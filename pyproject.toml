@@ -1,0 +1,16 @@
+[project]
+name = "nahida-bot"
+version = "0.1.0"
+description = "Just a simple QQ bot based on nonebot2"
+authors = [
+    {name = "arendellian13",email = "listener1381@outlook.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
