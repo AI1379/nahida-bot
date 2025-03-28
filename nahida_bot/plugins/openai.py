@@ -13,6 +13,7 @@ from nonebot.log import logger
 from openai import OpenAI
 from typing import Tuple
 from collections import deque
+import sqlite3
 import time
 
 logger.info("Loading openai.py")
@@ -21,9 +22,13 @@ openai_url = nonebot.get_driver().config.openai_api_url
 openai_token = nonebot.get_driver().config.openai_api_token
 openai_model = nonebot.get_driver().config.openai_model_name
 
+data_path = nonebot.get_driver().config.data_dir
+
 DEFAULT_PROMPT = "You are a helpful AI assistant. DO NOT use markdown in your reply"
-MESSAGE_TIMEOUT = 120  # Currently set it to 2min to debug
-MAX_MEMORY = 20 # Max context message
+MESSAGE_TIMEOUT = 3600  # Currently set it to 2min to debug
+MAX_MEMORY = 50 # Max context message
+
+db = f"{data_path}/openai.db"
 
 config = {
     "group": {
@@ -43,34 +48,38 @@ config = {
 logger.info(f"OpenAI API URL: {openai_url}")
 logger.info(f"OpenAI API Token: {openai_token}")
 logger.info(f"OpenAI Model Name: {openai_model}")
+logger.info(f"OpenAI DB Path: {db}")
 
 openai = on_message(rule=to_me(), priority=10)
 openai_setting_group = CommandGroup("openai_setting", priority=5, block=True)
 prompt_setting = openai_setting_group.command("prompt")
 
+def database_init():
+    return sqlite3.connect(db)
+
 @openai.handle()
 async def handle_message(args: Message = EventMessage(), event: MessageEvent = EventParam()):
-    logger.info(f"Received message: {args}")
-    logger.info(f"Received event: {event}")
-    logger.info(f"Received event message: {event.get_message()}")
-    logger.info(f"Received event type: {event.get_type()}")
-    logger.info(f"Received user id: {event.get_user_id()}")
-    logger.info(f"Message type: {event.message_type}")
-    logger.info(f"Message sender: {event.sender}")
+    logger.debug(f"Received message: {args}")
+    logger.debug(f"Received event: {event}")
+    logger.debug(f"Received event message: {event.get_message()}")
+    logger.debug(f"Received event type: {event.get_type()}")
+    logger.debug(f"Received user id: {event.get_user_id()}")
+    logger.debug(f"Message type: {event.message_type}")
+    logger.debug(f"Message sender: {event.sender}")
 
     msg_type = ""
 
     if isinstance(event, PrivateMessageEvent):
-        logger.info(f"Received private message from {event.sender}")
+        logger.debug(f"Received private message from {event.sender}")
         msg_type = "private"
-        await get_openai_response(args, event, msg_type)
     elif isinstance(event, GroupMessageEvent):
-        logger.info(f"Received group message from {event.sender}")
+        logger.debug(f"Received group message from {event.sender}")
         grp_event = event
-        logger.info(f"Received group id: {grp_event.group_id}")
+        logger.debug(f"Received group id: {grp_event.group_id}")
         msg_type = "group"
     else:
         await openai.finish("你好像没有说话喵~")
+    await get_openai_response(args, event, msg_type)
 
 
 async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type: str):
@@ -105,7 +114,7 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
             "content": m["content"]
         })
 
-    logger.info(f"Messages: {messages}")
+    logger.debug(f"Messages: {messages}")
 
     client = OpenAI(api_key=openai_token,
                     base_url=openai_url)
@@ -131,13 +140,13 @@ async def openai_setting_handler(cmd: Tuple[str, str] = Command(),
                          event: MessageEvent = EventParam()):
     _, argument = cmd
     args_msg = args.extract_plain_text()
-    logger.info(f"Received command: {cmd}")
-    logger.info(f"Received config: {argument}")
-    logger.info(f"Received args: {args_msg}")
+    logger.debug(f"Received command: {cmd}")
+    logger.debug(f"Received config: {argument}")
+    logger.debug(f"Received args: {args_msg}")
     if argument == "prompt":
         if isinstance(event, PrivateMessageEvent):
             config["private"]["prompt"][event.get_user_id()] = args_msg
         elif isinstance(event, GroupMessageEvent):
             config["group"]["prompt"][event.group_id] = args_msg
-        logger.info(f"Current config: {config}")
+        logger.debug(f"Current config: {config}")
         await prompt_setting.finish("Prompt has been set")
