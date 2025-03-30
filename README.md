@@ -15,6 +15,10 @@
 - [ ] 持续化记忆
 - [ ] 权限控制
 
+## 配置
+
+由于 nonebot 不知为何加载 `.env` 文件有延迟，因此我们选择使用一个额外的 `config.json` 文件来配置。这个文件的路径可以在 `.env` 文件中配置。
+
 ## License
 
 DO WHAT THE FUCK YOU WANT TO.

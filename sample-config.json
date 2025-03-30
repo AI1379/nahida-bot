@@ -1,0 +1,6 @@
+{
+    "DATA_DIR": "data",
+    "OPENAI_API_URL": "https://api.siliconflow.cn/v1",
+    "OPENAI_API_TOKEN": "sk-YourAPIToken",
+    "OPENAI_MODEL_NAME": "Pro/deepseek-ai/DeepSeek-V3"
+}

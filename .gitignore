@@ -88,6 +88,8 @@ celerybeat-schedule
 env/
 venv/
 
+config.json
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -105,5 +107,8 @@ dmypy.json
 
 # PyCharm settings
 .idea/
+
+# VS Code settings
+.vscode/
 
 data/

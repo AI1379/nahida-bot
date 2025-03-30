@@ -4,23 +4,18 @@
 
 from typing import Optional
 from nahida_bot.localstore.localstore import BaseLocalStore
+from nahida_bot.localstore.localstore_manager import LocalStoreManager
 
-_localstore: Optional[BaseLocalStore] = None
+_localstore_manager: Optional[LocalStoreManager] = None
 
-def get_localstore() -> BaseLocalStore:
-    """
-    Get the local store instance.
-    """
-    global _localstore
-    if _localstore is None:
-        raise RuntimeError("Local store not initialized")
-    return _localstore
+def get_localstore_manager() -> LocalStoreManager:
+    global _localstore_manager
+    if _localstore_manager is None:
+        raise RuntimeError("LocalStoreManager not initialized")
+    return _localstore_manager
 
-def init_localstore(localstore: BaseLocalStore) -> None:
-    """
-    Initialize the local store instance.
-    """
-    global _localstore
-    if _localstore is not None:
-        raise RuntimeError("Local store already initialized")
-    _localstore = localstore
+def set_localstore_manager(manager: LocalStoreManager) -> None:
+    global _localstore_manager
+    if _localstore_manager is not None:
+        raise RuntimeError("LocalStoreManager already initialized")
+    _localstore_manager = manager
