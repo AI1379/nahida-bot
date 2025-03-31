@@ -11,8 +11,8 @@
 - [x] 基础功能
 - [ ] pixiv搜索
 - [ ] 漫画搜索下载
-- [ ] 基于DeepSeek-R1/SiliconFlow的角色扮演
-- [ ] 持续化记忆
+- [x] 基于DeepSeek-R1/SiliconFlow的角色扮演
+- [x] 持续化记忆
 - [ ] 权限控制
 
 ## 配置

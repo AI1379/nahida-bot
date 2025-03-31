@@ -36,10 +36,10 @@ logger.info(f"OpenAI Model Name: {openai_model}")
 logger.info(f"OpenAI DB Path: {db_path}")
 
 openai = on_message(rule=to_me(), priority=10)
-openai_setting_group = CommandGroup("openai_setting", priority=5, block=True)
-prompt_setting = openai_setting_group.command("prompt")
-clear_memory = openai_setting_group.command("clear_memory")
-reset_prompt = openai_setting_group.command("reset_prompt")
+openai_setting = CommandGroup("openai", priority=5, block=True)
+prompt_setting = openai_setting.command("prompt", aliases={"prompt"})
+clear_memory = openai_setting.command("clear_memory", aliases={"clear_memory"})
+reset_prompt = openai_setting.command("reset_prompt", aliases={"reset_prompt"})
 
 db = sqlite3.connect(db_path)
 cursor = db.cursor()
@@ -55,8 +55,10 @@ db.commit()
 def get_chat_identifier(msg_type: str, chat_id: str) -> str:
     return f"{msg_type}_{chat_id}"
 
+
 def get_memory_table_name(msg_type: str, chat_id: str) -> str:
     return f"{msg_type}_{chat_id}_memory"
+
 
 @openai.handle()
 async def handle_message(args: Message = EventMessage(), event: MessageEvent = EventParam()):
@@ -78,7 +80,7 @@ async def handle_message(args: Message = EventMessage(), event: MessageEvent = E
         grp_event = event
         logger.debug(f"Received group id: {grp_event.group_id}")
         msg_type = "group"
-    else:
+    elif args.extract_plain_text() == "":
         await openai.finish("你好像没有说话喵~")
     await get_openai_response(args, event, msg_type)
 
@@ -91,7 +93,7 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
     # For SQLite3
     chat_identifier = get_chat_identifier(msg_type, chat_id)
     memory_table = get_memory_table_name(msg_type, chat_id)
-    
+
     logger.debug(f"Chat ID: {chat_id}")
     logger.debug(f"Message type: {msg_type}")
     logger.debug(f"Chat identifier: {chat_identifier}")
@@ -161,14 +163,10 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
 
 
 @prompt_setting.handle()
-async def openai_setting_handler(cmd: Tuple[str, str] = Command(),
-                                 args: Message = CommandArg(),
+async def openai_setting_handler(args: Message = CommandArg(),
                                  event: MessageEvent = EventParam()):
-    _, argument = cmd
     args_msg = args.extract_plain_text()
 
-    logger.debug(f"Received command: {cmd}")
-    logger.debug(f"Received config: {argument}")
     logger.debug(f"Received args: {args_msg}")
 
     msg_type = "private" if isinstance(event, PrivateMessageEvent) else "group"
@@ -178,15 +176,14 @@ async def openai_setting_handler(cmd: Tuple[str, str] = Command(),
     logger.debug(f"Chat ID: {chat_id}")
     logger.debug(f"Chat Identifier: {chat_identifier}")
 
-    if argument == "prompt":
-        if not args_msg:
-            await prompt_setting.finish("Please provide a prompt")
+    if not args_msg:
+        await prompt_setting.finish("Please provide a prompt")
 
-        cursor.execute(f"""UPDATE prompts SET prompt = ? WHERE chat_identifier = ?""",
-                       (args_msg, chat_identifier))
-        db.commit()
+    cursor.execute(f"""UPDATE prompts SET prompt = ? WHERE chat_identifier = ?""",
+                   (args_msg, chat_identifier))
+    db.commit()
 
-        await prompt_setting.finish("Prompt has been set")
+    await prompt_setting.finish("Prompt has been set")
 
 
 @clear_memory.handle()
