@@ -6,7 +6,7 @@ authors = [
     {name = "arendellian13",email = "listener1381@outlook.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.13,<4.0"
+requires-python = ">=3.12,<4.0"
 dependencies = [
     "nonebot2[fastapi] (>=2.4.2,<3.0.0)",
     "nonebot-adapter-console (>=0.6.0,<0.7.0)",
