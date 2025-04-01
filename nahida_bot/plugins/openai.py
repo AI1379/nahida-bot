@@ -34,6 +34,7 @@ logger.info(f"OpenAI API URL: {openai_url}")
 logger.info(f"OpenAI API Token: {openai_token}")
 logger.info(f"OpenAI Model Name: {openai_model}")
 logger.info(f"OpenAI DB Path: {db_path}")
+logger.success("OpenAI plugin loaded successfully")
 
 openai = on_message(rule=to_me(), priority=10)
 openai_setting = CommandGroup("openai", priority=5, block=True)
@@ -158,6 +159,8 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
     cursor.execute(f"""INSERT INTO {memory_table} (role, content, timestamp) VALUES (?, ?, ?)""",
                    (res.role, res.content, time.time()))
     db.commit()
+    
+    logger.success(f"OpenAI response: {res.content}")
 
     await openai.send(res.content)
 
@@ -181,6 +184,10 @@ async def openai_setting_handler(args: Message = CommandArg(),
 
     cursor.execute(f"""UPDATE prompts SET prompt = ? WHERE chat_identifier = ?""",
                    (args_msg, chat_identifier))
+    
+    memory_table = get_memory_table_name(msg_type, chat_id)
+    # remove old memory
+    cursor.execute(f"""DELETE FROM {memory_table}""")
     db.commit()
 
     await prompt_setting.finish("Prompt has been set")
