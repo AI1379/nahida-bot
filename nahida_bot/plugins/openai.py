@@ -12,6 +12,8 @@ from nonebot.params import EventMessage, EventParam, Command, CommandArg
 from nonebot.log import logger
 from openai import OpenAI
 from typing import Tuple
+from nahida_bot.localstore import register, get_store
+from nahida_bot.localstore.sqlite3 import SQLite3DB, PRIMARY_KEY_TYPE, TEXT, REAL
 import sqlite3
 import time
 
@@ -28,12 +30,12 @@ DEFAULT_PROMPT = """You are a helpful AI assistant. DO NOT use markdown in your 
 MESSAGE_TIMEOUT = 3600  # Currently set it to 1 hour
 MAX_MEMORY = 50  # Max context message
 
-db_path = f"{data_path}/openai.db"
+store: SQLite3DB = register("openai", SQLite3DB)
 
 logger.info(f"OpenAI API URL: {openai_url}")
 logger.info(f"OpenAI API Token: {openai_token}")
 logger.info(f"OpenAI Model Name: {openai_model}")
-logger.info(f"OpenAI DB Path: {db_path}")
+logger.info(f"OpenAI DB Path: {store.db_path}")
 logger.success("OpenAI plugin loaded successfully")
 
 openai = on_message(rule=to_me(), priority=10)
@@ -42,15 +44,11 @@ prompt_setting = openai_setting.command("prompt", aliases={"prompt"})
 clear_memory = openai_setting.command("clear_memory", aliases={"clear_memory"})
 reset_prompt = openai_setting.command("reset_prompt", aliases={"reset_prompt"})
 
-db = sqlite3.connect(db_path)
-cursor = db.cursor()
-
-cursor.execute("""CREATE TABLE IF NOT EXISTS prompts (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            chat_identifier TEXT NOT NULL,
-                            prompt TEXT NOT NULL
-                        )""")
-db.commit()
+store.create_table("prompts", {
+    "id": PRIMARY_KEY_TYPE,
+    "chat_identifier": TEXT,
+    "prompt": TEXT,
+})
 
 
 def get_chat_identifier(msg_type: str, chat_id: str) -> str:
@@ -100,33 +98,47 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
     logger.debug(f"Chat identifier: {chat_identifier}")
     logger.debug(f"Memory table: {memory_table}")
 
-    cursor.execute(f"""CREATE TABLE IF NOT EXISTS {memory_table} (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            role TEXT NOT NULL,
-                            content TEXT NOT NULL,
-                            timestamp REAL NOT NULL
-                        )""")
-    db.commit()
+    store.create_table(memory_table, {
+        "id": PRIMARY_KEY_TYPE,
+        "role": TEXT,
+        "content": TEXT,
+        "timestamp": REAL
+    })
 
-    row = cursor.execute(f"""SELECT * FROM prompts WHERE chat_identifier = ?""",
-                         (chat_identifier,)).fetchone()
-    if row is None:
-        cursor.execute(f"""INSERT INTO prompts (chat_identifier, prompt) VALUES (?, ?)""",
-                       (chat_identifier, DEFAULT_PROMPT))
-        db.commit()
+    row = store.select("prompts", {
+        "chat_identifier": chat_identifier
+    })
+    if not row:
+        store.insert("prompts", {
+            "chat_identifier": chat_identifier,
+            "prompt": DEFAULT_PROMPT
+        })
+        row = store.select("prompts", {
+            "chat_identifier": chat_identifier
+        })
+    row = row[0] if row else None
+
     logger.debug(f"Row: {row}")
 
     prompt = row[2] if row else DEFAULT_PROMPT
     logger.debug(f"Prompt: {prompt}")
 
     # Update memory
-    cursor.execute(f"""DELETE FROM {memory_table} WHERE timestamp < ?""",
-                   (time.time() - MESSAGE_TIMEOUT,))
-    db.commit()
+    # cursor.execute(f"""DELETE FROM {memory_table} WHERE timestamp < ?""",
+    #                (time.time() - MESSAGE_TIMEOUT,))
+    # cursor.execute(f"""INSERT INTO {memory_table} (role, content, timestamp) VALUES (?, ?, ?)""",
+    #                ("user", msg.extract_plain_text(), time.time()))
+    # db.commit()
 
-    cursor.execute(f"""INSERT INTO {memory_table} (role, content, timestamp) VALUES (?, ?, ?)""",
-                   ("user", msg.extract_plain_text(), time.time()))
-    db.commit()
+    store.delete(memory_table, {
+                 "timestamp": time.time() - MESSAGE_TIMEOUT
+                 },
+                 "{} < ?")
+    store.insert(memory_table, {
+        "role": "user",
+        "content": msg.extract_plain_text(),
+        "timestamp": time.time()
+    })
 
     messages = []
     messages.append({
@@ -134,7 +146,8 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
         "content": prompt
     })
 
-    db_memory = cursor.execute(f"""SELECT * FROM {memory_table}""").fetchall()
+    db_memory = store.select(memory_table)
+
     for row in db_memory:
         logger.debug(f"Database memory row: {row}")
 
@@ -156,10 +169,12 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
 
     res = response.choices[0].message
 
-    cursor.execute(f"""INSERT INTO {memory_table} (role, content, timestamp) VALUES (?, ?, ?)""",
-                   (res.role, res.content, time.time()))
-    db.commit()
-    
+    store.insert(memory_table, {
+        "role": res.role,
+        "content": res.content,
+        "timestamp": time.time()
+    })
+
     logger.success(f"OpenAI response: {res.content}")
 
     await openai.send(res.content)
@@ -175,6 +190,7 @@ async def openai_setting_handler(args: Message = CommandArg(),
     msg_type = "private" if isinstance(event, PrivateMessageEvent) else "group"
     chat_id = event.get_user_id() if msg_type == "private" else event.group_id
     chat_identifier = get_chat_identifier(msg_type, chat_id)
+    memory_table = get_memory_table_name(msg_type, chat_id)
 
     logger.debug(f"Chat ID: {chat_id}")
     logger.debug(f"Chat Identifier: {chat_identifier}")
@@ -182,13 +198,12 @@ async def openai_setting_handler(args: Message = CommandArg(),
     if not args_msg:
         await prompt_setting.finish("Please provide a prompt")
 
-    cursor.execute(f"""UPDATE prompts SET prompt = ? WHERE chat_identifier = ?""",
-                   (args_msg, chat_identifier))
-    
-    memory_table = get_memory_table_name(msg_type, chat_id)
-    # remove old memory
-    cursor.execute(f"""DELETE FROM {memory_table}""")
-    db.commit()
+    store.update("prompts", {
+        "prompt": args_msg
+    }, {
+        "chat_identifier": chat_identifier
+    })
+    store.delete(memory_table)
 
     await prompt_setting.finish("Prompt has been set")
 
@@ -205,8 +220,7 @@ async def clear_memory_handler(event: MessageEvent = EventParam()):
     memory_table = get_memory_table_name(msg_type, chat_id)
     logger.debug(f"Memory table: {memory_table}")
 
-    cursor.execute(f"""DELETE FROM {memory_table}""")
-    db.commit()
+    store.delete(memory_table)
 
     await clear_memory.finish("Memory has been cleared")
 
@@ -220,8 +234,11 @@ async def reset_prompt_handler(event: MessageEvent = EventParam()):
     logger.debug(f"Chat ID: {chat_id}")
     logger.debug(f"Chat Identifier: {chat_identifier}")
 
-    cursor.execute(f"""UPDATE prompts SET prompt = ? WHERE chat_identifier = ?""",
-                   (DEFAULT_PROMPT, chat_identifier))
-    db.commit()
+    store.update("prompts", {
+        "prompt": DEFAULT_PROMPT
+    }, {
+        "chat_identifier": chat_identifier
+    })
+    store.delete(get_memory_table_name(msg_type, chat_id))
 
     await reset_prompt.finish("Prompt has been reset to default")

@@ -11,13 +11,11 @@ import platform
 import time
 import datetime
 
-server_monitor_group = CommandGroup("server", priority=5, block=True)
-all_status = server_monitor_group.command(
-    tuple(), rule=to_me(), aliases={"status"})
-info = server_monitor_group.command("info", rule=to_me(), aliases={"sysinfo"})
-usage = server_monitor_group.command("usage", rule=to_me(), aliases={"usage"})
-bot_config = server_monitor_group.command(
-    "config", rule=to_me(), aliases={"botconfig"})
+server_monitor = CommandGroup("server", priority=5, block=True)
+all_status = server_monitor.command(tuple(), rule=to_me(), aliases={"status"})
+info = server_monitor.command("info", rule=to_me(), aliases={"sysinfo"})
+usage = server_monitor.command("usage", rule=to_me(), aliases={"usage"})
+bot_config = server_monitor.command("config", rule=to_me(), aliases={"config"})
 
 
 @info.handle()

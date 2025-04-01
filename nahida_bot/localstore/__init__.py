@@ -3,19 +3,39 @@
 #
 
 from typing import Optional
-from nahida_bot.localstore.localstore import BaseLocalStore
 from nahida_bot.localstore.localstore_manager import LocalStoreManager
+import os
 
 _localstore_manager: Optional[LocalStoreManager] = None
 
-def get_localstore_manager() -> LocalStoreManager:
+
+def init(data_path: str):
+    """
+    Get the localstore manager object
+    :param data_path the relative path to the data dir.
+    """
     global _localstore_manager
     if _localstore_manager is None:
-        raise RuntimeError("LocalStoreManager not initialized")
+        path = os.path.join(os.path.abspath(os.getcwd()), data_path)
+        _localstore_manager = LocalStoreManager(path)
+
+
+def get_localstore_manager() -> LocalStoreManager:
+    """
+    Get the localstore manager object
+    :param data_path the relative path to the data dir.
+    """
+    global _localstore_manager
+    if _localstore_manager is None:
+        raise RuntimeError("Local store object is not initialized")
     return _localstore_manager
 
-def set_localstore_manager(manager: LocalStoreManager) -> None:
-    global _localstore_manager
-    if _localstore_manager is not None:
-        raise RuntimeError("LocalStoreManager already initialized")
-    _localstore_manager = manager
+
+def register(plugin_name: str, store: type):
+    if _localstore_manager is None:
+        raise RuntimeError("Local store object is not initialized")
+    return _localstore_manager.register(plugin_name, store)
+
+
+def get_store(plugin_name: str):
+    return _localstore_manager.get_store(plugin_name)
