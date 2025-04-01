@@ -11,30 +11,40 @@ from nonebot.adapters.onebot.v11 import MessageEvent, PrivateMessageEvent, Group
 from nonebot.params import EventMessage, EventParam, Command, CommandArg
 from nonebot.log import logger
 from openai import OpenAI
-from typing import Tuple
-from nahida_bot.localstore import register, get_store
+from nahida_bot.localstore import register
 from nahida_bot.localstore.sqlite3 import SQLite3DB, PRIMARY_KEY_TYPE, TEXT, REAL
-import sqlite3
 import time
 
 logger.info("Loading openai.py")
 
-openai_url = nonebot.get_driver().config.openai_api_url
-openai_token = nonebot.get_driver().config.openai_api_token
-openai_model = nonebot.get_driver().config.openai_model_name
+OPENAI_URL = nonebot.get_driver().config.openai_api_url
+OPENAI_TOKEN = nonebot.get_driver().config.openai_api_token
+OPENAI_MODEL = nonebot.get_driver().config.openai_model_name
 
-data_path = nonebot.get_driver().config.data_dir
+DATA_PATH = nonebot.get_driver().config.data_dir
 
-DEFAULT_PROMPT = """You are a helpful AI assistant. DO NOT use markdown in your reply. Always reply in Simplified Chinese unless requested. """
-# TODO: Make this configurable
-MESSAGE_TIMEOUT = 3600  # Currently set it to 1 hour
-MAX_MEMORY = 50  # Max context message
+FIXED_PROMPT = "DO NOT use markdown in your reply. Always reply in Simplified Chinese unless requested."
+
+if hasattr(nonebot.get_driver().config, "openai_default_prompt"):
+    DEFAULT_PROMPT = nonebot.get_driver().config.openai_default_prompt + FIXED_PROMPT
+else:
+    DEFAULT_PROMPT = """You are a helpful AI assistant. DO NOT use markdown in your reply. Always reply in Simplified Chinese unless requested. """
+
+if hasattr(nonebot.get_driver().config, "openai_message_timeout"):
+    MESSAGE_TIMEOUT = nonebot.get_driver().config.openai_message_timeout
+else:
+    MESSAGE_TIMEOUT = 60 * 60 * 24 * 7 # 7 days
+
+if hasattr(nonebot.get_driver().config, "openai_max_memory"):
+    MAX_MEMORY = nonebot.get_driver().config.openai_max_memory
+else:
+    MAX_MEMORY = 50  # Max context message
 
 store: SQLite3DB = register("openai", SQLite3DB)
 
-logger.info(f"OpenAI API URL: {openai_url}")
-logger.info(f"OpenAI API Token: {openai_token}")
-logger.info(f"OpenAI Model Name: {openai_model}")
+logger.info(f"OpenAI API URL: {OPENAI_URL}")
+logger.info(f"OpenAI API Token: {OPENAI_TOKEN}")
+logger.info(f"OpenAI Model Name: {OPENAI_MODEL}")
 logger.info(f"OpenAI DB Path: {store.db_path}")
 logger.success("OpenAI plugin loaded successfully")
 
@@ -123,17 +133,17 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
     prompt = row[2] if row else DEFAULT_PROMPT
     logger.debug(f"Prompt: {prompt}")
 
-    # Update memory
-    # cursor.execute(f"""DELETE FROM {memory_table} WHERE timestamp < ?""",
-    #                (time.time() - MESSAGE_TIMEOUT,))
-    # cursor.execute(f"""INSERT INTO {memory_table} (role, content, timestamp) VALUES (?, ?, ?)""",
-    #                ("user", msg.extract_plain_text(), time.time()))
-    # db.commit()
-
     store.delete(memory_table, {
                  "timestamp": time.time() - MESSAGE_TIMEOUT
                  },
                  "{} < ?")
+    # Delete oldest messages if memory exceeds MAX_MEMORY
+    store.get_cursor().execute(
+        f"""
+        DELETE FROM {memory_table}
+        ORDER BY id ASC
+        LIMIT {MAX_MEMORY}
+        """).connection.commit()
     store.insert(memory_table, {
         "role": "user",
         "content": msg.extract_plain_text(),
@@ -159,11 +169,11 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
 
     logger.debug(f"Messages: {messages}")
 
-    client = OpenAI(api_key=openai_token,
-                    base_url=openai_url)
+    client = OpenAI(api_key=OPENAI_TOKEN,
+                    base_url=OPENAI_URL)
 
     response = client.chat.completions.create(
-        model=openai_model,
+        model=OPENAI_MODEL,
         messages=messages
     )
 
@@ -197,6 +207,8 @@ async def openai_setting_handler(args: Message = CommandArg(),
 
     if not args_msg:
         await prompt_setting.finish("Please provide a prompt")
+
+    args_msg = args_msg.strip() + " " + FIXED_PROMPT
 
     store.update("prompts", {
         "prompt": args_msg

@@ -72,3 +72,9 @@ class SQLite3DB:
         params = tuple(where.values()) if where else ()
         query = f"SELECT * FROM {table_name} {where_clause}"
         return cursor.execute(query, params).fetchall()
+    
+    def get_cursor(self):
+        return self.connection.cursor()
+    
+    def commit(self):
+        self.connection.commit()
