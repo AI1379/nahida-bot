@@ -33,7 +33,7 @@ else:
 if hasattr(nonebot.get_driver().config, "openai_message_timeout"):
     MESSAGE_TIMEOUT = nonebot.get_driver().config.openai_message_timeout
 else:
-    MESSAGE_TIMEOUT = 60 * 60 * 24 * 7 # 7 days
+    MESSAGE_TIMEOUT = 60 * 60 * 24 * 7  # 7 days
 
 if hasattr(nonebot.get_driver().config, "openai_max_memory"):
     MAX_MEMORY = nonebot.get_driver().config.openai_max_memory
@@ -138,11 +138,10 @@ async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type
                  },
                  "{} < ?")
     # Delete oldest messages if memory exceeds MAX_MEMORY
+    where_clause = f"""SELECT id FROM {memory_table} ORDER BY id DESC LIMIT {MAX_MEMORY}"""
     store.get_cursor().execute(
         f"""
-        DELETE FROM {memory_table}
-        ORDER BY id ASC
-        LIMIT {MAX_MEMORY}
+        DELETE FROM {memory_table} WHERE id NOT IN ({where_clause})
         """).connection.commit()
     store.insert(memory_table, {
         "role": "user",
