@@ -10,6 +10,7 @@ from nonebot.utils import escape_tag
 from nonebot.compat import model_dump
 import nahida_bot.localstore as localstore
 from json import load as json_load
+import os
 
 nonebot.init()
 
@@ -36,13 +37,15 @@ if hasattr(driver.config, "log_file") and driver.config.log_file:
 
 if not driver.config.data_dir:
     driver.config.data_dir = "data"
+    
+full_data_dir = os.path.abspath(driver.config.data_dir)
 
 logger.info("Data path: " + driver.config.data_dir)
 logger.opt(colors=True).debug(
     f"Updated <y><b>Config</b></y>: {escape_tag(str(model_dump(driver.config)))}"
 )
 
-localstore.init(driver.config.data_dir)
+localstore.init(full_data_dir)
 
 nonebot.load_builtin_plugins()
 nonebot.load_plugins("nahida_bot/plugins")

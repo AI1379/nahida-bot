@@ -94,7 +94,7 @@ async def handle_message(args: Message = EventMessage(), event: MessageEvent = E
     await get_openai_response(args, event, msg_type)
 
 
-async def get_openai_response(msg: Message, event: PrivateMessageEvent, msg_type: str):
+async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
     if msg_type != "private" and msg_type != "group":
         return
     chat_id = event.get_user_id() if msg_type == "private" else event.group_id

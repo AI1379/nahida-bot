@@ -9,14 +9,13 @@ import os
 _localstore_manager: Optional[LocalStoreManager] = None
 
 
-def init(data_path: str):
+def init(path: str):
     """
     Get the localstore manager object
     :param data_path the relative path to the data dir.
     """
     global _localstore_manager
     if _localstore_manager is None:
-        path = os.path.join(os.path.abspath(os.getcwd()), data_path)
         _localstore_manager = LocalStoreManager(path)
 
 

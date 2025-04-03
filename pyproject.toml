@@ -14,10 +14,17 @@ dependencies = [
     "openai (>=1.68.2,<2.0.0)",
     "psutil (>=7.0.0,<8.0.0)",
     "pydantic (>=2.11.0,<3.0.0)",
-    "pixivpy3 (>=3.7.5,<4.0.0)"
+    "pixivpy3 (>=3.7.5,<4.0.0)",
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.5"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

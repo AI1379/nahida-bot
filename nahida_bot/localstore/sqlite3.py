@@ -26,11 +26,18 @@ class SQLite3DB:
         if self.connection:
             self.connection.close()
             self.connection = None
+            
+    def reset(self):
+        self.close()
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
+        self.connect()
 
     def create_table(self, table_name: str, schema: Dict[str, str]):
         cursor = self.connection.cursor()
         columns = ', '.join(
             [f"{col} {dtype}" for col, dtype in schema.items()])
+        print(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
         cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
         self.connection.commit()
 
