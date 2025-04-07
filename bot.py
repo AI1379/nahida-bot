@@ -9,6 +9,7 @@ from nonebot.log import logger, default_format
 from nonebot.utils import escape_tag
 from nonebot.compat import model_dump
 import nahida_bot.localstore as localstore
+import nahida_bot.permission as permission
 from json import load as json_load
 import os
 
@@ -37,7 +38,7 @@ if hasattr(driver.config, "log_file") and driver.config.log_file:
 
 if not driver.config.data_dir:
     driver.config.data_dir = "data"
-    
+
 full_data_dir = os.path.abspath(driver.config.data_dir)
 
 logger.info("Data path: " + driver.config.data_dir)
@@ -45,7 +46,13 @@ logger.opt(colors=True).debug(
     f"Updated <y><b>Config</b></y>: {escape_tag(str(model_dump(driver.config)))}"
 )
 
+superuser = str(driver.config.superuser) if hasattr(
+    driver.config, "superuser") else None
+
+logger.info(f"Superuser: {superuser}")
+
 localstore.init(full_data_dir)
+permission.init(superuser)
 
 nonebot.load_builtin_plugins()
 nonebot.load_plugins("nahida_bot/plugins")

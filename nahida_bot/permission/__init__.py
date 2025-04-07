@@ -61,6 +61,7 @@ from nahida_bot.localstore.sqlite3 import SQLite3DB, PRIMARY_KEY_TYPE, TEXT, INT
 from nahida_bot.localstore import register, LocalStoreManager
 from typing import Dict, Any, Optional, Tuple, List
 from nonebot.adapters.onebot.v11 import MessageEvent, GroupMessageEvent
+from nonebot.adapters import Event
 
 _permission_store: Optional[SQLite3DB] = None
 
@@ -346,3 +347,12 @@ def check_permission(event: MessageEvent, plugin: str, feature: str) -> bool:
         return _group_handler(event, plugin, feature)
     else:
         return _private_handler(event, plugin, feature)
+
+
+def get_checker(plugin: str, feature: str):
+    async def checker(event: Event):
+        if isinstance(event, MessageEvent):
+            return check_permission(event, plugin, feature)
+        return False
+
+    return checker

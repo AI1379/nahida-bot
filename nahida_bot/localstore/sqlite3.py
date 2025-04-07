@@ -37,7 +37,6 @@ class SQLite3DB:
         cursor = self.connection.cursor()
         columns = ', '.join(
             [f"{col} {dtype}" for col, dtype in schema.items()])
-        print(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
         cursor.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
         self.connection.commit()
 
