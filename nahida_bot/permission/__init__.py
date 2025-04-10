@@ -62,6 +62,7 @@ from nahida_bot.localstore import register, LocalStoreManager
 from typing import Dict, Any, Optional, Tuple, List
 from nonebot.adapters.onebot.v11 import MessageEvent, GroupMessageEvent
 from nonebot.adapters import Event
+from nonebot.log import logger
 
 _permission_store: Optional[SQLite3DB] = None
 
@@ -112,6 +113,24 @@ def init(superuser: str = None, db_name: str = "permission", localstore: LocalSt
     else:
         _permission_store = localstore.register(db_name, SQLite3DB)
     _create_tables(superuser)
+
+
+def check_yes(value: str) -> bool:
+    """Check if the value is true"""
+    true_list = ["yes", "true", "y", "ok", "allow"]
+    false_list = ["no", "false", "n", "deny"]
+    if value.lower() in true_list:
+        return True
+    if value.lower() in false_list:
+        return False
+    try:
+        value = int(value)
+        if value != 0:
+            return True
+        else:
+            return False
+    except ValueError:
+        return None
 
 
 def _create_tables(superuser: str = None):
@@ -286,6 +305,9 @@ def _group_handler(event: GroupMessageEvent, plugin: str, feature: str) -> bool:
     # Not found or disabled
     if not feature_record or feature_record[0][4] == 0:
         return False
+    
+    default_group = feature_record[0][4] == 1
+    default_user = feature_record[0][5] == 1
 
     group_id = event.group_id
     group_record = _permission_store.select("groups", {
@@ -294,9 +316,9 @@ def _group_handler(event: GroupMessageEvent, plugin: str, feature: str) -> bool:
         "group_id": group_id,
     })
     if _check_admin(event):
-        group_state = feature_record[0][3] == 1 if group_record else DEFAULT_PERMISSION["admin"]
+        group_state = feature_record[0][3] == 1
     else:
-        group_state = group_record[0][4] == 1 if group_record else DEFAULT_PERMISSION["group"]
+        group_state = group_record[0][4] == 1 if group_record else default_group
 
     user_id = event.sender.user_id
     user_record = _permission_store.select("users", {
@@ -304,7 +326,9 @@ def _group_handler(event: GroupMessageEvent, plugin: str, feature: str) -> bool:
         "feature": feature,
         "user_id": user_id,
     })
-    user_state = user_record[0][4] == 1 if user_record else DEFAULT_PERMISSION["user"]
+    user_state = user_record[0][4] == 1 if user_record else default_user
+    
+    logger.debug(f"Group state: {group_state}, User state: {user_state}")
 
     if group_state and user_state:
         return True

@@ -13,7 +13,30 @@ from nonebot.log import logger
 from openai import OpenAI
 from nahida_bot.localstore import register
 from nahida_bot.localstore.sqlite3 import SQLite3DB, PRIMARY_KEY_TYPE, TEXT, REAL
+import nahida_bot.permission as permission
 import time
+
+plugin_name = "openai"
+
+
+def checker(feature: str):
+    return permission.get_checker(plugin_name, feature) & to_me()
+
+
+permission.update_feature_permission(
+    plugin_name,
+    feature="chat",
+    admin=permission.ALLOW,
+    group=permission.ALLOW,
+    user=permission.ALLOW
+)
+permission.update_feature_permission(
+    plugin_name,
+    feature="prompt",
+    admin=permission.ALLOW,
+    group=permission.ALLOW,
+    user=permission.ALLOW
+)
 
 logger.info("Loading openai.py")
 
@@ -40,7 +63,7 @@ if hasattr(nonebot.get_driver().config, "openai_max_memory"):
 else:
     MAX_MEMORY = 50  # Max context message
 
-store: SQLite3DB = register("openai", SQLite3DB)
+store: SQLite3DB = register(plugin_name, SQLite3DB)
 
 logger.info(f"OpenAI API URL: {OPENAI_URL}")
 logger.info(f"OpenAI API Token: {OPENAI_TOKEN}")
@@ -48,11 +71,16 @@ logger.info(f"OpenAI Model Name: {OPENAI_MODEL}")
 logger.info(f"OpenAI DB Path: {store.db_path}")
 logger.success("OpenAI plugin loaded successfully")
 
-openai = on_message(rule=to_me(), priority=10)
+openai = on_message(rule=checker("chat"), priority=10)
 openai_setting = CommandGroup("openai", priority=5, block=True)
-prompt_setting = openai_setting.command("prompt", aliases={"prompt"})
-clear_memory = openai_setting.command("clear_memory", aliases={"clear_memory"})
-reset_prompt = openai_setting.command("reset_prompt", aliases={"reset_prompt"})
+prompt_setting = openai_setting.command(
+    "prompt", rule=checker("prompt"), aliases={"prompt"})
+clear_memory = openai_setting.command(
+    "clear_memory", rule=checker("prompt"), aliases={"clear_memory"})
+reset_prompt = openai_setting.command(
+    "reset_prompt", rule=checker("prompt"), aliases={"reset_prompt"})
+show_prompt = openai_setting.command(
+    "show_prompt", rule=checker("prompt"), aliases={"show_prompt"})
 
 store.create_table("prompts", {
     "id": PRIMARY_KEY_TYPE,
@@ -253,3 +281,27 @@ async def reset_prompt_handler(event: MessageEvent = EventParam()):
     store.delete(get_memory_table_name(msg_type, chat_id))
 
     await reset_prompt.finish("Prompt has been reset to default")
+
+
+@show_prompt.handle()
+async def show_prompt_handler(event: MessageEvent = EventParam()):
+    msg_type = "private" if isinstance(event, PrivateMessageEvent) else "group"
+    chat_id = event.get_user_id() if msg_type == "private" else event.group_id
+    chat_identifier = get_chat_identifier(msg_type, chat_id)
+
+    logger.debug(f"Chat ID: {chat_id}")
+    logger.debug(f"Chat Identifier: {chat_identifier}")
+
+    row = store.select("prompts", {
+        "chat_identifier": chat_identifier
+    })
+    if not row:
+        await show_prompt.finish("No prompt found")
+    row = row[0] if row else None
+
+    logger.debug(f"Row: {row}")
+
+    prompt = row[2] if row else DEFAULT_PROMPT
+    logger.debug(f"Prompt: {prompt}")
+
+    await show_prompt.send(prompt)
