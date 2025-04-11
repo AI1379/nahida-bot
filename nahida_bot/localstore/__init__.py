@@ -38,3 +38,6 @@ def register(plugin_name: str, store: type):
 
 def get_store(plugin_name: str):
     return _localstore_manager.get_store(plugin_name)
+
+def register_cache(plugin_name: str):
+    return _localstore_manager.register_cache(plugin_name)
