@@ -131,6 +131,15 @@ def check_yes(value: str) -> bool:
             return False
     except ValueError:
         return None
+    
+def check_user_id(value: str) -> bool:
+    """Check if the value is a valid user id"""
+    # Currently, we only check if the value is an integer.
+    try:
+        value = int(value)
+        return True
+    except ValueError:
+        return False
 
 
 def _create_tables(superuser: str = None):

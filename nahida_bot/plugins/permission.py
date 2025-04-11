@@ -62,3 +62,48 @@ async def handle_group_set(
         f"Plugin {plugin} feature {feature} group {event.group_id} permission {perm}")
 
     await group_set.finish(f"{plugin}.{feature} permission in group {event.group_id} set to {perm}")
+
+
+@user_set.handle()
+async def handle_user_set(
+    args: Message = CommandArg(),
+):
+    """Set the permission level of a plugin for a user."""
+    logger.debug(f"User set args: {args}")
+    logger.debug(f"Argument list {args.extract_plain_text().split(' ')}")
+    logger.debug(f"Argument length {len(args)}")
+    user_id = []
+    plugin = None
+    feature = None
+    perm = None
+    for arg in args:
+        logger.debug(f"Argument: {arg}")
+        if arg.type == "at":
+            user_id.append(arg.data["qq"])
+        elif permission.check_yes(arg.extract_plain_text()) is not None:
+            perm = permission.check_yes(arg.extract_plain_text())
+        elif permission.check_user_id(arg.extract_plain_text()):
+            user_id.append(arg.extract_plain_text())
+        else:
+            plugin, feature = arg.extract_plain_text().split(".")
+
+    if len(user_id) == 0:
+        await user_set.finish("Please provide a user ID.")
+
+    if plugin is None or feature is None:
+        await user_set.finish("Please provide a valid feature.")
+
+    if perm is None:
+        await user_set.finish("Please provide a valid permission level.")
+
+    msg_list = []
+
+    for uid in user_id:
+        permission.update_user_permission(plugin, feature, uid, perm)
+        logger.debug(
+            f"Plugin {plugin} feature {feature} user {uid} permission {perm}")
+        msg_list.append(
+            f"{plugin}.{feature} permission for user {uid} set to {perm}"
+        )
+
+    await user_set.finish("\n".join(msg_list))
