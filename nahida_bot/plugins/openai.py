@@ -242,7 +242,10 @@ async def openai_setting_handler(args: Message = CommandArg(),
     }, {
         "chat_identifier": chat_identifier
     })
-    store.delete(memory_table)
+    try:
+        store.delete(memory_table)
+    except Exception as e:
+        logger.error(f"Error deleting memory table: {e}")
 
     await prompt_setting.finish("Prompt has been set")
 
@@ -259,7 +262,10 @@ async def clear_memory_handler(event: MessageEvent = EventParam()):
     memory_table = get_memory_table_name(msg_type, chat_id)
     logger.debug(f"Memory table: {memory_table}")
 
-    store.delete(memory_table)
+    try:
+        store.delete(memory_table)
+    except Exception as e:
+        logger.error(f"Error deleting memory table: {e}")
 
     await clear_memory.finish("Memory has been cleared")
 
