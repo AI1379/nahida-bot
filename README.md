@@ -20,6 +20,12 @@
 
 由于 nonebot 不知为何加载 `.env` 文件有延迟，因此我们选择使用一个额外的 `config.json` 文件来配置。这个文件的路径可以在 `.env` 文件中配置。
 
+### PixivBot
+
+你需要通过 `gppt` 包来获取 pixiv 的 `refresh_token`，这个包需要使用 `ChromeDriver`。所以请确保你已经安装了 `Chrome`。
+
+由于 pixiv 可能会有 reCAPTCHA 验证，因此你需要修改 `gppt` 包中的一个 `timeout` 参数。具体参考 [gppt issue #183](https://github.com/eggplants/get-pixivpy-token/issues/183)
+
 ## License
 
 DO WHAT THE FUCK YOU WANT TO.

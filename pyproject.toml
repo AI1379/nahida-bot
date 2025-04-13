@@ -24,6 +24,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"
+gppt = "^4.1.1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

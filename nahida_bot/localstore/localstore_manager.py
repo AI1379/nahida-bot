@@ -16,11 +16,16 @@ class LocalStoreManager:
         self.cache_manager = CacheManager(self.cache_path)
 
     def register(self, plugin_name: str, store: type):
-        self.table[plugin_name] = store(self.data_path, plugin_name)
+        if plugin_name not in self.table:
+            self.table[plugin_name] = store(self.data_path, plugin_name)
         return self.table[plugin_name]
 
     def get_store(self, plugin_name: str):
         return self.table[plugin_name]
 
-    def register_cache(self, plugin_name: str):
-        return self.cache_manager.register_plugin(plugin_name)
+    def register_cache(self, plugin_name: str) -> CacheManager.PluginCache:
+        if plugin_name not in self.cache_table:
+            self.cache_table[plugin_name] = self.cache_manager.register_plugin(
+                plugin_name
+            )
+        return self.cache_table[plugin_name]
