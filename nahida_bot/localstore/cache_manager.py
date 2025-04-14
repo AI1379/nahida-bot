@@ -45,7 +45,7 @@ class CacheManager:
             now = datetime.now()
             return (now - mtime).days
 
-        def clean_cache(self):
+        def clean_outdated_cache(self):
             """Clean the cache by removing files older than self.cache_days."""
             with open(self.record_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -89,9 +89,33 @@ class CacheManager:
             with open(self.record_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
 
-            self.clean_cache()
-            
-        def add_file(self, name:str, op, mode="w"):
+            self.clean_outdated_cache()
+
+        class CachedFile:
+            def __init__(self, cache_obj, file_path: str, mode: str, **kwargs):
+                self.file_path = file_path
+                self._parent_obj = cache_obj
+                self._file = open(file_path, mode, **kwargs)
+
+            def __enter__(self):
+                return self
+
+            def __getattr__(self, name):
+                return getattr(self._file, name)
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if exc_type is None:
+                    self._parent_obj.push_file(self.file_path)
+                    self._file.close()
+                    return True
+                self._file.close()
+                return False
+
+            def get_raw(self):
+                """Get the raw file object."""
+                return self._file
+
+        def add_file(self, name: str, op, mode="w"):
             """Add a file."""
             full_path = os.path.join(
                 self.cache_path,
@@ -104,8 +128,29 @@ class CacheManager:
             self.push_file(name)
             return full_path
 
+        def get_file(self, name: str):
+            """Get a file."""
+            """:return: The path to the file"""
+            full_path = os.path.join(
+                self.cache_path,
+                self.plugin_name,
+                name
+            )
+            if not os.path.exists(full_path):
+                return None
+            return full_path
+
+        def get_file_handler(self, name: str, mode="w", **kwargs):
+            """Get a file handler."""
+            full_path = os.path.join(
+                self.cache_path,
+                self.plugin_name,
+                name
+            )
+            return self.CachedFile(self, full_path, mode, **kwargs)
+
     def register_plugin(self, plugin_name: str):
         return self.PluginCache(self.cache_path,
-                          plugin_name,
-                          self.record_file,
-                          self.cache_days)
+                                plugin_name,
+                                self.record_file,
+                                self.cache_days)

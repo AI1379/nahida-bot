@@ -14,7 +14,8 @@ pixiv_plugin_name = "pixiv_plugin"
 
 
 def checker(feature: str):
-    return permission.get_checker(pixiv_plugin_name, feature) & to_me()
+    # return permission.get_checker(pixiv_plugin_name, feature) & to_me()
+    return to_me()
 
 
 permission.update_feature_permission(

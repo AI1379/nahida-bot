@@ -6,11 +6,10 @@ import nonebot
 from nonebot import on_command, on_message, CommandGroup
 from nonebot.rule import to_me
 from nonebot.adapters import Message, Event
-from nonebot.adapters.onebot.v11 import Event as OnebotEvent
 from nonebot.adapters.onebot.v11 import MessageEvent, PrivateMessageEvent, GroupMessageEvent
 from nonebot.params import EventMessage, EventParam, Command, CommandArg
 from nonebot.log import logger
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from nahida_bot.localstore import register
 from nahida_bot.localstore.sqlite3 import SQLite3DB, PRIMARY_KEY_TYPE, TEXT, REAL
 import nahida_bot.permission as permission
@@ -20,7 +19,9 @@ plugin_name = "openai"
 
 
 def checker(feature: str):
-    return permission.get_checker(plugin_name, feature) & to_me()
+    # FIXME: This is a temporary fix for the permission system
+    # return permission.get_checker(plugin_name, feature) & to_me()
+    return to_me()
 
 
 permission.update_feature_permission(
@@ -38,7 +39,7 @@ permission.update_feature_permission(
     user=permission.ALLOW
 )
 
-logger.info("Loading openai.py")
+logger.info("Loading openai_bot.py")
 
 OPENAI_URL = nonebot.get_driver().config.openai_api_url
 OPENAI_TOKEN = nonebot.get_driver().config.openai_api_token
@@ -162,10 +163,9 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
     logger.debug(f"Prompt: {prompt}")
 
     store.delete(memory_table, {
-                 "timestamp": time.time() - MESSAGE_TIMEOUT
-                 },
-                 "{} < ?")
-    # Delete oldest messages if memory exceeds MAX_MEMORY
+        "timestamp": time.time() - MESSAGE_TIMEOUT
+    }, "{} < ?")
+    # Delete the oldest messages if memory exceeds MAX_MEMORY
     where_clause = f"""SELECT id FROM {memory_table} ORDER BY id DESC LIMIT {MAX_MEMORY}"""
     store.get_cursor().execute(
         f"""
@@ -177,11 +177,10 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
         "timestamp": time.time()
     })
 
-    messages = []
-    messages.append({
+    messages = [{
         "role": "system",
         "content": prompt
-    })
+    }]
 
     db_memory = store.select(memory_table)
 
@@ -237,11 +236,9 @@ async def openai_setting_handler(args: Message = CommandArg(),
 
     args_msg = args_msg.strip() + " " + FIXED_PROMPT
 
-    store.update("prompts", {
-        "prompt": args_msg
-    }, {
-        "chat_identifier": chat_identifier
-    })
+    store.update("prompts",
+                 {"prompt": args_msg},
+                 {"chat_identifier": chat_identifier})
     try:
         store.delete(memory_table)
     except Exception as e:
@@ -279,11 +276,7 @@ async def reset_prompt_handler(event: MessageEvent = EventParam()):
     logger.debug(f"Chat ID: {chat_id}")
     logger.debug(f"Chat Identifier: {chat_identifier}")
 
-    store.update("prompts", {
-        "prompt": DEFAULT_PROMPT
-    }, {
-        "chat_identifier": chat_identifier
-    })
+    store.update("prompts", {"prompt": DEFAULT_PROMPT}, {"chat_identifier": chat_identifier})
     store.delete(get_memory_table_name(msg_type, chat_id))
 
     await reset_prompt.finish("Prompt has been reset to default")
