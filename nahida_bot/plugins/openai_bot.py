@@ -195,10 +195,10 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
 
     logger.debug(f"Messages: {messages}")
 
-    client = OpenAI(api_key=OPENAI_TOKEN,
-                    base_url=OPENAI_URL)
+    async_client = AsyncOpenAI(api_key=OPENAI_TOKEN,
+                               base_url=OPENAI_URL)
 
-    response = client.chat.completions.create(
+    response = await async_client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=messages
     )

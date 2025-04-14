@@ -31,11 +31,12 @@ Example:
 
 HELP_MESSAGE_ZH = """
 
-/pixiv.request [xN] [sN] [r18] [tags] (tag1 tag2 tag3)
+/pixiv.request [xN] [sN] [r18] [ai] [tags] (tag1 tag2 tag3)
 
 xN: N是要获取的图片数量。默认值为1。
 sN: N是图片的健康等级。默认值为2。如果设置了R18为True，则健康等级将被忽略。
 r18: 是否包含R18图片。默认值为False。
+ai: 是否包含AI生成的图片。默认值为False。
 tags: 要搜索的标签。如果不提供，将获取系统推荐的图片。
 
 举例:
@@ -50,9 +51,10 @@ tags: 要搜索的标签。如果不提供，将获取系统推荐的图片。
 # - An optional x parameter: "x" immediately followed by one or more digits (group "count")
 # - An optional s parameter: "s" with one or more digits (group "sanity")
 # - An optional "r18" literal (group "r18")
+# - An optional "ai" literal (group "ai")
 # - An optional "tags" literal followed by one or more tags.
 #   Tags are sequences of non-whitespace characters; multiple tags may be separated by whitespace.
-ARG_PARSE_REGEX = r"^(?:\s*x(?P<count>\d+))?(?:\s+s(?P<sanity>\d+))?(?:\s+(?P<r18>r18))?(?:\s+tags(?:\s+(?P<tags>\S+(?:\s+\S+)*))?)?\s*$"
+ARG_PARSE_REGEX = r"^(?:\s*x(?P<count>\d+))?(?:\s+s(?P<sanity>\d+))?(?:\s+(?P<r18>r18))?(?:\s+(?P<ai>ai))?(?:\s+tags(?:\s+(?P<tags>\S+(?:\s+\S+)*))?)?\s*$"
 
 COUNT_FACTOR = 10
 MAX_IMAGE_PER_PAGE = 5
@@ -82,6 +84,9 @@ def pixiv_auth():
         raise e
 
 
+pixiv_auth()
+
+
 @scheduler.scheduled_job("cron", hour="*")
 async def auto_auth():
     """Automatically authenticate the Pixiv API every hour."""
@@ -89,11 +94,12 @@ async def auto_auth():
         pixiv_auth()
     except PixivError as e:
         logger.error(f"Pixiv authentication failed: {e}")
-        if superuser := nonebot.get_driver().config.superuser:
-            await nonebot.get_bot().send_private_msg(
-                user_id=superuser,
-                message=f"Pixiv authentication failed: {e}"
-            )
+        if superusers := nonebot.get_driver().config.superusers:
+            for superuser in superusers:
+                await nonebot.get_bot().send_private_msg(
+                    user_id=superuser,
+                    message=f"Pixiv authentication failed: {e}"
+                )
 
 
 def extract_arguments(command: str):
@@ -104,6 +110,7 @@ def extract_arguments(command: str):
     count = int(match.group("count")) if match.group("count") else 1
     sanity = int(match.group("sanity")) if match.group("sanity") else 4
     r18 = bool(match.group("r18"))
+    ai = bool(match.group("ai"))
     if r18:
         sanity = 6
     tags = match.group("tags").split() if match.group("tags") else []
@@ -111,6 +118,7 @@ def extract_arguments(command: str):
         "count": count,
         "sanity": sanity,
         "r18": r18,
+        "ai": ai,
         "tags": tags,
     }
 
@@ -143,6 +151,22 @@ def search_and_filter(tag: str, count: int, filter_func: Callable) -> list:
     return res
 
 
+def recommended_and_filter(count: int, filter_func: Callable) -> list:
+    res = []
+    qs = {}
+    while len(res) < count:
+        rec = _pixiv_api.illust_recommended(**qs)
+        try:
+            filtered = [record for record in rec["illusts"]
+                        if filter_func(record)]
+            res.extend(filtered)
+            qs = _pixiv_api.parse_qs(rec["next_url"])
+        except KeyError as err:
+            logger.error(f"KeyError: {err}")
+            logger.error(f"Record: {rec}")
+    return res
+
+
 async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, matcher: Matcher) -> None:
     """Handle the pixiv request command."""
     raw_arg = args.extract_plain_text()
@@ -156,12 +180,15 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
     count = parsed_args["count"]
     sanity = parsed_args["sanity"]  # record["sanity_level"]
     r18 = parsed_args["r18"]  # record["x_restrict"]
+    ai = parsed_args["ai"]
     tags = parsed_args["tags"]
     result = []
 
     def filter_func(record):
         if r18:
             return 4 <= record["sanity_level"] <= sanity
+        if not ai and record["x_restrict"] == 1:
+            return False
         return record["sanity_level"] <= sanity and not record["x_restrict"]
 
     if tags:
@@ -180,9 +207,7 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
                 raise err
     else:
         try:
-            rec = _pixiv_api.illust_recommended()
-            filtered = [record for record in rec["illusts"]
-                        if filter_func(record)]
+            filtered = recommended_and_filter(count * COUNT_FACTOR, filter_func)
             weight = [record["total_bookmarks"] for record in filtered]
             result.extend(weight_sample(filtered, weight, count * COUNT_FACTOR))
         except PixivError as err:
@@ -269,6 +294,7 @@ async def construct_message_chain(record) -> MessageSegment:
     message += MessageSegment.text(f"Id: {img_id}\n")
     message += MessageSegment.text(f"Page count: {record["page_count"]}\n")
     message += MessageSegment.text(f"Bookmarks: {record['total_bookmarks']}\n")
+    message += MessageSegment.text(f"Is AI: {"Yes" if record['x_restrict'] else "No"}\n")
 
     async def download_image(f: str, url: str):
         full_path = _cache.get_file(f)

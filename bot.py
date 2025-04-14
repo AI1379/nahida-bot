@@ -30,6 +30,7 @@ log_level = driver.config.log_level if hasattr(
     driver.config, "log_level") else "INFO"
 
 if hasattr(driver.config, "log_file") and driver.config.log_file:
+    logger.success(f"Log file: {driver.config.log_file}")
     logger.add(driver.config.log_file,
                rotation="1 week",
                encoding="utf-8",
@@ -46,13 +47,15 @@ logger.opt(colors=True).debug(
     f"Updated <y><b>Config</b></y>: {escape_tag(str(model_dump(driver.config)))}"
 )
 
-superuser = str(driver.config.superuser) if hasattr(
-    driver.config, "superuser") else None
+superusers = driver.config.superusers
 
-logger.info(f"Superuser: {superuser}")
+logger.info(f"Superuser: {superusers}")
 
 localstore.init(full_data_dir)
-permission.init(superuser)
+
+permission.init()
+for superuser in superusers:
+    permission.add_superuser(superuser)
 
 nonebot.load_builtin_plugins()
 nonebot.load_plugins("nahida_bot/plugins")

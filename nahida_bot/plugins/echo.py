@@ -80,11 +80,11 @@ def print_attributes(obj, max_depth=3, current_depth=0, visited=None):
             continue
 
         if (
-            ismethod(attr_value) or
-            isclass(attr_value) or
-            ismodule(attr_value) or
-            isinstance(attr_value, (types.BuiltinFunctionType, types.BuiltinMethodType)) or
-            isinstance(attr_value, (int, float, str, bool, bytes))
+                ismethod(attr_value) or
+                isclass(attr_value) or
+                ismodule(attr_value) or
+                isinstance(attr_value, (types.BuiltinFunctionType, types.BuiltinMethodType)) or
+                isinstance(attr_value, (int, float, str, bool, bytes))
         ):
             continue
 
@@ -109,13 +109,15 @@ async def handle_first_receive(args: Message = CommandArg()):
     else:
         await echo.finish("你好像没有说话喵~")
 
+
 @scheduler.scheduled_job("cron", hour="*")
 async def scheduled_job():
     bot = nonebot.get_bot()
-    if superuser := nonebot.get_driver().config.superuser:
-        await bot.send_private_msg(
-            user_id=superuser,
-            message="定时任务运行了喵~"
-        )
+    if superusers := nonebot.get_driver().config.superusers:
+        for superuser in superusers:
+            await bot.send_private_msg(
+                user_id=superuser,
+                message="定时任务运行了喵~"
+            )
     else:
         nonebot.logger.info("Heartbeat: No superuser found, skipping scheduled job.")
