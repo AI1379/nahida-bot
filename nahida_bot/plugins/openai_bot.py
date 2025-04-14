@@ -200,20 +200,23 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
 
     response = await async_client.chat.completions.create(
         model=OPENAI_MODEL,
-        messages=messages
+        messages=messages,
+        stream=True
     )
 
-    res = response.choices[0].message
-
-    store.insert(memory_table, {
-        "role": res.role,
-        "content": res.content,
-        "timestamp": time.time()
-    })
-
-    logger.success(f"OpenAI response: {res.content}")
-
-    await openai.send(res.content)
+    current_content = ""
+    async for chunk in response:
+        if chunk.choices[0].delta.content:
+            lines = chunk.choices[0].delta.content.splitlines()
+            if len(lines) == 1:
+                current_content += chunk.choices[0].delta.content
+            else:
+                current_content += lines[0]
+                await openai.send(current_content)
+                for line in lines[1:-1]:
+                    await openai.send(line)
+                current_content = lines[-1]
+    await openai.finish(current_content)
 
 
 @prompt_setting.handle()

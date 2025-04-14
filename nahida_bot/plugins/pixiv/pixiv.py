@@ -9,6 +9,7 @@ from nonebot.adapters.onebot.v11 import MessageEvent, Message, MessageSegment, B
 from nonebot.log import logger
 import nahida_bot.localstore as localstore
 from nahida_bot.scheduler import scheduler
+from nahida_bot.utils.command_parser import split_arguments
 import asyncio
 import re
 import random
@@ -104,31 +105,57 @@ async def auto_auth():
 
 def extract_arguments(command: str):
     """Extract arguments from the command using ARG_PARSE_REGEX."""
-    match = re.match(ARG_PARSE_REGEX, command)
-    if not match:
-        return None  # or raise an exception/error if you prefer
-    count = int(match.group("count")) if match.group("count") else 1
-    sanity = int(match.group("sanity")) if match.group("sanity") else 4
-    r18 = bool(match.group("r18"))
-    ai = bool(match.group("ai"))
-    if r18:
-        sanity = 6
-    tags = match.group("tags").split() if match.group("tags") else []
-    return {
-        "count": count,
-        "sanity": sanity,
-        "r18": r18,
-        "ai": ai,
-        "tags": tags,
+    args = split_arguments(command)
+    if len(args) == 0:
+        return None
+    result = {
+        "count": 1,
+        "sanity": 4,
+        "r18": False,
+        "ai": False,
+        "tags": []
     }
+    for arg in args:
+        if arg.startswith("x"):
+            try:
+                result["count"] = int(arg[1:])
+            except ValueError:
+                logger.error(f"Invalid count argument: {arg}")
+                return None
+        elif arg.startswith("s"):
+            try:
+                result["sanity"] = int(arg[1:])
+            except ValueError:
+                logger.error(f"Invalid sanity argument: {arg}")
+                return None
+        elif arg == "r18":
+            result["r18"] = True
+        elif arg == "ai":
+            result["ai"] = True
+        elif arg.startswith("tags"):
+            tags = arg[5:].split()
+            result["tags"].extend(tags)
+            break
+    return result
 
 
 def weight_sample(items, weights, k: int) -> list:
     # TODO: Implement a more efficient sampling algorithm.
-    keys = [(-math.log(max(1e-10, random.uniform(0, 1))) / w, i)
+    keys = [(-math.log(max(1e-10, random.uniform(0, 1))) / (w + 1), i)
             for i, w in enumerate(weights)]
     keys.sort(reverse=True)
     return [items[i] for _, i in keys[:k]]
+
+
+class PixivErrorInResponse(Exception):
+    """Custom exception for Pixiv API errors in response."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+    def __str__(self):
+        return self.message
 
 
 def search_and_filter(tag: str, count: int, filter_func: Callable) -> list:
@@ -140,6 +167,8 @@ def search_and_filter(tag: str, count: int, filter_func: Callable) -> list:
     }
     while len(res) < count:
         rec = _pixiv_api.search_illust(**qs)
+        if 'error' in rec:
+            raise PixivErrorInResponse(rec['error']['message'])
         try:
             filtered = [record for record in rec["illusts"]
                         if filter_func(record)]
@@ -156,6 +185,8 @@ def recommended_and_filter(count: int, filter_func: Callable) -> list:
     qs = {}
     while len(res) < count:
         rec = _pixiv_api.illust_recommended(**qs)
+        if 'error' in rec:
+            raise PixivErrorInResponse(rec['error']['message'])
         try:
             filtered = [record for record in rec["illusts"]
                         if filter_func(record)]
@@ -187,7 +218,7 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
     def filter_func(record):
         if r18:
             return 4 <= record["sanity_level"] <= sanity
-        if not ai and record["x_restrict"] == 1:
+        if not ai and record["illust_ai_type"] == 1:
             return False
         return record["sanity_level"] <= sanity and not record["x_restrict"]
 
@@ -201,6 +232,9 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
             except PixivError as err:
                 logger.error(f"Pixiv search failed: {err}")
                 await matcher.finish(f"Pixiv search failed: {err}")
+            except PixivErrorInResponse as err:
+                logger.error(f"Pixiv search failed: {err}")
+                await matcher.send(f"Pixiv search failed: {err}")
             except Exception as err:
                 logger.error(f"Error occurred: {err}")
                 await matcher.send(f"Pixiv search failed")
@@ -213,6 +247,9 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
         except PixivError as err:
             logger.error(f"Pixiv recommended failed: {err}")
             await matcher.finish(f"Pixiv recommended failed: {err}")
+        except PixivErrorInResponse as err:
+            logger.error(f"Pixiv recommended failed: {err}")
+            await matcher.send(f"Pixiv recommended failed: {err}")
 
     result = random.sample(result, count)
 
@@ -294,7 +331,7 @@ async def construct_message_chain(record) -> MessageSegment:
     message += MessageSegment.text(f"Id: {img_id}\n")
     message += MessageSegment.text(f"Page count: {record["page_count"]}\n")
     message += MessageSegment.text(f"Bookmarks: {record['total_bookmarks']}\n")
-    message += MessageSegment.text(f"Is AI: {"Yes" if record['x_restrict'] else "No"}\n")
+    message += MessageSegment.text(f"Is AI: {"Yes" if record['illust_ai_type'] else "No"}\n")
 
     async def download_image(f: str, url: str):
         full_path = _cache.get_file(f)
