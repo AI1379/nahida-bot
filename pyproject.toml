@@ -15,6 +15,7 @@ dependencies = [
     "psutil (>=7.0.0,<8.0.0)",
     "pydantic (>=2.11.0,<3.0.0)",
     "pixivpy3 (>=3.7.5,<4.0.0)",
+    "apscheduler (>=3.11.0,<4.0.0)",
 ]
 
 

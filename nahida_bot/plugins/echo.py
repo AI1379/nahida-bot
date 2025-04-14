@@ -2,14 +2,14 @@
 # Created by Renatus Madrigal on 03/24/2025
 #
 
+import nonebot
 from nonebot import on_command, on_message
 from nonebot.rule import to_me
 from nonebot.adapters import Message
 from nonebot.params import CommandArg, Command, EventMessage, EventParam
-from nonebot.adapters.onebot.v11 import MessageEvent
-from nonebot.log import logger
 import types
 from inspect import ismethod, isclass, ismodule
+from nahida_bot.scheduler import scheduler
 
 
 def print_dict(d: dict, max_depth=3, current_depth=0, visited=None):
@@ -109,14 +109,13 @@ async def handle_first_receive(args: Message = CommandArg()):
     else:
         await echo.finish("你好像没有说话喵~")
 
-"""
-message_log = on_message(priority=5, block=True)
-
-
-@message_log.handle()
-async def handle_message_log(args: Message = EventMessage(), event: MessageEvent = EventParam()):
-    logger.debug(f"Received message: {args}")
-    logger.debug(f"Received event: {event}")
-    logger.debug(f"Sender role: {event.sender.role}")
-    logger.debug(f"Sender: {event.sender}")
-"""
+@scheduler.scheduled_job("cron", hour="*")
+async def scheduled_job():
+    bot = nonebot.get_bot()
+    if superuser := nonebot.get_driver().config.superuser:
+        await bot.send_private_msg(
+            user_id=superuser,
+            message="定时任务运行了喵~"
+        )
+    else:
+        nonebot.logger.info("Heartbeat: No superuser found, skipping scheduled job.")
