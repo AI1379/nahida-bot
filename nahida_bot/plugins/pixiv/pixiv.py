@@ -10,11 +10,10 @@ from nonebot.log import logger
 import nahida_bot.localstore as localstore
 from nahida_bot.scheduler import scheduler
 from nahida_bot.utils.command_parser import split_arguments
+from nahida_bot.plugins.pixiv.pixiv_pool import PixivPool
 import asyncio
-import re
 import random
-import math
-from typing import Callable, Union, Any, Coroutine
+from typing import Callable, Union, Any, Coroutine, Literal
 
 HELP_MESSAGE = """
 /pixiv.request [xN] [sN] [r18] [tags] (tag1 tag2 tag3)
@@ -47,50 +46,21 @@ tags: 要搜索的标签。如果不提供，将获取系统推荐的图片。
 
 """
 
-COUNT_FACTOR = 10
+COUNT_FACTOR = 5
 MAX_IMAGE_PER_PAGE = 5
-REFRESH_TOKEN = nonebot.get_driver().config.pixiv_refresh_token
+REFRESH_TOKENS = nonebot.get_driver().config.pixiv_refresh_tokens
 BYPASS_GFW = False
 
-logger.info(f"Pixiv refresh token: {REFRESH_TOKEN}")
 logger.info(f"Pixiv bypass GFW: {BYPASS_GFW}")
 logger.info(f"Pixiv max image per page: {MAX_IMAGE_PER_PAGE}")
+logger.info(f"Pixiv refresh tokens: {REFRESH_TOKENS}")
 
 _cache = localstore.register_cache("pixiv")
 
-if not BYPASS_GFW:
-    _pixiv_api = AppPixivAPI()
-else:
-    _pixiv_api = ByPassSniApi()
-    _pixiv_api.require_appapi_hosts()
-
-
-def pixiv_auth():
-    try:
-        auth_result = _pixiv_api.auth(refresh_token=REFRESH_TOKEN)
-        logger.success(f"Pixiv authentication successful.")
-        logger.success(f"Pixiv account name: {auth_result["user"]["name"]}")
-    except PixivError as e:
-        logger.error(f"Pixiv authentication failed: {e}")
-        raise e
-
-
-pixiv_auth()
-
-
-@scheduler.scheduled_job("cron", hour="*")
-async def auto_auth():
-    """Automatically authenticate the Pixiv API every hour."""
-    try:
-        pixiv_auth()
-    except PixivError as e:
-        logger.error(f"Pixiv authentication failed: {e}")
-        if superusers := nonebot.get_driver().config.superusers:
-            for superuser in superusers:
-                await nonebot.get_bot().send_private_msg(
-                    user_id=superuser,
-                    message=f"Pixiv authentication failed: {e}"
-                )
+_pixiv_pool = PixivPool(refresh_tokens=REFRESH_TOKENS)
+_api_generator = _pixiv_pool.all_api()
+_current_token, _pixiv_api = next(_api_generator)
+logger.info(f"Pixiv current token: {_current_token}")
 
 
 def extract_arguments(command: str):
@@ -131,7 +101,7 @@ def extract_arguments(command: str):
 
 def weight_sample(items, weights, k: int) -> list:
     # TODO: Implement a more efficient sampling algorithm.
-    keys = [(-math.log(max(1e-10, random.uniform(0, 1))) / (w + 1), i)
+    keys = [(random.normalvariate(1, 0.2) * w, i)
             for i, w in enumerate(weights)]
     keys.sort(reverse=True)
     return [items[i] for _, i in keys[:k]]
@@ -148,17 +118,33 @@ class PixivErrorInResponse(Exception):
         return self.message
 
 
-def search_and_filter(tag: str, count: int, filter_func: Callable) -> list:
+def get_and_filter(count: int,
+                   filter_func: Callable,
+                   get_type: Literal["recommend", "search"],
+                   tag: str = None) -> list:
+    """Get and filter Pixiv images based on the specified tag and count."""
+    global _current_token, _pixiv_api
     res = []
-    qs = {
+    init_qs = {
         "word": tag,
         "search_target": "partial_match_for_tags",
         "sort": "popular_desc"
-    }
+    } if get_type == "search" else {}
+    qs = init_qs
+    first_attempt_token = _current_token
     while len(res) < count:
-        rec = _pixiv_api.search_illust(**qs)
+        if get_type == "recommend":
+            rec = _pixiv_api.illust_recommended(**qs)
+        else:
+            rec = _pixiv_api.search_illust(**qs)
         if 'error' in rec:
-            raise PixivErrorInResponse(rec['error']['message'])
+            _current_token, _pixiv_api = next(_api_generator)
+            qs = init_qs
+            logger.warning(f"Pixiv API error: {rec['error']}")
+            logger.warning(f"Switching to next token: {_current_token}")
+            if _current_token == first_attempt_token:
+                raise PixivErrorInResponse(rec['error']['message'])
+            continue
         try:
             filtered = [record for record in rec["illusts"]
                         if filter_func(record)]
@@ -167,24 +153,7 @@ def search_and_filter(tag: str, count: int, filter_func: Callable) -> list:
         except KeyError as err:
             logger.error(f"KeyError: {err}")
             logger.error(f"Record: {rec}")
-    return res
-
-
-def recommended_and_filter(count: int, filter_func: Callable) -> list:
-    res = []
-    qs = {}
-    while len(res) < count:
-        rec = _pixiv_api.illust_recommended(**qs)
-        if 'error' in rec:
-            raise PixivErrorInResponse(rec['error']['message'])
-        try:
-            filtered = [record for record in rec["illusts"]
-                        if filter_func(record)]
-            res.extend(filtered)
-            qs = _pixiv_api.parse_qs(rec["next_url"])
-        except KeyError as err:
-            logger.error(f"KeyError: {err}")
-            logger.error(f"Record: {rec}")
+    logger.info(f"Using token: {_current_token}")
     return res
 
 
@@ -215,23 +184,24 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
     if tags:
         for tag in tags:
             try:
-                filtered = search_and_filter(tag, count * COUNT_FACTOR, filter_func)
+                filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "search", tag=tag)
                 logger.debug(f"Find {len(filtered)} after filter")
                 weight = [record["total_bookmarks"] for record in filtered]
                 result.extend(weight_sample(filtered, weight, count * COUNT_FACTOR))
             except PixivError as err:
-                logger.error(f"Pixiv search failed: {err}")
-                await matcher.finish(f"Pixiv search failed: {err}")
+                logger.error(f"Pixiv internal error: {err}")
+                await matcher.finish(f"Pixiv internal error: {err}")
             except PixivErrorInResponse as err:
-                logger.error(f"Pixiv search failed: {err}")
-                await matcher.send(f"Pixiv search failed: {err}")
+                logger.error(f"Pixiv failed in response: {err}")
+                await matcher.send(f"Pixiv failed in response: {err}")
+                raise err
             except Exception as err:
                 logger.error(f"Error occurred: {err}")
                 await matcher.send(f"Pixiv search failed")
                 raise err
     else:
         try:
-            filtered = recommended_and_filter(count * COUNT_FACTOR, filter_func)
+            filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "recommend")
             weight = [record["total_bookmarks"] for record in filtered]
             result.extend(weight_sample(filtered, weight, count * COUNT_FACTOR))
         except PixivError as err:
@@ -239,9 +209,9 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
             await matcher.finish(f"Pixiv recommended failed: {err}")
         except PixivErrorInResponse as err:
             logger.error(f"Pixiv recommended failed: {err}")
-            await matcher.send(f"Pixiv recommended failed: {err}")
+            await matcher.finish(f"Pixiv recommended failed: {err}")
 
-    result = random.sample(result, count)
+    result = random.sample(result, min(len(result), count))
 
     group = isinstance(event, GroupMessageEvent)
 
