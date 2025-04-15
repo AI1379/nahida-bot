@@ -219,8 +219,7 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
                 for line in lines[1:-1]:
                     await openai.send(line)
                 current_content = lines[-1]
-        if "usage" in chunk:
-            token_count += chunk.usage.total_tokens
+        token_count = chunk.usage.total_tokens
     await openai.send(current_content)
 
     store.insert(memory_table, {
