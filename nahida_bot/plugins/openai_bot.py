@@ -204,9 +204,12 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
         stream=True
     )
 
+    all_content = ""
     current_content = ""
+    token_count = 0
     async for chunk in response:
         if chunk.choices[0].delta.content:
+            all_content += chunk.choices[0].delta.content
             lines = chunk.choices[0].delta.content.splitlines()
             if len(lines) == 1:
                 current_content += chunk.choices[0].delta.content
@@ -216,7 +219,17 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
                 for line in lines[1:-1]:
                     await openai.send(line)
                 current_content = lines[-1]
-    await openai.finish(current_content)
+        if "usage" in chunk:
+            token_count += chunk.usage.total_tokens
+    await openai.send(current_content)
+
+    store.insert(memory_table, {
+        "role": "assistant",
+        "content": all_content,
+        "timestamp": time.time()
+    })
+
+    logger.info(f"Token count: {token_count}")
 
 
 @prompt_setting.handle()

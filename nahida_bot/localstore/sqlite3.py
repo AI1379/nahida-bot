@@ -26,7 +26,7 @@ class SQLite3DB:
         if self.connection:
             self.connection.close()
             self.connection = None
-            
+
     def reset(self):
         self.close()
         if os.path.exists(self.db_path):
@@ -54,10 +54,17 @@ class SQLite3DB:
         where_clause = ("WHERE " + ' AND '.join(
             [where_format.format(key) for key in where.keys()]
         )) if where else ''
-        params = tuple(record.values()) + \
-            (tuple(where.values()) if where else ())
-        cursor.execute(
-            f"UPDATE {table_name} SET {set_clause} {where_clause}", params)
+        where_params = tuple(where.values()) if where else ()
+        params = tuple(record.values()) + where_params
+
+        # Check if the record exists
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name} {where_clause}", where_params)
+        count = cursor.fetchone()[0]
+        if count == 0:
+            self.insert(table_name, record)
+        else:
+            cursor.execute(
+                f"UPDATE {table_name} SET {set_clause} {where_clause}", params)
         self.connection.commit()
 
     def delete(self, table_name: str, where: Dict[str, str] = None, where_format: str = "{} = ?"):
@@ -78,9 +85,9 @@ class SQLite3DB:
         params = tuple(where.values()) if where else ()
         query = f"SELECT * FROM {table_name} {where_clause}"
         return cursor.execute(query, params).fetchall()
-    
+
     def get_cursor(self):
         return self.connection.cursor()
-    
+
     def commit(self):
         self.connection.commit()
