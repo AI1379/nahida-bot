@@ -47,16 +47,6 @@ tags: 要搜索的标签。如果不提供，将获取系统推荐的图片。
 
 """
 
-# Regex to parse the /pixiv.request command.
-# It parses:
-# - An optional x parameter: "x" immediately followed by one or more digits (group "count")
-# - An optional s parameter: "s" with one or more digits (group "sanity")
-# - An optional "r18" literal (group "r18")
-# - An optional "ai" literal (group "ai")
-# - An optional "tags" literal followed by one or more tags.
-#   Tags are sequences of non-whitespace characters; multiple tags may be separated by whitespace.
-ARG_PARSE_REGEX = r"^(?:\s*x(?P<count>\d+))?(?:\s+s(?P<sanity>\d+))?(?:\s+(?P<r18>r18))?(?:\s+(?P<ai>ai))?(?:\s+tags(?:\s+(?P<tags>\S+(?:\s+\S+)*))?)?\s*$"
-
 COUNT_FACTOR = 10
 MAX_IMAGE_PER_PAGE = 5
 REFRESH_TOKEN = nonebot.get_driver().config.pixiv_refresh_token
