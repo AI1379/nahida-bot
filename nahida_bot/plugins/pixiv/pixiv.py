@@ -8,7 +8,6 @@ from nonebot.matcher import Matcher
 from nonebot.adapters.onebot.v11 import MessageEvent, Message, MessageSegment, Bot, GroupMessageEvent
 from nonebot.log import logger
 import nahida_bot.localstore as localstore
-from nahida_bot.scheduler import scheduler
 from nahida_bot.utils.command_parser import split_arguments
 from nahida_bot.plugins.pixiv.pixiv_pool import PixivPool
 import asyncio
@@ -75,6 +74,7 @@ def extract_arguments(command: str):
         "ai": False,
         "tags": []
     }
+    in_tags = False
     for arg in args:
         if arg.startswith("x"):
             try:
@@ -93,9 +93,9 @@ def extract_arguments(command: str):
         elif arg == "ai":
             result["ai"] = True
         elif arg.startswith("tags"):
-            tags = arg[5:].split()
-            result["tags"].extend(tags)
-            break
+            in_tags = True
+        elif in_tags:
+            result["tags"].append(arg)
     return result
 
 
