@@ -13,7 +13,7 @@
     - [ ] 引入[`nonebot-plugin-add-friends`](https://github.com/hakunomiko/nonebot-plugin-add-friends)
 - [x] pixiv搜索
     - [x] AI 设置
-    - [ ] Token Pool
+    - [x] Token Pool
 - [ ] 漫画搜索下载
 - [x] 基于DeepSeek-R1/SiliconFlow的角色扮演
     - [x] 基础功能
@@ -22,11 +22,12 @@
 - [x] 权限控制
     - [ ] Bug: 权限查询失败
 - [x] 心跳包
-- [ ] 并发处理
+- [x] 并发处理
     - [x] Pixiv 异步下载
-    - [ ] OpenAI API 异步处理
+    - [x] OpenAI API 异步处理
 - [ ] Bug: 日志处理
 - [ ] 基于 StableDiffusion 的图像生成
+- [ ] 搜图
 
 ## 配置
 

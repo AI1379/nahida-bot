@@ -45,7 +45,7 @@ tags: 要搜索的标签。如果不提供，将获取系统推荐的图片。
 
 """
 
-COUNT_FACTOR = 5
+COUNT_FACTOR = 2
 MAX_IMAGE_PER_PAGE = 5
 REFRESH_TOKENS = nonebot.get_driver().config.pixiv_refresh_tokens
 BYPASS_GFW = False
@@ -100,7 +100,6 @@ def extract_arguments(command: str):
 
 
 def weight_sample(items, weights, k: int) -> list:
-    # TODO: Implement a more efficient sampling algorithm.
     keys = [(random.normalvariate(1, 0.2) * w, i)
             for i, w in enumerate(weights)]
     keys.sort(reverse=True)
@@ -167,6 +166,7 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
     if not parsed_args:
         logger.debug(f"Invalid argument: {raw_arg}")
         await matcher.finish(HELP_MESSAGE_ZH)
+    logger.info(f"Parsed arguments: {parsed_args}")
     count = parsed_args["count"]
     sanity = parsed_args["sanity"]  # record["sanity_level"]
     r18 = parsed_args["r18"]  # record["x_restrict"]
@@ -177,7 +177,8 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
     def filter_func(record):
         if r18:
             return 4 <= record["sanity_level"] <= sanity
-        if not ai and record["illust_ai_type"] == 1:
+        # The GOD DAMN Pixiv API returns 2 for AI generated images and 1 for non-AI generated images.
+        if not ai and record["illust_ai_type"] == 2:
             return False
         return record["sanity_level"] <= sanity and not record["x_restrict"]
 
@@ -263,7 +264,6 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
 
 
 async def async_pixiv_download(url: str, filename: str) -> str:
-    path = ""
     with _cache.get_file_handler(filename, mode="wb") as file:
         await asyncio.to_thread(lambda: _pixiv_api.download(url, fname=file.get_raw()))
         logger.success(f"Downloaded image: {filename}")
@@ -291,7 +291,7 @@ async def construct_message_chain(record) -> MessageSegment:
     message += MessageSegment.text(f"Id: {img_id}\n")
     message += MessageSegment.text(f"Page count: {record["page_count"]}\n")
     message += MessageSegment.text(f"Bookmarks: {record['total_bookmarks']}\n")
-    message += MessageSegment.text(f"Is AI: {"Yes" if record['illust_ai_type'] else "No"}\n")
+    message += MessageSegment.text(f"Is AI: {"Yes" if record['illust_ai_type'] == 2 else "No"}\n")
 
     async def download_image(f: str, url: str):
         full_path = _cache.get_file(f)
