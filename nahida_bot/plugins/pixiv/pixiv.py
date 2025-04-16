@@ -97,7 +97,7 @@ def extract_arguments(command: str, **kwargs):
             result["r18"] = True
         elif arg == "ban-ai":
             result["ai"] = False
-        elif arg.startswith("tags"):
+        elif arg == "tag" or arg == "tags":
             in_tags = True
         elif in_tags:
             result["tags"].append(arg)
