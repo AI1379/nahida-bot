@@ -138,14 +138,14 @@ def get_and_filter(count: int,
     res = []
     init_qs_table = {
         "search": {
-            "word": kwargs["tag"] if "tag" in kwargs else None,
+            "word": kwargs.get("tag"),
             "search_target": "partial_match_for_tags",
             "sort": "popular_desc",
             "search_ai_type": 1 if ai else 0,
         },
         "recommend": {},
         "related": {
-            "illust_id": kwargs["id"],
+            "illust_id": kwargs.get("id")
         }
     }
     qs = init_qs_table[get_type]
