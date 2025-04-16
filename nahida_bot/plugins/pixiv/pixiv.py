@@ -130,7 +130,6 @@ class PixivErrorInResponse(Exception):
 def get_and_filter(count: int,
                    filter_func: Callable,
                    get_type: Literal["recommend", "search", "related"],
-                   tag: str = None,
                    ai: bool = False,
                    **kwargs) -> list:
     """Get and filter Pixiv images based on the specified tag and count."""
