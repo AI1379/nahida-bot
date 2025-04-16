@@ -59,9 +59,10 @@ is allowed to use all features regardless of the permission level.
 
 from nahida_bot.localstore.sqlite3 import SQLite3DB, PRIMARY_KEY_TYPE, TEXT, INTEGER
 from nahida_bot.localstore import register, LocalStoreManager
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, Union
 from nonebot.adapters.onebot.v11 import MessageEvent, GroupMessageEvent
 from nonebot.adapters import Event
+from nonebot.rule import to_me
 from nonebot.log import logger
 
 _permission_store: Optional[SQLite3DB] = None
@@ -131,7 +132,8 @@ def check_yes(value: str) -> bool:
             return False
     except ValueError:
         return None
-    
+
+
 def check_user_id(value: str) -> bool:
     """Check if the value is a valid user id"""
     # Currently, we only check if the value is an integer.
@@ -223,9 +225,9 @@ def update_feature_permission(plugin: str, feature: str, admin: int = -1, group:
             "group_perm": group if group != -1 else current_record[4],
             "user": user if user != -1 else current_record[5],
         }, {
-            "plugin": plugin,
-            "feature": feature,
-        })
+                                     "plugin": plugin,
+                                     "feature": feature,
+                                 })
 
 
 def update_group_permission(plugin: str, feature: str, group_id: str, state: int):
@@ -249,10 +251,10 @@ def update_group_permission(plugin: str, feature: str, group_id: str, state: int
         _permission_store.update("groups", {
             "state": state,
         }, {
-            "plugin": plugin,
-            "feature": feature,
-            "group_id": group_id,
-        })
+                                     "plugin": plugin,
+                                     "feature": feature,
+                                     "group_id": group_id,
+                                 })
 
 
 def update_user_permission(plugin: str, feature: str, user_id: str, state: int):
@@ -276,13 +278,13 @@ def update_user_permission(plugin: str, feature: str, user_id: str, state: int):
         _permission_store.update("users", {
             "state": state,
         }, {
-            "plugin": plugin,
-            "feature": feature,
-            "user_id": user_id,
-        })
+                                     "plugin": plugin,
+                                     "feature": feature,
+                                     "user_id": user_id,
+                                 })
 
 
-def _check_superuser(user_id: str) -> bool:
+def _check_superuser(user_id: Union[str, int]) -> bool:
     """Check if a user is superuser"""
     if _permission_store is None:
         raise ValueError("Permission store is not initialized.")
@@ -314,7 +316,7 @@ def _group_handler(event: GroupMessageEvent, plugin: str, feature: str) -> bool:
     # Not found or disabled
     if not feature_record or feature_record[0][4] == 0:
         return False
-    
+
     default_group = feature_record[0][4] == 1
     default_user = feature_record[0][5] == 1
 
@@ -336,7 +338,7 @@ def _group_handler(event: GroupMessageEvent, plugin: str, feature: str) -> bool:
         "user_id": user_id,
     })
     user_state = user_record[0][4] == 1 if user_record else default_user
-    
+
     logger.debug(f"Group state: {group_state}, User state: {user_state}")
 
     if group_state and user_state:
@@ -389,3 +391,17 @@ def get_checker(plugin: str, feature: str):
         return False
 
     return checker
+
+
+def get_checker_generator(plugin: str, admin: int = ALLOW, group: int = ALLOW, user: int = ALLOW):
+    """
+    Get a checker function for a plugin and feature and auto register it.
+    """
+
+    def checker_generator(feature: str):
+        if _permission_store is None:
+            raise ValueError("Permission store is not initialized.")
+        update_feature_permission(plugin, feature, admin, group, user)
+        return get_checker(plugin, feature) & to_me()
+
+    return checker_generator

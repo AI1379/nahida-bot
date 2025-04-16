@@ -6,7 +6,7 @@ import nonebot
 from nonebot import on_command, on_message, CommandGroup
 from nonebot.rule import to_me
 from nonebot.adapters import Message, Event
-from nonebot.adapters.onebot.v11 import MessageEvent, PrivateMessageEvent, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import MessageEvent, PrivateMessageEvent, GroupMessageEvent, MessageSegment
 from nonebot.params import EventMessage, EventParam, Command, CommandArg
 from nonebot.log import logger
 from openai import OpenAI, AsyncOpenAI
@@ -24,26 +24,12 @@ def checker(feature: str):
     return to_me()
 
 
-permission.update_feature_permission(
-    plugin_name,
-    feature="chat",
-    admin=permission.ALLOW,
-    group=permission.ALLOW,
-    user=permission.ALLOW
-)
-permission.update_feature_permission(
-    plugin_name,
-    feature="prompt",
-    admin=permission.ALLOW,
-    group=permission.ALLOW,
-    user=permission.ALLOW
-)
-
 logger.info("Loading openai_bot.py")
 
 OPENAI_URL = nonebot.get_driver().config.openai_api_url
 OPENAI_TOKEN = nonebot.get_driver().config.openai_api_token
-OPENAI_MODEL = nonebot.get_driver().config.openai_model_name
+DEFAULT_OPENAI_MODEL = nonebot.get_driver().config.openai_model_name
+OPENAI_MODEL = DEFAULT_OPENAI_MODEL
 
 DATA_PATH = nonebot.get_driver().config.data_dir
 
@@ -74,14 +60,14 @@ logger.success("OpenAI plugin loaded successfully")
 
 openai = on_message(rule=checker("chat"), priority=10)
 openai_setting = CommandGroup("openai", priority=5, block=True)
-prompt_setting = openai_setting.command(
-    "prompt", rule=checker("prompt"), aliases={"prompt"})
-clear_memory = openai_setting.command(
-    "clear_memory", rule=checker("prompt"), aliases={"clear_memory"})
-reset_prompt = openai_setting.command(
-    "reset_prompt", rule=checker("prompt"), aliases={"reset_prompt"})
-show_prompt = openai_setting.command(
-    "show_prompt", rule=checker("prompt"), aliases={"show_prompt"})
+
+prompt_setting = openai_setting.command("prompt", rule=checker("prompt"), aliases={"prompt"})
+clear_memory = openai_setting.command("clear_memory", rule=checker("prompt"), aliases={"clear_memory"})
+reset_prompt = openai_setting.command("reset_prompt", rule=checker("prompt"), aliases={"reset_prompt"})
+show_prompt = openai_setting.command("show_prompt", rule=checker("prompt"), aliases={"show_prompt"})
+get_models = openai_setting.command("get_models", rule=checker("prompt"), aliases={"get_models"})
+current_model = openai_setting.command("current_model", rule=checker("prompt"), aliases={"current_model"})
+set_model = openai_setting.command("set_model", rule=checker("prompt"), aliases={"set_model"})
 
 store.create_table("prompts", {
     "id": PRIMARY_KEY_TYPE,
@@ -213,14 +199,25 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
             lines = chunk.choices[0].delta.content.splitlines()
             if len(lines) == 1:
                 current_content += chunk.choices[0].delta.content
+                if current_content.endswith("\n"):
+                    logger.debug(f"Sending content: {current_content}")
+                    await openai.send(current_content)
+                    current_content = ""
             else:
                 current_content += lines[0]
+                logger.debug(f"Sending content: {current_content}")
                 await openai.send(current_content)
                 for line in lines[1:-1]:
+                    if line == "":
+                        continue
+                    logger.debug(f"Sending content: {line}")
                     await openai.send(line)
                 current_content = lines[-1]
         token_count = chunk.usage.total_tokens
-    await openai.send(current_content)
+
+    logger.debug(f"Sending content: {current_content}")
+    if current_content != "":
+        await openai.send(current_content)
 
     store.insert(memory_table, {
         "role": "assistant",
@@ -319,3 +316,35 @@ async def show_prompt_handler(event: MessageEvent = EventParam()):
     logger.debug(f"Prompt: {prompt}")
 
     await show_prompt.send(prompt)
+
+
+@get_models.handle()
+async def get_models_handler():
+    async_client = AsyncOpenAI(api_key=OPENAI_TOKEN,
+                               base_url=OPENAI_URL)
+    models = await async_client.models.list()
+    models_list = [model.id for model in models.data]
+    await get_models.finish("\n".join(models_list))
+
+
+@current_model.handle()
+async def current_model_handler():
+    await current_model.finish(OPENAI_MODEL)
+
+
+@set_model.handle()
+async def set_model_handler(args: Message = CommandArg()):
+    global OPENAI_MODEL
+    model_name = args.extract_plain_text().strip()
+    if not model_name:
+        await set_model.finish("Please provide a model name")
+
+    client = AsyncOpenAI(api_key=OPENAI_TOKEN, base_url=OPENAI_URL)
+    all_models = await client.models.list()
+    if model_name not in [model.id for model in all_models.data]:
+        message = MessageSegment.text(f"Model {model_name} not found. Available models are:\n")
+        for model in all_models.data:
+            message += MessageSegment.text(f"{model.id}\n")
+        await set_model.finish(message)
+    OPENAI_MODEL = model_name
+    await set_model.finish(f"Model has been set to {model_name}")
