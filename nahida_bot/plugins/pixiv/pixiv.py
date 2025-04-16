@@ -12,7 +12,7 @@ from nahida_bot.utils.command_parser import split_arguments
 from nahida_bot.plugins.pixiv.pixiv_pool import PixivPool
 import asyncio
 import random
-from typing import Callable, Union, Any, Coroutine, Literal
+from typing import Callable, Union, Any, Coroutine, Literal, Type
 
 HELP_MESSAGE = """
 /pixiv.request [xN] [sN] [r18] [tags] (tag1 tag2 tag3)
@@ -30,12 +30,12 @@ Example:
 
 HELP_MESSAGE_ZH = """
 
-/pixiv.request [xN] [sN] [r18] [ai] [tags] (tag1 tag2 tag3)
+/pixiv.request [xN] [sN] [r18] [ban-ai] [tags] (tag1 tag2 tag3)
 
 xN: N是要获取的图片数量。默认值为1。
 sN: N是图片的健康等级。默认值为2。如果设置了R18为True，则健康等级将被忽略。
 r18: 是否包含R18图片。默认值为False。
-ai: 是否包含AI生成的图片。默认值为False。
+ban-ai: 是否避免AI生成的图片。默认值为False。
 tags: 要搜索的标签。如果不提供，将获取系统推荐的图片。
 
 举例:
@@ -62,17 +62,22 @@ _current_token, _pixiv_api = next(_api_generator)
 logger.info(f"Pixiv current token: {_current_token}")
 
 
-def extract_arguments(command: str):
+def extract_arguments(command: str, **kwargs):
     """Extract arguments from the command using ARG_PARSE_REGEX."""
     args = split_arguments(command)
     if len(args) == 0:
+        return None
+    if "help" in args:
         return None
     result = {
         "count": 1,
         "sanity": 4,
         "r18": False,
-        "ai": False,
-        "tags": []
+        # Because non-AI generated images are much less than AI generated images,
+        # we set the default to True to avoid missing out on good images.
+        "ai": True,
+        "tags": [],
+        "related_id": None,
     }
     in_tags = False
     for arg in args:
@@ -90,16 +95,21 @@ def extract_arguments(command: str):
                 return None
         elif arg == "r18":
             result["r18"] = True
-        elif arg == "ai":
-            result["ai"] = True
+        elif arg == "ban-ai":
+            result["ai"] = False
         elif arg.startswith("tags"):
             in_tags = True
         elif in_tags:
             result["tags"].append(arg)
+        elif kwargs["related"]:
+            result["related_id"] = arg
+        else:
+            return None
     return result
 
 
-def weight_sample(items, weights, k: int) -> list:
+def weight_sample(items, k: int) -> list:
+    weights = [item["total_bookmarks"] for item in items]
     keys = [(random.normalvariate(1, 0.2) * w, i)
             for i, w in enumerate(weights)]
     keys.sort(reverse=True)
@@ -119,26 +129,37 @@ class PixivErrorInResponse(Exception):
 
 def get_and_filter(count: int,
                    filter_func: Callable,
-                   get_type: Literal["recommend", "search"],
-                   tag: str = None) -> list:
+                   get_type: Literal["recommend", "search", "related"],
+                   tag: str = None,
+                   ai: bool = False,
+                   **kwargs) -> list:
     """Get and filter Pixiv images based on the specified tag and count."""
     global _current_token, _pixiv_api
     res = []
-    init_qs = {
-        "word": tag,
-        "search_target": "partial_match_for_tags",
-        "sort": "popular_desc"
-    } if get_type == "search" else {}
-    qs = init_qs
+    init_qs_table = {
+        "search": {
+            "word": kwargs["tag"] if "tag" in kwargs else None,
+            "search_target": "partial_match_for_tags",
+            "sort": "popular_desc",
+            "search_ai_type": 1 if ai else 0,
+        },
+        "recommend": {},
+        "related": {
+            "illust_id": kwargs["id"],
+        }
+    }
+    qs = init_qs_table[get_type]
     first_attempt_token = _current_token
     while len(res) < count:
         if get_type == "recommend":
             rec = _pixiv_api.illust_recommended(**qs)
+        elif get_type == "related":
+            rec = _pixiv_api.illust_related(**qs)
         else:
             rec = _pixiv_api.search_illust(**qs)
         if 'error' in rec:
             _current_token, _pixiv_api = next(_api_generator)
-            qs = init_qs
+            qs = init_qs_table[get_type]
             logger.warning(f"Pixiv API error: {rec['error']}")
             logger.warning(f"Switching to next token: {_current_token}")
             if _current_token == first_attempt_token:
@@ -148,6 +169,8 @@ def get_and_filter(count: int,
             filtered = [record for record in rec["illusts"]
                         if filter_func(record)]
             res.extend(filtered)
+            if "next_url" not in rec:
+                break
             qs = _pixiv_api.parse_qs(rec["next_url"])
         except KeyError as err:
             logger.error(f"KeyError: {err}")
@@ -156,13 +179,29 @@ def get_and_filter(count: int,
     return res
 
 
-async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, matcher: Matcher) -> None:
+def get_filter(r18: bool, ai: bool, sanity: int) -> Callable[[Any], bool]:
+    def filter_func(record):
+        if r18:
+            return 4 <= record["sanity_level"] <= sanity
+        # The GOD DAMN Pixiv API returns 2 for AI generated images and 1 for non-AI generated images.
+        if not ai and record["illust_ai_type"] == 2:
+            return False
+        return record["sanity_level"] <= sanity and not record["x_restrict"]
+
+    return filter_func
+
+
+async def pixiv_request_handler(bot: Bot,
+                                event: MessageEvent,
+                                args: Message,
+                                matcher: Type[Matcher],
+                                related: bool = False) -> None:
     """Handle the pixiv request command."""
     raw_arg = args.extract_plain_text()
     if not raw_arg:
         logger.debug(f"Empty argument: {raw_arg}")
         await matcher.finish(HELP_MESSAGE_ZH)
-    parsed_args = extract_arguments(raw_arg)
+    parsed_args = extract_arguments(raw_arg, related=related)
     if not parsed_args:
         logger.debug(f"Invalid argument: {raw_arg}")
         await matcher.finish(HELP_MESSAGE_ZH)
@@ -172,55 +211,38 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
     r18 = parsed_args["r18"]  # record["x_restrict"]
     ai = parsed_args["ai"]
     tags = parsed_args["tags"]
+    related_id = parsed_args["related_id"] if related else None
     result = []
-
-    def filter_func(record):
-        if r18:
-            return 4 <= record["sanity_level"] <= sanity
-        # The GOD DAMN Pixiv API returns 2 for AI generated images and 1 for non-AI generated images.
-        if not ai and record["illust_ai_type"] == 2:
-            return False
-        return record["sanity_level"] <= sanity and not record["x_restrict"]
-
-    if tags:
-        for tag in tags:
-            try:
-                filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "search", tag=tag)
-                logger.debug(f"Find {len(filtered)} after filter")
-                weight = [record["total_bookmarks"] for record in filtered]
-                result.extend(weight_sample(filtered, weight, count * COUNT_FACTOR))
-            except PixivError as err:
-                logger.error(f"Pixiv internal error: {err}")
-                await matcher.finish(f"Pixiv internal error: {err}")
-            except PixivErrorInResponse as err:
-                logger.error(f"Pixiv failed in response: {err}")
-                await matcher.send(f"Pixiv failed in response: {err}")
-                raise err
-            except Exception as err:
-                logger.error(f"Error occurred: {err}")
-                await matcher.send(f"Pixiv search failed")
-                raise err
-    else:
-        try:
-            filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "recommend")
-            weight = [record["total_bookmarks"] for record in filtered]
-            result.extend(weight_sample(filtered, weight, count * COUNT_FACTOR))
-        except PixivError as err:
-            logger.error(f"Pixiv recommended failed: {err}")
-            await matcher.finish(f"Pixiv recommended failed: {err}")
-        except PixivErrorInResponse as err:
-            logger.error(f"Pixiv recommended failed: {err}")
-            await matcher.finish(f"Pixiv recommended failed: {err}")
+    filter_func = get_filter(r18, ai, sanity)
+    try:
+        if tags:
+            for tag in tags:
+                filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "search", tag=tag, ai=ai)
+                result.extend(weight_sample(filtered, count * COUNT_FACTOR))
+        elif related_id:
+            filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "related", id=related_id, ai=ai)
+            result.extend(weight_sample(filtered, count * COUNT_FACTOR))
+        else:
+            filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "recommend", ai=ai)
+            result.extend(weight_sample(filtered, count * COUNT_FACTOR))
+    except PixivError as err:
+        logger.error(f"Pixiv internal error: {err}")
+        await matcher.finish(f"Pixiv internal error: {err}")
+    except PixivErrorInResponse as err:
+        logger.error(f"Pixiv failed in response: {err}")
+        await matcher.send(f"Pixiv failed in response: {err}")
+        raise err
+    except Exception as err:
+        logger.error(f"Error occurred: {err}")
+        await matcher.send(f"Pixiv search failed")
+        raise err
 
     result = random.sample(result, min(len(result), count))
-
-    group = isinstance(event, GroupMessageEvent)
-
     bot_info = await bot.get_login_info()
-    self_id = bot_info["user_id"]
-    self_name = bot_info["nickname"]
 
     def to_json(raw_msg: MessageSegment):
+        self_id = bot_info["user_id"]
+        self_name = bot_info["nickname"]
         return {
             "type": "node",
             "data": {
@@ -238,29 +260,35 @@ async def pixiv_request_handler(bot: Bot, event: MessageEvent, args: Message, ma
         logger.debug(f"illust sanity level: {record['sanity_level']}")
         logger.debug(f"illust x_restrict: {record['x_restrict']}")
         logger.debug(f"total bookmarks: {record['total_bookmarks']}")
-        if group:
-            tasks.append(construct_message_chain(record))
-        else:
-            async def send_message(cur_rec):
-                msg = await construct_message_chain(cur_rec)
-                await matcher.send(msg)
+        tasks.append(construct_message_chain(record))
 
-            tasks.append(send_message(record))
-
+    messages: list[Union[MessageSegment, BaseException]] = await asyncio.gather(*tasks, return_exceptions=True)
+    exception_msg = [msg for msg in messages if isinstance(msg, BaseException)]
+    filtered_msg = [msg for msg in messages if not isinstance(msg, BaseException)]
+    group = isinstance(event, GroupMessageEvent)
     if group:
-        messages: list[Union[MessageSegment, BaseException]] = await asyncio.gather(*tasks, return_exceptions=True)
         await bot.call_api(
             "send_group_forward_msg",
             group_id=event.group_id,
-            messages=[to_json(msg_elem) for msg_elem in messages]
+            messages=[to_json(msg_elem) for msg_elem in filtered_msg]
         )
     else:
-        err = await asyncio.gather(*tasks, return_exceptions=True)
-        if any(isinstance(e, BaseException) for e in err):
-            logger.error(f"Error occurred: {err}")
-            await matcher.send(f"Error occurred: {err}")
+        await bot.call_api(
+            "send_private_forward_msg",
+            user_id=event.user_id,
+            messages=[to_json(msg_elem) for msg_elem in filtered_msg]
+        )
+    for msg in exception_msg:
+        if isinstance(msg, PixivErrorInResponse):
+            logger.error(f"Pixiv failed in response: {msg}")
+        else:
+            logger.error(f"Error occurred: {msg}")
 
-    await matcher.finish(f"{count} images are sent.")
+    count = len(filtered_msg)
+    err_count = len(exception_msg)
+    err_msg = f"Failed to send {err_count} images." if err_count else ""
+
+    await matcher.finish(f"{count} images are sent. {err_msg}")
 
 
 async def async_pixiv_download(url: str, filename: str) -> str:
@@ -288,15 +316,20 @@ async def construct_message_chain(record) -> MessageSegment:
     message += MessageSegment.text(
         f"Tags: {', '.join([tag["name"] for tag in record["tags"]])}\n")
     message += MessageSegment.text(f"Sanity Level: {record['sanity_level']}\n")
-    message += MessageSegment.text(f"Id: {img_id}\n")
     message += MessageSegment.text(f"Page count: {record["page_count"]}\n")
     message += MessageSegment.text(f"Bookmarks: {record['total_bookmarks']}\n")
+    message += MessageSegment.text(f"Total bookmarks: {record['total_bookmarks']}\n")
+    message += MessageSegment.text(f"URL: https://www.pixiv.net/artworks/{img_id}\n")
+    message += MessageSegment.text(f"Date: {record['create_date']}\n")
     message += MessageSegment.text(f"Is AI: {"Yes" if record['illust_ai_type'] == 2 else "No"}\n")
 
     async def download_image(f: str, url: str):
         full_path = _cache.get_file(f)
         if not full_path:
             full_path = await async_pixiv_download(url, f)
+            logger.info(f"Downloaded image: {full_path}")
+        else:
+            logger.info(f"Cache hit: {full_path}")
         return full_path
 
     tasks = [

@@ -5,6 +5,7 @@
 from pixivpy3 import AppPixivAPI
 from nonebot.log import logger
 from nahida_bot.scheduler import scheduler
+from typing import Generator
 
 
 class PixivPool:
@@ -17,7 +18,7 @@ class PixivPool:
         self.current_token = None
         self.add_tokens(refresh_tokens)
 
-    def add_token(self, refresh_token: str):
+    def add_token(self, refresh_token: str) -> None:
         """
         Add a refresh token to the pool.
 
@@ -36,7 +37,7 @@ class PixivPool:
                 logger.info(f"Refreshing token: {refresh_token}")
                 self._pool[refresh_token].auth(refresh_token=refresh_token)
 
-    def add_tokens(self, refresh_tokens: list):
+    def add_tokens(self, refresh_tokens: list) -> None:
         """
         Add multiple refresh tokens to the pool.
 
@@ -45,7 +46,7 @@ class PixivPool:
         for token in refresh_tokens:
             self.add_token(token)
 
-    def all_api(self):
+    def all_api(self) -> Generator[tuple[str, AppPixivAPI], None, None]:
         """
         Get all AppPixivAPI instances in the pool.
 

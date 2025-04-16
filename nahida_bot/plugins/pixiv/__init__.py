@@ -3,7 +3,6 @@
 #
 
 from nonebot import CommandGroup
-from nonebot.log import logger
 from nonebot.rule import to_me
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, Bot
 from nonebot.params import CommandArg, EventParam
@@ -18,32 +17,15 @@ def checker(feature: str):
     return to_me()
 
 
-permission.update_feature_permission(
-    pixiv_plugin_name,
-    feature="request",
-    admin=permission.ALLOW,
-    group=permission.ALLOW,
-    user=permission.ALLOW
-)
-permission.update_feature_permission(
-    pixiv_plugin_name,
-    feature="statistic",
-    admin=permission.ALLOW,
-    group=permission.ALLOW,
-    user=permission.ALLOW
-)
-permission.update_feature_permission(
-    pixiv_plugin_name,
-    feature="ranking",
-    admin=permission.ALLOW,
-    group=permission.ALLOW,
-    user=permission.ALLOW
-)
-
 pixiv_group = CommandGroup("pixiv", priority=5, block=True)
 # Fetch an image from pixiv
 pixiv_request = pixiv_group.command(
     "request", aliases={"pixiv_request", "setu"}, priority=5, rule=checker("request")
+)
+
+# Get related images of a specific image on pixiv
+pixiv_related = pixiv_group.command(
+    "related", aliases={"pxrelated"}, priority=5, rule=checker("related")
 )
 
 # Get a word cloud of the favorite tags of members in the group
@@ -59,8 +41,17 @@ pixiv_ranking = pixiv_group.command(
 
 @pixiv_request.handle()
 async def handle_pixiv_request(
-    bot: Bot,
-    event: MessageEvent = EventParam(),
-    args: Message = CommandArg()
+        bot: Bot,
+        event: MessageEvent = EventParam(),
+        args: Message = CommandArg()
 ):
     await pixiv_request_handler(bot, event, args, pixiv_request)
+
+
+@pixiv_related.handle()
+async def handle_pixiv_related(
+        bot: Bot,
+        event: MessageEvent = EventParam(),
+        args: Message = CommandArg()
+):
+    await pixiv_request_handler(bot, event, args, pixiv_related, related=True)
