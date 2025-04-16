@@ -14,10 +14,13 @@
 - [x] pixiv搜索
     - [x] AI 设置
     - [x] Token Pool
+    - [x] Related pic
+    - [ ] 搜索标签统计
 - [ ] 漫画搜索下载
-- [x] 基于DeepSeek-R1/SiliconFlow的角色扮演
+- [x] 基于 OpenAI 兼容平台 API 的纯文本对话
     - [x] 基础功能
     - [x] 持续化记忆
+    - [x] 模型设置
     - [ ] 长期记忆筛选
 - [x] 权限控制
     - [ ] Bug: 权限查询失败
@@ -28,6 +31,27 @@
 - [ ] Bug: 日志处理
 - [ ] 基于 StableDiffusion 的图像生成
 - [ ] 搜图
+- [ ] 星图数据库
+
+## 使用：
+
+以下所有命令开头的 `!` 均可替换为 `/`。可选参数用 `[]` 表示，不可选的用 `<>` 表示。
+
+### `OpenAI`
+
+- `!prompt <prompt>`: 设置机器人的 `prompt`。该设置在当前会话生效。
+- `!clear_memory`: 清除记忆。
+- `!reset_prompt`: 重置 `prompt` 并清楚记忆。
+- `!show_prompt`: 查看当前 `prompt`。
+- `!get_models`: 查看当前可用的模型。
+- `!current_model`: 查看当前使用的模型。
+- `!set_model <model>`: 设置当前使用的模型。
+
+### `Pixiv`
+
+- `!setu [xN] [sN] [r18] [ban-ai]`: 获取推荐图片。
+- `!setu [xN] [sN] [r18] [ban-ai] <tags/tag> tag1 tag2`: 获取指定标签的图片。
+- `!pxrelated [xN] [sN] [r18] [ban-ai] <id>`: 获取与指定 id 相关的图片。
 
 ## 配置
 

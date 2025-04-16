@@ -36,6 +36,8 @@ if hasattr(driver.config, "log_file") and driver.config.log_file:
                encoding="utf-8",
                level=log_level,
                format=default_format)
+else:
+    logger.success("Log file: None")
 
 if not driver.config.data_dir:
     driver.config.data_dir = "data"
