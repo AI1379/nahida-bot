@@ -4,6 +4,7 @@
 
 import os
 from nahida_bot.localstore.cache_manager import CacheManager
+from nahida_bot.localstore.json import JSONManager
 
 
 class LocalStoreManager:
@@ -14,6 +15,7 @@ class LocalStoreManager:
         self.cache_path = os.path.join(data_path, "cache")
         os.makedirs(self.cache_path, exist_ok=True)
         self.cache_manager = CacheManager(self.cache_path)
+        self.json_manager = JSONManager()
 
     def register(self, plugin_name: str, store: type):
         if plugin_name not in self.table:
@@ -22,6 +24,10 @@ class LocalStoreManager:
 
     def get_store(self, plugin_name: str):
         return self.table[plugin_name]
+
+    def get_json(self, plugin_name: str, filename: str):
+        filename = os.path.join(self.data_path, plugin_name, filename + ".json")
+        return self.json_manager.get_handler(filename)
 
     def register_cache(self, plugin_name: str) -> CacheManager.PluginCache:
         if plugin_name not in self.cache_table:

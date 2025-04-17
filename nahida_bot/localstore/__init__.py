@@ -35,6 +35,10 @@ def register(plugin_name: str, store: type):
         raise RuntimeError("Local store object is not initialized")
     return _localstore_manager.register(plugin_name, store)
 
+def get_json(plugin_name: str, filename: str):
+    if _localstore_manager is None:
+        raise RuntimeError("Local store object is not initialized")
+    return _localstore_manager.get_json(plugin_name, filename)
 
 def get_store(plugin_name: str):
     return _localstore_manager.get_store(plugin_name)
