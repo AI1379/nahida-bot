@@ -8,6 +8,7 @@ from nonebot.params import CommandArg, ArgPlainText, EventParam
 from nonebot.rule import to_me
 from nonebot.log import logger
 import nahida_bot.permission as permission
+from nahida_bot.utils.command_parser import check_true
 
 perm_plugin_name = "permission_plugin"
 
@@ -53,7 +54,7 @@ async def handle_group_set(
         await group_set.finish("Please provide a valid feature.")
     plugin = arg_list[0].split(".")[0]
     feature = arg_list[0].split(".")[1]
-    perm = permission.check_yes(arg_list[1])
+    perm = check_true(arg_list[1])
     if perm is None:
         await group_set.finish("Please provide a valid permission level.")
 
