@@ -42,7 +42,7 @@ plugin_registry.add_feature(
 )
 
 echo = on_command("echo", rule=to_me(), priority=5, block=True)
-readme = on_command("readme", priority=5, block=True)
+readme = on_command("readme", rule=to_me(), priority=5, block=True)
 
 
 @echo.handle()

@@ -14,7 +14,8 @@ perm_plugin_name = "permission_plugin"
 
 
 def checker(feature: str):
-    return permission.get_checker(perm_plugin_name, feature) & to_me()
+    return to_me()
+    # return permission.get_checker(perm_plugin_name, feature) & to_me()
 
 
 perm = CommandGroup("perm", priority=5, block=True, rule=checker("perm"))
