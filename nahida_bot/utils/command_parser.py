@@ -25,7 +25,7 @@ def _check_union(arg_type: Any) -> bool:
     return get_origin(arg_type) == Union and len(get_args(arg_type)) > 1 and type(None) not in get_args(arg_type)
 
 
-def _check_true(cmd: str) -> bool:
+def check_true(cmd: str) -> bool:
     """
     Check if the command is 'true'.
 
@@ -80,7 +80,7 @@ def _basic_type_handler(arg_type: Any, arg: str) -> Union[str, int, float, bool]
     elif arg_type == float:
         return float(arg)
     elif arg_type == bool:
-        return _check_true(arg)
+        return check_true(arg)
     else:
         raise ValueError(f"Unsupported type: {arg_type}")
 

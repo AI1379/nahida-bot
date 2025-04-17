@@ -10,6 +10,7 @@ from nonebot.log import logger
 import nahida_bot.localstore as localstore
 from nahida_bot.utils.command_parser import split_arguments
 from nahida_bot.plugins.pixiv.pixiv_pool import PixivPool
+from nahida_bot.plugins.pixiv.xp_statistic import record_tag_usage
 import asyncio
 import random
 from typing import Callable, Union, Any, Coroutine, Literal, Type
@@ -211,6 +212,11 @@ async def pixiv_request_handler(bot: Bot,
     ai = parsed_args["ai"]
     tags = parsed_args["tags"]
     related_id = parsed_args["related_id"] if related else None
+    
+    # Record tag usage for statistics
+    if tags:
+        record_tag_usage(tags, str(event.user_id))
+    
     result = []
     filter_func = get_filter(r18, ai, sanity)
     try:
@@ -317,7 +323,6 @@ async def construct_message_chain(record) -> MessageSegment:
     message += MessageSegment.text(f"Sanity Level: {record['sanity_level']}\n")
     message += MessageSegment.text(f"Page count: {record["page_count"]}\n")
     message += MessageSegment.text(f"Bookmarks: {record['total_bookmarks']}\n")
-    message += MessageSegment.text(f"Total bookmarks: {record['total_bookmarks']}\n")
     message += MessageSegment.text(f"URL: https://www.pixiv.net/artworks/{img_id}\n")
     message += MessageSegment.text(f"Date: {record['create_date']}\n")
     message += MessageSegment.text(f"Is AI: {"Yes" if record['illust_ai_type'] == 2 else "No"}\n")

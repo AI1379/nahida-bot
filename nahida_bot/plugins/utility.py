@@ -9,8 +9,37 @@ from nonebot.adapters import Message
 from nonebot.params import CommandArg, Command, EventMessage, EventParam
 from nonebot.log import logger
 from nahida_bot.scheduler import scheduler
+from nahida_bot.utils.plugin_registry import plugin_registry
 import os
 import __main__
+
+# Register the plugin
+utility_plugin = plugin_registry.register_plugin(
+    name="工具插件",
+    description="提供基础工具和系统功能"
+)
+
+# Register features
+plugin_registry.add_feature(
+    plugin_name="工具插件",
+    feature_name="回显功能",
+    description="回显用户发送的消息",
+    commands=["/echo"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="工具插件",
+    feature_name="文档查看",
+    description="查看项目文档",
+    commands=["/readme"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="工具插件",
+    feature_name="定时任务",
+    description="系统定时任务",
+    commands=["自动运行"]
+)
 
 echo = on_command("echo", rule=to_me(), priority=5, block=True)
 readme = on_command("readme", priority=5, block=True)

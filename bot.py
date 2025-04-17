@@ -3,13 +3,13 @@
 #
 
 import nonebot
-from nonebot.adapters.console import Adapter as ConsoleAdapter
 from nonebot.adapters.onebot.v11 import Adapter as OnebotAdapter
 from nonebot.log import logger, default_format
 from nonebot.utils import escape_tag
 from nonebot.compat import model_dump
 import nahida_bot.localstore as localstore
 import nahida_bot.permission as permission
+from nahida_bot.utils.plugin_registry import plugin_registry
 from json import load as json_load
 import os
 
@@ -61,6 +61,33 @@ for superuser in superusers:
 
 nonebot.load_builtin_plugins()
 nonebot.load_plugins("nahida_bot/plugins")
+
+async def notify_superusers():
+    """Notify all superusers when the bot is initialized"""
+    bot = nonebot.get_bot()
+    message = "Bot已初始化完成！\n\n"
+    message += "当前加载的插件：\n"
+    
+    plugins = plugin_registry.get_plugins()
+    for plugin_name, plugin_info in plugins.items():
+        message += f"\n{plugin_name}：{plugin_info.description}\n"
+        for feature in plugin_info.features:
+            message += f"  - {feature.name}：{feature.description}\n"
+            if feature.commands:
+                message += "    命令：\n"
+                for cmd in feature.commands:
+                    message += f"      {cmd}\n"
+    
+    for user_id in superusers:
+        try:
+            await bot.send_private_msg(user_id=int(user_id), message=message)
+            logger.info(f"Sent initialization notification to superuser {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to send initialization notification to superuser {user_id}: {e}")
+
+@driver.on_bot_connect
+async def _():
+    await notify_superusers()
 
 if __name__ == "__main__":
     nonebot.run()

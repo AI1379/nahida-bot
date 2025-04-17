@@ -5,6 +5,28 @@
 import nonebot
 from nonebot import on_request
 from nonebot.adapters.onebot.v11.event import FriendRequestEvent, GroupRequestEvent
+from nahida_bot.utils.plugin_registry import plugin_registry
+
+# Register the plugin
+auto_approve_plugin = plugin_registry.register_plugin(
+    name="自动审批",
+    description="自动处理好友和群组请求"
+)
+
+# Register features
+plugin_registry.add_feature(
+    plugin_name="自动审批",
+    feature_name="好友请求",
+    description="自动审批好友添加请求",
+    commands=["自动处理"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="自动审批",
+    feature_name="群组请求",
+    description="自动审批群组加入请求",
+    commands=["自动处理"]
+)
 
 friend_request = on_request(priority=1)
 group_request = on_request(priority=1)

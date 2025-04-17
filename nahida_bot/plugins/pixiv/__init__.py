@@ -2,12 +2,36 @@
 # Created by Renatus Madrigal on 04/12/2025
 #
 
-from nonebot import CommandGroup
+from nonebot import CommandGroup, get_driver
 from nonebot.rule import to_me
 from nonebot.adapters.onebot.v11 import Message, MessageEvent, Bot
 from nonebot.params import CommandArg, EventParam
 import nahida_bot.permission as permission
 from nahida_bot.plugins.pixiv.pixiv import pixiv_request_handler
+from nahida_bot.plugins.pixiv.xp_statistic import handle_tag_stats
+from nahida_bot.utils.plugin_registry import plugin_registry
+from nonebot.log import logger
+
+# Register the plugin
+pixiv_plugin = plugin_registry.register_plugin(
+    name="Pixiv插件",
+    description="提供Pixiv图片请求、标签统计等功能"
+)
+
+# Register features
+plugin_registry.add_feature(
+    plugin_name="Pixiv插件",
+    feature_name="图片请求",
+    description="从Pixiv获取图片",
+    commands=["/pixiv.request", "/pixiv.related"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="Pixiv插件",
+    feature_name="标签统计",
+    description="统计和分析标签使用情况",
+    commands=["/pixiv.statistic", "/pixiv.ranking"]
+)
 
 pixiv_plugin_name = "pixiv_plugin"
 
@@ -55,3 +79,13 @@ async def handle_pixiv_related(
         args: Message = CommandArg()
 ):
     await pixiv_request_handler(bot, event, args, pixiv_related, related=True)
+
+
+@pixiv_statistic.handle()
+async def handle_pixiv_statistic(
+        event: MessageEvent = EventParam(),
+):
+    await handle_tag_stats(event, pixiv_statistic)
+
+
+

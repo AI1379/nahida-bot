@@ -13,7 +13,43 @@ from openai import OpenAI, AsyncOpenAI
 from nahida_bot.localstore import register
 from nahida_bot.localstore.sqlite3 import SQLite3DB, PRIMARY_KEY_TYPE, TEXT, REAL
 import nahida_bot.permission as permission
+from nahida_bot.utils.plugin_registry import plugin_registry
 import time
+
+# Register the plugin
+openai_plugin = plugin_registry.register_plugin(
+    name="OpenAI插件",
+    description="提供AI对话、提示词管理等功能"
+)
+
+# Register features
+plugin_registry.add_feature(
+    plugin_name="OpenAI插件",
+    feature_name="AI对话",
+    description="与AI进行对话",
+    commands=["@机器人 对话内容"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="OpenAI插件",
+    feature_name="提示词管理",
+    description="管理AI对话的提示词",
+    commands=["/prompt", "/reset_prompt", "/show_prompt"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="OpenAI插件",
+    feature_name="模型管理",
+    description="管理AI模型",
+    commands=["/get_models", "/current_model", "/set_model"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="OpenAI插件",
+    feature_name="记忆管理",
+    description="管理对话记忆",
+    commands=["/clear_memory"]
+)
 
 plugin_name = "openai"
 

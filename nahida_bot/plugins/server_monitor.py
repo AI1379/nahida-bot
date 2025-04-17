@@ -5,11 +5,47 @@
 import nonebot
 from nonebot import on_command, CommandGroup
 from nonebot.rule import to_me
+from nahida_bot.utils.plugin_registry import plugin_registry
 import psutil
 import os
 import platform
 import time
 import datetime
+
+# Register the plugin
+server_plugin = plugin_registry.register_plugin(
+    name="服务器监控",
+    description="提供服务器状态监控和系统信息查询功能"
+)
+
+# Register features
+plugin_registry.add_feature(
+    plugin_name="服务器监控",
+    feature_name="系统信息",
+    description="查询系统基本信息",
+    commands=["/server info", "/server sysinfo"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="服务器监控",
+    feature_name="资源使用",
+    description="查询系统资源使用情况",
+    commands=["/server usage"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="服务器监控",
+    feature_name="配置信息",
+    description="查询机器人配置信息",
+    commands=["/server config"]
+)
+
+plugin_registry.add_feature(
+    plugin_name="服务器监控",
+    feature_name="状态总览",
+    description="查看所有系统状态信息",
+    commands=["/server", "/server status"]
+)
 
 server_monitor = CommandGroup("server", priority=5, block=True)
 all_status = server_monitor.command(tuple(), rule=to_me(), aliases={"status"})
