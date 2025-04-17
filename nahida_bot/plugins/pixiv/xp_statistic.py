@@ -5,74 +5,58 @@
 from nonebot.adapters.onebot.v11 import MessageEvent, Message
 from nonebot.matcher import Matcher
 from typing import Dict, List, Tuple
-import json
-from pathlib import Path
 from datetime import datetime, timedelta
+import nahida_bot.localstore as localstore
 
-# Statistics storage
-TAG_STATS_FILE = Path("data/pixiv/tag_stats.json")
-TAG_STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+# Initialize statistics handler
+stats_handler = localstore.get_json("pixiv", "tag_stats")
 
-# Initialize statistics if file doesn't exist
-if not TAG_STATS_FILE.exists():
-    TAG_STATS_FILE.write_text(json.dumps({
+# Initialize statistics if empty
+if not stats_handler:
+    stats_handler.update({
         "total_requests": 0,
         "tag_counts": {},
         "daily_stats": {},
         "user_stats": {}
-    }))
-
-
-def load_stats() -> Dict:
-    """Load statistics from file"""
-    return json.loads(TAG_STATS_FILE.read_text(encoding="utf-8"))
-
-
-def save_stats(stats: Dict):
-    """Save statistics to file"""
-    TAG_STATS_FILE.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+    })
 
 
 def update_tag_stats(tags: List[str], user_id: str):
     """Update statistics for given tags"""
-    stats = load_stats()
     today = datetime.now().strftime("%Y-%m-%d")
 
     # Update total requests
-    stats["total_requests"] += 1
+    stats_handler["total_requests"] += 1
 
     # Update tag counts
     for tag in tags:
-        if tag not in stats["tag_counts"]:
-            stats["tag_counts"][tag] = 0
-        stats["tag_counts"][tag] += 1
+        if tag not in stats_handler["tag_counts"]:
+            stats_handler["tag_counts"][tag] = 0
+        stats_handler["tag_counts"][tag] += 1
 
     # Update daily stats
-    if today not in stats["daily_stats"]:
-        stats["daily_stats"][today] = {"total": 0, "tags": {}}
-    stats["daily_stats"][today]["total"] += 1
+    if today not in stats_handler["daily_stats"]:
+        stats_handler["daily_stats"][today] = {"total": 0, "tags": {}}
+    stats_handler["daily_stats"][today]["total"] += 1
     for tag in tags:
-        if tag not in stats["daily_stats"][today]["tags"]:
-            stats["daily_stats"][today]["tags"][tag] = 0
-        stats["daily_stats"][today]["tags"][tag] += 1
+        if tag not in stats_handler["daily_stats"][today]["tags"]:
+            stats_handler["daily_stats"][today]["tags"][tag] = 0
+        stats_handler["daily_stats"][today]["tags"][tag] += 1
 
     # Update user stats
-    if user_id not in stats["user_stats"]:
-        stats["user_stats"][user_id] = {"total": 0, "tags": {}}
-    stats["user_stats"][user_id]["total"] += 1
+    if user_id not in stats_handler["user_stats"]:
+        stats_handler["user_stats"][user_id] = {"total": 0, "tags": {}}
+    stats_handler["user_stats"][user_id]["total"] += 1
     for tag in tags:
-        if tag not in stats["user_stats"][user_id]["tags"]:
-            stats["user_stats"][user_id]["tags"][tag] = 0
-        stats["user_stats"][user_id]["tags"][tag] += 1
-
-    save_stats(stats)
+        if tag not in stats_handler["user_stats"][user_id]["tags"]:
+            stats_handler["user_stats"][user_id]["tags"][tag] = 0
+        stats_handler["user_stats"][user_id]["tags"][tag] += 1
 
 
 def get_top_tags(limit: int = 10) -> List[Tuple[str, int]]:
     """Get top N most used tags"""
-    stats = load_stats()
     return sorted(
-        stats["tag_counts"].items(),
+        stats_handler["tag_counts"].items(),
         key=lambda x: x[1],
         reverse=True
     )[:limit]
@@ -80,11 +64,10 @@ def get_top_tags(limit: int = 10) -> List[Tuple[str, int]]:
 
 def get_user_top_tags(user_id: str, limit: int = 5) -> List[Tuple[str, int]]:
     """Get top N most used tags by a specific user"""
-    stats = load_stats()
-    if user_id not in stats["user_stats"]:
+    if user_id not in stats_handler["user_stats"]:
         return []
     return sorted(
-        stats["user_stats"][user_id]["tags"].items(),
+        stats_handler["user_stats"][user_id]["tags"].items(),
         key=lambda x: x[1],
         reverse=True
     )[:limit]
@@ -92,7 +75,6 @@ def get_user_top_tags(user_id: str, limit: int = 5) -> List[Tuple[str, int]]:
 
 async def handle_tag_stats(event: MessageEvent, matcher: Matcher):
     """Handle tag statistics command"""
-    stats = load_stats()
     user_id = str(event.user_id)
 
     # Get top tags
@@ -101,7 +83,7 @@ async def handle_tag_stats(event: MessageEvent, matcher: Matcher):
 
     # Format message
     message = "Pixiv标签统计:\n"
-    message += f"总请求数: {stats['total_requests']}\n\n"
+    message += f"总请求数: {stats_handler['total_requests']}\n\n"
 
     message += "全局热门标签:\n"
     for tag, count in top_tags:
@@ -113,9 +95,6 @@ async def handle_tag_stats(event: MessageEvent, matcher: Matcher):
             message += f"{tag}: {count}次\n"
 
     await matcher.finish(message)
-
-
-# Function to be called from pixiv.py when tags are used
 
 
 def record_tag_usage(tags: List[str], user_id: str):

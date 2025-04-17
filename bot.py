@@ -71,13 +71,7 @@ async def notify_superusers():
     plugins = plugin_registry.get_plugins()
     for plugin_name, plugin_info in plugins.items():
         message += f"\n{plugin_name}：{plugin_info.description}\n"
-        for feature in plugin_info.features:
-            message += f"  - {feature.name}：{feature.description}\n"
-            if feature.commands:
-                message += "    命令：\n"
-                for cmd in feature.commands:
-                    message += f"      {cmd}\n"
-    
+
     for user_id in superusers:
         try:
             await bot.send_private_msg(user_id=int(user_id), message=message)
