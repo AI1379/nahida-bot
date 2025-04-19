@@ -53,7 +53,7 @@ async def handle_first_receive(args: Message = CommandArg()):
         await echo.finish("你好像没有说话喵~")
 
 
-@scheduler.scheduled_job("cron", hour="*")
+@scheduler.scheduled_job("cron", hour="*", misfire_grace_time=300, coalesce=True)
 async def scheduled_job():
     bot = nonebot.get_bot()
     if superusers := nonebot.get_driver().config.superusers:

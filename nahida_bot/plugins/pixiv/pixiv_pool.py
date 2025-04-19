@@ -29,7 +29,7 @@ class PixivPool:
             self._pool[refresh_token] = AppPixivAPI()
             self._pool[refresh_token].auth(refresh_token=refresh_token)
 
-            @scheduler.scheduled_job("cron", hour="*")
+            @scheduler.scheduled_job("cron", hour="*", misfire_grace_time=300, coalesce=True)
             async def auto_refresh():
                 """
                 Automatically refresh the token every hour.
