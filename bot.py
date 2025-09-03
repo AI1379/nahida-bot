@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 #
 # Created by Renatus Madrigal on 03/24/2025
 #

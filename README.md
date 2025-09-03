@@ -33,7 +33,27 @@
 - [ ] 搜图
 - [ ] 星图数据库
 
-## 使用：
+## 运行
+
+本项目使用 `poetry` 作为包管理，请确保你的 `poetry` 版本大于等于 `2.0.1` 。
+
+首先使用 `poetry install` 安装依赖。这个过程中 `poetry` 会自动在 `~/.cache/pypoetry/virtualenvs` 中创建一个虚拟环境。如果你希望覆盖这个行为，你可以自己在项目目录下创建虚拟环境，或者手工激活你想要的虚拟环境， `poetry` 会自动识别。具体可以参考 `poetry` 的[文档](https://python-poetry.org/docs/managing-environments/) 。
+
+安装完成后，运行：
+
+```bash
+poetry run python ./bot.py
+```
+
+即可。
+
+此外，你也可以手工激活虚拟环境，然后运行 `python ./bot.py` 启动机器人。如果你通过 `poetry install` 创建虚拟环境，则需要额外激活这个虚拟环境：
+
+```bash
+eval "$(poetry env activate)"
+```
+
+## 使用
 
 以下所有命令开头的 `!` 均可替换为 `/`。可选参数用 `[]` 表示，不可选的用 `<>` 表示。
 
