@@ -29,26 +29,25 @@ permission.update_feature_permission(
     feature="group",
     admin=permission.ALLOW,
     group=permission.ALLOW,
-    user=permission.ALLOW
+    user=permission.ALLOW,
 )
 permission.update_feature_permission(
     perm_plugin_name,
     feature="user",
     admin=permission.ALLOW,
     group=permission.DENY,
-    user=permission.DENY
+    user=permission.DENY,
 )
 
 
 @group_set.handle()
 async def handle_group_set(
-    args: Message = CommandArg(),
-    event: GroupMessageEvent = EventParam()
+    args: Message = CommandArg(), event: GroupMessageEvent = EventParam()
 ):
     """Set the permission level of a plugin in a group."""
     logger.debug(f"Group set args: {args}")
     logger.debug(f"Argument list {args.extract_plain_text().split(' ')}")
-    arg_list = args.extract_plain_text().split(' ')
+    arg_list = args.extract_plain_text().split(" ")
     if len(arg_list) < 2:
         await group_set.finish("Please provide a feature and a permission level.")
     if arg_list[0].find(".") == -1:
@@ -61,9 +60,12 @@ async def handle_group_set(
 
     permission.update_group_permission(plugin, feature, event.group_id, perm)
     logger.debug(
-        f"Plugin {plugin} feature {feature} group {event.group_id} permission {perm}")
+        f"Plugin {plugin} feature {feature} group {event.group_id} permission {perm}"
+    )
 
-    await group_set.finish(f"{plugin}.{feature} permission in group {event.group_id} set to {perm}")
+    await group_set.finish(
+        f"{plugin}.{feature} permission in group {event.group_id} set to {perm}"
+    )
 
 
 @user_set.handle()
@@ -102,10 +104,7 @@ async def handle_user_set(
 
     for uid in user_id:
         permission.update_user_permission(plugin, feature, uid, perm)
-        logger.debug(
-            f"Plugin {plugin} feature {feature} user {uid} permission {perm}")
-        msg_list.append(
-            f"{plugin}.{feature} permission for user {uid} set to {perm}"
-        )
+        logger.debug(f"Plugin {plugin} feature {feature} user {uid} permission {perm}")
+        msg_list.append(f"{plugin}.{feature} permission for user {uid} set to {perm}")
 
     await user_set.finish("\n".join(msg_list))

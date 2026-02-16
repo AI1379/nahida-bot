@@ -13,12 +13,9 @@ stats_handler = localstore.get_json("pixiv", "tag_stats")
 
 # Initialize statistics if empty
 if not stats_handler:
-    stats_handler.update({
-        "total_requests": 0,
-        "tag_counts": {},
-        "daily_stats": {},
-        "user_stats": {}
-    })
+    stats_handler.update(
+        {"total_requests": 0, "tag_counts": {}, "daily_stats": {}, "user_stats": {}}
+    )
 
 
 def update_tag_stats(tags: List[str], user_id: str):
@@ -56,9 +53,7 @@ def update_tag_stats(tags: List[str], user_id: str):
 def get_top_tags(limit: int = 10) -> List[Tuple[str, int]]:
     """Get top N most used tags"""
     return sorted(
-        stats_handler["tag_counts"].items(),
-        key=lambda x: x[1],
-        reverse=True
+        stats_handler["tag_counts"].items(), key=lambda x: x[1], reverse=True
     )[:limit]
 
 
@@ -69,7 +64,7 @@ def get_user_top_tags(user_id: str, limit: int = 5) -> List[Tuple[str, int]]:
     return sorted(
         stats_handler["user_stats"][user_id]["tags"].items(),
         key=lambda x: x[1],
-        reverse=True
+        reverse=True,
     )[:limit]
 
 

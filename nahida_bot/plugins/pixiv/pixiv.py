@@ -5,12 +5,19 @@
 from pixivpy3 import AppPixivAPI, PixivError, ByPassSniApi
 import nonebot
 from nonebot.matcher import Matcher
-from nonebot.adapters.onebot.v11 import MessageEvent, Message, MessageSegment, Bot, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import (
+    MessageEvent,
+    Message,
+    MessageSegment,
+    Bot,
+    GroupMessageEvent,
+)
 from nonebot.log import logger
 import nahida_bot.localstore as localstore
 from nahida_bot.utils.command_parser import split_arguments
 from nahida_bot.plugins.pixiv.pixiv_pool import PixivPool
 from nahida_bot.plugins.pixiv.xp_statistic import record_tag_usage
+from nahida_bot.config import get_config
 import asyncio
 import random
 from typing import Callable, Union, Any, Coroutine, Literal, Type
@@ -48,7 +55,8 @@ tags: 要搜索的标签。如果不提供，将获取系统推荐的图片。
 
 COUNT_FACTOR = 2
 MAX_IMAGE_PER_PAGE = 5
-REFRESH_TOKENS = nonebot.get_driver().config.pixiv_refresh_tokens
+app_config = get_config()
+REFRESH_TOKENS = app_config.pixiv.refresh_tokens if app_config.pixiv else []
 BYPASS_GFW = False
 
 logger.info(f"Pixiv bypass GFW: {BYPASS_GFW}")
@@ -111,8 +119,7 @@ def extract_arguments(command: str, **kwargs):
 
 def weight_sample(items, k: int) -> list:
     weights = [item["total_bookmarks"] for item in items]
-    keys = [(random.normalvariate(1, 0.2) * w, i)
-            for i, w in enumerate(weights)]
+    keys = [(random.normalvariate(1, 0.2) * w, i) for i, w in enumerate(weights)]
     keys.sort(reverse=True)
     return [items[i] for _, i in keys[:k]]
 
@@ -128,11 +135,13 @@ class PixivErrorInResponse(Exception):
         return self.message
 
 
-def get_and_filter(count: int,
-                   filter_func: Callable,
-                   get_type: Literal["recommend", "search", "related"],
-                   ai: bool = False,
-                   **kwargs) -> list:
+def get_and_filter(
+    count: int,
+    filter_func: Callable,
+    get_type: Literal["recommend", "search", "related"],
+    ai: bool = False,
+    **kwargs,
+) -> list:
     """Get and filter Pixiv images based on the specified tag and count."""
     global _current_token, _pixiv_api
     res = []
@@ -144,9 +153,7 @@ def get_and_filter(count: int,
             "search_ai_type": 1 if ai else 0,
         },
         "recommend": {},
-        "related": {
-            "illust_id": kwargs.get("id")
-        }
+        "related": {"illust_id": kwargs.get("id")},
     }
     qs = init_qs_table[get_type]
     first_attempt_token = _current_token
@@ -157,17 +164,16 @@ def get_and_filter(count: int,
             rec = _pixiv_api.illust_related(**qs)
         else:
             rec = _pixiv_api.search_illust(**qs)
-        if 'error' in rec:
+        if "error" in rec:
             _current_token, _pixiv_api = next(_api_generator)
             qs = init_qs_table[get_type]
             logger.warning(f"Pixiv API error: {rec['error']}")
             logger.warning(f"Switching to next token: {_current_token}")
             if _current_token == first_attempt_token:
-                raise PixivErrorInResponse(rec['error']['message'])
+                raise PixivErrorInResponse(rec["error"]["message"])
             continue
         try:
-            filtered = [record for record in rec["illusts"]
-                        if filter_func(record)]
+            filtered = [record for record in rec["illusts"] if filter_func(record)]
             res.extend(filtered)
             if "next_url" not in rec:
                 break
@@ -191,11 +197,13 @@ def get_filter(r18: bool, ai: bool, sanity: int) -> Callable[[Any], bool]:
     return filter_func
 
 
-async def pixiv_request_handler(bot: Bot,
-                                event: MessageEvent,
-                                args: Message,
-                                matcher: Type[Matcher],
-                                related: bool = False) -> None:
+async def pixiv_request_handler(
+    bot: Bot,
+    event: MessageEvent,
+    args: Message,
+    matcher: Type[Matcher],
+    related: bool = False,
+) -> None:
     """Handle the pixiv request command."""
     raw_arg = args.extract_plain_text()
     if not raw_arg:
@@ -212,23 +220,29 @@ async def pixiv_request_handler(bot: Bot,
     ai = parsed_args["ai"]
     tags = parsed_args["tags"]
     related_id = parsed_args["related_id"] if related else None
-    
+
     # Record tag usage for statistics
     if tags:
         record_tag_usage(tags, str(event.user_id))
-    
+
     result = []
     filter_func = get_filter(r18, ai, sanity)
     try:
         if tags:
             for tag in tags:
-                filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "search", tag=tag, ai=ai)
+                filtered = get_and_filter(
+                    count * COUNT_FACTOR, filter_func, "search", tag=tag, ai=ai
+                )
                 result.extend(weight_sample(filtered, count * COUNT_FACTOR))
         elif related_id:
-            filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "related", id=related_id, ai=ai)
+            filtered = get_and_filter(
+                count * COUNT_FACTOR, filter_func, "related", id=related_id, ai=ai
+            )
             result.extend(weight_sample(filtered, count * COUNT_FACTOR))
         else:
-            filtered = get_and_filter(count * COUNT_FACTOR, filter_func, "recommend", ai=ai)
+            filtered = get_and_filter(
+                count * COUNT_FACTOR, filter_func, "recommend", ai=ai
+            )
             result.extend(weight_sample(filtered, count * COUNT_FACTOR))
     except PixivError as err:
         logger.error(f"Pixiv internal error: {err}")
@@ -250,11 +264,7 @@ async def pixiv_request_handler(bot: Bot,
         self_name = bot_info["nickname"]
         return {
             "type": "node",
-            "data": {
-                "name": self_name,
-                "uin": f"{self_id}",
-                "content": raw_msg
-            }
+            "data": {"name": self_name, "uin": f"{self_id}", "content": raw_msg},
         }
 
     tasks = []
@@ -267,7 +277,9 @@ async def pixiv_request_handler(bot: Bot,
         logger.debug(f"total bookmarks: {record['total_bookmarks']}")
         tasks.append(construct_message_chain(record))
 
-    messages: list[Union[MessageSegment, BaseException]] = await asyncio.gather(*tasks, return_exceptions=True)
+    messages: list[Union[MessageSegment, BaseException]] = await asyncio.gather(
+        *tasks, return_exceptions=True
+    )
     exception_msg = [msg for msg in messages if isinstance(msg, BaseException)]
     filtered_msg = [msg for msg in messages if not isinstance(msg, BaseException)]
     group = isinstance(event, GroupMessageEvent)
@@ -275,13 +287,13 @@ async def pixiv_request_handler(bot: Bot,
         await bot.call_api(
             "send_group_forward_msg",
             group_id=event.group_id,
-            messages=[to_json(msg_elem) for msg_elem in filtered_msg]
+            messages=[to_json(msg_elem) for msg_elem in filtered_msg],
         )
     else:
         await bot.call_api(
             "send_private_forward_msg",
             user_id=event.user_id,
-            messages=[to_json(msg_elem) for msg_elem in filtered_msg]
+            messages=[to_json(msg_elem) for msg_elem in filtered_msg],
         )
     for msg in exception_msg:
         if isinstance(msg, PixivErrorInResponse):
@@ -310,8 +322,7 @@ async def construct_message_chain(record) -> MessageSegment:
     file_basename = "pixiv_{}_{}.jpg"
     img_id = record["id"]
     if record["page_count"] > 1:
-        image_urls = [page["image_urls"]["original"]
-                      for page in record["meta_pages"]]
+        image_urls = [page["image_urls"]["original"] for page in record["meta_pages"]]
     else:
         image_urls = [record["meta_single_page"]["original_image_url"]]
 
@@ -319,13 +330,16 @@ async def construct_message_chain(record) -> MessageSegment:
 
     message = MessageSegment.text(f"Title: {record['title']}\n")
     message += MessageSegment.text(
-        f"Tags: {', '.join([tag["name"] for tag in record["tags"]])}\n")
+        f"Tags: {', '.join([tag['name'] for tag in record['tags']])}\n"
+    )
     message += MessageSegment.text(f"Sanity Level: {record['sanity_level']}\n")
-    message += MessageSegment.text(f"Page count: {record["page_count"]}\n")
+    message += MessageSegment.text(f"Page count: {record['page_count']}\n")
     message += MessageSegment.text(f"Bookmarks: {record['total_bookmarks']}\n")
     message += MessageSegment.text(f"URL: https://www.pixiv.net/artworks/{img_id}\n")
     message += MessageSegment.text(f"Date: {record['create_date']}\n")
-    message += MessageSegment.text(f"Is AI: {"Yes" if record['illust_ai_type'] == 2 else "No"}\n")
+    message += MessageSegment.text(
+        f"Is AI: {'Yes' if record['illust_ai_type'] == 2 else 'No'}\n"
+    )
 
     async def download_image(f: str, url: str):
         full_path = _cache.get_file(f)
@@ -338,10 +352,13 @@ async def construct_message_chain(record) -> MessageSegment:
 
     tasks = [
         download_image(file_basename.format(img_id, i), url)
-        for i, url in enumerate(image_urls) if i < MAX_IMAGE_PER_PAGE
+        for i, url in enumerate(image_urls)
+        if i < MAX_IMAGE_PER_PAGE
     ]
 
-    result: list[Union[str, BaseException]] = await asyncio.gather(*tasks, return_exceptions=True)
+    result: list[Union[str, BaseException]] = await asyncio.gather(
+        *tasks, return_exceptions=True
+    )
 
     for i, res in enumerate(result):
         if isinstance(res, BaseException):

@@ -628,6 +628,8 @@ dependencies = [
     { name = "pixivpy3" },
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -646,6 +648,8 @@ requires-dist = [
     { name = "pixivpy3", specifier = ">=3.7.5,<4.0.0" },
     { name = "psutil", specifier = ">=7.0.0,<8.0.0" },
     { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "pyyaml", specifier = ">=6.0,<7.0.0" },
 ]
 
 [package.metadata.requires-dev]

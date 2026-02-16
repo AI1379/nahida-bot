@@ -1,0 +1,42 @@
+# Nahida Bot Configuration
+# This file uses YAML format with a hierarchical structure for better organization.
+# Environment variables will override corresponding YAML values.
+
+# Core Bot Settings
+core:
+  host: "127.0.0.1"
+  port: 5700
+  log_level: "INFO"
+  log_file: "data/logs/server.log"
+  data_dir: "data"
+  
+  # Command settings for command parsing
+  command_start:
+    - "/"
+    - "!"
+  command_sep:
+    - "."
+  
+  # OneBot adapter settings: Superuser QQ IDs
+  superusers: "${SUPERUSERS}"  # Add superuser QQ IDs here
+
+plugins:
+  - openai_bot
+  # - pixiv
+  - auto_approve
+  - remake
+  - server_monitor
+  - utility
+
+# OpenAI Plugin Configuration
+openai:
+  api_url: "https://api.siliconflow.cn/v1"
+  api_token: "${OPENAI_API_TOKEN}"  # Set via environment variable or directly here
+  model_name: "Pro/deepseek-ai/DeepSeek-V3"
+  default_prompt: null  # Optional: Set a custom default prompt
+  message_timeout: 604800  # 7 days in seconds (optional, default: 7 * 24 * 3600)
+  max_memory: 50  # Maximum context messages to keep (optional, default: 50)
+
+# Pixiv Plugin Configuration
+pixiv:
+  refresh_tokens: []  # Add Pixiv refresh tokens here

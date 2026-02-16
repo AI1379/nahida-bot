@@ -14,6 +14,8 @@ dependencies = [
     "pydantic (>=2.11.0,<3.0.0)",
     "pixivpy3 (>=3.7.5,<4.0.0)",
     "apscheduler (>=3.11.0,<4.0.0)",
+    "PyYAML (>=6.0,<7.0.0)",
+    "python-dotenv>=1.2.1",
 ]
 
 [tool.pytest.ini_options]
