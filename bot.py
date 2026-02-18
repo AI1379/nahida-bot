@@ -20,7 +20,6 @@ import os
 nonebot.init()
 
 driver = nonebot.get_driver()
-driver.register_adapter(OnebotAdapter)
 
 # Load configuration from YAML and environment variables
 # nonebot has already loaded .env files automatically
@@ -30,6 +29,8 @@ app_config = init_config("config.yaml")
 # Convert all config fields to uppercase for nonebot compatibility
 driver.config = merge_pydantic_models(driver.config, app_config.core)
 
+# Register adapters after custom config is loaded
+driver.register_adapter(OnebotAdapter)
 
 log_level = app_config.core.log_level
 

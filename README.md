@@ -10,48 +10,34 @@
 
 - [x] 基础功能
 - [x] 自动批准加好友/加群申请
-    - [ ] 引入[`nonebot-plugin-add-friends`](https://github.com/hakunomiko/nonebot-plugin-add-friends)
+  - [ ] 引入[`nonebot-plugin-add-friends`](https://github.com/hakunomiko/nonebot-plugin-add-friends)
 - [x] pixiv搜索
-    - [x] AI 设置
-    - [x] Token Pool
-    - [x] Related pic
-    - [ ] 搜索标签统计
+  - [x] AI 设置
+  - [x] Token Pool
+  - [x] Related pic
+  - [ ] 搜索标签统计
 - [ ] 漫画搜索下载
 - [x] 基于 OpenAI 兼容平台 API 的纯文本对话
-    - [x] 基础功能
-    - [x] 持续化记忆
-    - [x] 模型设置
-    - [ ] 长期记忆筛选
+  - [x] 基础功能
+  - [x] 持续化记忆
+  - [x] 模型设置
+  - [ ] 长期记忆筛选
 - [x] 权限控制
-    - [ ] Bug: 权限查询失败
+  - [ ] Bug: 权限查询失败
 - [x] 心跳包
 - [x] 并发处理
-    - [x] Pixiv 异步下载
-    - [x] OpenAI API 异步处理
+  - [x] Pixiv 异步下载
+  - [x] OpenAI API 异步处理
 - [ ] Bug: 日志处理
-- [ ] 基于 StableDiffusion 的图像生成
+- [ ] ~~基于 StableDiffusion 的图像生成~~基于大香蕉 / Qwen-Image 的图像生成
 - [ ] 搜图
 - [ ] 星图数据库
+- [ ] 消息总结
+- [ ] B 站视频自动解析与总结
 
 ## 运行
 
-本项目使用 `poetry` 作为包管理，请确保你的 `poetry` 版本大于等于 `2.0.1` 。
-
-首先使用 `poetry install` 安装依赖。这个过程中 `poetry` 会自动在 `~/.cache/pypoetry/virtualenvs` 中创建一个虚拟环境。如果你希望覆盖这个行为，你可以自己在项目目录下创建虚拟环境，或者手工激活你想要的虚拟环境， `poetry` 会自动识别。具体可以参考 `poetry` 的[文档](https://python-poetry.org/docs/managing-environments/) 。
-
-安装完成后，运行：
-
-```bash
-poetry run python ./bot.py
-```
-
-即可。
-
-此外，你也可以手工激活虚拟环境，然后运行 `python ./bot.py` 启动机器人。如果你通过 `poetry install` 创建虚拟环境，则需要额外激活这个虚拟环境：
-
-```bash
-eval "$(poetry env activate)"
-```
+**本项目的包管理器已经迁移至 `uv` ，直接按照 `uv` 项目常见的方式运行 `bot.py` 即可。**
 
 ## 使用
 
@@ -75,8 +61,10 @@ eval "$(poetry env activate)"
 
 ## 配置
 
-由于 nonebot 不知为何加载 `.env` 文件有延迟，因此我们选择使用一个额外的 `config.json` 文件来配置。这个文件的路径可以在
-`.env` 文件中配置。
+~~由于 nonebot 不知为何加载 `.env` 文件有延迟，因此我们选择使用一个额外的 `config.json` 文件来配置。这个文件的路径可以在
+`.env` 文件中配置。~~
+
+配置文件已经全面迁移到 `config.yaml` ，其中形如 `${CUSTOM_CONFIG_KEY}` 的内容会从环境变量或 `.env` 中读取。 nonebot 所需要的配置项仍然必须写在 `.env` 中，其它的配置项则写在 `config.yaml` 中。
 
 ### PixivBot
 
