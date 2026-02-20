@@ -21,6 +21,8 @@ from nahida_bot.config import get_config
 import nahida_bot.permission as permission
 from nahida_bot.utils.plugin_registry import plugin_registry
 import time
+import random
+import asyncio
 
 # Register the plugin
 openai_plugin = plugin_registry.register_plugin(
@@ -91,6 +93,19 @@ else:
 
 MESSAGE_TIMEOUT = openai_config.message_timeout
 MAX_MEMORY = openai_config.max_memory
+
+# Segmentation settings - minimum length before splitting by punctuation/newline
+MIN_SEGMENT_LENGTH = 200
+# Chinese punctuation marks
+CHINESE_PUNCTUATION = "。！？；"
+# English punctuation marks
+ENGLISH_PUNCTUATION = ".!?;"
+# All punctuation marks
+ALL_PUNCTUATION = CHINESE_PUNCTUATION + ENGLISH_PUNCTUATION
+# Message sending speed (characters per second) for delay calculation
+MESSAGE_SEND_SPEED = 50
+# Random delay variance (0.8 - 1.2 means ±20%)
+DELAY_VARIANCE = 0.2
 
 store: SQLite3DB = register(plugin_name, SQLite3DB)
 
@@ -170,6 +185,80 @@ async def handle_message(
     await get_openai_response(args, event, msg_type)
 
 
+async def should_send_content(content: str) -> bool:
+    """
+    Determine if content should be sent based on:
+    1. Length >= MIN_SEGMENT_LENGTH
+    2. Ends with punctuation or newline
+    
+    Args:
+        content: The content to check
+        
+    Returns:
+        True if content should be sent, False otherwise
+    """
+    if not content:
+        return False
+    
+    # If content is less than minimum length, don't send
+    if len(content) < MIN_SEGMENT_LENGTH:
+        return False
+    
+    # If reaches minimum length, check if it ends with punctuation or newline
+    return content[-1] in ALL_PUNCTUATION or content.endswith("\n")
+
+
+def split_at_last_punctuation(content: str) -> tuple[str | None, str]:
+    """
+    Find the last punctuation or newline in content and split at that point.
+    Only splits if the content before the punctuation is reasonably long.
+    
+    Args:
+        content: The content to split
+        
+    Returns:
+        A tuple of (segment_to_send, remaining_content) or (None, content) if no good split point found
+    """
+    if not content or len(content) < MIN_SEGMENT_LENGTH:
+        return (None, content)
+    
+    # Find the last punctuation mark from the end, but not too close to the end
+    # We want to ensure there's some content left in the buffer
+    min_keep_length = 50  # Keep at least 50 chars in buffer for next segment
+    search_end = max(len(content) - min_keep_length, MIN_SEGMENT_LENGTH)
+    
+    # Search backwards from search_end
+    last_punct_pos = -1
+    for i in range(search_end - 1, -1, -1):
+        if content[i] in ALL_PUNCTUATION or content[i] == "\n":
+            last_punct_pos = i
+            break
+    
+    # If found a punctuation mark, split there (include the punctuation)
+    if last_punct_pos != -1:
+        split_pos = last_punct_pos + 1
+        return (content[:split_pos], content[split_pos:])
+    
+    # No good split point found
+    return (None, content)
+
+
+async def calculate_send_delay(content_length: int) -> float:
+    """
+    Calculate delay based on message length with randomization.
+    Delay = (length / MESSAGE_SEND_SPEED) * random(1 - DELAY_VARIANCE, 1 + DELAY_VARIANCE)
+    
+    Args:
+        content_length: Length of content being sent
+        
+    Returns:
+        Delay in seconds
+    """
+    base_delay = content_length / MESSAGE_SEND_SPEED
+    variance = random.uniform(1.0 - DELAY_VARIANCE, 1.0 + DELAY_VARIANCE)
+    return base_delay * variance
+
+
 async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
     if msg_type != "private" and msg_type != "group":
         return
@@ -238,31 +327,43 @@ async def get_openai_response(msg: Message, event: MessageEvent, msg_type: str):
     all_content = ""
     current_content = ""
     token_count = 0
+    
     async for chunk in response:
         if chunk.choices[0].delta.content:
-            all_content += chunk.choices[0].delta.content
-            lines = chunk.choices[0].delta.content.splitlines()
-            if len(lines) == 1:
-                current_content += chunk.choices[0].delta.content
-                if current_content.endswith("\n"):
-                    logger.debug(f"Sending content: {current_content}")
-                    await openai.send(current_content)
-                    current_content = ""
-            else:
-                current_content += lines[0]
-                logger.debug(f"Sending content: {current_content}")
-                await openai.send(current_content)
-                for line in lines[1:-1]:
-                    if line == "":
-                        continue
-                    logger.debug(f"Sending content: {line}")
-                    await openai.send(line)
-                current_content = lines[-1]
+            delta_content = chunk.choices[0].delta.content
+            all_content += delta_content
+            current_content += delta_content
+            
+            logger.debug(f"Current buffer length: {len(current_content)}")
+            
+            # If content is long enough, try to find a good split point
+            if len(current_content) >= MIN_SEGMENT_LENGTH:
+                segment_to_send, remaining = split_at_last_punctuation(current_content)
+                
+                # If we found a good split point, send the segment and keep the rest
+                if segment_to_send:
+                    if segment_to_send.strip():  # Only send non-empty segments
+                        logger.debug(f"Sending content: {repr(segment_to_send)}")
+                        await openai.send(segment_to_send.strip())
+                        
+                        # Calculate delay based on segment length with randomization
+                        delay = await calculate_send_delay(len(segment_to_send))
+                        logger.debug(f"Sending delay for {len(segment_to_send)} chars: {delay:.2f}s")
+                        await asyncio.sleep(delay)
+                    
+                    # Keep remaining content in buffer
+                    current_content = remaining
+        
         token_count = chunk.usage.total_tokens
-
-    logger.debug(f"Sending content: {current_content}")
-    if current_content != "":
+    
+    # Send any remaining content in the buffer
+    logger.debug(f"Final buffer content: {repr(current_content)}")
+    if current_content.strip():
         await openai.send(current_content)
+        # Add delay for final message too
+        delay = await calculate_send_delay(len(current_content))
+        logger.debug(f"Final message delay for {len(current_content)} chars: {delay:.2f}s")
+        await asyncio.sleep(delay)
 
     store.insert(
         memory_table,
