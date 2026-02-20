@@ -11,11 +11,12 @@ dependencies = [
     "nonebot-adapter-onebot (>=2.4.6,<3.0.0)",
     "openai (>=1.68.2,<2.0.0)",
     "psutil (>=7.0.0,<8.0.0)",
-    "pydantic (>=2.11.0,<3.0.0)",
+    "pydantic>=2.11.0,<3.0.0",
     "pixivpy3 (>=3.7.5,<4.0.0)",
     "apscheduler (>=3.11.0,<4.0.0)",
     "PyYAML (>=6.0,<7.0.0)",
     "python-dotenv>=1.2.1",
+    "polars>=1.38.1",
 ]
 
 [tool.pytest.ini_options]
@@ -23,4 +24,7 @@ testpaths = ["tests"]
 addopts = "-v"
 
 [dependency-groups]
-dev = ["gppt>=4.3.0", "pytest>=9.0.2"]
+dev = [
+    "gppt>=4.3.0",
+    "pytest>=9.0.2",
+]

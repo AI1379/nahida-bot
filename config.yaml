@@ -27,6 +27,7 @@ plugins:
   - remake
   - server_monitor
   - utility
+  - summary.chat_summarizer
 
 # OpenAI Plugin Configuration
 openai:
