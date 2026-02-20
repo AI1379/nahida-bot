@@ -19,7 +19,14 @@ from nonebot.adapters.onebot.v11 import (
 )
 from nonebot.log import logger
 from nonebot.matcher import Matcher
-from nonebot.params import BotParam, Command, CommandArg, EventMessage, EventParam, MatcherParam
+from nonebot.params import (
+    BotParam,
+    Command,
+    CommandArg,
+    EventMessage,
+    EventParam,
+    MatcherParam,
+)
 from nonebot.rule import to_me
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -323,7 +330,7 @@ async def record_message(
 async def message_summarize_handler(
     event: Event = EventParam(),  # type: ignore
     args: Message = CommandArg(),
-    matcher: Matcher = MatcherParam(), # type: ignore
+    matcher: Matcher = MatcherParam(),  # type: ignore
 ):
     if not isinstance(event, GroupMessageEvent):
         await msg_summarize.finish("This command can only be used in group chats.")
@@ -337,6 +344,8 @@ async def message_summarize_handler(
         if not messages:
             await msg_summarize.finish("No messages to summarize.")
             return
+
+        messages.reverse()  # Reverse to have oldest messages first for better summarization context
 
         try:
             summary = await message_summarize(messages)
