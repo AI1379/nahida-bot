@@ -25,6 +25,7 @@ plugins:
   # - pixiv
   - auto_approve
   - remake
+  - reminder
   - server_monitor
   - utility
   - summary.chat_summarizer
