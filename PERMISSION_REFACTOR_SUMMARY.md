@@ -7,10 +7,12 @@
 ## 主要改动
 
 ### 1. 核心逻辑变更
+
 - **旧模型**：Allow/Deny 三层权限（Feature/Group/User）
 - **新模型**：黑名单模型 - 默认允许，除非被ban
 
 ### 2. 数据库表结构
+
 ```
 ban_user: (id, user_id, plugin, feature)
   └─ 用户黑名单
@@ -23,6 +25,7 @@ superusers: (id, user_id)
 ```
 
 ### 3. 权限检查流程
+
 1. 是superuser？ → 允许
 2. 用户被ban？ → 拒绝
 3. 群被ban（群消息）？ → 拒绝
@@ -31,6 +34,7 @@ superusers: (id, user_id)
 ## 新增功能
 
 ### 管理命令（私聊，仅superuser可用）
+
 ```
 /perm ban user <user_id> <plugin.feature>
 /perm unban user <user_id> <plugin.feature>
@@ -42,6 +46,7 @@ superusers: (id, user_id)
 ```
 
 ### API函数
+
 ```python
 perm.add_superuser(user_id)
 perm.remove_superuser(user_id)
@@ -65,10 +70,12 @@ perm.get_all_bans()
 ## 文件修改
 
 ### 新增
+
 - `PERMISSION_GUIDE.md` - 使用指南
 - 权限管理命令处理
 
 ### 修改
+
 - `nahida_bot/permission/__init__.py` - 完全重构
 - `nahida_bot/plugins/permission.py` - 完全重写
 - `tests/test_permission.py` - 新测试用例
@@ -77,6 +84,7 @@ perm.get_all_bans()
 ## 测试结果
 
 ✅ 所有12个测试用例通过
+
 - Superuser功能
 - Ban用户功能
 - Ban群功能
@@ -87,6 +95,7 @@ perm.get_all_bans()
 ## 使用示例
 
 ### 在插件中使用
+
 ```python
 from nonebot import on_command
 import nahida_bot.permission as perm
@@ -101,6 +110,7 @@ async def handle(event):
 ```
 
 ### 通过私聊管理
+
 ```
 向bot发送私聊：
 /perm ban user 123456 pixiv.search
@@ -114,9 +124,11 @@ async def handle(event):
 ```
 
 ## 不需要迁移
+
 旧权限数据无需迁移，新系统完全独立。
 
 ## 注意事项
+
 1. Superuser需要在config中配置或通过API添加
 2. 用户ID和群ID均需转换为字符串存储
 3. 权限检查必须在事件处理中进行

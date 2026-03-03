@@ -24,6 +24,7 @@ plugins:
   - openai_bot
   # - pixiv
   - auto_approve
+  - permission
   - remake
   - reminder
   - server_monitor
