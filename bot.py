@@ -62,7 +62,9 @@ logger.info(f"Superuser: {superusers}")
 
 localstore.init(full_data_dir)
 
-permission.init()
+# Initialize permission system with database path
+permission_db_path = os.path.join(full_data_dir, "permission.db")
+permission.init(permission_db_path)
 for superuser in superusers:
     permission.add_superuser(superuser)
 

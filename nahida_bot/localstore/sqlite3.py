@@ -21,6 +21,8 @@ class SQLite3DB:
     def connect(self):
         if not self.connection:
             self.connection = sqlite3.connect(self.db_path)
+            # 设置row_factory使查询结果返回字典而不是元组
+            self.connection.row_factory = sqlite3.Row
 
     def close(self):
         if self.connection:

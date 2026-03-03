@@ -1,110 +1,192 @@
 #
-# Created by Renatus Madrigal on 04/03/2025
+# 权限管理插件
+# 仅superuser可以通过私聊使用这些命令
 #
 
-from nonebot import on_command, CommandGroup
-from nonebot.adapters.onebot.v11 import Message, GroupMessageEvent
-from nonebot.params import CommandArg, ArgPlainText, EventParam
-from nonebot.rule import to_me
+from nonebot import on_command
+from nonebot.adapters.onebot.v11 import PrivateMessageEvent, Message
+from nonebot.params import CommandArg
 from nonebot.log import logger
-import nahida_bot.permission as permission
-from nahida_bot.utils.command_parser import check_true
+import nahida_bot.permission as perm
 
-perm_plugin_name = "permission_plugin"
-
-
-def checker(feature: str):
-    return to_me()
-    # return permission.get_checker(perm_plugin_name, feature) & to_me()
+# 仅在私聊中使用
+perm_cmd = on_command("perm", priority=5, block=True)
 
 
-perm = CommandGroup("perm", priority=5, block=True, rule=checker("perm"))
-# Feature should only be set by plugins, not in chat
-# feature_set = perm.command("feat", rule=checker("feat"))
-group_set = perm.command("group", rule=checker("group"))
-user_set = perm.command("user", rule=checker("user"))
+async def _verify_superuser(event: PrivateMessageEvent) -> bool:
+    """验证是否是superuser"""
+    if not perm.get_all_bans:  # 检查权限系统是否初始化
+        await perm_cmd.finish("权限系统未初始化")
+        return False
 
-permission.update_feature_permission(
-    perm_plugin_name,
-    feature="group",
-    admin=permission.ALLOW,
-    group=permission.ALLOW,
-    user=permission.ALLOW,
-)
-permission.update_feature_permission(
-    perm_plugin_name,
-    feature="user",
-    admin=permission.ALLOW,
-    group=permission.DENY,
-    user=permission.DENY,
-)
+    bans = perm.get_all_bans()
+    superusers = bans.get("superusers", [])
+    user_id = str(event.sender.user_id)
+
+    if not any(su["user_id"] == user_id for su in superusers):
+        await perm_cmd.finish("只有superuser才能使用此命令")
+        return False
+
+    return True
 
 
-@group_set.handle()
-async def handle_group_set(
-    args: Message = CommandArg(), event: GroupMessageEvent = EventParam()
-):
-    """Set the permission level of a plugin in a group."""
-    logger.debug(f"Group set args: {args}")
-    logger.debug(f"Argument list {args.extract_plain_text().split(' ')}")
-    arg_list = args.extract_plain_text().split(" ")
-    if len(arg_list) < 2:
-        await group_set.finish("Please provide a feature and a permission level.")
-    if arg_list[0].find(".") == -1:
-        await group_set.finish("Please provide a valid feature.")
-    plugin = arg_list[0].split(".")[0]
-    feature = arg_list[0].split(".")[1]
-    perm = check_true(arg_list[1])
-    if perm is None:
-        await group_set.finish("Please provide a valid permission level.")
-
-    permission.update_group_permission(plugin, feature, event.group_id, perm)
-    logger.debug(
-        f"Plugin {plugin} feature {feature} group {event.group_id} permission {perm}"
-    )
-
-    await group_set.finish(
-        f"{plugin}.{feature} permission in group {event.group_id} set to {perm}"
-    )
-
-
-@user_set.handle()
-async def handle_user_set(
+@perm_cmd.handle()
+async def handle_permission_command(
+    event: PrivateMessageEvent,
     args: Message = CommandArg(),
 ):
-    """Set the permission level of a plugin for a user."""
-    logger.debug(f"User set args: {args}")
-    logger.debug(f"Argument list {args.extract_plain_text().split(' ')}")
-    logger.debug(f"Argument length {len(args)}")
-    user_id = []
-    plugin = None
-    feature = None
-    perm = None
-    for arg in args:
-        logger.debug(f"Argument: {arg}")
-        if arg.type == "at":
-            user_id.append(arg.data["qq"])
-        elif permission.check_yes(arg.extract_plain_text()) is not None:
-            perm = permission.check_yes(arg.extract_plain_text())
-        elif permission.check_user_id(arg.extract_plain_text()):
-            user_id.append(arg.extract_plain_text())
+    """处理权限命令
+
+    用法:
+    - perm ban user <user_id> <plugin.feature>  # Ban用户的功能
+    - perm unban user <user_id> <plugin.feature>  # Unban用户的功能
+    - perm ban group <group_id> <plugin.feature>  # Ban群的功能
+    - perm unban group <group_id> <plugin.feature>  # Unban群的功能
+    - perm add_superuser <user_id>  # 添加superuser
+    - perm remove_superuser <user_id>  # 移除superuser
+    - perm list  # 列出所有ban和superuser
+    """
+
+    if not await _verify_superuser(event):
+        return
+
+    args_text = args.extract_plain_text().strip()
+    if not args_text:
+        await perm_cmd.finish(handle_permission_command.__doc__)
+        return
+
+    parts = args_text.split()
+    command = parts[0] if parts else None
+
+    try:
+        if command == "ban":
+            await handle_ban(parts[1:])
+        elif command == "unban":
+            await handle_unban(parts[1:])
+        elif command == "add_superuser":
+            await handle_add_superuser(parts[1:])
+        elif command == "remove_superuser":
+            await handle_remove_superuser(parts[1:])
+        elif command == "list":
+            await handle_list()
         else:
-            plugin, feature = arg.extract_plain_text().split(".")
+            await perm_cmd.finish(
+                f"未知命令: {command}\n\n{handle_permission_command.__doc__}"
+            )
+    except Exception as e:
+        logger.error(f"权限命令执行失败: {e}")
+        await perm_cmd.finish(f"执行失败: {e}")
 
-    if len(user_id) == 0:
-        await user_set.finish("Please provide a user ID.")
 
-    if plugin is None or feature is None:
-        await user_set.finish("Please provide a valid feature.")
+async def handle_ban(parts: list):
+    """处理ban命令"""
+    if len(parts) < 3:
+        await perm_cmd.finish("用法: perm ban <user|group> <id> <plugin.feature>")
+        return
 
-    if perm is None:
-        await user_set.finish("Please provide a valid permission level.")
+    target_type = parts[0]  # user or group
+    target_id = parts[1]
+    feature_spec = parts[2]
 
-    msg_list = []
+    if "." not in feature_spec:
+        await perm_cmd.finish("功能格式错误，应为: plugin.feature")
+        return
 
-    for uid in user_id:
-        permission.update_user_permission(plugin, feature, uid, perm)
-        logger.debug(f"Plugin {plugin} feature {feature} user {uid} permission {perm}")
-        msg_list.append(f"{plugin}.{feature} permission for user {uid} set to {perm}")
+    plugin, feature = feature_spec.split(".", 1)
 
-    await user_set.finish("\n".join(msg_list))
+    if target_type == "user":
+        perm.ban_user(target_id, plugin, feature)
+        await perm_cmd.finish(f"✓ 已ban用户 {target_id} 的功能 {plugin}.{feature}")
+    elif target_type == "group":
+        perm.ban_group(target_id, plugin, feature)
+        await perm_cmd.finish(f"✓ 已ban群 {target_id} 的功能 {plugin}.{feature}")
+    else:
+        await perm_cmd.finish(f"目标类型错误: {target_type}，应为 user 或 group")
+
+
+async def handle_unban(parts: list):
+    """处理unban命令"""
+    if len(parts) < 3:
+        await perm_cmd.finish("用法: perm unban <user|group> <id> <plugin.feature>")
+        return
+
+    target_type = parts[0]
+    target_id = parts[1]
+    feature_spec = parts[2]
+
+    if "." not in feature_spec:
+        await perm_cmd.finish("功能格式错误，应为: plugin.feature")
+        return
+
+    plugin, feature = feature_spec.split(".", 1)
+
+    if target_type == "user":
+        perm.unban_user(target_id, plugin, feature)
+        await perm_cmd.finish(f"✓ 已unban用户 {target_id} 的功能 {plugin}.{feature}")
+    elif target_type == "group":
+        perm.unban_group(target_id, plugin, feature)
+        await perm_cmd.finish(f"✓ 已unban群 {target_id} 的功能 {plugin}.{feature}")
+    else:
+        await perm_cmd.finish(f"目标类型错误: {target_type}，应为 user 或 group")
+
+
+async def handle_add_superuser(parts: list):
+    """处理添加superuser"""
+    if not parts:
+        await perm_cmd.finish("用法: perm add_superuser <user_id>")
+        return
+
+    user_id = parts[0]
+    perm.add_superuser(user_id)
+    await perm_cmd.finish(f"✓ 已添加superuser: {user_id}")
+
+
+async def handle_remove_superuser(parts: list):
+    """处理移除superuser"""
+    if not parts:
+        await perm_cmd.finish("用法: perm remove_superuser <user_id>")
+        return
+
+    user_id = parts[0]
+    perm.remove_superuser(user_id)
+    await perm_cmd.finish(f"✓ 已移除superuser: {user_id}")
+
+
+async def handle_list():
+    """列出所有ban和superuser"""
+    bans = perm.get_all_bans()
+
+    msg = "【权限配置】\n\n"
+
+    # Superusers
+    superusers = bans.get("superusers", [])
+    if superusers:
+        msg += "Superusers:\n"
+        for su in superusers:
+            msg += f"  - {su['user_id']}\n"
+    else:
+        msg += "Superusers: 无\n"
+
+    msg += "\n"
+
+    # User bans
+    user_bans = bans.get("user_bans", [])
+    if user_bans:
+        msg += "用户黑名单:\n"
+        for ban in user_bans:
+            msg += f"  - 用户 {ban['user_id']}: {ban['plugin']}.{ban['feature']}\n"
+    else:
+        msg += "用户黑名单: 无\n"
+
+    msg += "\n"
+
+    # Group bans
+    group_bans = bans.get("group_bans", [])
+    if group_bans:
+        msg += "群黑名单:\n"
+        for ban in group_bans:
+            msg += f"  - 群 {ban['group_id']}: {ban['plugin']}.{ban['feature']}\n"
+    else:
+        msg += "群黑名单: 无\n"
+
+    await perm_cmd.finish(msg)
