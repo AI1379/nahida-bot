@@ -8,23 +8,34 @@ repos:
     hooks:
       - id: ruff
         args: [--fix]
+        stages: [pre-commit]
       - id: ruff-format
+        stages: [pre-commit]
 
   # Pre-commit hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        stages: [pre-commit]
       - id: end-of-file-fixer
+        stages: [pre-commit]
       - id: check-yaml
         args: [--unsafe]
+        stages: [pre-commit]
       - id: check-toml
+        stages: [pre-commit]
       - id: check-json
+        stages: [pre-commit]
       - id: check-added-large-files
         args: [--maxkb=500]
+        stages: [pre-commit]
       - id: check-merge-conflict
+        stages: [pre-commit]
       - id: detect-private-key
+        stages: [pre-commit]
       - id: debug-statements
+        stages: [pre-commit]
 
   # Type checking (local)
   - repo: local
