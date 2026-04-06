@@ -5,6 +5,15 @@ import logging
 import signal
 
 from nahida_bot.core.config import Settings, load_settings
+from nahida_bot.core.events import (
+    AppInitializing,
+    AppLifecyclePayload,
+    AppStarted,
+    AppStopped,
+    AppStopping,
+    EventBus,
+    EventContext,
+)
 from nahida_bot.core.exceptions import ApplicationError
 
 logger = logging.getLogger(__name__)
@@ -23,6 +32,9 @@ class Application:
         self._initialized = False
         self._started = False
         self._shutdown_event = asyncio.Event()
+        self.event_bus = EventBus(
+            EventContext(app=self, settings=self.settings, logger=logger)
+        )
 
     async def initialize(self) -> None:
         """Initialize application components."""
@@ -34,6 +46,15 @@ class Application:
             logger.info(
                 f"Initializing application: {self.settings.app_name} "
                 f"(debug={self.settings.debug})"
+            )
+            await self.event_bus.publish(
+                AppInitializing(
+                    payload=AppLifecyclePayload(
+                        app_name=self.settings.app_name,
+                        debug=self.settings.debug,
+                    ),
+                    source="core.app.initialize",
+                )
             )
             # TODO: Placeholder for future initialization logic
             self._initialized = True
@@ -53,6 +74,15 @@ class Application:
             logger.info("Starting application...")
             # TODO: Placeholder for future startup logic
             self._started = True
+            await self.event_bus.publish(
+                AppStarted(
+                    payload=AppLifecyclePayload(
+                        app_name=self.settings.app_name,
+                        debug=self.settings.debug,
+                    ),
+                    source="core.app.start",
+                )
+            )
             logger.info("Application started successfully")
         except Exception as e:
             raise ApplicationError(f"Failed to start application: {e}") from e
@@ -66,8 +96,27 @@ class Application:
 
         try:
             logger.info("Stopping application...")
+            await self.event_bus.publish(
+                AppStopping(
+                    payload=AppLifecyclePayload(
+                        app_name=self.settings.app_name,
+                        debug=self.settings.debug,
+                    ),
+                    source="core.app.stop",
+                )
+            )
             # TODO: Placeholder for future shutdown logic
             self._started = False
+            await self.event_bus.publish(
+                AppStopped(
+                    payload=AppLifecyclePayload(
+                        app_name=self.settings.app_name,
+                        debug=self.settings.debug,
+                    ),
+                    source="core.app.stop",
+                )
+            )
+            await self.event_bus.shutdown(timeout=1.0)
             self._shutdown_event.set()
             logger.info("Application stopped successfully")
         except Exception as e:
