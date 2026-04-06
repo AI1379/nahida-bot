@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import signal
 
 from nahida_bot.core.config import Settings, load_settings
 from nahida_bot.core.exceptions import ApplicationError
@@ -21,6 +22,7 @@ class Application:
         self.settings = settings or load_settings()
         self._initialized = False
         self._started = False
+        self._shutdown_event = asyncio.Event()
 
     async def initialize(self) -> None:
         """Initialize application components."""
@@ -33,7 +35,7 @@ class Application:
                 f"Initializing application: {self.settings.app_name} "
                 f"(debug={self.settings.debug})"
             )
-            # Placeholder for future initialization logic
+            # TODO: Placeholder for future initialization logic
             self._initialized = True
         except Exception as e:
             raise ApplicationError(f"Failed to initialize application: {e}") from e
@@ -49,7 +51,7 @@ class Application:
 
         try:
             logger.info("Starting application...")
-            # Placeholder for future startup logic
+            # TODO: Placeholder for future startup logic
             self._started = True
             logger.info("Application started successfully")
         except Exception as e:
@@ -59,27 +61,48 @@ class Application:
         """Stop the application gracefully."""
         if not self._started:
             logger.warning("Application not started")
+            self._shutdown_event.set()
             return
 
         try:
             logger.info("Stopping application...")
-            # Placeholder for future shutdown logic
+            # TODO: Placeholder for future shutdown logic
             self._started = False
+            self._shutdown_event.set()
             logger.info("Application stopped successfully")
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
             raise ApplicationError(f"Failed to stop application: {e}") from e
 
+    def request_shutdown(self) -> None:
+        """Request application shutdown from external callers."""
+        self._shutdown_event.set()
+
     async def run(self) -> None:
         """Run the application until interrupted."""
         await self.start()
+        self._shutdown_event.clear()
+
+        loop = asyncio.get_running_loop()
+        registered_signals: list[signal.Signals] = []
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self.request_shutdown)
+                registered_signals.append(sig)
+            except (NotImplementedError, RuntimeError):
+                # Signal handlers may be unavailable on some platforms/runtimes.
+                logger.warning(
+                    f"Signal handlers not supported for {sig}, shutdown may not work properly"
+                )
+                continue
+
         try:
-            # Keep the application running
-            while True:
-                await asyncio.sleep(1)
-        except KeyboardInterrupt:
+            await self._shutdown_event.wait()
+        except (KeyboardInterrupt, asyncio.CancelledError):
             logger.info("Received interrupt signal")
         finally:
+            for sig in registered_signals:
+                loop.remove_signal_handler(sig)
             await self.stop()
 
     @property

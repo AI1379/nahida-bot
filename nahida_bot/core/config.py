@@ -1,10 +1,16 @@
 """Application configuration."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Main application settings."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
 
     # Application
     app_name: str = "Nahida Bot"
@@ -16,13 +22,6 @@ class Settings(BaseSettings):
 
     # Database
     db_path: str = "./data/nahida.db"
-
-    class Config:
-        """Pydantic config."""
-
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
 
 
 def load_settings() -> Settings:

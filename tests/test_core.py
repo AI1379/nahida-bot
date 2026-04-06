@@ -1,5 +1,7 @@
 """Tests for core module."""
 
+import asyncio
+
 import pytest
 
 from nahida_bot.core.app import Application
@@ -115,3 +117,17 @@ class TestApplication:
         application = Application(settings=test_settings)
         assert application.settings.app_name == "Test Bot"
         assert application.settings.debug is True
+
+    @pytest.mark.asyncio
+    async def test_application_run_stops_on_shutdown_request(
+        self, test_settings: Settings
+    ) -> None:
+        """Test run loop exits when shutdown is requested."""
+        application = Application(settings=test_settings)
+        run_task = asyncio.create_task(application.run())
+
+        await asyncio.sleep(0)
+        application.request_shutdown()
+
+        await asyncio.wait_for(run_task, timeout=1)
+        assert application.is_started is False
