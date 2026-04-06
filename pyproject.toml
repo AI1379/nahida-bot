@@ -1,16 +1,110 @@
 [project]
 name = "nahida-bot"
 version = "0.1.0"
-description = "Just a simple QQ bot based on nonebot2"
-authors = [
-    {name = "arendellian13",email = "listener1381@outlook.com"}
-]
+description = "A Python-based chatbot inspired by OpenClaw"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
+license = { text = "WTFPL" }
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    # 测试
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+    "pytest-cov>=6.2.1",
+
+    # 类型检查
+    "pyright>=1.1.0",
+
+    # Linting & Formatting
+    "ruff>=0.15.0",
+
+    # Pre-commit
+    "pre-commit>=4.0.0",
 ]
 
+# ============================================================
+# Ruff 配置
+# ============================================================
 
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+exclude = ["tests/fixtures", "build", "dist"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+# ============================================================
+# Pyright 配置
+# ============================================================
+
+[tool.pyright]
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
+reportMissingTypeStubs = false
+reportMissingImports = true
+reportUnusedImport = "warning"
+reportUnusedVariable = "warning"
+reportConstantRedefinition = "error"
+reportOptionalSubscript = "error"
+reportOptionalMemberAccess = "error"
+reportOptionalCall = "error"
+reportOptionalIterable = "error"
+reportOptionalContextManager = "error"
+reportOptionalOperand = "error"
+reportUntypedFunctionDecorator = "warning"
+reportUntypedClassDecorator = "warning"
+reportUntypedBaseClass = "error"
+reportUntypedNamedTuple = "error"
+reportPrivateUsage = "warning"
+reportOverlappingOverload = "error"
+include = ["nahida_bot", "tests"]
+exclude = ["**/node_modules", "**/__pycache__", "build", "dist"]
+
+# ============================================================
+# Pytest 配置
+# ============================================================
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = ["-ra", "-q", "--strict-markers", "--strict-config", "--tb=short"]
+markers = [
+    "unit: 单元测试",
+    "integration: 集成测试",
+    "slow: 慢速测试",
+    "network: 需要网络连接的测试",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+# ============================================================
+# Coverage 配置
+# ============================================================
+
+[tool.coverage.run]
+source = ["nahida_bot"]
+branch = true
+omit = ["*/__init__.py", "*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+fail_under = 80

@@ -1,0 +1,45 @@
+# Pre-commit hooks configuration
+# See: https://pre-commit.com/
+
+repos:
+  # Ruff - Linting & Formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: debug-statements
+
+  # Type checking (local)
+  - repo: local
+    hooks:
+      - id: pyright
+        name: pyright (type check)
+        entry: pyright
+        language: system
+        types: [python]
+        stages: [pre-push]
+        pass_filenames: false
+
+# CI configuration
+ci:
+  autofix_commit_msg: "style: auto-fix pre-commit issues"
+  autofix_prs: true
+  autoupdate_commit_msg: "chore: pre-commit autoupdate"
+  autoupdate_schedule: weekly
