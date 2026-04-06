@@ -1,11 +1,36 @@
 [project]
 name = "nahida-bot"
 version = "0.1.0"
-description = "A Python-based chatbot inspired by OpenClaw"
+description = "A Python-based LLM chatbot framework with Agent, Workspace, Plugin system"
 readme = "README.md"
 license = { text = "WTFPL" }
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    # CLI & UI
+    "typer>=0.15.0",
+    "rich>=13.0.0",
+
+    # Configuration
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+
+    # Web Framework
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+
+    # Database
+    "aiosqlite>=0.19.0",
+
+    # Logging & Observability
+    "structlog>=24.0.0",
+
+    # HTTP & WebSocket
+    "httpx>=0.25.0",
+    "websockets>=12.0",
+
+    # Async utilities
+    "anyio>=4.0.0",
+]
 
 [dependency-groups]
 dev = [
@@ -24,9 +49,12 @@ dev = [
     "pre-commit>=4.0.0",
 ]
 
-# ============================================================
-# Ruff 配置
-# ============================================================
+[project.scripts]
+nahida-bot = "nahida_bot.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.ruff]
 target-version = "py312"

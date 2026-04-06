@@ -75,12 +75,12 @@ Python 方案的核心结构可以概括为五层：
 
 任务清单：
 
-- [ ] 统一包名、模块命名、目录边界，明确 `nahida_bot/core`、`nahida_bot/agent`、`nahida_bot/plugins` 等目标目录。
-- [ ] 补齐 `pyproject.toml` 的运行依赖与开发依赖，固定 `ruff`、`pyright`、`pytest` 基线。
-- [ ] 增加最小 CLI（如 `nahida-bot start`），先实现空壳启动与优雅退出。
-- [ ] 在 `scripts/` 添加常用命令包装（lint、typecheck、test、run）。
-- [ ] 将 README、开发文档、架构文档对齐到同一目录与模块命名。
-- [ ] 验证 `uv sync`、`ruff check .`、`ruff format .`、`pyright`、`pytest` 全部可跑通。
+- [x] 统一包名、模块命名、目录边界，明确 `nahida_bot/core`、`nahida_bot/agent`、`nahida_bot/plugins` 等目标目录。
+- [x] 补齐 `pyproject.toml` 的运行依赖与开发依赖，固定 `ruff`、`pyright`、`pytest` 基线。
+- [x] 增加最小 CLI（如 `nahida-bot start`），先实现空壳启动与优雅退出。
+- [x] 在 `scripts/` 添加常用命令包装（lint、typecheck、test、run）。
+- [x] 将 README、开发文档、架构文档对齐到同一目录与模块命名。
+- [x] 验证 `uv sync`、`ruff check .`、`ruff format .`、`pyright`、`pytest` 全部可跑通。
 
 前置依赖：无。
 

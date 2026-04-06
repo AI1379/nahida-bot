@@ -24,6 +24,7 @@ Nahida Bot 的核心目标：
 6. **Interface Layer** — CLI / WebUI / API
 
 > **关键改进：Channel 不再是独立层，而是作为 Plugin Layer 的标准接口之一。** 参考 OneBot/NapCat 设计，定义 ChannelPlugin 基类，支持多种通信协议（HTTP Server/Client、WebSocket、SSE）。这样可以：
+>
 > - 复用插件的权限系统、生命周期管理
 > - 灵活支持多种平台接入方式
 > - 允许第三方开发 Channel 插件
@@ -279,15 +280,18 @@ class ChannelPlugin(Plugin):
 ```
 
 优点：
+
 - 无需长连接，可跨域
 - 支持负载均衡和水平扩展
 - 外部系统可异步推送，Bot 可异步发送
 
 缺点：
+
 - 需要鉴权机制（防 webhook 伪造）
 - 频率限制和重试需自行管理
 
 NapCat 示例配置：
+
 ```yaml
 channels:
   qq:
@@ -306,10 +310,12 @@ channels:
 ```
 
 优点：
+
 - 真正双向、低延迟
 - 一个连接复用，性能好
 
 缺点：
+
 - 需要连接管理和重连机制
 - 难以水平扩展（需要 session 亲和性）
 

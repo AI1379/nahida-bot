@@ -104,3 +104,35 @@ def mock_http_client():
     client.get = AsyncMock(return_value={"status": "ok"})
     client.post = AsyncMock(return_value={"status": "ok"})
     return client
+
+
+# ============================================================
+# Application Fixtures
+# ============================================================
+
+
+@pytest.fixture
+def test_settings():
+    """创建测试用的应用设置。"""
+    from nahida_bot.core.config import Settings
+
+    return Settings(
+        app_name="Test Bot",
+        debug=True,
+        host="127.0.0.1",
+        port=6666,
+        db_path=":memory:",
+    )
+
+
+@pytest.fixture
+async def app(test_settings):
+    """创建并初始化测试用的应用实例。"""
+    from nahida_bot.core.app import Application
+
+    application = Application(settings=test_settings)
+    await application.initialize()
+    yield application
+    # 清理：如果应用已启动，则停止
+    if application.is_started:
+        await application.stop()
