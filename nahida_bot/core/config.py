@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "Nahida Bot"
     debug: bool = False
+    log_level: str = "INFO"
+    log_json: bool | None = None
 
     # Server
     host: str = "127.0.0.1"

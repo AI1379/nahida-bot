@@ -1,8 +1,9 @@
 """Main application container."""
 
 import asyncio
-import logging
 import signal
+
+import structlog
 
 from nahida_bot.core.config import Settings, load_settings
 from nahida_bot.core.events import (
@@ -14,9 +15,10 @@ from nahida_bot.core.events import (
     EventBus,
     EventContext,
 )
-from nahida_bot.core.exceptions import ApplicationError
+from nahida_bot.core.exceptions import ApplicationError, StartupError
+from nahida_bot.core.logging import configure_logging
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class Application:
@@ -29,6 +31,11 @@ class Application:
             settings: Application settings. If None, will be loaded automatically.
         """
         self.settings = settings or load_settings()
+        configure_logging(
+            debug=self.settings.debug,
+            log_level=self.settings.log_level,
+            log_json=self.settings.log_json,
+        )
         self._initialized = False
         self._started = False
         self._shutdown_event = asyncio.Event()
@@ -39,13 +46,14 @@ class Application:
     async def initialize(self) -> None:
         """Initialize application components."""
         if self._initialized:
-            logger.warning("Application already initialized")
+            logger.warning("application.already_initialized")
             return
 
         try:
             logger.info(
-                f"Initializing application: {self.settings.app_name} "
-                f"(debug={self.settings.debug})"
+                "application.initializing",
+                app_name=self.settings.app_name,
+                debug=self.settings.debug,
             )
             await self.event_bus.publish(
                 AppInitializing(
@@ -59,7 +67,11 @@ class Application:
             # TODO: Placeholder for future initialization logic
             self._initialized = True
         except Exception as e:
-            raise ApplicationError(f"Failed to initialize application: {e}") from e
+            logger.exception(
+                "application.initialize_failed",
+                app_name=self.settings.app_name,
+            )
+            raise StartupError(f"Failed to initialize application: {e}") from e
 
     async def start(self) -> None:
         """Start the application."""
@@ -67,11 +79,14 @@ class Application:
             await self.initialize()
 
         if self._started:
-            logger.warning("Application already started")
+            logger.warning("application.already_started")
             return
 
         try:
-            logger.info("Starting application...")
+            logger.info(
+                "application.starting",
+                app_name=self.settings.app_name,
+            )
             # TODO: Placeholder for future startup logic
             self._started = True
             await self.event_bus.publish(
@@ -83,19 +98,29 @@ class Application:
                     source="core.app.start",
                 )
             )
-            logger.info("Application started successfully")
+            logger.info(
+                "application.started",
+                app_name=self.settings.app_name,
+            )
         except Exception as e:
-            raise ApplicationError(f"Failed to start application: {e}") from e
+            logger.exception(
+                "application.start_failed",
+                app_name=self.settings.app_name,
+            )
+            raise StartupError(f"Failed to start application: {e}") from e
 
     async def stop(self) -> None:
         """Stop the application gracefully."""
         if not self._started:
-            logger.warning("Application not started")
+            logger.warning("application.stop_without_start")
             self._shutdown_event.set()
             return
 
         try:
-            logger.info("Stopping application...")
+            logger.info(
+                "application.stopping",
+                app_name=self.settings.app_name,
+            )
             await self.event_bus.publish(
                 AppStopping(
                     payload=AppLifecyclePayload(
@@ -118,9 +143,15 @@ class Application:
             )
             await self.event_bus.shutdown(timeout=1.0)
             self._shutdown_event.set()
-            logger.info("Application stopped successfully")
+            logger.info(
+                "application.stopped",
+                app_name=self.settings.app_name,
+            )
         except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
+            logger.exception(
+                "application.stop_failed",
+                app_name=self.settings.app_name,
+            )
             raise ApplicationError(f"Failed to stop application: {e}") from e
 
     def request_shutdown(self) -> None:
@@ -141,14 +172,15 @@ class Application:
             except (NotImplementedError, RuntimeError):
                 # Signal handlers may be unavailable on some platforms/runtimes.
                 logger.warning(
-                    f"Signal handlers not supported for {sig}, shutdown may not work properly"
+                    "application.signal_handler_unavailable",
+                    signal=str(sig),
                 )
                 continue
 
         try:
             await self._shutdown_event.wait()
         except (KeyboardInterrupt, asyncio.CancelledError):
-            logger.info("Received interrupt signal")
+            logger.info("application.interrupt_received")
         finally:
             for sig in registered_signals:
                 loop.remove_signal_handler(sig)

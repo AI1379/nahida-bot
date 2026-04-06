@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import (
@@ -25,6 +24,16 @@ if TYPE_CHECKING:
 
 PayloadT = TypeVar("PayloadT")
 EventT = TypeVar("EventT", bound="Event[Any]", contravariant=True)
+
+
+class LoggerLike(Protocol):
+    """Minimal logger protocol consumed by EventBus."""
+
+    def exception(self, event: str, **kwargs: object) -> object:
+        """Log one exception event."""
+
+    def warning(self, event: str, **kwargs: object) -> object:
+        """Log one warning event."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -72,7 +81,7 @@ class EventContext:
 
     app: Application
     settings: Settings
-    logger: logging.Logger
+    logger: LoggerLike
 
 
 class EventHandler(Protocol[EventT]):

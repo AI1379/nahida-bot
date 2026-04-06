@@ -6,7 +6,13 @@ import pytest
 
 from nahida_bot.core.app import Application
 from nahida_bot.core.config import Settings, load_settings
-from nahida_bot.core.exceptions import ApplicationError, ConfigError, NahidaBotError
+from nahida_bot.core.exceptions import (
+    ApplicationError,
+    CommunicationError,
+    ConfigError,
+    NahidaBotError,
+    StartupError,
+)
 
 
 class TestExceptions:
@@ -34,6 +40,14 @@ class TestExceptions:
         with pytest.raises(ApplicationError):
             raise ApplicationError("Test app error")
 
+    def test_startup_error_inherits_application_error(self) -> None:
+        """Test StartupError inherits from ApplicationError."""
+        assert issubclass(StartupError, ApplicationError)
+
+    def test_communication_error_inherits_application_error(self) -> None:
+        """Test CommunicationError inherits from ApplicationError."""
+        assert issubclass(CommunicationError, ApplicationError)
+
 
 class TestSettings:
     """Test configuration settings."""
@@ -44,6 +58,8 @@ class TestSettings:
         assert isinstance(settings, Settings)
         assert settings.app_name == "Nahida Bot"
         assert settings.debug is False
+        assert settings.log_level == "INFO"
+        assert settings.log_json is None
         assert settings.port == 6185
 
     def test_custom_settings(self) -> None:
@@ -51,11 +67,15 @@ class TestSettings:
         settings = Settings(
             app_name="Custom Bot",
             debug=True,
+            log_level="DEBUG",
+            log_json=False,
             host="0.0.0.0",
             port=8000,
         )
         assert settings.app_name == "Custom Bot"
         assert settings.debug is True
+        assert settings.log_level == "DEBUG"
+        assert settings.log_json is False
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
 

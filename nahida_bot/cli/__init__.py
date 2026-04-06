@@ -53,6 +53,8 @@ def config() -> None:
 
     table.add_row("App Name", settings.app_name)
     table.add_row("Debug", str(settings.debug))
+    table.add_row("Log Level", settings.log_level)
+    table.add_row("JSON Logs", str(settings.log_json))
     table.add_row("Host", settings.host)
     table.add_row("Port", str(settings.port))
     table.add_row("Database", settings.db_path)
