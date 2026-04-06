@@ -94,18 +94,21 @@ Python 方案的核心结构可以概括为五层：
 
 任务清单：
 
-- [ ] 实现 `Application` 主类，统一管理生命周期（init/start/stop）。
-- [ ] 使用 `pydantic-settings` 建立分层配置（默认值、配置文件、环境变量）。
+- [x] 实现 `Application` 主类，统一管理生命周期（init/start/stop）。
+- [x] 使用 `pydantic-settings` 建立分层配置（默认值、配置文件、环境变量）。
 - [ ] 接入 `structlog`，区分开发态可读日志和生产态 JSON 日志。
 - [ ] 建立基础异常树（配置错误、启动错误、插件错误、通信错误等）。
-- [ ] 实现轻量事件总线（内部事件与订阅机制）。
-- [ ] 验证应用可独立启动/优雅退出，关键错误可结构化记录。
+- [x] 实现轻量事件总线（内部事件与订阅机制，基础版）。
+- [x] 验证应用可独立启动/优雅退出（基础版）。
+- [ ] 关键错误可结构化记录（待 `structlog` 接入后完成）。
 
 前置依赖：Phase 0。
 
 风险控制：不要在本阶段引入具体平台逻辑，保证核心层中立。
 
 参考来源：OpenClaw（生命周期）、AstrBot（配置日志）、pydantic-settings。
+
+事件系统的结构设计、类型约束、依赖注入集成和参考方案，统一维护在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的“类型安全事件系统”章节，ROADMAP 仅保留交付目标与勾选状态。
 
 ### Phase 2 - Agent 与 Workspace 联合阶段
 
