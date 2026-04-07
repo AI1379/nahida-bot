@@ -279,6 +279,305 @@ class MemoryStore(Protocol):
 - 关键路径打点：provider 延迟、工具成功率、上下文裁剪次数、最终回复耗时。
 - 最小验收闭环需要可追踪 trace_id，确保从 workspace 注入到最终回复可串联。
 
+#### 6.1.7 Workspace Sandbox 安全增强
+
+> ⚠️ **当前实现风险提示**：现有 `workspace/sandbox.py` 仅使用简单的路径归一化检查，存在被绕过的风险。需要升级为更健壮的安全方案。
+
+**当前实现的局限性**：
+
+```python
+# 当前实现（sandbox.py）- 简单路径检查
+normalized = (self.root / candidate).resolve(strict=False)
+try:
+    normalized.relative_to(self.root)
+except ValueError as exc:
+    raise WorkspacePathError(...)
+```
+
+**已知绕过风险**：
+
+1. **符号链接攻击**：攻击者可通过符号链接跳出沙盒边界
+2. **硬链接攻击**：硬链接可能指向沙盒外文件
+3. **竞态条件（TOCTOU）**：检查与实际操作之间存在时间窗口
+4. **特殊文件系统对象**：设备文件、FIFO、socket 等未处理
+5. **Unicode/编码绕过**：特殊编码可能绕过路径检查
+
+**推荐增强方案**：
+
+**方案 A：多层防御（推荐）**
+
+```python
+class SecureWorkspaceSandbox:
+    """增强版沙盒实现，采用多层防御策略。"""
+
+    def __init__(self, root: Path, *, max_file_size: int = 10 * 1024 * 1024) -> None:
+        self.root = root.resolve(strict=True)
+        self.max_file_size = max_file_size
+        self._allowed_extensions: set[str] | None = None  # 可选：白名单扩展名
+
+    def resolve_safe_path(self, relative_path: str) -> Path:
+        candidate = Path(relative_path)
+
+        # 第 1 层：拒绝绝对路径
+        if candidate.is_absolute():
+            raise WorkspacePathError(f"Absolute paths not allowed: {relative_path}")
+
+        # 第 2 层：规范化并检查边界
+        normalized = (self.root / candidate).resolve(strict=False)
+
+        # 第 3 层：防止路径穿越（包括 .. 和编码绕过）
+        try:
+            normalized.relative_to(self.root)
+        except ValueError as exc:
+            raise WorkspacePathError(f"Path escapes workspace: {relative_path}") from exc
+
+        # 第 4 层：拒绝符号链接（即使指向沙盒内）
+        # 在实际操作时检查，避免 TOCTOU
+        return normalized
+
+    def _validate_before_operation(self, path: Path, *, for_write: bool = False) -> None:
+        """操作前进行实时验证，防止 TOCTOU 攻击。"""
+        # 检查是否为符号链接
+        if path.is_symlink():
+            raise WorkspacePathError(f"Symlinks not allowed: {path}")
+
+        # 检查路径是否仍在沙盒内（实时验证）
+        resolved = path.resolve(strict=False)
+        try:
+            resolved.relative_to(self.root)
+        except ValueError:
+            raise WorkspacePathError(f"Path escapes workspace after resolution: {path}")
+
+        # 写入操作额外检查
+        if for_write:
+            # 检查父目录是否为符号链接
+            if path.parent.is_symlink():
+                raise WorkspacePathError(f"Parent directory is symlink: {path.parent}")
+
+            # 可选：检查文件扩展名白名单
+            if self._allowed_extensions and path.suffix.lower() not in self._allowed_extensions:
+                raise WorkspacePathError(f"File extension not allowed: {path.suffix}")
+```
+
+**方案 B：使用工业级沙盒库（参考 AstrBot）**
+
+考虑引入成熟的沙盒库作为依赖：
+
+| 库 | 特点 | 适用场景 |
+|---|------|---------|
+| ` RestrictedPython` | Python 代码沙盒 | 工具执行隔离 |
+| `pyrate-limiter` | 频率限制 | 防止资源滥用 |
+| 自研 + `os` 模块底层检查 | 文件系统沙盒 | 当前推荐 |
+
+**方案 C：系统级隔离（未来扩展）**
+
+- **容器隔离**：每个 workspace 运行在独立容器中
+- **用户命名空间**：利用 Linux user namespace 隔离
+- **seccomp/AppArmor**：限制系统调用
+
+**实施建议**：
+
+1. **Phase 2.7**：实现方案 A（多层防御），包括：
+   - 符号链接检测与拒绝
+   - TOCTOU 防护（操作时二次验证）
+   - 文件大小限制
+   - 可选的扩展名白名单
+
+2. **Phase 3+**：根据实际需求评估方案 C（系统级隔离）
+
+**测试要求**：
+
+```python
+# 必须覆盖的安全测试用例
+def test_sandbox_rejects_symlink_escape()
+def test_sandbox_rejects_symlink_inside_workspace()
+def test_sandbox_rejects_hardlink_escape()
+def test_sandbox_rejects_unicode_bypass()
+def test_sandbox_enforces_max_file_size()
+def test_sandbox_rejects_device_files()
+```
+
+#### 6.1.8 Provider 响应健壮性与多后端适配
+
+> ⚠️ **当前实现风险提示**：现有 `agent/providers/openai_compatible.py` 仅处理标准 OpenAI 响应格式，未考虑不同 LLM 后端的响应差异，特别是推理链（thinking chain）支持。
+
+**当前实现的局限性**：
+
+```python
+# 当前实现（openai_compatible.py）- 仅提取标准字段
+content = message.get("content")
+normalized_content = content if isinstance(content, str) else None
+```
+
+**未覆盖的响应格式**：
+
+| 后端 | 特殊字段 | 说明 |
+|-----|---------|------|
+| DeepSeek-R1 | `reasoning_content` | 推理过程单独返回 |
+| Claude | `thinking` 块 | Extended Thinking 特性 |
+| Claude | `redacted_thinking` | 脱敏推理内容 |
+| OpenAI o1 | `reasoning_tokens` | 推理 token 统计 |
+| 通用 | 流式响应 `delta` | SSE/流式输出处理 |
+| 通用 | `refusal` | 内容拒绝标记 |
+
+**推荐增强方案**：
+
+**1. 扩展 ProviderResponse 数据结构**
+
+```python
+@dataclass(slots=True, frozen=True)
+class ProviderResponse:
+    """统一的 Provider 响应结构。"""
+
+    # 标准字段
+    content: str | None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    finish_reason: str | None = None
+    raw_response: dict[str, object] | None = None
+
+    # 推理链支持（Phase 2.7 新增）
+    reasoning_content: str | None = None      # DeepSeek-R1 / Claude thinking
+    reasoning_tokens: int | None = None       # o1 系列推理 token 数
+
+    # 拒绝/安全标记
+    refusal: str | None = None                # 内容被拒绝的原因
+    safety_ratings: list[SafetyRating] | None = None  # 安全评级（如 Gemini）
+
+    # 使用统计
+    usage: TokenUsage | None = None
+```
+
+**2. 上下文消息扩展**
+
+```python
+@dataclass(slots=True, frozen=True)
+class ContextMessage:
+    """上下文消息单元。"""
+
+    role: MessageRole
+    content: str
+    source: str
+
+    # 推理链支持（可选）
+    reasoning: str | None = None  # 推理过程，可选注入上下文
+```
+
+**3. 后端适配器模式**
+
+```python
+# agent/providers/adapters/base.py
+class ResponseAdapter(Protocol):
+    """Provider 响应适配器协议。"""
+
+    def adapt(self, raw_response: dict[str, object]) -> ProviderResponse:
+        """将原始响应转换为统一的 ProviderResponse。"""
+        ...
+
+# agent/providers/adapters/openai.py
+class OpenAIAdapter(ResponseAdapter):
+    """标准 OpenAI 响应适配器。"""
+
+    def adapt(self, raw_response: dict[str, object]) -> ProviderResponse:
+        # 处理标准 OpenAI 格式
+        ...
+
+# agent/providers/adapters/deepseek.py
+class DeepSeekAdapter(ResponseAdapter):
+    """DeepSeek-R1 响应适配器，处理 reasoning_content。"""
+
+    def adapt(self, raw_response: dict[str, object]) -> ProviderResponse:
+        message = self._extract_message(raw_response)
+        return ProviderResponse(
+            content=message.get("content"),
+            reasoning_content=message.get("reasoning_content"),  # 关键：提取推理内容
+            ...
+        )
+
+# agent/providers/adapters/anthropic.py
+class AnthropicAdapter(ResponseAdapter):
+    """Claude 响应适配器，处理 thinking 块。"""
+
+    def adapt(self, raw_response: dict[str, object]) -> ProviderResponse:
+        # 处理 content blocks，提取 text 和 thinking
+        content_blocks = raw_response.get("content", [])
+        text_content = []
+        thinking_content = []
+
+        for block in content_blocks:
+            if block.get("type") == "text":
+                text_content.append(block.get("text", ""))
+            elif block.get("type") == "thinking":
+                thinking_content.append(block.get("thinking", ""))
+
+        return ProviderResponse(
+            content="\n".join(text_content) or None,
+            reasoning_content="\n".join(thinking_content) or None,
+            ...
+        )
+```
+
+**4. 推理链上下文策略**
+
+```python
+class ReasoningPolicy(Enum):
+    """推理内容注入策略。"""
+    NEVER = "never"           # 从不注入推理内容
+    ALWAYS = "always"         # 始终注入推理内容
+    ON_BUDGET = "on_budget"   # 预算允许时注入
+    SEPARATE = "separate"     # 分开存储，不注入上下文
+
+@dataclass
+class ContextBudget:
+    max_tokens: int = 8000
+    reserved_tokens: int = 1000
+    reasoning_policy: ReasoningPolicy = ReasoningPolicy.ON_BUDGET
+    max_reasoning_tokens: int = 2000  # 推理内容最大 token 数
+```
+
+**5. 流式响应支持（未来扩展）**
+
+```python
+# agent/providers/base.py
+class ChatProvider(Protocol):
+    async def chat(
+        self,
+        *,
+        messages: list[ContextMessage],
+        tools: list[ToolDefinition] | None = None,
+        timeout_seconds: float | None = None,
+        stream: bool = False,  # 新增：流式支持
+    ) -> ProviderResponse | AsyncIterator[StreamChunk]:
+        ...
+```
+
+**实施建议**：
+
+1. **Phase 2.7**：
+   - 扩展 `ProviderResponse` 和 `ContextMessage` 数据结构
+   - 实现 `ResponseAdapter` 协议和 OpenAI 适配器
+   - 添加推理链字段但默认不注入上下文
+
+2. **Phase 2.8**：
+   - 实现 DeepSeek 适配器（`reasoning_content`）
+   - 实现 Anthropic 适配器（`thinking` 块）
+   - 实现推理链上下文策略
+
+3. **Phase 3+**：
+   - 流式响应支持
+   - 更多后端适配器（Gemini、本地模型等）
+
+**测试要求**：
+
+```python
+# 必须覆盖的适配器测试用例
+def test_openai_adapter_extracts_standard_content()
+def test_deepseek_adapter_extracts_reasoning_content()
+def test_anthropic_adapter_extracts_thinking_blocks()
+def test_context_builder_handles_reasoning_never_policy()
+def test_context_builder_handles_reasoning_always_policy()
+def test_context_builder_respects_reasoning_budget()
+```
+
 ## 7. ChannelPlugin 设计细节（Plugin 系统的扩展）
 
 ### 7.1 背景与设计目标

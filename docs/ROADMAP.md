@@ -31,7 +31,9 @@ Nahida Bot 的目标不是做一个普通聊天机器人，而是做一个以 Ag
 | `agent.loop`（推理回路） | OpenClaw, claude-code（模式层） | 消息拼装、工具调用回填、流式输出链路 | 不复制具体 prompt 或私有实现细节 |
 | `agent.context`（上下文管理） | claude-code（模式层）, LangGraph | 上下文裁剪、历史管理、状态拼接 | 先可用再优化，优先滑窗策略 |
 | `agent.providers`（模型抽象） | OpenClaw, LiteLLM, OpenAI SDK 生态 | Provider 统一接口、错误归一化、重试策略 | 首先打通一个 provider，再扩展 |
+| `agent.providers.adapters`（响应适配） | LiteLLM, 各厂商 API 文档 | 多后端响应归一化、推理链提取、流式解析 | ⚠️ 必须处理 DeepSeek-R1 和 Claude thinking |
 | `workspace`（文件即上下文） | OpenClaw, AstrBot | 指令文件注入、工作区隔离、状态持久化 | 路径安全必须先于易用性 |
+| `workspace.sandbox`（文件沙盒） | AstrBot, claude-code（模式层） | 符号链接防护、TOCTOU 防护、多层防御 | ⚠️ 当前实现不安全，Phase 2.7 必须加固 |
 | `plugins`（声明式扩展） | OpenClaw, nonebot2 插件生态 | 插件发现、生命周期、能力注册 | 不允许绕过权限模型直连核心 |
 | `plugins.permissions`（权限系统） | OpenClaw, Android Manifest 思路 | 声明式权限、运行时拦截、审计日志 | 权限粒度从小开始，逐步放开 |
 | `channels`（平台接入层） | AstrBot, nonebot2, aiogram | 多平台适配、消息标准化、事件分发 | 平台差异收敛在 adapter 层 |
@@ -149,6 +151,47 @@ Python 方案的核心结构可以概括为五层：
 - [ ] 增加重试、超时、回退提示，避免单次错误中断对话。
 - [ ] 建立最小可观测性埋点（调用耗时、失败率、工具调用成功率）。
 - [ ] 验证至少一条完整闭环：workspace 指令加载 -> provider 调用 -> tool 调用 -> 最终回复。
+
+#### Phase 2.7 - Workspace Sandbox 安全增强
+
+> ⚠️ **重要性**：当前沙盒实现仅使用简单路径检查，存在符号链接攻击、TOCTOU 等安全风险。本阶段必须完成安全加固。
+
+- [ ] 实现符号链接检测与拒绝（包括指向沙盒内和沙盒外的符号链接）。
+- [ ] 实现 TOCTOU 防护（操作时二次验证路径有效性）。
+- [ ] 实现文件大小限制（默认 10MB，可配置）。
+- [ ] 实现可选的文件扩展名白名单机制。
+- [ ] 处理特殊文件系统对象（设备文件、FIFO、socket）的拒绝逻辑。
+- [ ] 添加 Unicode/编码绕过防护。
+- [ ] 编写完整的安全测试套件（符号链接、硬链接、路径穿越、编码绕过等）。
+- [ ] 更新 ARCHITECTURE.md 中的沙盒安全文档。
+
+**参考实现**：见 ARCHITECTURE.md 第 6.1.7 节。
+
+#### Phase 2.8 - Provider 响应健壮性与多后端适配
+
+> ⚠️ **重要性**：当前 Provider 实现仅支持标准 OpenAI 响应格式，无法处理 DeepSeek-R1 推理链、Claude Extended Thinking 等高级特性。
+
+- [ ] 扩展 `ProviderResponse` 数据结构，添加 `reasoning_content` 和 `reasoning_tokens` 字段。
+- [ ] 扩展 `ContextMessage` 数据结构，添加 `reasoning` 字段。
+- [ ] 实现 `ResponseAdapter` 协议，定义统一的响应适配接口。
+- [ ] 实现标准 OpenAI 响应适配器（`OpenAIAdapter`）。
+- [ ] 实现 DeepSeek-R1 响应适配器（处理 `reasoning_content` 字段）。
+- [ ] 实现 Anthropic/Claude 响应适配器（处理 `thinking` 块和 `redacted_thinking` 块）。
+- [ ] 定义推理链上下文策略（`ReasoningPolicy`：never/always/on_budget/separate）。
+- [ ] 在 `ContextBuilder` 中实现推理内容的条件注入逻辑。
+- [ ] 编写适配器和上下文策略的完整测试套件。
+- [ ] 更新 ARCHITECTURE.md 中的 Provider 文档。
+
+**支持的响应格式**：
+
+| 后端 | 特殊字段 | 适配器 |
+|-----|---------|-------|
+| OpenAI 标准 | `content` | `OpenAIAdapter` |
+| DeepSeek-R1 | `reasoning_content` | `DeepSeekAdapter` |
+| Claude | `thinking` 块 | `AnthropicAdapter` |
+| OpenAI o1 | `reasoning_tokens` | `OpenAIAdapter` |
+
+**参考实现**：见 ARCHITECTURE.md 第 6.1.8 节。
 
 前置依赖：Phase 1。
 
@@ -333,21 +376,28 @@ class ChannelPlugin(Plugin):
 
 1. 项目地基（Phase 0）
 2. 核心运行时（Phase 1）
-3. Agent 与 Workspace 联合阶段（Phase 2）
-4. 插件系统与 Channel 接口定义（Phase 3）
-5. 基于插件系统的 Channel 实现（Phase 4）
-6. Gateway 与 Node（Phase 5）
-7. WebUI 与运维工具（Phase 6）
-8. 稳定性、发布与生态（Phase 7）
+3. Agent 与 Workspace 联合阶段（Phase 2.1-2.6）
+4. **Workspace Sandbox 安全加固（Phase 2.7）** ⚠️ 阻断项
+5. **Provider 响应健壮性增强（Phase 2.8）** ⚠️ 推荐在 Phase 3 前完成
+6. 插件系统与 Channel 接口定义（Phase 3）
+7. 基于插件系统的 Channel 实现（Phase 4）
+8. Gateway 与 Node（Phase 5）
+9. WebUI 与运维工具（Phase 6）
+10. 稳定性、发布与生态（Phase 7）
 
 这个顺序的核心原因是：
 
-- **Phase 0-2** 建立最小智能闭环（应用容器 -> 核心运行时 -> Agent + Workspace）
+- **Phase 0-2.6** 建立最小智能闭环（应用容器 -> 核心运行时 -> Agent + Workspace）
+- **Phase 2.7-2.8** 安全与健壮性加固（**必须在 Phase 3 前完成，避免在不可靠基础上构建插件生态**）
 - **Phase 3-4** 打通插件和 Channel（先定义接口，允许多种通信协议；再实现具体 Channel 作为插件）
 - **Phase 5-6** 扩展分布式与运维（Gateway-Node + WebUI）
 - **Phase 7** 稳定化与商业化（发版、CI/CD、生态）
 
-关键设计点是 **Phase 3 中的 Channel 接口设计直接服务于 Phase 4**，避免核心层改造。
+关键设计点：
+
+- **Phase 2.7 是阻断项**：不安全的沙盒会威胁整个系统安全，必须在插件系统落地前修复。
+- **Phase 2.8 推荐优先**：Provider 响应格式差异会直接影响 Agent 能力，尽早适配可减少后续返工。
+- **Phase 3 中的 Channel 接口设计直接服务于 Phase 4**，避免核心层改造。
 
 建议实践方式：
 
@@ -381,6 +431,36 @@ MVP 建议额外约束：
 - 插件系统一旦失控，会直接影响安全性和稳定性，因此权限模型必须先于生态扩张落地。
 - Workspace 机制是项目的核心资产，任何能破坏文件安全边界的实现都应视为阻断项。
 - Gateway-Node 协议一旦发布，就属于稳定契约，后续只能做兼容性演进。
+
+**⚠️ 关键安全风险（Phase 2 必须解决）**：
+
+### 8.1 Workspace Sandbox 安全风险
+
+当前 `workspace/sandbox.py` 实现存在以下已知漏洞：
+
+| 风险类型 | 严重程度 | 状态 |
+|---------|---------|------|
+| 符号链接攻击 | 🔴 高 | 待修复（Phase 2.7） |
+| TOCTOU 竞态条件 | 🔴 高 | 待修复（Phase 2.7） |
+| 硬链接攻击 | 🟡 中 | 待修复（Phase 2.7） |
+| Unicode/编码绕过 | 🟡 中 | 待修复（Phase 2.7） |
+| 特殊文件系统对象 | 🟡 中 | 待修复（Phase 2.7） |
+| 无文件大小限制 | 🟡 中 | 待修复（Phase 2.7） |
+
+**缓解措施**：在 Phase 2.7 中实现多层防御机制，详见 ARCHITECTURE.md 第 6.1.7 节。
+
+### 8.2 Provider 响应兼容性风险
+
+当前 `agent/providers/openai_compatible.py` 实现的局限性：
+
+| 风险类型 | 严重程度 | 状态 |
+|---------|---------|------|
+| DeepSeek-R1 推理链丢失 | 🟡 中 | 待修复（Phase 2.8） |
+| Claude thinking 块丢失 | 🟡 中 | 待修复（Phase 2.8） |
+| 流式响应不支持 | 🟡 中 | 待规划（Phase 3+） |
+| 拒绝标记未处理 | 🟢 低 | 待规划 |
+
+**缓解措施**：在 Phase 2.8 中实现响应适配器模式和推理链支持，详见 ARCHITECTURE.md 第 6.1.8 节。
 
 额外风险清单：
 
