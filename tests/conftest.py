@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from dotenv import load_dotenv
 
 if TYPE_CHECKING:
     pass
@@ -22,26 +23,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 os.environ.setdefault("TESTING", "true")
 
 
-def _load_env_file(path: Path) -> None:
-    """Load KEY=VALUE entries from a dotenv-like file if present."""
-    if not path.exists() or not path.is_file():
-        return
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            os.environ.setdefault(key, value)
-
-
 # 可选加载测试环境配置，便于本地 live 集成测试。
-_load_env_file(PROJECT_ROOT / ".env")
-_load_env_file(PROJECT_ROOT / ".env.test")
+load_dotenv(PROJECT_ROOT / ".env", override=False)
+load_dotenv(PROJECT_ROOT / ".env.test", override=False)
 
 
 # ============================================================

@@ -9,6 +9,7 @@ import pytest
 
 from nahida_bot.agent.context import ContextBudget, ContextBuilder
 from nahida_bot.agent.loop import AgentLoop
+from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.providers import OpenAICompatibleProvider
 
 
@@ -39,3 +40,36 @@ async def test_live_openai_compatible_roundtrip(live_llm_config):
     )
 
     assert result.final_response
+    assert "pong" in result.final_response.lower()
+
+
+@pytest.mark.integration
+@pytest.mark.network
+@pytest.mark.slow
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_live_openai_compatible_provider_contract(live_llm_config):
+    """Validate direct provider contract on a real backend response."""
+    if live_llm_config is None:
+        pytest.skip("Live LLM config is not provided")
+
+    provider = OpenAICompatibleProvider(
+        base_url=live_llm_config["base_url"],
+        api_key=live_llm_config["api_key"],
+        model=live_llm_config["model"],
+    )
+
+    response = await provider.chat(
+        messages=[
+            ContextMessage(
+                role="user",
+                source="integration_test",
+                content="Reply with one short greeting.",
+            )
+        ],
+        timeout_seconds=30,
+    )
+
+    assert response.content is None or isinstance(response.content, str)
+    assert isinstance(response.tool_calls, list)
+    assert response.raw_response is not None

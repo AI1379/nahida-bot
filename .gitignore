@@ -177,3 +177,7 @@ Icon?
 # Local configuration
 .local
 .claude
+
+# Environment variables
+.env.*
+!.env.*.example
