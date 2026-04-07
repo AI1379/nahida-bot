@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from nahida_bot.agent.context import ContextBudget, ContextBuilder, ContextMessage
-from nahida_bot.agent.tokenization import CharacterEstimateTokenizer, Tokenizer
+from nahida_bot.agent.providers import ChatProvider, ProviderResponse
+from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
 
 
 class _AlwaysOneTokenizer:
@@ -18,20 +19,26 @@ class _FailingTokenizer:
         raise RuntimeError("boom")
 
 
-class _ProviderWithTokenizer:
+class _ProviderWithTokenizer(ChatProvider):
     name = "mock-provider"
 
     @property
-    def tokenizer(self) -> Tokenizer | None:
+    def tokenizer(self):
         return _AlwaysOneTokenizer()
 
+    async def chat(self, *, messages, tools=None, timeout_seconds=None):  # noqa: ANN001
+        return ProviderResponse(content="ok")
 
-class _ProviderWithoutTokenizer:
+
+class _ProviderWithoutTokenizer(ChatProvider):
     name = "mock-provider-no-tokenizer"
 
     @property
-    def tokenizer(self) -> Tokenizer | None:
+    def tokenizer(self):
         return None
+
+    async def chat(self, *, messages, tools=None, timeout_seconds=None):  # noqa: ANN001
+        return ProviderResponse(content="ok")
 
 
 class TestContextBuilder:

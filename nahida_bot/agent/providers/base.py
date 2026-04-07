@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal
 
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.tokenization import Tokenizer
@@ -40,16 +41,18 @@ class ProviderResponse:
     raw_response: dict[str, object] | None = None
 
 
-class ChatProvider(Protocol):
+class ChatProvider(ABC):
     """Common provider interface consumed by agent loop."""
 
     name: str
 
     @property
+    @abstractmethod
     def tokenizer(self) -> Tokenizer | None:
         """Provider-specific tokenizer for context budgeting."""
-        ...
+        raise NotImplementedError
 
+    @abstractmethod
     async def chat(
         self,
         *,
@@ -58,4 +61,4 @@ class ChatProvider(Protocol):
         timeout_seconds: float | None = None,
     ) -> ProviderResponse:
         """Run a single chat completion round."""
-        ...
+        raise NotImplementedError

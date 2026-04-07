@@ -24,7 +24,6 @@ from nahida_bot.agent.tokenization import (
     CharacterEstimateTokenizer,
     CompositeTokenizer,
     HeuristicTokenizer,
-    Provider,
     Tokenizer,
 )
 
@@ -47,7 +46,6 @@ __all__ = [
     "ProviderResponse",
     "ProviderTimeoutError",
     "ProviderTransportError",
-    "Provider",
     "ToolCall",
     "ToolDefinition",
     "ToolExecutor",

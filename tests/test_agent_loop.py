@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 import pytest
 
 from nahida_bot.agent.context import ContextBudget, ContextBuilder
-from nahida_bot.agent.loop import AgentLoop, AgentLoopConfig
+from nahida_bot.agent.loop import AgentLoop, AgentLoopConfig, ToolExecutor
 from nahida_bot.agent.providers import (
+    ChatProvider,
     ProviderRateLimitError,
     ProviderResponse,
     ToolCall,
@@ -18,7 +19,7 @@ from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
 
 
 @dataclass
-class _QueuedProvider:
+class _QueuedProvider(ChatProvider):
     responses: list[ProviderResponse] = field(default_factory=list)
     failures: list[Exception] = field(default_factory=list)
     calls: int = 0
@@ -40,7 +41,7 @@ class _QueuedProvider:
 
 
 @dataclass
-class _RecorderToolExecutor:
+class _RecorderToolExecutor(ToolExecutor):
     calls: list[ToolCall] = field(default_factory=list)
 
     async def execute(self, tool_call: ToolCall) -> str:
@@ -152,3 +153,15 @@ async def test_agent_loop_raises_when_tool_requested_without_executor() -> None:
 
     with pytest.raises(RuntimeError, match="no tool executor"):
         await loop.run(user_message="hi", system_prompt="sys")
+
+
+def test_provider_contract_is_abstract() -> None:
+    """ChatProvider should remain an abstract base class contract."""
+    with pytest.raises(TypeError):
+        ChatProvider()  # type: ignore[abstract]
+
+
+def test_tool_executor_contract_is_abstract() -> None:
+    """ToolExecutor should remain an abstract base class contract."""
+    with pytest.raises(TypeError):
+        ToolExecutor()  # type: ignore[abstract]

@@ -17,18 +17,6 @@ class Tokenizer(Protocol):
         ...
 
 
-@runtime_checkable
-class Provider(Protocol):
-    """Provider protocol exposing an optional tokenizer implementation."""
-
-    name: str
-
-    @property
-    def tokenizer(self) -> Tokenizer | None:
-        """Provider-specific tokenizer, if available."""
-        ...
-
-
 class HeuristicTokenizer:
     """General-purpose tokenizer approximation using lexical chunks."""
 
@@ -81,7 +69,7 @@ class CompositeTokenizer:
 
 def resolve_tokenizer(
     *,
-    provider: Provider | None,
+    provider_tokenizer: Tokenizer | None,
     tokenizer: Tokenizer | None,
     fallback_tokenizer: Tokenizer | None,
 ) -> Tokenizer:
@@ -91,8 +79,7 @@ def resolve_tokenizer(
             return CompositeTokenizer(tokenizer, fallback_tokenizer)
         return tokenizer
 
-    if provider is not None and provider.tokenizer is not None:
-        provider_tokenizer = provider.tokenizer
+    if provider_tokenizer is not None:
         fallback = fallback_tokenizer or HeuristicTokenizer()
         return CompositeTokenizer(provider_tokenizer, fallback)
 

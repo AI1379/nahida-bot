@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from nahida_bot.agent.tokenization import Provider, Tokenizer, resolve_tokenizer
+from nahida_bot.agent.tokenization import Tokenizer, resolve_tokenizer
+
+if TYPE_CHECKING:
+    from nahida_bot.agent.providers.base import ChatProvider
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
 
@@ -54,14 +57,14 @@ class ContextBuilder:
         self,
         budget: ContextBudget | None = None,
         *,
-        provider: Provider | None = None,
+        provider: ChatProvider | None = None,
         tokenizer: Tokenizer | None = None,
         fallback_tokenizer: Tokenizer | None = None,
     ) -> None:
         """Create context builder with optional provider/tokenizer strategy."""
         self.budget = budget or ContextBudget()
         self.tokenizer = resolve_tokenizer(
-            provider=provider,
+            provider_tokenizer=provider.tokenizer if provider is not None else None,
             tokenizer=tokenizer,
             fallback_tokenizer=fallback_tokenizer,
         )

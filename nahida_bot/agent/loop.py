@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage
 from nahida_bot.agent.providers import (
@@ -16,12 +16,13 @@ from nahida_bot.agent.providers import (
 )
 
 
-class ToolExecutor(Protocol):
+class ToolExecutor(ABC):
     """Executor contract for tool calls emitted by providers."""
 
+    @abstractmethod
     async def execute(self, tool_call: ToolCall) -> str:
         """Execute a tool call and return textual result."""
-        ...
+        raise NotImplementedError
 
 
 @dataclass(slots=True, frozen=True)
