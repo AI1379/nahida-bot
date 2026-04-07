@@ -206,6 +206,79 @@ Node connect
 - 对外统一通过 repository 接口，不让业务代码直接拼 SQL。
 - 文件系统读写全部经过 workspace/sandbox 统一入口。
 
+### 6.1 Phase 2 架构细化（Agent 与 Workspace 联合阶段）
+
+本节对应 ROADMAP 的 Phase 2.x 子阶段，只定义架构约束和模块协作方式。
+
+#### 6.1.1 Workspace 基线与安全边界
+
+- `workspace.manager` 负责空间生命周期：创建、切换、列举、默认空间选择。
+- `workspace.sandbox` 是唯一文件访问入口，必须实现路径归一化和越界拒绝。
+- `workspace` 元数据进入独立 repository 层，避免业务逻辑直接操作 SQLite。
+
+建议最小接口：
+
+```python
+class WorkspaceManager(Protocol):
+    async def ensure_default(self) -> Workspace: ...
+    async def create(self, name: str, template: str | None = None) -> Workspace: ...
+    async def switch(self, workspace_id: str) -> Workspace: ...
+
+
+class WorkspaceSandbox(Protocol):
+    async def read_text(self, rel_path: str) -> str: ...
+    async def write_text(self, rel_path: str, content: str) -> None: ...
+```
+
+#### 6.1.2 指令注入与上下文构建
+
+- 上下文拼装顺序建议固定：系统基线 -> `AGENTS.md` -> `SOUL.md` -> `USER.md` -> 会话历史 -> 工具回填。
+- `agent.context` 只负责拼装和裁剪，不直接访问 provider。
+- 上下文预算策略分两层：
+  1. 先执行窗口裁剪（保留最近对话与关键系统指令）。
+  2. 超预算时再触发摘要压缩（可插拔策略）。
+
+#### 6.1.3 Agent Loop 与 Provider 适配
+
+- `agent.loop` 维持纯状态机语义：`prepare -> call_provider -> dispatch_tools -> finalize`。
+- `agent.providers.base` 固定最小契约：`chat(messages, tools, timeout) -> ProviderResult`。
+- Provider 错误必须归一到统一错误码，避免上层针对具体厂商分支。
+
+建议错误码集合（最小可用）：
+
+- `provider_timeout`
+- `provider_rate_limited`
+- `provider_auth_failed`
+- `provider_bad_response`
+
+#### 6.1.4 Tool Calling 协议
+
+- 工具定义由插件系统注册，但执行编排由 `agent.tools` 统一管理。
+- 参数校验建议在执行前完成（Pydantic 模型或等价校验器）。
+- 工具执行结果统一封装为结构化消息，区分：
+  - `ok`: 是否成功
+  - `content`: 供模型消费的结果
+  - `meta`: 可观测字段（耗时、工具名、截断标记）
+  - `error`: 失败原因（可回退提示）
+
+#### 6.1.5 记忆模型与存储抽象
+
+- 短期记忆放在会话上下文层，长期记忆通过 repository 检索。
+- SQLite 只作为首个实现，不直接暴露给 `agent.loop`。
+- 建议契约：
+
+```python
+class MemoryStore(Protocol):
+    async def append_turn(self, session_id: str, turn: ConversationTurn) -> None: ...
+    async def search(self, session_id: str, query: str, limit: int = 5) -> list[MemoryRecord]: ...
+```
+
+#### 6.1.6 稳定性与可观测性
+
+- 重试仅用于可恢复错误（超时、限流），认证失败默认不重试。
+- 关键路径打点：provider 延迟、工具成功率、上下文裁剪次数、最终回复耗时。
+- 最小验收闭环需要可追踪 trace_id，确保从 workspace 注入到最终回复可串联。
+
 ## 7. ChannelPlugin 设计细节（Plugin 系统的扩展）
 
 ### 7.1 背景与设计目标
