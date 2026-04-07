@@ -128,9 +128,9 @@ Python 方案的核心结构可以概括为五层：
 
 #### Phase 2.3 - Agent Loop 与 Provider 打通
 
-- [ ] 实现 Agent Loop（消息组装、模型调用、工具调用、结果回填、终止条件）。
-- [ ] 定义 Provider 抽象接口，先接入一个 OpenAI 兼容 Provider。
-- [ ] 固定统一错误模型（超时、限流、认证失败、响应格式错误）。
+- [x] 实现 Agent Loop（消息组装、模型调用、工具调用、结果回填、终止条件）。
+- [x] 定义 Provider 抽象接口，先接入一个 OpenAI 兼容 Provider。
+- [x] 固定统一错误模型（超时、限流、认证失败、响应格式错误）。
 
 #### Phase 2.4 - Tool Calling 协议闭环
 

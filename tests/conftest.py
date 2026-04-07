@@ -22,6 +22,28 @@ PROJECT_ROOT = Path(__file__).parent.parent
 os.environ.setdefault("TESTING", "true")
 
 
+def _load_env_file(path: Path) -> None:
+    """Load KEY=VALUE entries from a dotenv-like file if present."""
+    if not path.exists() or not path.is_file():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+# 可选加载测试环境配置，便于本地 live 集成测试。
+_load_env_file(PROJECT_ROOT / ".env")
+_load_env_file(PROJECT_ROOT / ".env.test")
+
+
 # ============================================================
 # 测试收集和排序
 # ============================================================
@@ -55,6 +77,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "integration: 集成测试")
     config.addinivalue_line("markers", "slow: 慢速测试")
     config.addinivalue_line("markers", "network: 需要网络连接的测试")
+    config.addinivalue_line("markers", "live: 需要真实后端配置的测试")
 
 
 # ============================================================
@@ -136,3 +159,26 @@ async def app(test_settings):
     # 清理：如果应用已启动，则停止
     if application.is_started:
         await application.stop()
+
+
+@pytest.fixture
+def live_llm_config() -> dict[str, str] | None:
+    """Return live LLM config from env variables, or None when incomplete.
+
+    Supported env keys:
+    - NAHIDA_LIVE_OPENAI_BASE_URL
+    - NAHIDA_LIVE_OPENAI_API_KEY (or OPENAI_API_KEY)
+    - NAHIDA_LIVE_OPENAI_MODEL
+    """
+    base_url = os.getenv("NAHIDA_LIVE_OPENAI_BASE_URL")
+    api_key = os.getenv("NAHIDA_LIVE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    model = os.getenv("NAHIDA_LIVE_OPENAI_MODEL")
+
+    if not base_url or not api_key or not model:
+        return None
+
+    return {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+    }
