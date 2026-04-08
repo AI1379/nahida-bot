@@ -49,10 +49,7 @@ class OpenAICompatibleProvider(ChatProvider):
         """Call OpenAI-compatible chat completion API."""
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
+            "messages": [self._serialize_message(message) for message in messages],
         }
         if tools:
             payload["tools"] = [
@@ -180,3 +177,54 @@ class OpenAICompatibleProvider(ChatProvider):
                 )
             )
         return calls
+
+    def _serialize_message(self, message: ContextMessage) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "role": message.role,
+            "content": message.content,
+        }
+
+        if message.role == "assistant" and message.metadata is not None:
+            tool_calls_raw = message.metadata.get("tool_calls")
+            if isinstance(tool_calls_raw, list):
+                tool_calls = self._serialize_assistant_tool_calls(tool_calls_raw)
+                if tool_calls:
+                    payload["tool_calls"] = tool_calls
+
+        if message.role == "tool" and message.metadata is not None:
+            tool_call_id = message.metadata.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                payload["tool_call_id"] = tool_call_id
+
+        return payload
+
+    def _serialize_assistant_tool_calls(
+        self,
+        payload: list[object],
+    ) -> list[dict[str, object]]:
+        serialized: list[dict[str, object]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+
+            call_id = item.get("id")
+            name = item.get("name")
+            arguments = item.get("arguments", {})
+
+            if not isinstance(call_id, str) or not isinstance(name, str):
+                continue
+            if not isinstance(arguments, dict):
+                continue
+
+            serialized.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    },
+                }
+            )
+
+        return serialized

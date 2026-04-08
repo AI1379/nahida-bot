@@ -5,6 +5,7 @@ from nahida_bot.agent.loop import (
     AgentLoop,
     AgentLoopConfig,
     AgentRunResult,
+    ToolExecutionResult,
     ToolExecutor,
 )
 from nahida_bot.agent.providers import (
@@ -48,6 +49,7 @@ __all__ = [
     "ProviderTransportError",
     "ToolCall",
     "ToolDefinition",
+    "ToolExecutionResult",
     "ToolExecutor",
     "Tokenizer",
 ]

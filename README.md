@@ -1,161 +1,124 @@
-# Nahida Bot
+# 🍃 Nahida Bot
 
 > ![Avatar](assets/NahidaAvatar1.jpg)
 >
-> 这是**摩诃善法大吉祥智慧主**，须弥的**草神大人**，你敢和她对视五秒吗？
+> 「这是**摩诃善法大吉祥智慧主**，须弥的**草神大人**，你敢和她对视五秒吗？」
 
-一个以 **Agent 为核心**、以 **Workspace 为中心**、可通过 **插件扩展** 的 Python Bot 框架。
+欢迎连接到属于你的私有「虚空终端」！**Nahida Bot** 不仅仅是一个冷冰冰的机器，而是一个 **Agent 为灵魂**、以 **Workspace 为家**，还能通过 **插件随意换装** 的 Python 智能框架哦~ 🌿
 
-## 核心特性
+## ✨ 核心天赋
 
-### 设计理念
+### 💡 设计理念
 
-- **Agent-first**：以 Agent Loop 为中枢，而不是把 LLM 当外挂
-- **Workspace-native**：文件即上下文，工作空间是一等对象
-- **Plugin-driven**：能力扩展通过插件，不通过核心硬编码
-- **Gateway-Node-ready**：天然支持远程节点和分布式执行
-- **Ops-friendly**：可观测、可诊断、可发布
+- **Agent-first（意识主导）**：以 Agent Loop 为中枢，大语言模型（LLM）在这里不是外挂的工具人，而是真正的主导大脑~
+- **Workspace-native（专属花盆）**：文件就是上下文，工作空间（Workspace）作为一等公民被温柔对待。
+- **Plugin-driven（百变衣橱）**：不需要在核心代码里硬编码，想要什么新能力？装个插件就好啦！
+- **Gateway-Node-ready（世界树网络）**：天然支持远程节点和分布式执行，把智慧的枝蔓延伸到各个角落~
+- **Ops-friendly（无忧除虫）**：可观测、可诊断、好发布，就算遇到了 Bug 也能轻松捉虫🐞！
 
-### 技术栈
+## 📈 成长进度（项目状态）
 
-| 领域 | 技术选型 |
-|-----|---------|
-| 运行时 | Python 3.12+ / asyncio |
-| 类型系统 | Pydantic v2 + pyright |
-| Web 框架 | FastAPI + Uvicorn |
-| 数据存储 | SQLite + aiosqlite |
-| CLI | Typer + Rich |
-| 日志 | Structlog |
-| 包管理 | uv |
+目前小吉祥草王正处于 **Phase 2（Agent 与 Workspace 的萌芽期）**，核心的生命循环机制已经搭建好啦~ 🌱
 
-## 项目状态
+### 🌟 已点亮的命座 ✅
 
-当前处于 **Phase 2**（Agent 与 Workspace 联合阶段），核心运行时已可用。
+- [x] 净土的基石与质量把控（Phase 0）
+- [x] 核心生命循环：应用容器、配置文件、事件脉络与观测日志（Phase 1）
+- [x] 专属花盆（Workspace）基石：空间管理、文件沙盒隔离、记忆上下文注入（Phase 2.1-2.2）
+- [x] 智慧运转（Agent Loop）：消息拼装、模型共鸣、工具协议（Phase 2.3）
+- [x] 梦境链接（Provider 抽象）：OpenAI 兼容接口、错误归一化平权（Phase 2.3）
+- [x] 神力感知（Provider 感知 Token 预算）：精准把控消耗（Phase 2.3）
 
-### 已完成 ✅
+### 🚧 正在进行的光合作用
 
-- [x] 项目地基与质量闸门（Phase 0）
-- [x] 核心运行时：应用容器、配置、事件、日志（Phase 1）
-- [x] Workspace 基线：空间管理、文件沙盒、上下文注入（Phase 2.1-2.2）
-- [x] Agent Loop：消息组装、模型调用、工具协议（Phase 2.3）
-- [x] Provider 抽象：OpenAI 兼容接口、错误归一化（Phase 2.3）
-- [x] Provider 感知 Token 预算（Phase 2.3）
+- [ ] 幻境工具通信闭环（Tool Calling 协议）（Phase 2.4）
+- [ ] 记忆流转与梦境刻录（持久化）（Phase 2.5）
+- [ ] 保护花盆的安全强化魔法（Workspace Sandbox 安全增强）⚠️（Phase 2.7）
+- [ ] 梦境反馈的抗干扰训练（Provider 响应健壮性）（Phase 2.8）
 
-### 进行中 🚧
+### 📜 未来的须弥建设计划
 
-- [ ] Tool Calling 协议闭环（Phase 2.4）
-- [ ] 记忆模型与持久化（Phase 2.5）
-- [ ] Workspace Sandbox 安全增强（Phase 2.7）⚠️
-- [ ] Provider 响应健壮性（Phase 2.8）
+- [ ] 插件系统与连接外部的 Channel 接口（Phase 3）
+- [ ] 各大社交平台的接引通道实现（Phase 4）
+- [ ] 虚空终端的广域部署（Gateway 与 Node 分布式）（Phase 5）
+- [ ] 漂亮的可视化面板与教令院运维工具（WebUI）（Phase 6）
 
-### 规划中 📋
+想要了解更详细的须弥建设蓝图？请翻阅 [ROADMAP.md](docs/ROADMAP.md) 吧~
 
-- [ ] 插件系统与 Channel 接口（Phase 3）
-- [ ] 平台接入实现（Phase 4）
-- [ ] Gateway 与 Node 分布式（Phase 5）
-- [ ] WebUI 与运维工具（Phase 6）
-
-详细路线图见 [ROADMAP.md](docs/ROADMAP.md)。
-
-## 架构概览
+## 🏛️ 虚空系统架构概览
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Interface Layer                          │
+│                    世界树树冠 (Interface Layer)             │
 │                   CLI / WebUI / API                         │
 ├─────────────────────────────────────────────────────────────┤
-│                  Gateway-Node Layer                         │
-│              远程节点通信 / 分布式执行                         │
+│                  世界树树枝 (Gateway-Node Layer)            │
+│              远程节点通讯 / 智慧分布式网络                  │
 ├─────────────────────────────────────────────────────────────┤
-│                    Plugin Layer                             │
-│          插件加载 / 权限管理 / Channel 接口 / 工具注册          │
+│                    挂件与神之眼 (Plugin Layer)              │
+│          插件加载 / 权限管理 / 外部接引通道 / 道具注册      │
 ├─────────────────────────────────────────────────────────────┤
-│                    Agent Layer                              │
-│        LLM 推理循环 / 上下文管理 / 记忆 / Provider 抽象        │
+│                    智慧主脑 (Agent Layer)                   │
+│        LLM 推理循环 / 梦境上下文机制 / 记忆 / 模型连接抽象  │
 ├─────────────────────────────────────────────────────────────┤
-│                  Workspace Layer                            │
-│            工作空间 / 文件沙盒 / 上下文注入                     │
+│                  专属温室 (Workspace Layer)                 │
+│            工作空间管理 / 安全文件沙盒 / 记忆浇灌           │
 ├─────────────────────────────────────────────────────────────┤
-│                     Core Layer                              │
-│         应用容器 / 生命周期 / 配置 / 事件 / 日志 / 异常         │
+│                     净土核心 (Core Layer)                   │
+│         应用生命树 / 法则配置 / 事件脉搏 / 观测日志 / 异常  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-详细架构设计见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+详细的系统图纸存放在教令院的 [ARCHITECTURE.md](docs/ARCHITECTURE.md) 里哦。
 
-## 快速开始
+## 🚀 启动终端（快速开始）
 
 ### 环境要求
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/) 包管理器
+- [astral-uv](https://docs.astral.sh/uv/)
 
 ### 安装
 
 ```bash
-# 克隆仓库
 git clone https://github.com/your-org/nahida-bot.git
 cd nahida-bot
 
-# 安装依赖
 uv sync
 
-# 运行类型检查
+# 类型检查与单元测试，可选
 uv run pyright
-
-# 运行测试
 uv run pytest
 
-# 启动应用
 uv run nahida-bot start
 ```
 
 ### CLI 命令
 
 ```bash
-nahida-bot version          # 显示版本
-nahida-bot start [--debug]  # 启动应用
-nahida-bot config           # 显示配置
-nahida-bot doctor           # 诊断检查
+nahida-bot version
+nahida-bot start [--debug]
+nahida-bot config
+nahida-bot doctor
 ```
 
-## 目录结构
+## 📚 文档
 
-```
-nahida_bot/
-├── core/           # 核心层：应用容器、配置、事件、日志
-├── workspace/      # 工作空间：空间管理、文件沙盒
-├── agent/          # Agent 层：推理循环、上下文、Provider
-│   └── providers/  # Provider 实现：OpenAI 兼容等
-├── plugins/        # 插件系统（规划中）
-├── gateway/        # Gateway 服务（规划中）
-├── node/           # Node 客户端（规划中）
-├── db/             # 数据库层（规划中）
-└── cli/            # 命令行接口
-```
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [ROADMAP.md](docs/ROADMAP.md)
+- [DEVELOPMENT.md](docs/DEVELOPMENT.md)
 
-## 文档
+## 🤝 参考项目
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - 架构设计文档
-- [ROADMAP.md](docs/ROADMAP.md) - 开发路线图
-- [DEVELOPMENT.md](docs/DEVELOPMENT.md) - 开发指南
+这里的很多智慧结晶，都离不开前辈们的探索：
 
-## 参考项目
-
-| 项目 | 借鉴点 |
+| 项目 | 参考内容 |
 |-----|-------|
-| OpenClaw | Agent + Workspace 模式、Gateway-Node 架构 |
-| AstrBot | 项目初始化、配置日志、Dashboard 设计 |
-| nonebot2 | 插件生态、消息适配设计 |
-| LiteLLM | 多 Provider 抽象和错误兼容 |
-| OneBot/NapCat | Channel 协议设计、多通信方式支持 |
-
-## 安全说明
-
-⚠️ **重要**：当前 Workspace Sandbox 实现存在已知安全风险（符号链接攻击、TOCTOU 等），Phase 2.7 将完成安全加固。在生产环境使用前，请确保完成安全增强。
-
-详见 [ROADMAP.md](docs/ROADMAP.md) 第 8 节"风险与约束"。
+| OpenClaw | Agent + Workspace 的模式、Gateway-Node 架构灵感 |
+| AstrBot | Python LLM bot 领域的重量级项目 |
+| nonebot2 | 繁荣的插件生态、跨平台消息适配的绝佳设计 |
+| LiteLLM | 多 Provider 模型的优雅抽象和防报错平权 |
 
 ## License
 
-DO WHAT THE FUCK YOU WANT TO.
+**DO WHAT THE FUCK YOU WANT TO.**

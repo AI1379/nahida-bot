@@ -201,3 +201,119 @@ async def test_openai_provider_rejects_invalid_payload(
         await provider.chat(
             messages=[ContextMessage(role="user", source="u", content="hi")]
         )
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_serializes_tool_message_tool_call_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider should include tool_call_id when serializing tool messages."""
+    captured_payload: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        payload = {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        return httpx.Response(200, json=payload)
+
+    transport = _build_transport(handler)
+
+    class _MockClient(httpx.AsyncClient):
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(
+        "nahida_bot.agent.providers.openai_compatible.httpx.AsyncClient", _MockClient
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+    )
+    await provider.chat(
+        messages=[
+            ContextMessage(role="user", source="u", content="hi"),
+            ContextMessage(
+                role="tool",
+                source="tool_result:search",
+                content='{"status":"ok"}',
+                metadata={"tool_call_id": "call_1", "tool_name": "search"},
+            ),
+        ]
+    )
+
+    tool_message = captured_payload["messages"][1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["tool_call_id"] == "call_1"
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_serializes_assistant_tool_calls_from_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider should serialize assistant tool calls when metadata exists."""
+    captured_payload: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        payload = {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "done"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        return httpx.Response(200, json=payload)
+
+    transport = _build_transport(handler)
+
+    class _MockClient(httpx.AsyncClient):
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(
+        "nahida_bot.agent.providers.openai_compatible.httpx.AsyncClient", _MockClient
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+    )
+    await provider.chat(
+        messages=[
+            ContextMessage(role="user", source="u", content="hi"),
+            ContextMessage(
+                role="assistant",
+                source="provider_response",
+                content="",
+                metadata={
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "name": "search",
+                            "arguments": {"q": "nahida"},
+                        }
+                    ]
+                },
+            ),
+        ]
+    )
+
+    assistant_message = captured_payload["messages"][1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["tool_calls"][0]["id"] == "call_1"
+    assert assistant_message["tool_calls"][0]["function"]["name"] == "search"
+    assert (
+        assistant_message["tool_calls"][0]["function"]["arguments"] == '{"q": "nahida"}'
+    )

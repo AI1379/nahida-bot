@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -21,6 +22,7 @@ class ContextMessage:
     role: MessageRole
     content: str
     source: str
+    metadata: dict[str, object] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -261,10 +263,16 @@ class ContextBuilder:
         """Estimate context size using configured tokenizer strategy."""
         total = 0
         for message in messages:
+            metadata_serialized = (
+                json.dumps(message.metadata, sort_keys=True)
+                if message.metadata is not None
+                else ""
+            )
             serialized = (
                 f"role:{message.role}\n"
                 f"source:{message.source}\n"
-                f"content:{message.content}"
+                f"content:{message.content}\n"
+                f"metadata:{metadata_serialized}"
             )
             total += self.tokenizer.count_tokens(serialized)
         return total
