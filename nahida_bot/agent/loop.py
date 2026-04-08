@@ -259,6 +259,8 @@ class AgentLoop:
         self,
         tool_call: ToolCall,
     ) -> tuple[ToolExecutionResult, int, str]:
+        if self.tool_executor is None:
+            raise RuntimeError("Tool executor is not set")
         max_attempts = max(1, self.config.tool_retry_attempts + 1)
 
         for attempt in range(1, max_attempts + 1):
