@@ -1,3 +1,7 @@
 """Database access and models."""
 
-__all__ = []
+from nahida_bot.db.engine import DatabaseEngine
+
+__all__ = [
+    "DatabaseEngine",
+]
