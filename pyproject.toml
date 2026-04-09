@@ -9,27 +9,22 @@ dependencies = [
     # CLI & UI
     "typer>=0.15.0",
     "rich>=13.0.0",
-
     # Configuration
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-
     # Web Framework
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
-
     # Database
     "aiosqlite>=0.19.0",
-
     # Logging & Observability
     "structlog>=24.0.0",
-
     # HTTP & WebSocket
     "httpx>=0.25.0",
     "websockets>=12.0",
-
     # Async utilities
     "anyio>=4.0.0",
+    "jieba>=0.42.1",
 ]
 
 [dependency-groups]

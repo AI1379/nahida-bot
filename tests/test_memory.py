@@ -33,8 +33,8 @@ class TestExtractKeywords:
         keywords = extract_keywords("I am a Python developer")
         assert "python" in keywords
         assert "developer" in keywords
-        assert "i" not in keywords
-        assert "am" not in keywords
+        # Single-letter tokens are filtered by min_length=2 default.
+        assert "a" not in keywords
 
     def test_deduplicates_stably(self) -> None:
         """Deduplication should preserve first-occurrence order."""
@@ -58,6 +58,54 @@ class TestExtractKeywords:
         k2 = extract_keywords("alpha beta gamma")
         assert k1 == k2
         assert k1 == ["alpha", "beta", "gamma"]
+
+
+class TestExtractKeywordsCJK:
+    """Tests for CJK (Chinese) keyword extraction via jieba."""
+
+    def test_chinese_basic_segmentation(self) -> None:
+        """Chinese text should be segmented into meaningful words."""
+        keywords = extract_keywords("今天天气很好，我想去公园散步")
+        assert "天气" in keywords
+        assert "公园" in keywords
+        assert "散步" in keywords
+
+    def test_chinese_single_word_query(self) -> None:
+        """Single-word Chinese queries should produce at least one keyword."""
+        keywords = extract_keywords("天气")
+        assert "天气" in keywords
+
+    def test_chinese_deduplication(self) -> None:
+        """Repeated Chinese words should be deduplicated."""
+        keywords = extract_keywords("天气天气天气")
+        assert keywords.count("天气") == 1
+
+    def test_mixed_chinese_english(self) -> None:
+        """Mixed CJK + Latin text should extract keywords from both."""
+        keywords = extract_keywords("使用Python编写爬虫程序")
+        assert "python" in keywords
+        assert "编写" in keywords or "程序" in keywords
+
+    def test_chinese_search_mode_granularity(self) -> None:
+        """jieba search mode should produce fine-grained tokens."""
+        keywords = extract_keywords("南京市长江大桥")
+        # search mode should decompose "南京市长江大桥" into sub-phrases.
+        assert len(keywords) >= 2
+
+    def test_chinese_punctuation_filtered(self) -> None:
+        """Punctuation should not appear in keywords."""
+        keywords = extract_keywords("你好，世界！")
+        for kw in keywords:
+            assert kw.isalnum() or all(c.isalnum() for c in kw)
+
+    def test_short_chinese_tokens_filtered(self) -> None:
+        """Single-character Chinese tokens should be filtered by min_length=2."""
+        keywords = extract_keywords("我你在", min_length=2)
+        assert "我" not in keywords
+        assert "你" not in keywords
+
+    def test_chinese_empty_string(self) -> None:
+        assert extract_keywords("") == []
 
 
 # ---------------------------------------------------------------------------

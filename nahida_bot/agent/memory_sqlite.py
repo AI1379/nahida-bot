@@ -3,28 +3,47 @@
 from __future__ import annotations
 
 import re
+import warnings
 from datetime import UTC, datetime
 from typing import Any
+
+# jieba 0.42.1 contains invalid escape sequences that raise SyntaxError
+# on Python 3.12+. Suppress at import time until upstream releases a fix.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", SyntaxWarning)
+    import jieba
 
 from nahida_bot.agent.memory_models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.memory_store import MemoryStore
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.db.repositories.sqlite_memory_repo import SQLiteMemoryRepository
 
-_MIN_KEYWORD_LENGTH = 3
+_MIN_KEYWORD_LENGTH = 2
+_CJK_RANGE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uac00-\ud7af]")
 _KEYWORD_SPLIT = re.compile(r"[^\w]+", re.UNICODE)
 
 
 def extract_keywords(text: str, *, min_length: int = _MIN_KEYWORD_LENGTH) -> list[str]:
     """Extract normalized keywords from text for indexing.
 
-    Splits on non-word characters, lowercases, and filters short tokens.
+    Uses jieba for CJK segmentation and whitespace splitting for Latin text.
     Preserves first-occurrence order with stable deduplication.
     """
-    tokens = _KEYWORD_SPLIT.split(text.lower())
+    if not text:
+        return []
+
+    has_cjk = bool(_CJK_RANGE.search(text))
+
+    if has_cjk:
+        # jieba cut_for_search produces fine-grained tokens suitable for indexing.
+        raw_tokens = jieba.lcut_for_search(text)
+    else:
+        raw_tokens = _KEYWORD_SPLIT.split(text.lower())
+
     seen: set[str] = set()
     result: list[str] = []
-    for token in tokens:
+    for token in raw_tokens:
+        token = token.strip().lower()
         if len(token) >= min_length and token not in seen:
             seen.add(token)
             result.append(token)
