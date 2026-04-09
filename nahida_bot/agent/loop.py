@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage
+from nahida_bot.agent.metrics import MetricsCollector, Trace
 from nahida_bot.agent.providers import (
     ChatProvider,
     ProviderError,
@@ -16,6 +19,8 @@ from nahida_bot.agent.providers import (
     ToolCall,
     ToolDefinition,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ToolExecutor(ABC):
@@ -79,6 +84,9 @@ class AgentLoopConfig:
     tool_retry_attempts: int = 1
     tool_retry_backoff_seconds: float = 0.1
     max_tool_log_chars: int = 400
+    provider_error_template: str = (
+        "Service temporarily unavailable ({code}). Please try again later."
+    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -89,6 +97,8 @@ class AgentRunResult:
     assistant_messages: list[ContextMessage] = field(default_factory=list)
     tool_messages: list[ContextMessage] = field(default_factory=list)
     steps: int = 0
+    trace_id: str | None = None
+    error: str | None = None
 
 
 class AgentLoop:
@@ -101,11 +111,13 @@ class AgentLoop:
         context_builder: ContextBuilder,
         config: AgentLoopConfig | None = None,
         tool_executor: ToolExecutor | None = None,
+        metrics: MetricsCollector | None = None,
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
         self.config = config or AgentLoopConfig()
         self.tool_executor = tool_executor
+        self.metrics = metrics
 
     async def run(
         self,
@@ -117,6 +129,7 @@ class AgentLoop:
         tools: list[ToolDefinition] | None = None,
     ) -> AgentRunResult:
         """Run the agent loop until terminal assistant response is produced."""
+        trace = self.metrics.new_trace() if self.metrics else None
         conversation = list(history_messages or [])
         conversation.append(
             ContextMessage(role="user", source="user_input", content=user_message)
@@ -124,68 +137,109 @@ class AgentLoop:
         tool_messages: list[ContextMessage] = []
         assistant_messages: list[ContextMessage] = []
 
-        for step in range(1, self.config.max_steps + 1):
-            prompt_messages = self.context_builder.build_context(
-                system_prompt=system_prompt,
-                workspace_root=workspace_root,
-                history_messages=conversation,
-                tool_messages=tool_messages,
-            )
-
-            response = await self._call_provider_with_retry(
-                messages=prompt_messages,
-                tools=tools,
-            )
-
-            assistant_message = self._build_assistant_message(response)
-            if assistant_message is not None:
-                assistant_messages.append(assistant_message)
-                conversation.append(assistant_message)
-
-            if not response.tool_calls:
-                return AgentRunResult(
-                    final_response=response.content or "",
-                    assistant_messages=assistant_messages,
+        step = 0
+        try:
+            for step in range(1, self.config.max_steps + 1):
+                prompt_messages = self.context_builder.build_context(
+                    system_prompt=system_prompt,
+                    workspace_root=workspace_root,
+                    history_messages=conversation,
                     tool_messages=tool_messages,
-                    steps=step,
                 )
 
-            if self.tool_executor is None:
-                raise RuntimeError(
-                    "Provider requested tools but no tool executor is set"
+                response = await self._call_provider_with_retry(
+                    messages=prompt_messages,
+                    tools=tools,
+                    step=step,
+                    trace=trace,
                 )
 
-            executed_messages = await self._execute_tools(
-                response=response,
-                tools=tools,
+                assistant_message = self._build_assistant_message(response)
+                if assistant_message is not None:
+                    assistant_messages.append(assistant_message)
+                    conversation.append(assistant_message)
+
+                if not response.tool_calls:
+                    return AgentRunResult(
+                        final_response=response.content or "",
+                        assistant_messages=assistant_messages,
+                        tool_messages=tool_messages,
+                        steps=step,
+                        trace_id=trace.trace_id if trace else None,
+                    )
+
+                if self.tool_executor is None:
+                    raise RuntimeError(
+                        "Provider requested tools but no tool executor is set"
+                    )
+
+                executed_messages = await self._execute_tools(
+                    response=response,
+                    tools=tools,
+                    step=step,
+                    trace=trace,
+                )
+                tool_messages.extend(executed_messages)
+                conversation.extend(executed_messages)
+
+            final_fallback = (
+                assistant_messages[-1].content if assistant_messages else ""
             )
-            tool_messages.extend(executed_messages)
-            conversation.extend(executed_messages)
-
-        final_fallback = assistant_messages[-1].content if assistant_messages else ""
-        return AgentRunResult(
-            final_response=final_fallback,
-            assistant_messages=assistant_messages,
-            tool_messages=tool_messages,
-            steps=self.config.max_steps,
-        )
+            return AgentRunResult(
+                final_response=final_fallback,
+                assistant_messages=assistant_messages,
+                tool_messages=tool_messages,
+                steps=self.config.max_steps,
+                trace_id=trace.trace_id if trace else None,
+            )
+        except ProviderError as exc:
+            logger.warning(
+                "Agent loop aborted by provider error: %s", exc, exc_info=True
+            )
+            fallback = assistant_messages[-1].content if assistant_messages else ""
+            if not fallback:
+                fallback = self.config.provider_error_template.format(code=exc.code)
+            return AgentRunResult(
+                final_response=fallback,
+                assistant_messages=assistant_messages,
+                tool_messages=tool_messages,
+                steps=step,
+                trace_id=trace.trace_id if trace else None,
+                error=exc.code,
+            )
 
     async def _call_provider_with_retry(
         self,
         *,
         messages: list[ContextMessage],
         tools: list[ToolDefinition] | None,
+        step: int = 0,
+        trace: Trace | None = None,
     ) -> ProviderResponse:
         attempts = 0
         while True:
             attempts += 1
+            t0 = time.monotonic()
             try:
-                return await self.provider.chat(
+                response = await self.provider.chat(
                     messages=messages,
                     tools=tools,
                     timeout_seconds=self.config.provider_timeout_seconds,
                 )
+                if trace is not None and self.metrics is not None:
+                    self.metrics.record_provider_call(
+                        trace, step=step, latency_seconds=time.monotonic() - t0
+                    )
+                return response
             except ProviderError as exc:
+                if trace is not None and self.metrics is not None:
+                    self.metrics.record_provider_call(
+                        trace,
+                        step=step,
+                        latency_seconds=time.monotonic() - t0,
+                        error_code=exc.code,
+                        retryable=exc.retryable,
+                    )
                 can_retry = exc.retryable and attempts <= self.config.retry_attempts
                 if not can_retry:
                     raise
@@ -223,6 +277,8 @@ class AgentLoop:
         *,
         response: ProviderResponse,
         tools: list[ToolDefinition] | None,
+        step: int = 0,
+        trace: Trace | None = None,
     ) -> list[ContextMessage]:
         messages: list[ContextMessage] = []
         assert self.tool_executor is not None
@@ -244,7 +300,9 @@ class AgentLoop:
                 )
                 continue
 
-            result, attempt, phase = await self._execute_tool_with_lifecycle(tool_call)
+            result, attempt, phase = await self._execute_tool_with_lifecycle(
+                tool_call, step=step, trace=trace
+            )
             messages.append(
                 self._build_tool_message(
                     tool_call=tool_call,
@@ -258,12 +316,16 @@ class AgentLoop:
     async def _execute_tool_with_lifecycle(
         self,
         tool_call: ToolCall,
+        *,
+        step: int = 0,
+        trace: Trace | None = None,
     ) -> tuple[ToolExecutionResult, int, str]:
         if self.tool_executor is None:
             raise RuntimeError("Tool executor is not set")
         max_attempts = max(1, self.config.tool_retry_attempts + 1)
 
         for attempt in range(1, max_attempts + 1):
+            t0 = time.monotonic()
             try:
                 raw_result = await self.tool_executor.execute(tool_call)
                 result = self._coerce_tool_result(raw_result)
@@ -273,6 +335,17 @@ class AgentLoop:
                     message=f"Tool execution raised: {type(exc).__name__}",
                     retryable=False,
                     logs=[str(exc)],
+                )
+
+            if trace is not None and self.metrics is not None:
+                self.metrics.record_tool_call(
+                    trace,
+                    step=step,
+                    tool_name=tool_call.name,
+                    latency_seconds=time.monotonic() - t0,
+                    success=not result.is_error,
+                    error_code=result.error_code,
+                    retryable=result.retryable,
                 )
 
             if result.is_error and result.retryable and attempt < max_attempts:

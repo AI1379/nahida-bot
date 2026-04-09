@@ -8,6 +8,20 @@ from nahida_bot.agent.loop import (
     ToolExecutionResult,
     ToolExecutor,
 )
+from nahida_bot.agent.memory import (
+    ConversationTurn,
+    MemoryRecord,
+    MemoryStore,
+    SQLiteMemoryStore,
+    extract_keywords,
+)
+from nahida_bot.agent.metrics import (
+    ContextPruneRecord,
+    MetricsCollector,
+    ProviderCallRecord,
+    ToolCallRecord,
+    Trace,
+)
 from nahida_bot.agent.providers import (
     ChatProvider,
     OpenAICompatibleProvider,
@@ -29,27 +43,37 @@ from nahida_bot.agent.tokenization import (
 )
 
 __all__ = [
+    "AgentLoop",
+    "AgentLoopConfig",
+    "AgentRunResult",
     "CharacterEstimateTokenizer",
     "ChatProvider",
     "CompositeTokenizer",
     "ContextBudget",
     "ContextBuilder",
     "ContextMessage",
-    "AgentLoop",
-    "AgentLoopConfig",
-    "AgentRunResult",
+    "ContextPruneRecord",
+    "ConversationTurn",
     "HeuristicTokenizer",
+    "MemoryRecord",
+    "MemoryStore",
+    "MetricsCollector",
     "OpenAICompatibleProvider",
     "ProviderAuthError",
     "ProviderBadResponseError",
+    "ProviderCallRecord",
     "ProviderError",
     "ProviderRateLimitError",
     "ProviderResponse",
     "ProviderTimeoutError",
     "ProviderTransportError",
+    "SQLiteMemoryStore",
     "ToolCall",
+    "ToolCallRecord",
     "ToolDefinition",
     "ToolExecutionResult",
     "ToolExecutor",
     "Tokenizer",
+    "Trace",
+    "extract_keywords",
 ]
