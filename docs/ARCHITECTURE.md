@@ -268,16 +268,36 @@ class WorkspaceSandbox(Protocol):
 - 建议契约：
 
 ```python
-class MemoryStore(Protocol):
-    async def append_turn(self, session_id: str, turn: ConversationTurn) -> None: ...
+class MemoryStore(ABC):
+    async def append_turn(self, session_id: str, turn: ConversationTurn) -> int: ...
     async def search(self, session_id: str, query: str, limit: int = 5) -> list[MemoryRecord]: ...
+    async def get_recent(self, session_id: str, *, limit: int = 50) -> list[MemoryRecord]: ...
+    async def evict_before(self, cutoff: datetime) -> int: ...
 ```
+
+**当前实现**：
+
+- `agent/memory_models.py` — 数据模型（`ConversationTurn`, `MemoryRecord`）。
+- `agent/memory_store.py` — `MemoryStore` ABC 契约。
+- `agent/memory_sqlite.py` — `SQLiteMemoryStore` 实现（含 `extract_keywords` 工具函数）。
+- `db/engine.py` — `DatabaseEngine` 异步 SQLite 引擎。
+- `db/repositories/sqlite_memory_repo.py` — `SQLiteMemoryRepository` 纯 SQL 数据访问。
+
+> ⚠️ **架构优化待办**：当前调用链为 `MemoryStore → SQLiteMemoryStore → SQLiteMemoryRepository → DatabaseEngine`，对于仅支持 SQLite 的场景而言存在三层间接。后续应评估是否引入 SQLModel 等 ORM 统一 Repository 与模型层，或在确认无多后端需求后合并中间层。关键词检索目前为简单分词+精确匹配，后续可接入向量检索提升召回。
 
 #### 6.1.6 稳定性与可观测性
 
 - 重试仅用于可恢复错误（超时、限流），认证失败默认不重试。
 - 关键路径打点：provider 延迟、工具成功率、上下文裁剪次数、最终回复耗时。
 - 最小验收闭环需要可追踪 trace_id，确保从 workspace 注入到最终回复可串联。
+
+**当前实现**：
+
+- `agent/metrics.py` — `MetricsCollector`（含 `Trace`、各 Record 类型），支持 `max_traces` 环形缓冲防内存泄漏。
+- `agent/loop.py` — Provider 错误回退（`AgentRunResult.error` + `provider_error_template`），每步记录 provider/tool 指标。
+- 全链路 UTC-aware ISO8601 时间戳。
+
+> ⚠️ **架构优化待办**：`MetricsCollector` 当前为纯内存聚合，缺少 flush/export 机制。后续需增加 log sink 或 Prometheus exporter，并考虑将 observability 独立为 `agent/observability/` 子包。
 
 #### 6.1.7 Workspace Sandbox 安全增强
 

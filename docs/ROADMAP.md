@@ -142,15 +142,26 @@ Python 方案的核心结构可以概括为五层：
 
 #### Phase 2.5 - 记忆模型与持久化
 
-- [ ] 实现会话记忆（短期）和长期记忆（可检索）模型。
-- [ ] 先用 SQLite 打通记忆持久化，并预留存储抽象接口。
-- [ ] 建立最小检索策略（按会话、时间窗、关键词）并定义淘汰规则。
+- [x] 实现会话记忆（短期）和长期记忆（可检索）模型。
+- [x] 先用 SQLite 打通记忆持久化，并预留存储抽象接口。
+- [x] 建立最小检索策略（按会话、时间窗、关键词）并定义淘汰规则。
+
+> ⚠️ **待优化（技术债）**：当前记忆层存在三层间接（`MemoryStore ABC → SQLiteMemoryStore → SQLiteMemoryRepository → DatabaseEngine`），对于单一 SQLite 后端而言抽象层数偏多。后续应考虑：
+>
+> - 评估是否引入轻量 ORM（如 SQLModel）统一 Repository 与模型层，减少手写 SQL 和序列化代码。
+> - 若确认只使用 SQLite，可考虑合并 `SQLiteMemoryStore` 与 `SQLiteMemoryRepository` 为一层。
+> - 关键词检索当前为简单分词+精确匹配，后续可接入向量检索或 BM25 排序提升召回质量。
 
 #### Phase 2.6 - 稳定性增强与阶段验收
 
-- [ ] 增加重试、超时、回退提示，避免单次错误中断对话。
-- [ ] 建立最小可观测性埋点（调用耗时、失败率、工具调用成功率）。
-- [ ] 验证至少一条完整闭环：workspace 指令加载 -> provider 调用 -> tool 调用 -> 最终回复。
+- [x] 增加重试、超时、回退提示，避免单次错误中断对话。
+- [x] 建立最小可观测性埋点（调用耗时、失败率、工具调用成功率）。
+- [x] 验证至少一条完整闭环：workspace 指令加载 -> provider 调用 -> tool 调用 -> 最终回复。
+
+> ⚠️ **待优化（技术债）**：
+>
+> - `MetricsCollector` 当前为纯内存聚合，缺少持久化和导出能力。后续需增加 flush/export 机制（如 log sink、Prometheus exporter），否则进程重启后指标丢失。
+> - 错误回退文案通过 `AgentLoopConfig.provider_error_template` 配置，但尚未接入 i18n 系统。
 
 #### Phase 2.7 - Workspace Sandbox 安全增强
 
