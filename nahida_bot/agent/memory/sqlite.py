@@ -7,14 +7,16 @@ import warnings
 from datetime import UTC, datetime
 from typing import Any
 
+# FIXME: jieba's latest release (0.42.1) contains invalid escape sequences that raise SyntaxError on Python 3.12+.
+# Not sure if this is caused by us, by jieba, or by the interaction of jieba with our codebase.
 # jieba 0.42.1 contains invalid escape sequences that raise SyntaxError
 # on Python 3.12+. Suppress at import time until upstream releases a fix.
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", SyntaxWarning)
     import jieba
 
-from nahida_bot.agent.memory_models import ConversationTurn, MemoryRecord
-from nahida_bot.agent.memory_store import MemoryStore
+from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.db.repositories.sqlite_memory_repo import SQLiteMemoryRepository
 

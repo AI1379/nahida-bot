@@ -13,7 +13,7 @@ from nahida_bot.agent.memory import (
     SQLiteMemoryStore,
     extract_keywords,
 )
-from nahida_bot.agent.memory_store import MemoryStore
+from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.db.engine import DatabaseEngine
 
 

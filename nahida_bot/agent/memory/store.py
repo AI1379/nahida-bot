@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-from nahida_bot.agent.memory_models import ConversationTurn, MemoryRecord
+from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 
 
 class MemoryStore(ABC):
