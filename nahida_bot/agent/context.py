@@ -5,9 +5,25 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from enum import Enum
 from typing import TYPE_CHECKING, Literal
 
 from nahida_bot.agent.tokenization import Tokenizer, resolve_tokenizer
+
+
+class ReasoningPolicy(Enum):
+    """Controls how reasoning content is injected into context history.
+
+    Attributes:
+        STRIP: Discard reasoning text, keep only signatures (saves tokens).
+        APPEND: Inject reasoning text fully (most complete context).
+        BUDGET: Inject when within token budget, otherwise discard (recommended default).
+    """
+
+    STRIP = "strip"
+    APPEND = "append"
+    BUDGET = "budget"
+
 
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import ChatProvider
@@ -24,6 +40,11 @@ class ContextMessage:
     source: str
     metadata: dict[str, object] | None = None
 
+    # Reasoning chain support (Phase 2.8 — all have defaults for backward compat)
+    reasoning: str | None = None
+    reasoning_signature: str | None = None
+    has_redacted_thinking: bool = False
+
 
 @dataclass(slots=True, frozen=True)
 class ContextBudget:
@@ -34,6 +55,10 @@ class ContextBudget:
     max_chars: int | None = None
     reserved_chars: int = 0
     summary_max_chars: int = 600
+
+    # Reasoning chain budgeting (Phase 2.8)
+    reasoning_policy: ReasoningPolicy = ReasoningPolicy.BUDGET
+    max_reasoning_tokens: int = 2000
 
     @property
     def usable_tokens(self) -> int:

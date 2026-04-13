@@ -274,6 +274,9 @@ class AgentLoop:
             source="provider_response",
             content=response.content or "",
             metadata=metadata or None,
+            reasoning=response.reasoning_content,
+            reasoning_signature=response.reasoning_signature,
+            has_redacted_thinking=response.has_redacted_thinking,
         )
 
     async def _execute_tools(

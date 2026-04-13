@@ -11,6 +11,7 @@ from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ProviderResponse,
+    TokenUsage,
     ToolCall,
     ToolDefinition,
 )
@@ -21,18 +22,27 @@ from nahida_bot.agent.providers.errors import (
     ProviderTimeoutError,
     ProviderTransportError,
 )
+from nahida_bot.agent.providers.reasoning import _ReasoningMixin
+from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
 
 
+@register_provider("openai-compatible", "OpenAI-compatible Provider")
 @dataclass(slots=True)
-class OpenAICompatibleProvider(ChatProvider):
-    """Provider for OpenAI-compatible `/chat/completions` endpoints."""
+class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
+    """Provider for OpenAI-compatible ``/chat/completions`` endpoints.
+
+    Subclasses for specific backends (DeepSeek, GLM, Groq, Minimax) only need
+    to override ``reasoning_key`` and/or ``serialize_messages`` as needed.
+    """
 
     base_url: str
     api_key: str
     model: str
     name: str = "openai-compatible"
+    api_family: str = "openai-completions"
     tokenizer_impl: Tokenizer | None = None
+    reasoning_key: str = "reasoning_content"
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
     @property
@@ -60,22 +70,12 @@ class OpenAICompatibleProvider(ChatProvider):
         timeout_seconds: float | None = None,
     ) -> ProviderResponse:
         """Call OpenAI-compatible chat completion API."""
-        payload = {
+        payload: dict[str, object] = {
             "model": self.model,
-            "messages": [self._serialize_message(message) for message in messages],
+            "messages": self.serialize_messages(messages),
         }
         if tools:
-            payload["tools"] = [
-                {
-                    "type": tool.type,
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    },
-                }
-                for tool in tools
-            ]
+            payload["tools"] = self.format_tools(tools)
 
         timeout = timeout_seconds or 30
         endpoint = f"{self.base_url.rstrip('/')}/chat/completions"
@@ -123,22 +123,82 @@ class OpenAICompatibleProvider(ChatProvider):
                 "Missing message payload in provider response"
             )
 
+        # --- Extract content ---
         content = message.get("content")
         normalized_content = content if isinstance(content, str) else None
+
+        # --- Extract reasoning (Phase 2.8) ---
+        reasoning_content, cleaned_content = self._extract_reasoning_from_message(
+            message
+        )
+        # If think tags were found inside content, use cleaned version
+        if cleaned_content is not None:
+            normalized_content = cleaned_content
+
+        # --- Extract finish_reason ---
         finish_reason_raw = choice.get("finish_reason")
         finish_reason = (
             finish_reason_raw if isinstance(finish_reason_raw, str) else None
         )
 
+        # --- Extract refusal (OpenAI) ---
+        refusal_raw = message.get("refusal")
+        refusal = refusal_raw if isinstance(refusal_raw, str) else None
+
+        # --- Extract tool calls ---
         tool_calls_payload = message.get("tool_calls")
         tool_calls = self._parse_tool_calls(tool_calls_payload)
+
+        # --- Extract usage statistics ---
+        usage = self._parse_usage(body)
 
         return ProviderResponse(
             content=normalized_content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             raw_response=body,
+            reasoning_content=reasoning_content,
+            refusal=refusal,
+            usage=usage,
         )
+
+    # -- Serialization --
+
+    def serialize_messages(
+        self, messages: list[ContextMessage]
+    ) -> list[dict[str, object]]:
+        """Serialize context messages to OpenAI-compatible format.
+
+        Injects ``reasoning_content`` into assistant messages when present
+        so that the reasoning chain can be replayed in multi-turn contexts.
+        """
+        return [self._serialize_message(msg) for msg in messages]
+
+    def _serialize_message(self, message: ContextMessage) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "role": message.role,
+            "content": message.content,
+        }
+
+        # Inject reasoning into assistant history
+        if message.role == "assistant" and message.reasoning:
+            payload[self.reasoning_key] = message.reasoning
+
+        if message.role == "assistant" and message.metadata is not None:
+            tool_calls_raw = message.metadata.get("tool_calls")
+            if isinstance(tool_calls_raw, list):
+                tool_calls = self._serialize_assistant_tool_calls(tool_calls_raw)
+                if tool_calls:
+                    payload["tool_calls"] = tool_calls
+
+        if message.role == "tool" and message.metadata is not None:
+            tool_call_id = message.metadata.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                payload["tool_call_id"] = tool_call_id
+
+        return payload
+
+    # -- Parsing helpers --
 
     def _extract_first_choice(self, body: dict[str, object]) -> dict[str, object]:
         choices = body.get("choices")
@@ -195,25 +255,41 @@ class OpenAICompatibleProvider(ChatProvider):
             )
         return calls
 
-    def _serialize_message(self, message: ContextMessage) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "role": message.role,
-            "content": message.content,
-        }
+    def _parse_usage(self, body: dict[str, object]) -> TokenUsage | None:
+        """Extract token usage statistics from response body."""
+        usage_raw = body.get("usage")
+        if not isinstance(usage_raw, dict):
+            return None
 
-        if message.role == "assistant" and message.metadata is not None:
-            tool_calls_raw = message.metadata.get("tool_calls")
-            if isinstance(tool_calls_raw, list):
-                tool_calls = self._serialize_assistant_tool_calls(tool_calls_raw)
-                if tool_calls:
-                    payload["tool_calls"] = tool_calls
+        input_tokens = usage_raw.get("prompt_tokens", 0)
+        output_tokens = usage_raw.get("completion_tokens", 0)
 
-        if message.role == "tool" and message.metadata is not None:
-            tool_call_id = message.metadata.get("tool_call_id")
-            if isinstance(tool_call_id, str) and tool_call_id:
-                payload["tool_call_id"] = tool_call_id
+        # Extract reasoning tokens from nested completion_tokens_details
+        reasoning_tokens = 0
+        details = usage_raw.get("completion_tokens_details")
+        if isinstance(details, dict):
+            rt = details.get("reasoning_tokens", 0)
+            if isinstance(rt, int):
+                reasoning_tokens = rt
 
-        return payload
+        # DeepSeek cache tokens
+        cached_tokens = 0
+        prompt_details = usage_raw.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            ct = prompt_details.get("cached_tokens", 0)
+            if isinstance(ct, int):
+                cached_tokens = ct
+        # DeepSeek alternative cache field
+        cache_hit = usage_raw.get("prompt_cache_hit_tokens")
+        if isinstance(cache_hit, int) and cache_hit > 0:
+            cached_tokens = cache_hit
+
+        return TokenUsage(
+            input_tokens=input_tokens if isinstance(input_tokens, int) else 0,
+            output_tokens=output_tokens if isinstance(output_tokens, int) else 0,
+            cached_tokens=cached_tokens,
+            reasoning_tokens=reasoning_tokens,
+        )
 
     def _serialize_assistant_tool_calls(
         self,
