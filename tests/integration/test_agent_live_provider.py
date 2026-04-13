@@ -40,8 +40,15 @@ async def test_live_openai_compatible_roundtrip(live_llm_config):
             system_prompt="You are a concise assistant.",
         )
 
-        assert result.final_response
-        assert "pong" in result.final_response.lower()
+        # Phase 2.8: The model may put the answer inside reasoning content
+        # (think tags), leaving final_response empty. Check both locations.
+        response_text = result.final_response
+        if not response_text and result.assistant_messages:
+            last_msg = result.assistant_messages[-1]
+            if last_msg.reasoning:
+                response_text = last_msg.reasoning
+        assert response_text, "Expected either content or reasoning from provider"
+        assert "pong" in response_text.lower()
     finally:
         await provider.close()
 
