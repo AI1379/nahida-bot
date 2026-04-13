@@ -190,27 +190,31 @@ Python 方案的核心结构可以概括为五层：
 
 #### Phase 2.8 - Provider 响应健壮性与多后端适配
 
-> ⚠️ **重要性**：当前 Provider 实现仅支持标准 OpenAI 响应格式，无法处理 DeepSeek-R1 推理链、Claude Extended Thinking 等高级特性。
+> ✅ **已完成**：Phase 2.8 和 2.8b 全部完成。Provider 现在支持 OpenAI 兼容族和 Anthropic 族的推理链、Extended Thinking、签名回传等高级特性。
 
-- [ ] 扩展 `ProviderResponse` 数据结构，添加 `reasoning_content` 和 `reasoning_tokens` 字段。
-- [ ] 扩展 `ContextMessage` 数据结构，添加 `reasoning` 字段。
-- [ ] 实现 `ResponseAdapter` 协议，定义统一的响应适配接口。
-- [ ] 实现标准 OpenAI 响应适配器（`OpenAIAdapter`）。
-- [ ] 实现 DeepSeek-R1 响应适配器（处理 `reasoning_content` 字段）。
-- [ ] 实现 Anthropic/Claude 响应适配器（处理 `thinking` 块和 `redacted_thinking` 块）。
-- [ ] 定义推理链上下文策略（`ReasoningPolicy`：never/always/on_budget/separate）。
-- [ ] 在 `ContextBuilder` 中实现推理内容的条件注入逻辑。
-- [ ] 编写适配器和上下文策略的完整测试套件。
-- [ ] 更新 ARCHITECTURE.md 中的 Provider 文档。
+- [x] 扩展 `ProviderResponse` 数据结构，添加 `reasoning_content` 和 `reasoning_tokens` 字段。
+- [x] 扩展 `ContextMessage` 数据结构，添加 `reasoning` 字段。
+- [x] 实现集成式 Provider 架构（`_ReasoningMixin` + 类继承），替代独立 `ResponseAdapter` 协议。
+- [x] 实现标准 OpenAI 响应适配（`OpenAICompatibleProvider` 演进）。
+- [x] 实现 DeepSeek-R1 响应适配（`DeepSeekProvider` 子类，处理 `reasoning_content` 字段）。
+- [x] 实现 Anthropic/Claude 响应适配器（处理 `thinking` 块和 `redacted_thinking` 块）。
+- [x] 定义推理链上下文策略（`ReasoningPolicy`：strip/append/budget）。
+- [x] 在 Agent Loop 中实现推理内容的传播逻辑（`_build_assistant_message` → `ContextMessage`）。
+- [x] 编写适配器和上下文策略的完整测试套件。
+- [x] 实现 Provider 注册表（`@register_provider` + 工厂方法）和子类（GLM、Groq、Minimax）。
+- [x] 编写多后端集成测试（OpenAI/DeepSeek/Anthropic）。
+- [x] 更新 ARCHITECTURE.md 中的 Provider 文档（当前实现部分）。
 
 **支持的响应格式**：
 
-| 后端 | 特殊字段 | 适配器 |
-|-----|---------|-------|
-| OpenAI 标准 | `content` | `OpenAIAdapter` |
-| DeepSeek-R1 | `reasoning_content` | `DeepSeekAdapter` |
-| Claude | `thinking` 块 | `AnthropicAdapter` |
-| OpenAI o1 | `reasoning_tokens` | `OpenAIAdapter` |
+| 后端 | 特殊字段 | Provider 类 |
+|-----|---------|----------|
+| OpenAI 标准 | `content` | `OpenAICompatibleProvider` |
+| DeepSeek-R1 | `reasoning_content` | `DeepSeekProvider` |
+| GLM/智谱 | （无特殊字段） | `GLMProvider` |
+| Groq | `reasoning` | `GroqProvider` |
+| Minimax | （无特殊字段） | `MinimaxProvider` |
+| Claude | `thinking` 块 | `AnthropicProvider` |
 
 **参考实现**：见 ARCHITECTURE.md 第 6.1.8 节。
 

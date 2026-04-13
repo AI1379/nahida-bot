@@ -386,7 +386,7 @@ class SecureWorkspaceSandbox:
 
 | 库 | 特点 | 适用场景 |
 |---|------|---------|
-| ` RestrictedPython` | Python 代码沙盒 | 工具执行隔离 |
+| `RestrictedPython` | Python 代码沙盒 | 工具执行隔离 |
 | `pyrate-limiter` | 频率限制 | 防止资源滥用 |
 | 自研 + `os` 模块底层检查 | 文件系统沙盒 | 当前推荐 |
 
@@ -1449,45 +1449,52 @@ for msg in messages:
 
 ```
 nahida_bot/agent/providers/
-    __init__.py              # 更新：新增导出
-    base.py                  # 扩展：TokenUsage, ProviderResponse 新字段, api_family, format_tools, serialize_messages
-    registry.py              # 新增：@register_provider, get_provider_class, create_provider, list_providers
-    reasoning.py             # 新增：ReasoningPolicy, extract_think_tags, _ReasoningMixin
-    openai_compatible.py     # 演进：继承 _ReasoningMixin，填充新 ProviderResponse 字段，serialize_messages 注入推理
-    deepseek.py              # 新增：@register_provider("deepseek")，空子类
-    glm.py                   # 新增：@register_provider("glm")，空子类
-    groq.py                  # 新增：@register_provider("groq")，reasoning_key 覆盖 + 历史 strip
-    minimax.py               # 新增：@register_provider("minimax")，空子类
-    anthropic.py             # 新增：独立 Provider（Phase 2.8b）
-    gemini.py                # 新增：独立 Provider（Phase 3）
+    __init__.py              # ✅ 已更新：新增导出（AnthropicProvider, TokenUsage, ReasoningPolicy, registry 函数等）
+    base.py                  # ✅ 已扩展：TokenUsage, ProviderResponse 新字段, api_family, format_tools, serialize_messages
+    registry.py              # ✅ 已新增：@register_provider, get_provider_class, create_provider, list_providers
+    reasoning.py             # ✅ 已新增：extract_think_tags, _ReasoningMixin（ReasoningPolicy 定义在 context.py 以避免循环导入）
+    openai_compatible.py     # ✅ 已演进：继承 _ReasoningMixin，填充新 ProviderResponse 字段，serialize_messages 注入推理
+    deepseek.py              # ✅ 已新增：@register_provider("deepseek")，空子类
+    glm.py                   # ✅ 已新增：@register_provider("glm")，空子类
+    groq.py                  # ✅ 已新增：@register_provider("groq")，reasoning_key 覆盖 + 历史 strip
+    minimax.py               # ✅ 已新增：@register_provider("minimax")，空子类
+    anthropic.py             # ✅ 已新增：独立 AnthropicProvider（content blocks 解析 + 签名回传 + tool_use）
+    gemini.py                # ☐ 未实现：独立 Provider（Phase 3）
     errors.py                # 不变
 
 nahida_bot/agent/
-    context.py               # 扩展：ContextMessage 新字段，ContextBudget 新增 reasoning_policy/max_reasoning_tokens
-    loop.py                  # 扩展：_build_assistant_message 传播新字段
+    context.py               # ✅ 已扩展：ReasoningPolicy 枚举, ContextMessage 新字段, ContextBudget 新增 reasoning_policy/max_reasoning_tokens
+    loop.py                  # ✅ 已扩展：_build_assistant_message 传播推理/签名字段
+
+tests/
+    test_reasoning.py                              # ✅ 14 tests: extract_think_tags, _ReasoningMixin, ReasoningPolicy
+    test_provider_registry.py                      # ✅ 7 tests: 注册表、查找、重复检测
+    test_provider_reasoning_integration.py         # ✅ 12 tests: DeepSeek reasoning, think-tag fallback, Groq stripping, TokenUsage, refusal
+    test_provider_anthropic.py                     # ✅ 14 tests: text/thinking/redacted/tool_use blocks, system prompt, signature replay
+    integration/test_provider_multibackend_live.py # ✅ 10 tests: OpenAI/DeepSeek/Anthropic live roundtrips + contract validation
 ```
 
 ---
 
 ##### D. 实施计划
 
-**Phase 2.8（当前）**：
+**Phase 2.8 ✅ — 已完成**：
 
-1. 扩展 `base.py`：`TokenUsage` dataclass + `ProviderResponse` 新字段 + `ChatProvider` 新方法
-2. 扩展 `context.py`：`ContextMessage` 新字段 + `ContextBudget` 新字段 + `ReasoningPolicy` 引用
-3. 新建 `reasoning.py`：`ReasoningPolicy` 枚举 + `extract_think_tags()` + `_ReasoningMixin`
-4. 新建 `registry.py`：`@register_provider` + 工厂方法
-5. 演进 `openai_compatible.py`：继承 `_ReasoningMixin`，填充新字段，`serialize_messages` 处理推理历史
-6. 新建空子类：`deepseek.py`、`glm.py`、`groq.py`、`minimax.py`
-7. 扩展 `loop.py`：`_build_assistant_message` 传播推理/签名字段
-8. 编写完整测试套件
-9. 更新 ARCHITECTURE.md 文档
+1. ✅ 扩展 `base.py`：`TokenUsage` dataclass + `ProviderResponse` 新字段 + `ChatProvider` 新方法
+2. ✅ 扩展 `context.py`：`ContextMessage` 新字段 + `ContextBudget` 新字段 + `ReasoningPolicy` 枚举
+3. ✅ 新建 `reasoning.py`：`extract_think_tags()` + `_ReasoningMixin`
+4. ✅ 新建 `registry.py`：`@register_provider` + 工厂方法
+5. ✅ 演进 `openai_compatible.py`：继承 `_ReasoningMixin`，填充新字段，`serialize_messages` 处理推理历史
+6. ✅ 新建空子类：`deepseek.py`、`glm.py`、`groq.py`、`minimax.py`
+7. ✅ 扩展 `loop.py`：`_build_assistant_message` 传播推理/签名字段
+8. ✅ 编写完整测试套件
+9. ✅ 更新 ARCHITECTURE.md 文档
 
-**Phase 2.8b**：
+**Phase 2.8b ✅ — 已完成**：
 
-1. 新建 `anthropic.py`：独立 Anthropic Provider（content blocks 解析 + 签名回传）
-2. Anthropic 相关测试
-3. 可选：`gemini.py` 使用 OpenAI 兼容端点起步
+1. ✅ 新建 `anthropic.py`：独立 Anthropic Provider（content blocks 解析 + 签名回传 + tool_use）
+2. ✅ Anthropic 单元测试（14 tests）
+3. ✅ 多后端集成测试（OpenAI/DeepSeek/Anthropic，通过 `.env.test` 配置 API Key）
 
 **Phase 3+**：
 
@@ -1495,6 +1502,46 @@ nahida_bot/agent/
 2. `GeminiProvider` 原生端点实现
 3. 更多后端适配器
 4. 完整插件系统（通过 entry points 发现 Provider 模块）
+
+---
+
+##### G. 当前实现状态（Phase 2.8 完成后）
+
+> 本节记录 Phase 2.8/2.8b 完成后的实际代码状态，供后续开发参考。
+
+**设计决策与偏离**：
+
+1. **`ReasoningPolicy` 定义位置**：ARCHITECTURE 原设计将其放在 `reasoning.py`，实际放在 `context.py` 以避免循环导入（`context.py` → `providers.reasoning` → `providers.__init__` → `base` → `context.py`）。`reasoning.py` 通过 `from nahida_bot.agent.context import ReasoningPolicy` 重新导出。
+
+2. **`_ReasoningMixin._extract_reasoning_from_message` 返回值**：ARCHITECTURE 原设计返回 `str | None`，实际返回 `tuple[str | None, str | None]`（reasoning_content, cleaned_content）。当 think-tag 被提取后，调用方需要使用 cleaned content 替换原始 content。
+
+3. **`GroqProvider.serialize_messages`**：不使用 `super()` 而是显式调用 `OpenAICompatibleProvider.serialize_messages(self, ...)`，因为 `@dataclass(slots=True)` + 多重继承导致 `super()` 的 MRO 解析失败。
+
+4. **Anthropic `serialize_messages` 返回值**：返回 `tuple[str | None, list[dict]]` 而非 `list[dict]`，因为 Anthropic 要求 system prompt 作为独立顶层参数传递。
+
+**Provider 注册表状态**（通过 `list_providers()` 可查）：
+
+| Provider Type | Class | API Family | Key Features |
+|---|---|---|---|
+| `openai-compatible` | `OpenAICompatibleProvider` | `openai-completions` | Base class, `_ReasoningMixin`, think-tag fallback |
+| `deepseek` | `DeepSeekProvider` | `openai-completions` | Empty subclass, inherits `reasoning_key` |
+| `glm` | `GLMProvider` | `openai-completions` | Empty subclass |
+| `groq` | `GroqProvider` | `openai-completions` | `reasoning_key="reasoning"`, strips reasoning from history |
+| `minimax` | `MinimaxProvider` | `openai-completions` | Empty subclass |
+| `anthropic` | `AnthropicProvider` | `anthropic-messages` | Independent impl, content blocks, signature passback |
+
+**集成测试环境**：
+
+```
+.env.test.example    # 模板文件，包含所有支持的 Provider 环境变量
+.env.test            # 实际密钥文件（gitignored），从 .env.test.example 复制
+```
+
+测试用 fixtures（`conftest.py`）：
+
+- `live_llm_config` → OpenAI 兼容后端
+- `live_deepseek_config` → DeepSeek 后端
+- `live_anthropic_config` → Anthropic 后端
 
 ---
 
@@ -1942,7 +1989,7 @@ class EventHandler(Protocol[EventT]):
 - `publish_nowait(event) -> bool`
 - `shutdown(timeout: float | None = None) -> None`
 
-2. Facade API（上层开发体验层，Pythonic、声明式）
+1. Facade API（上层开发体验层，Pythonic、声明式）
 
 - `@events.on(EventType)` 装饰器式注册。
 - `@events.on(EventType, depends=[Depends(check_xxx)])` 前置依赖。
