@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ class DatabaseEngine:
         """
         self._db_path = str(db_path)
         self._db: aiosqlite.Connection | None = None
+        self._write_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def db(self) -> aiosqlite.Connection:
@@ -66,6 +68,11 @@ class DatabaseEngine:
         if self._db is None:
             raise RuntimeError("Database engine is not initialized")
         return self._db
+
+    @property
+    def write_lock(self) -> asyncio.Lock:
+        """Lock for serializing write operations."""
+        return self._write_lock
 
     async def initialize(self) -> None:
         """Open the database connection and run pending migrations."""
@@ -102,7 +109,31 @@ class DatabaseEngine:
         return list(await cursor.fetchall())
 
     async def _run_migrations(self) -> None:
-        """Apply all schema migrations in order."""
-        for migration_sql in _SCHEMA_MIGRATIONS:
-            await self.db.executescript(migration_sql)
+        """Apply pending schema migrations with version tracking."""
+        await self.db.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        )
         await self.db.commit()
+
+        cursor = await self.db.execute("SELECT version FROM schema_version")
+        row = await cursor.fetchone()
+        current_version = int(row["version"]) if row else 0
+
+        for idx, migration_sql in enumerate(_SCHEMA_MIGRATIONS, start=1):
+            if idx <= current_version:
+                continue
+            await self.db.executescript(migration_sql)
+
+        new_version = len(_SCHEMA_MIGRATIONS)
+        if new_version > current_version:
+            if current_version == 0:
+                await self.db.execute(
+                    "INSERT INTO schema_version (version) VALUES (?)",
+                    (new_version,),
+                )
+            else:
+                await self.db.execute(
+                    "UPDATE schema_version SET version = ?",
+                    (new_version,),
+                )
+            await self.db.commit()

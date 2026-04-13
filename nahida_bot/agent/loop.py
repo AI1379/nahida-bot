@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+import structlog
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage
 from nahida_bot.agent.metrics import MetricsCollector, Trace
@@ -20,7 +22,7 @@ from nahida_bot.agent.providers import (
     ToolDefinition,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class ToolExecutor(ABC):
@@ -125,7 +127,7 @@ class AgentLoop:
         user_message: str,
         system_prompt: str,
         history_messages: list[ContextMessage] | None = None,
-        workspace_root=None,
+        workspace_root: Path | None = None,
         tools: list[ToolDefinition] | None = None,
     ) -> AgentRunResult:
         """Run the agent loop until terminal assistant response is produced."""
@@ -194,7 +196,9 @@ class AgentLoop:
             )
         except ProviderError as exc:
             logger.warning(
-                "Agent loop aborted by provider error: %s", exc, exc_info=True
+                "agent_loop.provider_error_abort",
+                error=str(exc),
+                exc_info=True,
             )
             fallback = assistant_messages[-1].content if assistant_messages else ""
             if not fallback:
@@ -281,7 +285,6 @@ class AgentLoop:
         trace: Trace | None = None,
     ) -> list[ContextMessage]:
         messages: list[ContextMessage] = []
-        assert self.tool_executor is not None
 
         definitions = self._index_tools(tools)
         for tool_call in response.tool_calls:

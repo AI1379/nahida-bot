@@ -38,7 +38,7 @@ class Application:
         )
         self._initialized = False
         self._started = False
-        self._shutdown_event = asyncio.Event()
+        self._shutdown_event: asyncio.Event | None = None
         self.event_bus = EventBus(
             EventContext(app=self, settings=self.settings, logger=logger)
         )
@@ -55,7 +55,7 @@ class Application:
                 app_name=self.settings.app_name,
                 debug=self.settings.debug,
             )
-            await self.event_bus.publish(
+            result = await self.event_bus.publish(
                 AppInitializing(
                     payload=AppLifecyclePayload(
                         app_name=self.settings.app_name,
@@ -64,6 +64,13 @@ class Application:
                     source="core.app.initialize",
                 )
             )
+            if result.failures:
+                details = "; ".join(
+                    f"{f.handler_name}: {f.error}" for f in result.failures
+                )
+                raise StartupError(
+                    f"Lifecycle handler(s) failed during init: {details}"
+                )
             # TODO: Placeholder for future initialization logic
             self._initialized = True
         except Exception as e:
@@ -89,7 +96,7 @@ class Application:
             )
             # TODO: Placeholder for future startup logic
             self._started = True
-            await self.event_bus.publish(
+            result = await self.event_bus.publish(
                 AppStarted(
                     payload=AppLifecyclePayload(
                         app_name=self.settings.app_name,
@@ -98,6 +105,13 @@ class Application:
                     source="core.app.start",
                 )
             )
+            if result.failures:
+                details = "; ".join(
+                    f"{f.handler_name}: {f.error}" for f in result.failures
+                )
+                raise StartupError(
+                    f"Lifecycle handler(s) failed during start: {details}"
+                )
             logger.info(
                 "application.started",
                 app_name=self.settings.app_name,
@@ -113,7 +127,8 @@ class Application:
         """Stop the application gracefully."""
         if not self._started:
             logger.warning("application.stop_without_start")
-            self._shutdown_event.set()
+            if self._shutdown_event is not None:
+                self._shutdown_event.set()
             return
 
         try:
@@ -142,7 +157,8 @@ class Application:
                 )
             )
             await self.event_bus.shutdown(timeout=1.0)
-            self._shutdown_event.set()
+            if self._shutdown_event is not None:
+                self._shutdown_event.set()
             logger.info(
                 "application.stopped",
                 app_name=self.settings.app_name,
@@ -156,12 +172,13 @@ class Application:
 
     def request_shutdown(self) -> None:
         """Request application shutdown from external callers."""
-        self._shutdown_event.set()
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
 
     async def run(self) -> None:
         """Run the application until interrupted."""
+        self._shutdown_event = asyncio.Event()
         await self.start()
-        self._shutdown_event.clear()
 
         loop = asyncio.get_running_loop()
         registered_signals: list[signal.Signals] = []

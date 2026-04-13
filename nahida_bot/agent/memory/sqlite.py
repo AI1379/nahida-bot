@@ -7,10 +7,8 @@ import warnings
 from datetime import UTC, datetime
 from typing import Any
 
-# FIXME: jieba's latest release (0.42.1) contains invalid escape sequences that raise SyntaxError on Python 3.12+.
-# Not sure if this is caused by us, by jieba, or by the interaction of jieba with our codebase.
-# jieba 0.42.1 contains invalid escape sequences that raise SyntaxError
-# on Python 3.12+. Suppress at import time until upstream releases a fix.
+# FIXME: jieba 0.42.1 emits SyntaxWarning on Python 3.12+ due to invalid escapes.
+# Keep this suppression until we upgrade/patch jieba in a dedicated follow-up.
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", SyntaxWarning)
     import jieba

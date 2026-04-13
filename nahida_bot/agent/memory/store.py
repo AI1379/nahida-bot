@@ -12,6 +12,13 @@ class MemoryStore(ABC):
     """Abstract base class for memory persistence backends."""
 
     @abstractmethod
+    async def ensure_session(
+        self, session_id: str, workspace_id: str | None = None
+    ) -> None:
+        """Ensure session metadata exists before appending turns."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def append_turn(self, session_id: str, turn: ConversationTurn) -> int:
         """Store a conversation turn and return its ID."""
         raise NotImplementedError

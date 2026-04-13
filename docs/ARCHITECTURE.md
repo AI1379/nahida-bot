@@ -269,6 +269,7 @@ class WorkspaceSandbox(Protocol):
 
 ```python
 class MemoryStore(ABC):
+  async def ensure_session(self, session_id: str, workspace_id: str | None = None) -> None: ...
     async def append_turn(self, session_id: str, turn: ConversationTurn) -> int: ...
     async def search(self, session_id: str, query: str, limit: int = 5) -> list[MemoryRecord]: ...
     async def get_recent(self, session_id: str, *, limit: int = 50) -> list[MemoryRecord]: ...
@@ -277,9 +278,9 @@ class MemoryStore(ABC):
 
 **当前实现**：
 
-- `agent/memory_models.py` — 数据模型（`ConversationTurn`, `MemoryRecord`）。
-- `agent/memory_store.py` — `MemoryStore` ABC 契约。
-- `agent/memory_sqlite.py` — `SQLiteMemoryStore` 实现（含 `extract_keywords` 工具函数）。
+- `agent/memory/models.py` — 数据模型（`ConversationTurn`, `MemoryRecord`）。
+- `agent/memory/store.py` — `MemoryStore` ABC 契约。
+- `agent/memory/sqlite.py` — `SQLiteMemoryStore` 实现（含 `extract_keywords` 工具函数）。
 - `db/engine.py` — `DatabaseEngine` 异步 SQLite 引擎。
 - `db/repositories/sqlite_memory_repo.py` — `SQLiteMemoryRepository` 纯 SQL 数据访问。
 

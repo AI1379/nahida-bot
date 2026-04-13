@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -33,11 +33,24 @@ class OpenAICompatibleProvider(ChatProvider):
     model: str
     name: str = "openai-compatible"
     tokenizer_impl: Tokenizer | None = None
+    _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
     @property
     def tokenizer(self) -> Tokenizer | None:
         """Expose provider tokenizer to context budgeting."""
         return self.tokenizer_impl
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        """Return the shared HTTP client, creating it if needed."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient()
+        return self._client
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     async def chat(
         self,
@@ -72,12 +85,16 @@ class OpenAICompatibleProvider(ChatProvider):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(endpoint, json=payload, headers=headers)
+            client = self._ensure_client()
+            response = await client.post(
+                endpoint, json=payload, headers=headers, timeout=timeout
+            )
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError() from exc
         except httpx.HTTPError as exc:
-            raise ProviderTransportError(str(exc)) from exc
+            raise ProviderTransportError(
+                f"HTTP transport error communicating with {self.name}"
+            ) from exc
 
         if response.status_code in (401, 403):
             raise ProviderAuthError(

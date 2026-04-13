@@ -112,6 +112,7 @@ filterwarnings = [
     "error",
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 # ============================================================

@@ -1,7 +1,8 @@
 """Command-line interface."""
 
 import asyncio
-import logging
+
+import structlog
 
 import typer
 from rich.console import Console
@@ -10,7 +11,7 @@ from rich.table import Table
 from nahida_bot.core.app import Application
 from nahida_bot.core.config import load_settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 console = Console()
 
 app = typer.Typer(help="Nahida Bot - LLM Chatbot Framework")

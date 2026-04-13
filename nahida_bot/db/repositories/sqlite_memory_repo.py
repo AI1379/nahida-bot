@@ -27,22 +27,14 @@ class SQLiteMemoryRepository:
     ) -> None:
         """Insert a session row if it does not exist, refresh last_active_at."""
         now_iso = _utc_now_iso()
-        existing = await self._engine.fetch_one(
-            "SELECT session_id FROM sessions WHERE session_id = ?",
-            (session_id,),
-        )
-        if existing is None:
+        async with self._engine.write_lock:
             await self._engine.execute(
                 "INSERT INTO sessions (session_id, workspace_id, created_at, last_active_at) "
-                "VALUES (?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET last_active_at = excluded.last_active_at",
                 (session_id, workspace_id, now_iso, now_iso),
             )
-        else:
-            await self._engine.execute(
-                "UPDATE sessions SET last_active_at = ? WHERE session_id = ?",
-                (now_iso, session_id),
-            )
-        await self._engine.db.commit()
+            await self._engine.db.commit()
 
     async def append_turn(
         self,
@@ -58,18 +50,19 @@ class SQLiteMemoryRepository:
         now_iso = _utc_now_iso()
         metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
 
-        cursor = await self._engine.execute(
-            "INSERT INTO memory_turns "
-            "(session_id, role, content, source, metadata_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, role, content, source, metadata_json, now_iso),
-        )
-        turn_id: int = cursor.lastrowid  # type: ignore[assignment]
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                "INSERT INTO memory_turns "
+                "(session_id, role, content, source, metadata_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, role, content, source, metadata_json, now_iso),
+            )
+            turn_id: int = cursor.lastrowid  # type: ignore[assignment]
 
-        if keywords:
-            await self._insert_keywords(turn_id, keywords)
+            if keywords:
+                await self._insert_keywords(turn_id, keywords)
 
-        await self._engine.db.commit()
+            await self._engine.db.commit()
         return turn_id
 
     async def get_recent_turns(
@@ -177,18 +170,19 @@ class SQLiteMemoryRepository:
     async def delete_turns_before(self, cutoff: datetime) -> int:
         """Delete turns older than cutoff. Returns count of deleted rows."""
         cutoff_iso = cutoff.isoformat()
-        # Delete keywords first (no ON DELETE CASCADE on the FK).
-        await self._engine.execute(
-            "DELETE FROM memory_keywords WHERE turn_id IN ("
-            "SELECT id FROM memory_turns WHERE created_at < ?"
-            ")",
-            (cutoff_iso,),
-        )
-        cursor = await self._engine.execute(
-            "DELETE FROM memory_turns WHERE created_at < ?",
-            (cutoff_iso,),
-        )
-        await self._engine.db.commit()
+        async with self._engine.write_lock:
+            # Delete keywords first (no ON DELETE CASCADE on the FK).
+            await self._engine.execute(
+                "DELETE FROM memory_keywords WHERE turn_id IN ("
+                "SELECT id FROM memory_turns WHERE created_at < ?"
+                ")",
+                (cutoff_iso,),
+            )
+            cursor = await self._engine.execute(
+                "DELETE FROM memory_turns WHERE created_at < ?",
+                (cutoff_iso,),
+            )
+            await self._engine.db.commit()
         return cursor.rowcount
 
     async def _insert_keywords(self, turn_id: int, keywords: list[str]) -> None:

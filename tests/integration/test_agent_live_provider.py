@@ -34,13 +34,16 @@ async def test_live_openai_compatible_roundtrip(live_llm_config):
     )
     loop = AgentLoop(provider=provider, context_builder=context_builder)
 
-    result = await loop.run(
-        user_message="Reply with exactly: PONG",
-        system_prompt="You are a concise assistant.",
-    )
+    try:
+        result = await loop.run(
+            user_message="Reply with exactly: PONG",
+            system_prompt="You are a concise assistant.",
+        )
 
-    assert result.final_response
-    assert "pong" in result.final_response.lower()
+        assert result.final_response
+        assert "pong" in result.final_response.lower()
+    finally:
+        await provider.close()
 
 
 @pytest.mark.integration
@@ -59,17 +62,20 @@ async def test_live_openai_compatible_provider_contract(live_llm_config):
         model=live_llm_config["model"],
     )
 
-    response = await provider.chat(
-        messages=[
-            ContextMessage(
-                role="user",
-                source="integration_test",
-                content="Reply with one short greeting.",
-            )
-        ],
-        timeout_seconds=30,
-    )
+    try:
+        response = await provider.chat(
+            messages=[
+                ContextMessage(
+                    role="user",
+                    source="integration_test",
+                    content="Reply with one short greeting.",
+                )
+            ],
+            timeout_seconds=30,
+        )
 
-    assert response.content is None or isinstance(response.content, str)
-    assert isinstance(response.tool_calls, list)
-    assert response.raw_response is not None
+        assert response.content is None or isinstance(response.content, str)
+        assert isinstance(response.tool_calls, list)
+        assert response.raw_response is not None
+    finally:
+        await provider.close()
