@@ -166,3 +166,49 @@ def live_llm_config() -> dict[str, str] | None:
         "api_key": api_key,
         "model": model,
     }
+
+
+@pytest.fixture
+def live_deepseek_config() -> dict[str, str] | None:
+    """Return live DeepSeek config from env variables, or None when incomplete.
+
+    Supported env keys:
+    - NAHIDA_LIVE_DEEPSEEK_BASE_URL (default: https://api.deepseek.com)
+    - NAHIDA_LIVE_DEEPSEEK_API_KEY
+    - NAHIDA_LIVE_DEEPSEEK_MODEL (default: deepseek-chat)
+    """
+    api_key = os.getenv("NAHIDA_LIVE_DEEPSEEK_API_KEY")
+    if not api_key:
+        return None
+
+    return {
+        "base_url": os.getenv(
+            "NAHIDA_LIVE_DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        ),
+        "api_key": api_key,
+        "model": os.getenv("NAHIDA_LIVE_DEEPSEEK_MODEL", "deepseek-chat"),
+    }
+
+
+@pytest.fixture
+def live_anthropic_config() -> dict[str, str] | None:
+    """Return live Anthropic config from env variables, or None when incomplete.
+
+    Supported env keys:
+    - NAHIDA_LIVE_ANTHROPIC_BASE_URL (default: https://api.anthropic.com)
+    - NAHIDA_LIVE_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY)
+    - NAHIDA_LIVE_ANTHROPIC_MODEL (default: claude-sonnet-4-20250514)
+    """
+    api_key = os.getenv("NAHIDA_LIVE_ANTHROPIC_API_KEY") or os.getenv(
+        "ANTHROPIC_API_KEY"
+    )
+    if not api_key:
+        return None
+
+    return {
+        "base_url": os.getenv(
+            "NAHIDA_LIVE_ANTHROPIC_BASE_URL", "https://api.anthropic.com"
+        ),
+        "api_key": api_key,
+        "model": os.getenv("NAHIDA_LIVE_ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+    }
