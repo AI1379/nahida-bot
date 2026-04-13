@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import ChatProvider
+
+TProvider = TypeVar("TProvider", bound="type[ChatProvider]")
 
 
 @dataclass(slots=True, frozen=True)
@@ -32,7 +34,7 @@ def register_provider(provider_type: str, description: str = ""):  # noqa: ANN20
         ValueError: If *provider_type* is already registered.
     """
 
-    def decorator(cls: type[ChatProvider]) -> type[ChatProvider]:
+    def decorator(cls: TProvider) -> TProvider:
         if provider_type in _REGISTRY:
             raise ValueError(f"Provider type '{provider_type}' already registered")
         _REGISTRY[provider_type] = ProviderDescriptor(

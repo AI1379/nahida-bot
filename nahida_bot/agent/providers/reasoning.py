@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Mapping
 import re
 
 # Re-export ReasoningPolicy from context (canonical location) so that
@@ -47,7 +48,7 @@ class _ReasoningMixin:
     reasoning_key: str = "reasoning_content"
 
     def _extract_reasoning_from_message(
-        self, message: dict[str, object]
+        self, message: Mapping[str, object]
     ) -> tuple[str | None, str | None]:
         """Extract reasoning content from a response message dict.
 
