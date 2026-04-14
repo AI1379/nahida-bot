@@ -46,7 +46,13 @@ _SCHEMA_MIGRATIONS = [
 
 
 class DatabaseEngine:
-    """Async SQLite engine with schema migration support."""
+    """Async SQLite engine with schema migration support.
+
+    TODO: Add ``__aenter__`` / ``__aexit__`` so callers can use
+    ``async with DatabaseEngine(...) as db:`` for guaranteed connection
+    cleanup on exception paths. Currently callers must remember to call
+    ``close()`` manually.
+    """
 
     def __init__(self, db_path: str | Path) -> None:
         """Create engine for given database path.

@@ -22,6 +22,10 @@ class ProviderDescriptor:
 
 _REGISTRY: dict[str, ProviderDescriptor] = {}
 
+# TODO: _REGISTRY is a module-level mutable global — tests cannot isolate or
+# reset state between runs. Add a ``reset_registry()`` helper or switch to a
+# class-based registry that can be instantiated per-test.
+
 
 def register_provider(provider_type: str, description: str = ""):  # noqa: ANN201 — returns decorator
     """Decorator: register a ``ChatProvider`` subclass by type name.

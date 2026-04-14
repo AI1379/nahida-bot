@@ -285,7 +285,12 @@ class ContextBuilder:
             candidate_dynamic = candidate_dynamic[1:]
 
     def _estimate_tokens(self, messages: list[ContextMessage]) -> int:
-        """Estimate context size using configured tokenizer strategy."""
+        """Estimate context size using configured tokenizer strategy.
+
+        TODO: Metadata JSON is re-serialized on every call. The binary-search
+        truncation path calls this repeatedly for the same messages. Cache the
+        serialized form on ContextMessage or compute metadata overhead once.
+        """
         total = 0
         for message in messages:
             metadata_serialized = (

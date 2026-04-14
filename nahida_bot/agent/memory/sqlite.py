@@ -9,6 +9,10 @@ from typing import Any
 
 # FIXME: jieba 0.42.1 emits SyntaxWarning on Python 3.12+ due to invalid escapes.
 # Keep this suppression until we upgrade/patch jieba in a dedicated follow-up.
+# TODO: jieba's dictionary loading costs ~0.5-1s at import time. Even if the
+# memory subsystem is never used, this module-level import pays that cost.
+# Consider lazy-loading: defer ``import jieba`` into ``extract_keywords()``
+# on first call, or use ``functools.lru_cache`` on a wrapper.
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", SyntaxWarning)
     import jieba

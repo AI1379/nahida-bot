@@ -186,7 +186,12 @@ class SQLiteMemoryRepository:
         return cursor.rowcount
 
     async def _insert_keywords(self, turn_id: int, keywords: list[str]) -> None:
-        """Insert keyword associations for a turn."""
+        """Insert keyword associations for a turn.
+
+        TODO: This issues N individual INSERT statements. For CJK text jieba
+        can produce 20-50+ keywords per turn. Replace with ``executemany`` or
+        a single multi-value INSERT to reduce round-trips.
+        """
         for keyword in keywords:
             await self._engine.execute(
                 "INSERT INTO memory_keywords (turn_id, keyword) VALUES (?, ?)",

@@ -95,6 +95,10 @@ class Application:
                 app_name=self.settings.app_name,
             )
             # TODO: Placeholder for future startup logic
+            # FIXME: _started is set before AppStarted event validation. If a
+            # lifecycle handler fails, the flag already indicates "started" which
+            # causes stop() to run shutdown logic against a partially-started app.
+            # Move this assignment *after* the failure check below.
             self._started = True
             result = await self.event_bus.publish(
                 AppStarted(

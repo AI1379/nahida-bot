@@ -177,7 +177,16 @@ class EventBus:
             self._handlers.pop(event_type, None)
 
     async def publish(self, event: Event[Any]) -> PublishResult:
-        """Publish one event and wait for all handlers to complete."""
+        """Publish one event and wait for all handlers to complete.
+
+        FIXME: Handlers execute sequentially — a single slow handler blocks all
+        subsequent ones. Once real plugins land, a badly-written plugin could
+        stall core lifecycle events. Needs a more well-designed approach:
+        consider concurrent execution via ``asyncio.gather`` (with per-handler
+        timeout), priority-based dispatch, or a two-phase (sync-fast + async-slow)
+        pipeline. The sequential guarantee should be an explicit opt-in, not the
+        default.
+        """
         if self._closed:
             raise EventBusClosedError("EventBus is already closed")
 

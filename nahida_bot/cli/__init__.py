@@ -29,6 +29,9 @@ def version() -> None:
 def start(debug: bool = typer.Option(False, help="Enable debug mode")) -> None:
     """Start the Nahida Bot application."""
     settings = load_settings()
+    # TODO: Mutating a constructed Pydantic BaseModel is fragile. Pass debug
+    # through the constructor or use settings.model_copy(update={"debug": debug})
+    # once Settings is frozen.
     settings.debug = debug
 
     console.print(f"[bold cyan]Starting {settings.app_name}...[/bold cyan]")
@@ -67,6 +70,8 @@ def config() -> None:
 def doctor() -> None:
     """Run diagnostic checks."""
     console.print("[bold cyan]Running diagnostics...[/bold cyan]")
+
+    # TODO: Currently the doctor command is a placeholder. Implement actual checks in the future.
 
     checks = [
         ("Python version", True),

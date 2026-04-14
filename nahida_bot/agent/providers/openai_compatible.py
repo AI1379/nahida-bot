@@ -51,7 +51,13 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
         return self.tokenizer_impl
 
     def _ensure_client(self) -> httpx.AsyncClient:
-        """Return the shared HTTP client, creating it if needed."""
+        """Return the shared HTTP client, creating it if needed.
+
+        TODO: The httpx.AsyncClient is never closed automatically — ``close()``
+        must be called manually. Tie provider lifecycle to Application shutdown
+        or implement ``__aenter__``/``__aexit__`` on ChatProvider so the AgentLoop
+        can guarantee cleanup.
+        """
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient()
         return self._client

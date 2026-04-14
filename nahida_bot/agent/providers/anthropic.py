@@ -66,6 +66,8 @@ class AnthropicProvider(ChatProvider):
         return self.tokenizer_impl
 
     def _ensure_client(self) -> httpx.AsyncClient:
+        # TODO: Same lifecycle issue as OpenAICompatibleProvider — see its
+        # _ensure_client TODO for details.
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient()
         return self._client
