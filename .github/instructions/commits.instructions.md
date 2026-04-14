@@ -11,7 +11,7 @@ This instruction ensures AI agents generate clear, consistent, and actionable co
 
 **Format:** `<type>(<scope>): <description>`
 
-**Example:** `feat(adapter): add message parsing for QQ platform`
+**Example:** `feat(channel): add message parsing for QQ platform`
 
 ## Commit Type
 
@@ -19,25 +19,58 @@ Must be one of:
 
 | Type | Purpose | Example |
 |------|---------|---------|
-| `feat` | New feature or capability | `feat(adapter): add Telegram support` |
-| `fix` | Bug fix | `fix(parser): handle malformed JSON correctly` |
-| `docs` | Documentation changes only | `docs: update README with API examples` |
-| `style` | Code formatting (no logic change) | `style: reformat imports with ruff` |
-| `refactor` | Code restructuring (no feature/bug change) | `refactor(core): extract bot logic to separate module` |
-| `test` | Test additions/modifications | `test(handler): add unit tests for message parsing` |
-| `chore` | Dependencies, tooling, build (no code logic) | `chore: upgrade pytest to 8.4.1` |
+| `feat` | New feature or capability (scope required) | `feat(channel): add Telegram support` |
+| `fix` | Bug fix (scope required) | `fix(memory): handle malformed JSON correctly` |
+| `docs` | Documentation changes only (no scope) | `docs: update README with API examples` |
+| `style` | Code formatting (no logic change, no scope) | `style: reformat imports with ruff` |
+| `refactor` | Code restructuring (scope required) | `refactor(core): extract bot logic to separate module` |
+| `test` | Test additions/modifications (scope required) | `test(db): add unit tests for memory repository` |
+| `chore` | Dependencies, tooling, build (no scope) | `chore: upgrade pytest to 8.4.1` |
 
-## Scope (Optional but Recommended)
+## Scope (Required for feat/fix/refactor/test)
 
-Specify the affected area:
+For `feat`, `fix`, `refactor`, and `test` commits, a scope **must** be specified and chosen from the list below. For `docs`, `style`, and `chore` commits, omit the scope.
 
-- **Module:** `feat(adapters)`, `fix(handlers)`, `refactor(utils)`
-- **Component:** `feat(message-parser)`, `fix(connection-pool)`
-- **Feature area:** `feat(async-support)`, `docs(type-hints)`
+### Module Scopes
+
+Map to `nahida_bot/` top-level packages:
+
+| Scope | Path | Description |
+|-------|------|-------------|
+| `agent` | `agent/` | Agent core (loop, metrics, context, etc.) |
+| `memory` | `agent/memory/` | Memory persistence and retrieval |
+| `providers` | `agent/providers/` | LLM provider integrations |
+| `channel` | `channel/` | Chat platform adapters (QQ, Telegram, etc.) |
+| `cli` | `cli/` | CLI entry point and commands |
+| `core` | `core/` | Event bus, app lifecycle, shared types |
+| `db` | `db/` | Database engine and repositories |
+| `gateway` | `gateway/` | Remote gateway and node communication |
+| `node` | `node/` | Node runtime |
+| `plugins` | `plugins/` | Plugin system |
+| `workspace` | `workspace/` | Workspace management |
+
+### Cross-cutting Scopes
+
+| Scope | When to Use |
+|-------|-------------|
+| `docs` | ❌ Do not use as scope. Use `docs:` type directly. |
+| `ci` | CI/CD config, git hooks, lint/format tooling |
+| `tests` | Integration tests spanning multiple modules |
+
+### Scope Rules
+
+1. **Only use scopes from the list above** — no ad-hoc or nested scopes (e.g. avoid `agent/loop`, `agent/memory`, `qq-adapter`).
+2. **Pick the most specific scope** — changes in `agent/providers/` use `providers`, not `agent`.
+3. **No scope for docs/style/chore** — e.g. `docs: update ROADMAP`, `chore: upgrade pytest`.
+4. **Changes spanning multiple modules with no clear primary target** — use the broadest applicable scope, or split into separate commits.
 
 Examples:
-- `test(core): add async context manager tests`
-- `fix(qq-adapter): decode message encoding correctly`
+- `feat(channel): add Telegram platform adapter`
+- `fix(memory): resolve race condition in SQLite writes`
+- `refactor(core): extract event dispatcher from app lifecycle`
+- `test(db): add async connection pool stress tests`
+- `ci: add pyright to pre-push hook`
+- `docs: update ROADMAP for phase 3`
 
 ## Description
 
@@ -53,7 +86,7 @@ Write a **clear, concise, present-tense** description (50 characters or less whe
 When a commit includes complex changes, add a blank line after the header, then a detailed body:
 
 ```
-feat(adapter): add Telegram platform support
+feat(channel): add Telegram platform support
 
 - Implement message sending via Telegram Bot API
 - Add webhook handler for incoming messages
@@ -89,7 +122,7 @@ When asked to generate a commit message:
 1. **Inspect the actual changes** — Use git diff, git status, or examine staged files
 2. **Identify the primary change** — What's the main intent?
 3. **Determine the type** — Is it a feature, fix, refactor, or other?
-4. **Choose the scope** — What component/module is affected?
+4. **Choose the scope** — For feat/fix/refactor/test, pick from the allowed scope list. For other types, omit scope.
 5. **Write a clear description** — Present tense, action-oriented, specific
 6. **Include a body if complex** — Explain motivations and context
 7. **Reference issues** — Link to related GitHub issues if applicable
@@ -97,13 +130,16 @@ When asked to generate a commit message:
 ## Common Pitfalls
 
 ❌ **Generic messages:** `Refactor code structure for improved readability and maintainability`
-✅ **Specific messages:** `refactor(parser): extract validation logic into separate function`
+✅ **Specific messages:** `refactor(core): extract validation logic into separate function`
 
 ❌ **Mixed concerns:** `fix: update docs and refactor handler`
-✅ **Single concern:** `test(parser): add parametrized tests for edge cases`
+✅ **Single concern:** `test(db): add parametrized tests for edge cases`
 
-❌ **Vague scope:** `feat: improvements`
-✅ **Clear scope:** `feat(async): add asyncio support to message handlers`
+❌ **Missing scope:** `feat: add caching`
+✅ **Correct scope:** `feat(memory): add caching for user sessions`
+
+❌ **Ad-hoc scope:** `feat(agent/loop): add retry logic`
+✅ **Allowed scope:** `feat(agent): add retry logic to main loop`
 
 ❌ **Passive voice:** `multiple issues were fixed`
 ✅ **Active voice:** `fix(core): resolve race condition in event dispatcher`
@@ -123,7 +159,8 @@ When you encounter a request to generate a commit message:
 Before suggesting a commit message, verify:
 
 - [ ] Type is one of: feat, fix, docs, style, refactor, test, chore
-- [ ] Scope (if present) refers to an actual component/module
+- [ ] Scope is present for feat/fix/refactor/test, omitted for docs/style/chore
+- [ ] Scope (if present) is from the allowed scope list
 - [ ] Description is concise and action-oriented
 - [ ] Description uses present tense
 - [ ] Description is specific to the actual changes
