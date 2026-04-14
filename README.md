@@ -71,7 +71,7 @@ QQ 群：529674493
 └─────────────────────────────────────────────────────────────┘
 ```
 
-详细的系统图纸存放在教令院的 [ARCHITECTURE.md](docs/ARCHITECTURE.md) 里哦。
+详细的系统图纸存放在教令院的 [ARCHITECTURE](docs/architecture/README.md) 里哦。
 
 ## 🚀 启动终端（快速开始）
 
@@ -106,7 +106,7 @@ nahida-bot doctor
 
 ## 📚 文档
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [ARCHITECTURE](docs/architecture/README.md)
 - [ROADMAP.md](docs/ROADMAP.md)
 - [DEVELOPMENT.md](docs/DEVELOPMENT.md)
 

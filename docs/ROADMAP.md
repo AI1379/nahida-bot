@@ -110,7 +110,7 @@ Python 方案的核心结构可以概括为五层：
 
 参考来源：OpenClaw（生命周期）、AstrBot（配置日志）、pydantic-settings。
 
-事件系统的结构设计、类型约束、依赖注入集成和参考方案，统一维护在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的“类型安全事件系统”章节，ROADMAP 仅保留交付目标与勾选状态。
+事件系统的结构设计、类型约束、依赖注入集成和参考方案，统一维护在 [docs/architecture/event-system.md](architecture/event-system.md)，ROADMAP 仅保留交付目标与勾选状态。
 
 ### Phase 2 - Agent 与 Workspace 联合阶段
 
@@ -184,9 +184,9 @@ Python 方案的核心结构可以概括为五层：
 - [ ] 处理特殊文件系统对象（设备文件、FIFO、socket）的拒绝逻辑。
 - [ ] 添加 Unicode/编码绕过防护。
 - [ ] 编写完整的安全测试套件（符号链接、硬链接、路径穿越、编码绕过等）。
-- [ ] 更新 ARCHITECTURE.md 中的沙盒安全文档。
+- [ ] 更新 architecture 文档中的沙盒安全文档。
 
-**参考实现**：见 ARCHITECTURE.md 第 6.1.7 节。
+**参考实现**：见 [docs/architecture/sandbox-security.md](architecture/sandbox-security.md)。
 
 #### Phase 2.8 - Provider 响应健壮性与多后端适配
 
@@ -203,7 +203,7 @@ Python 方案的核心结构可以概括为五层：
 - [x] 编写适配器和上下文策略的完整测试套件。
 - [x] 实现 Provider 注册表（`@register_provider` + 工厂方法）和子类（GLM、Groq、Minimax）。
 - [x] 编写多后端集成测试（OpenAI/DeepSeek/Anthropic）。
-- [x] 更新 ARCHITECTURE.md 中的 Provider 文档（当前实现部分）。
+- [x] 更新 architecture 文档中的 Provider 文档（当前实现部分）。
 
 **支持的响应格式**：
 
@@ -216,7 +216,7 @@ Python 方案的核心结构可以概括为五层：
 | Minimax | （无特殊字段） | `MinimaxProvider` |
 | Claude | `thinking` 块 | `AnthropicProvider` |
 
-**参考实现**：见 ARCHITECTURE.md 第 6.1.8 节。
+**参考实现**：见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md)。
 
 前置依赖：Phase 1。
 
@@ -472,7 +472,7 @@ MVP 建议额外约束：
 | 特殊文件系统对象 | 🟡 中 | 待修复（Phase 2.7） |
 | 无文件大小限制 | 🟡 中 | 待修复（Phase 2.7） |
 
-**缓解措施**：在 Phase 2.7 中实现多层防御机制，详见 ARCHITECTURE.md 第 6.1.7 节。
+**缓解措施**：在 Phase 2.7 中实现多层防御机制，详见 [docs/architecture/sandbox-security.md](architecture/sandbox-security.md)。
 
 ### 8.2 Provider 响应兼容性风险
 
@@ -485,7 +485,7 @@ MVP 建议额外约束：
 | 流式响应不支持 | 🟡 中 | 待规划（Phase 3+） |
 | 拒绝标记未处理 | 🟢 低 | 待规划 |
 
-**缓解措施**：在 Phase 2.8 中实现响应适配器模式和推理链支持，详见 ARCHITECTURE.md 第 6.1.8 节。
+**缓解措施**：在 Phase 2.8 中实现响应适配器模式和推理链支持，详见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md)。
 
 额外风险清单：
 
