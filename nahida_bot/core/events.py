@@ -126,6 +126,32 @@ class PluginErrorOccurred(Event[PluginErrorPayload]):
     """Raised when a plugin method raises an unhandled exception."""
 
 
+# ── Message Events ────────────────────────────────────────────
+
+
+@dataclass(slots=True, frozen=True)
+class MessagePayload:
+    """Payload for message lifecycle events."""
+
+    message: Any  # InboundMessage — use Any to avoid circular import
+    session_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class MessageReceived(Event[MessagePayload]):
+    """Raised after a ChannelPlugin normalizes an inbound platform event."""
+
+
+@dataclass(slots=True, frozen=True)
+class MessageSending(Event[MessagePayload]):
+    """Raised before sending a message. Plugins can intercept or modify."""
+
+
+@dataclass(slots=True, frozen=True)
+class MessageSent(Event[MessagePayload]):
+    """Raised after a message has been successfully sent."""
+
+
 # ── Event Bus Infrastructure ──────────────────────────────────
 
 
