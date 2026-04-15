@@ -35,3 +35,21 @@ class PluginError(NahidaBotError):
     """Plugin loading or execution error."""
 
     pass
+
+
+class PermissionDenied(PluginError):
+    """Raised when a plugin attempts an action beyond its declared permissions."""
+
+    pass
+
+
+class PluginLoadError(PluginError):
+    """Raised when a plugin manifest is invalid or the module cannot be imported."""
+
+    pass
+
+
+class PluginStateError(PluginError):
+    """Raised when a lifecycle transition is invalid for the plugin's current state."""
+
+    pass
