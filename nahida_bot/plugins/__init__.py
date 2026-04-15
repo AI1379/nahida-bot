@@ -10,6 +10,13 @@ from nahida_bot.plugins.base import (
     SessionInfo,
     SubscriptionHandle,
 )
+from nahida_bot.plugins.channel_plugin import ChannelPlugin
+from nahida_bot.plugins.commands import (
+    CommandEntry,
+    CommandMatch,
+    CommandMatcher,
+    CommandRegistry,
+)
 from nahida_bot.plugins.loader import PluginLoader
 from nahida_bot.plugins.manager import PluginManager, PluginState
 from nahida_bot.plugins.manifest import (
@@ -36,6 +43,13 @@ __all__ = [
     "PluginLogger",
     "SessionInfo",
     "SubscriptionHandle",
+    # Channel
+    "ChannelPlugin",
+    # Commands
+    "CommandEntry",
+    "CommandMatch",
+    "CommandMatcher",
+    "CommandRegistry",
     # Loader
     "PluginLoader",
     # Manager
