@@ -1,7 +1,11 @@
 """Main application container."""
 
+from __future__ import annotations
+
 import asyncio
 import signal
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -17,6 +21,9 @@ from nahida_bot.core.events import (
 )
 from nahida_bot.core.exceptions import ApplicationError, StartupError
 from nahida_bot.core.logging import configure_logging
+
+if TYPE_CHECKING:
+    from nahida_bot.plugins.manager import PluginManager
 
 logger = structlog.get_logger(__name__)
 
@@ -42,6 +49,7 @@ class Application:
         self.event_bus = EventBus(
             EventContext(app=self, settings=self.settings, logger=logger)
         )
+        self.plugin_manager: PluginManager | None = None
 
         logger.debug(
             "application.instance_created",
@@ -77,7 +85,15 @@ class Application:
                 raise StartupError(
                     f"Lifecycle handler(s) failed during init: {details}"
                 )
-            # TODO: Placeholder for future initialization logic
+            # Initialize plugin manager
+            from nahida_bot.plugins.manager import PluginManager
+
+            self.plugin_manager = PluginManager(
+                event_bus=self.event_bus,
+                workspace_manager=None,  # Wire up when workspace is integrated
+                memory_store=None,  # Wire up when memory is integrated
+            )
+
             self._initialized = True
         except Exception as e:
             logger.exception(
@@ -100,12 +116,16 @@ class Application:
                 "application.starting",
                 app_name=self.settings.app_name,
             )
-            # TODO: Placeholder for future startup logic
-            # FIXME: _started is set before AppStarted event validation. If a
-            # lifecycle handler fails, the flag already indicates "started" which
-            # causes stop() to run shutdown logic against a partially-started app.
-            # Move this assignment *after* the failure check below.
-            self._started = True
+            # Discover and load plugins from standard paths
+            if self.plugin_manager is not None:
+                plugin_paths = [Path(p).resolve() for p in self.settings.plugin_paths]
+                await self.plugin_manager.discover(plugin_paths)
+                await self.plugin_manager.load_all()
+                await self.plugin_manager.enable_all()
+                # FIXME: If startup fails after plugins are enabled but before
+                # self._started becomes True, stop() will early-return and skip
+                # plugin_manager.shutdown_all(), leaving partial startup state.
+
             result = await self.event_bus.publish(
                 AppStarted(
                     payload=AppLifecyclePayload(
@@ -122,6 +142,7 @@ class Application:
                 raise StartupError(
                     f"Lifecycle handler(s) failed during start: {details}"
                 )
+            self._started = True
             logger.info(
                 "application.started",
                 app_name=self.settings.app_name,
@@ -136,6 +157,9 @@ class Application:
     async def stop(self) -> None:
         """Stop the application gracefully."""
         if not self._started:
+            # FIXME: This branch currently skips plugin shutdown entirely.
+            # Consider cleaning up loaded/enabled plugins even when startup
+            # failed before setting _started = True.
             logger.warning("application.stop_without_start")
             if self._shutdown_event is not None:
                 self._shutdown_event.set()
@@ -155,7 +179,9 @@ class Application:
                     source="core.app.stop",
                 )
             )
-            # TODO: Placeholder for future shutdown logic
+            # Shut down plugins before event bus
+            if self.plugin_manager is not None:
+                await self.plugin_manager.shutdown_all()
             self._started = False
             await self.event_bus.publish(
                 AppStopped(

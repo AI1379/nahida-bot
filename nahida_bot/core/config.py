@@ -26,6 +26,9 @@ class Settings(BaseModel):
     # Database
     db_path: str = "./data/nahida.db"
 
+    # Plugins
+    plugin_paths: list[str] = ["./plugins"]
+
 
 def load_settings(
     config_yaml: str | None = None,
