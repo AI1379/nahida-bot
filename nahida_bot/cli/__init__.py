@@ -26,16 +26,19 @@ def version() -> None:
 
 
 @app.command()
-def start(debug: bool = typer.Option(False, help="Enable debug mode")) -> None:
+def start(
+    config_yaml: str | None = typer.Option(
+        None, help="Path to YAML configuration file"
+    ),
+    debug: bool = typer.Option(False, help="Enable debug mode"),
+) -> None:
     """Start the Nahida Bot application."""
-    settings = load_settings()
-    # TODO: Mutating a constructed Pydantic BaseModel is fragile. Pass debug
-    # through the constructor or use settings.model_copy(update={"debug": debug})
-    # once Settings is frozen.
-    settings.debug = debug
+    settings = load_settings(config_yaml=config_yaml, debug=debug)
 
+    console.print(f"[bold cyan]Config YAML Path: {config_yaml}[/bold cyan]")
     console.print(f"[bold cyan]Starting {settings.app_name}...[/bold cyan]")
     console.print(f"Debug mode: {debug}")
+    console.print(f"Log level: {settings.log_level}")
     console.print(f"Listening on {settings.host}:{settings.port}")
 
     app_instance = Application(settings=settings)

@@ -43,6 +43,12 @@ class Application:
             EventContext(app=self, settings=self.settings, logger=logger)
         )
 
+        logger.debug(
+            "application.instance_created",
+            app_name=self.settings.app_name,
+            settings=self.settings.model_dump(),
+        )
+
     async def initialize(self) -> None:
         """Initialize application components."""
         if self._initialized:
