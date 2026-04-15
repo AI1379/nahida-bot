@@ -235,14 +235,61 @@ Python 方案的核心结构可以概括为五层：
 
 任务清单：
 
-- [ ] 定义 `plugin.yaml` 字段、版本与兼容策略。
-- [ ] 实现 discover/load/enable/disable/reload/unload 生命周期。
-- [ ] 实现声明式权限校验（文件、网络、环境变量、命令执行）。
-- [ ] 定义 ChannelPlugin 基类和标准接口（见下文详解）。
-- [ ] 定义 Tool、Hook 两类标准接口。
+#### Phase 3.1 — Manifest 与 Loader
+
+- [x] 定义 `plugin.yaml` 字段模型（`PluginManifest` Pydantic 模型：id、name、version、entrypoint、type、permissions、capabilities、config schema、depends_on）。
+- [x] 实现 YAML 解析与校验（`parse_manifest`，缺失字段报错、格式校验）。
+- [x] 定义入口点格式约束（`module:Class`，强制一对一模块绑定）。
+- [x] 实现插件发现（扫描指定目录下的 `plugin.yaml`，支持子目录结构）。
+- [x] 实现动态加载（`importlib` 导入入口类，校验 `Plugin` 子类）。
+- [x] 实现 `sys.modules` 清理与模块绑定追踪（支持热重载前提）。
+
+#### Phase 3.2 — 事件系统增强
+
+- [x] 新增插件生命周期事件类型（`PluginLoaded`、`PluginEnabled`、`PluginDisabled`、`PluginUnloaded`、`PluginErrorOccurred`）。
+- [x] 改进 `EventBus.publish()` 为两阶段执行模型（同步核心 phase 1 + 异步插件 phase 2）。
+- [x] 实现 handler 优先级（`priority` 参数，值越小越先执行）。
+- [x] 实现 per-handler 超时保护（`timeout` 参数，异步阶段 handler 超时后记录失败但不阻塞其他）。
+
+#### Phase 3.3 — APIBridge 与权限
+
+- [x] 实现 `BotAPI` 协议定义（send_message、on_event、subscribe、register_tool、get_session、memory_search/store、workspace_read/write、logger）。
+- [x] 实现 `RealBotAPI` 桥接层（将 `BotAPI` 协议连接到 EventBus、WorkspaceManager、MemoryStore）。
+- [x] 实现声明式权限校验（`PermissionChecker`：network outbound/inbound、filesystem read/write zone、memory read/write、subprocess、env_vars 前缀匹配）。
+- [x] 实现审计日志（权限拒绝时通过 structlog 记录 plugin_id、resource、action、target）。
+
+#### Phase 3.4 — 异常隔离与生命周期管理
+
+- [x] 实现 `PluginManager` 完整生命周期（discover → load → enable → disable → unload，含状态机校验）。
+- [x] 实现生命周期事件发布（每次状态转换触发对应 Event）。
+- [x] 实现首启与重启用区分（`LOADED → ENABLED` 调用 `on_load` + `on_enable`；`DISABLED → ENABLED` 仅调用 `on_enable`）。
+- [x] 实现逆序关闭（`shutdown_all` 按反向加载顺序关闭插件）。
+- [x] 实现插件异常隔离（`_safe_invoke` 超时 + 异常捕获，崩溃插件进入 `ERROR` 状态不影响其他插件）。
+- [x] 实现 `ToolRegistry` 和 `HandlerRegistry`（按 plugin_id 注册/注销，支持批量清理）。
+- [ ] 实现降级策略（ERROR 状态插件的可配置自动重试，含最大次数与冷却时间）。
+
+#### Phase 3.5 — ChannelPlugin 接口
+
+- [ ] 定义 `ChannelPlugin` 基类（`handle_inbound_event`、`send_message`、`get_user_info`、`get_group_info`）。
+- [ ] 定义通信方式声明（`SUPPORT_HTTP_SERVER/CLIENT`、`SUPPORT_WEBSOCKET_SERVER/CLIENT`、`SUPPORT_SSE`）。
+- [ ] 实现 HTTP Server 模式的 webhook 端点自动注册（声明了 `http_server` 协议的 ChannelPlugin 自动挂载路由）。
+- [ ] 实现消息标准化流程（平台原生事件 → `InboundMessage` → Agent → `OutboundMessage` → 平台回复）。
+- [ ] 实现消息事件类型（`MessageReceived`、`MessageSending`、`MessageSent`）。
+
+#### Phase 3.6 — 内置插件与验证
+
 - [ ] 提供基础内置插件（读文件、命令执行、网页读取、记忆检索）。
-- [ ] 实现插件异常隔离与降级告警。
-- [ ] 验证不改核心代码可新增并加载插件，越权行为可拦截可追踪。
+- [ ] 实现插件配置解析（环境变量 `NAHIDA_PLUGIN_{ID}_{KEY}` + `config/plugins/{id}.yaml`，JSON Schema 校验）。
+- [ ] 验证不改核心代码可新增并加载外部插件。
+- [ ] 验证越权行为可拦截、可追踪（权限拒绝触发 `PermissionDenied` + 审计日志）。
+- [ ] 验证插件崩溃不影响核心和其他插件（异常隔离测试通过）。
+
+#### Phase 3.7 — SDK 分离（可选前置）
+
+- [ ] 抽取 `nahida-bot-sdk` 独立包（Plugin 基类、BotAPI 协议、Manifest 模型、消息类型）。
+- [ ] 实现 `MockBotAPI` 和测试 fixture（插件开发者无需启动 bot 即可单元测试）。
+- [ ] 发布到 PyPI 或本地可安装（`uv` 可安装）。
+- [ ] 验证：一个不依赖 `nahida-bot` 的插件可以安装 SDK 并完成编译 + 单元测试。
 
 **ChannelPlugin 接口设计（关键产出物）**：
 
