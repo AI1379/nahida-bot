@@ -6,6 +6,7 @@ import asyncio
 import inspect
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import IntEnum
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -19,8 +20,8 @@ from typing import (
 from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
-    from nahida_bot.core.config import Settings
     from nahida_bot.core.app import Application
+    from nahida_bot.core.config import Settings
 
 PayloadT = TypeVar("PayloadT")
 EventT = TypeVar("EventT", bound="Event[Any]", contravariant=True)
@@ -45,6 +46,9 @@ class Event(Generic[PayloadT]):
     trace_id: str = ""
     source: str = ""
     occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+# ── Application Lifecycle Events ──────────────────────────────
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,6 +77,56 @@ class AppStopping(Event[AppLifecyclePayload]):
 @dataclass(slots=True, frozen=True)
 class AppStopped(Event[AppLifecyclePayload]):
     """Raised after application shutdown completes."""
+
+
+# ── Plugin Events ─────────────────────────────────────────────
+
+
+@dataclass(slots=True, frozen=True)
+class PluginPayload:
+    """Payload for plugin lifecycle events."""
+
+    plugin_id: str
+    plugin_name: str
+    plugin_version: str
+
+
+@dataclass(slots=True, frozen=True)
+class PluginLoaded(Event[PluginPayload]):
+    """Raised after a plugin has been loaded (module imported, class instantiated)."""
+
+
+@dataclass(slots=True, frozen=True)
+class PluginEnabled(Event[PluginPayload]):
+    """Raised after a plugin has been enabled (on_load + on_enable called)."""
+
+
+@dataclass(slots=True, frozen=True)
+class PluginDisabled(Event[PluginPayload]):
+    """Raised after a plugin has been disabled."""
+
+
+@dataclass(slots=True, frozen=True)
+class PluginUnloaded(Event[PluginPayload]):
+    """Raised after a plugin has been fully unloaded."""
+
+
+@dataclass(slots=True, frozen=True)
+class PluginErrorPayload:
+    """Payload for plugin error events."""
+
+    plugin_id: str
+    plugin_name: str
+    method: str
+    error: str
+
+
+@dataclass(slots=True, frozen=True)
+class PluginErrorOccurred(Event[PluginErrorPayload]):
+    """Raised when a plugin method raises an unhandled exception."""
+
+
+# ── Event Bus Infrastructure ──────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -128,15 +182,34 @@ class Subscription:
         self.bus.unsubscribe(self.event_type, self.handler)
 
 
+@dataclass(slots=True)
+class _HandlerEntry:
+    """Internal bookkeeping for a registered handler."""
+
+    handler: Callable[[Event[Any], EventContext], Awaitable[None] | None]
+    priority: int
+    timeout: float  # seconds, used for async-phase handlers
+    name: str
+
+
+class _HandlerPhase(IntEnum):
+    """Which execution phase a handler belongs to."""
+
+    SYNC = 0  # priority <= 0, executed serially
+    ASYNC = 1  # priority > 0, executed concurrently with timeout
+
+
 class EventBus:
-    """Lightweight typed event bus with handler error isolation."""
+    """Lightweight typed event bus with priority-based two-phase dispatch.
+
+    Handlers with ``priority <= 0`` execute serially in priority order
+    (core handlers). Handlers with ``priority > 0`` execute concurrently
+    with per-handler timeout protection (plugin handlers).
+    """
 
     def __init__(self, context: EventContext) -> None:
         self._context = context
-        self._handlers: dict[
-            type[Event[Any]],
-            list[Callable[[Event[Any], EventContext], Awaitable[None] | None]],
-        ] = {}
+        self._handlers: dict[type[Event[Any]], list[_HandlerEntry]] = {}
         self._closed = False
         self._pending_tasks: set[asyncio.Task[None]] = set()
 
@@ -144,8 +217,22 @@ class EventBus:
         self,
         event_type: type[EventT],
         handler: EventHandler[EventT],
+        *,
+        priority: int = 0,
+        timeout: float = 30.0,
     ) -> Subscription:
-        """Subscribe a handler to one concrete event type."""
+        """Subscribe a handler to one concrete event type.
+
+        Args:
+            event_type: The event class to listen for.
+            handler: Async or sync callback accepting (event, ctx).
+            priority: Execution order — lower runs first. Values <= 0 run
+                serially (core); values > 0 run concurrently (plugins).
+            timeout: Per-handler timeout in seconds for async-phase handlers.
+
+        Returns:
+            A ``Subscription`` that can be used to unsubscribe.
+        """
         if self._closed:
             raise EventBusClosedError("EventBus is already closed")
 
@@ -153,8 +240,14 @@ class EventBus:
             Callable[[Event[Any], EventContext], Awaitable[None] | None],
             handler,
         )
-        handlers = self._handlers.setdefault(cast(type[Event[Any]], event_type), [])
-        handlers.append(normalized_handler)
+        entry = _HandlerEntry(
+            handler=normalized_handler,
+            priority=priority,
+            timeout=timeout,
+            name=getattr(handler, "__name__", handler.__class__.__name__),
+        )
+        entries = self._handlers.setdefault(cast(type[Event[Any]], event_type), [])
+        entries.append(entry)
 
         return Subscription(
             event_type=cast(type[Event[Any]], event_type),
@@ -168,48 +261,85 @@ class EventBus:
         handler: Callable[[Event[Any], EventContext], Awaitable[None] | None],
     ) -> None:
         """Unsubscribe a handler from one event type."""
-        handlers = self._handlers.get(event_type)
-        if not handlers:
+        entries = self._handlers.get(event_type)
+        if not entries:
             return
 
-        self._handlers[event_type] = [h for h in handlers if h is not handler]
+        self._handlers[event_type] = [e for e in entries if e.handler is not handler]
         if not self._handlers[event_type]:
             self._handlers.pop(event_type, None)
 
     async def publish(self, event: Event[Any]) -> PublishResult:
-        """Publish one event and wait for all handlers to complete.
+        """Publish one event with two-phase handler dispatch.
 
-        FIXME: Handlers execute sequentially — a single slow handler blocks all
-        subsequent ones. Once real plugins land, a badly-written plugin could
-        stall core lifecycle events. Needs a more well-designed approach:
-        consider concurrent execution via ``asyncio.gather`` (with per-handler
-        timeout), priority-based dispatch, or a two-phase (sync-fast + async-slow)
-        pipeline. The sequential guarantee should be an explicit opt-in, not the
-        default.
+        Phase 1 (sync, priority <= 0): handlers execute serially in
+        ascending priority order. A failing handler does not prevent
+        subsequent handlers from running.
+
+        Phase 2 (async, priority > 0): handlers execute concurrently with
+        per-handler timeout protection. A timeout or error in one handler
+        does not affect others.
         """
         if self._closed:
             raise EventBusClosedError("EventBus is already closed")
 
-        handlers = list(self._handlers.get(type(event), []))
+        entries = list(self._handlers.get(type(event), []))
+        if not entries:
+            return PublishResult(dispatched=0, failures=())
+
+        # Sort by priority (ascending — lower priority runs first)
+        entries.sort(key=lambda e: e.priority)
+
+        sync_entries = [e for e in entries if e.priority <= 0]
+        async_entries = [e for e in entries if e.priority > 0]
+
         failures: list[HandlerFailure] = []
 
-        for handler in handlers:
+        # Phase 1: serial execution for core handlers
+        for entry in sync_entries:
             try:
-                outcome = handler(event, self._context)
+                outcome = entry.handler(event, self._context)
                 if inspect.isawaitable(outcome):
                     await outcome
             except Exception as exc:  # noqa: BLE001
-                failures.append(
-                    HandlerFailure(
-                        handler_name=getattr(
-                            handler, "__name__", handler.__class__.__name__
-                        ),
-                        error=str(exc),
-                    )
-                )
+                failures.append(HandlerFailure(handler_name=entry.name, error=str(exc)))
                 self._context.logger.exception("Event handler failed", exc_info=exc)
 
-        return PublishResult(dispatched=len(handlers), failures=tuple(failures))
+        # Phase 2: concurrent execution with per-handler timeout
+        if async_entries:
+
+            async def _run_with_timeout(entry: _HandlerEntry) -> None:
+                try:
+                    outcome = entry.handler(event, self._context)
+                    if inspect.isawaitable(outcome):
+                        await asyncio.wait_for(outcome, timeout=entry.timeout)
+                except TimeoutError:
+                    failures.append(
+                        HandlerFailure(
+                            handler_name=entry.name,
+                            error=f"Handler timed out after {entry.timeout}s",
+                        )
+                    )
+                    self._context.logger.warning(
+                        "Event handler timed out",
+                        handler=entry.name,
+                        timeout=entry.timeout,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(
+                        HandlerFailure(handler_name=entry.name, error=str(exc))
+                    )
+                    self._context.logger.exception("Event handler failed", exc_info=exc)
+
+            await asyncio.gather(
+                *[_run_with_timeout(e) for e in async_entries],
+                return_exceptions=False,
+            )
+
+        return PublishResult(
+            dispatched=len(sync_entries) + len(async_entries),
+            failures=tuple(failures),
+        )
 
     def publish_nowait(self, event: Event[Any]) -> bool:
         """Publish one event in background.
