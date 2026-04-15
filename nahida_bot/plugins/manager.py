@@ -12,6 +12,7 @@ import structlog
 
 from nahida_bot.core.exceptions import PluginLoadError, PluginStateError
 from nahida_bot.plugins.api_bridge import RealBotAPI
+from nahida_bot.plugins.commands import CommandRegistry
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.loader import PluginLoader
 from nahida_bot.plugins.manifest import PluginManifest, parse_manifest
@@ -74,6 +75,7 @@ class PluginManager:
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
+        self._command_registry = CommandRegistry()
         self._records: dict[str, PluginRecord] = {}
 
     @property
@@ -85,6 +87,11 @@ class PluginManager:
     def handler_registry(self) -> HandlerRegistry:
         """Public read-only access to the handler registry."""
         return self._handler_registry
+
+    @property
+    def command_registry(self) -> CommandRegistry:
+        """Public read-only access to the command registry."""
+        return self._command_registry
 
     def get_record(self, plugin_id: str) -> PluginRecord | None:
         """Look up a plugin record by ID."""
@@ -146,6 +153,7 @@ class PluginManager:
             permission_checker=checker,
             tool_registry=self._tool_registry,
             handler_registry=self._handler_registry,
+            command_registry=self._command_registry,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)
@@ -198,9 +206,10 @@ class PluginManager:
         record = self._require_record(plugin_id)
         self._require_state(record, PluginState.ENABLED)
 
-        # Remove registered tools and handlers
+        # Remove registered tools, handlers, and commands
         self._tool_registry.unregister_by_plugin(plugin_id)
         self._handler_registry.unregister_by_plugin(plugin_id)
+        self._command_registry.unregister_by_plugin(plugin_id)
 
         # Unsubscribe from EventBus
         if record.api_bridge is not None:

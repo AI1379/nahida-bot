@@ -33,6 +33,7 @@ class InboundMessage:
     is_group: bool = False
     reply_to: str = ""
     timestamp: float = 0.0
+    command_prefix: str = "/"  # Prefix used for command matching on this platform
 
 
 @dataclass(slots=True, frozen=True)
@@ -135,6 +136,19 @@ class BotAPI(Protocol):
         handler: Callable[..., Awaitable[str]],
     ) -> None:
         """Register a tool that the LLM can call during conversations."""
+        ...
+
+    # ── Command Registration ───────────────────────────
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable[..., Awaitable[str]],
+        *,
+        description: str = "",
+        aliases: list[str] | None = None,
+    ) -> None:
+        """Register a /command that is matched from incoming messages."""
         ...
 
     # ── Session ────────────────────────────────────────

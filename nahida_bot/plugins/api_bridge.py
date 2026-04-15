@@ -13,6 +13,7 @@ from nahida_bot.plugins.base import (
     SessionInfo,
     SubscriptionHandle,
 )
+from nahida_bot.plugins.commands import CommandEntry
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
 
@@ -63,6 +64,7 @@ class RealBotAPI:
         permission_checker: PermissionChecker,
         tool_registry: Any,  # ToolRegistry — use Any to avoid circular import
         handler_registry: Any,  # HandlerRegistry
+        command_registry: Any,  # CommandRegistry
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -72,6 +74,7 @@ class RealBotAPI:
         self._permissions = permission_checker
         self._tool_registry = tool_registry
         self._handler_registry = handler_registry
+        self._command_registry = command_registry
         self._logger = _PluginLogger(plugin_id)
         self._subscriptions: list[Any] = []  # EventBus Subscription objects
 
@@ -146,6 +149,27 @@ class RealBotAPI:
             )
         )
         self._logger.debug("tool_registered", tool_name=name)
+
+    # ── Command Registration ───────────────────────────
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable[..., Awaitable[str]],
+        *,
+        description: str = "",
+        aliases: list[str] | None = None,
+    ) -> None:
+        self._command_registry.register(
+            CommandEntry(
+                name=name,
+                handler=handler,
+                description=description,
+                aliases=tuple(aliases or []),
+                plugin_id=self._plugin_id,
+            )
+        )
+        self._logger.debug("command_registered", command_name=name)
 
     # ── Session ────────────────────────────────────────
 
