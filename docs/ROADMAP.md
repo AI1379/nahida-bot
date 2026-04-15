@@ -268,13 +268,15 @@ Python 方案的核心结构可以概括为五层：
 - [x] 实现 `ToolRegistry` 和 `HandlerRegistry`（按 plugin_id 注册/注销，支持批量清理）。
 - [ ] 实现降级策略（ERROR 状态插件的可配置自动重试，含最大次数与冷却时间）。
 
-#### Phase 3.5 — ChannelPlugin 接口
+#### Phase 3.5 — ChannelPlugin 接口与指令系统
 
-- [ ] 定义 `ChannelPlugin` 基类（`handle_inbound_event`、`send_message`、`get_user_info`、`get_group_info`）。
-- [ ] 定义通信方式声明（`SUPPORT_HTTP_SERVER/CLIENT`、`SUPPORT_WEBSOCKET_SERVER/CLIENT`、`SUPPORT_SSE`）。
+- [x] 定义 `ChannelPlugin` 基类（`handle_inbound_event`、`send_message`、`get_user_info`、`get_group_info`）。
+- [x] 定义通信方式声明（`SUPPORT_HTTP_SERVER/CLIENT`、`SUPPORT_WEBSOCKET_SERVER/CLIENT`、`SUPPORT_SSE`）。
+- [x] 实现消息事件类型（`MessageReceived`、`MessageSending`、`MessageSent`）。
+- [x] 实现统一指令系统（`CommandRegistry` + `CommandMatcher`，前缀匹配、别名支持、@mention 剥离）。
+- [x] `InboundMessage` 增加 `command_prefix` 字段，支持各平台自定义前缀。
 - [ ] 实现 HTTP Server 模式的 webhook 端点自动注册（声明了 `http_server` 协议的 ChannelPlugin 自动挂载路由）。
 - [ ] 实现消息标准化流程（平台原生事件 → `InboundMessage` → Agent → `OutboundMessage` → 平台回复）。
-- [ ] 实现消息事件类型（`MessageReceived`、`MessageSending`、`MessageSent`）。
 
 #### Phase 3.6 — 内置插件与验证
 
@@ -356,23 +358,43 @@ class ChannelPlugin(Plugin):
 
 参考来源：OpenClaw（插件 contract）、nonebot2（扩展生态）、OneBot 协议、NapCat 设计、Android Manifest 思路。
 
-### Phase 4 - 基于插件系统的 Channel 实现
+### Phase 4 - 基于 ChannelPlugin 的 Telegram 接入
 
-目标：实现一个或多个 ChannelPlugin，让系统真正接入外部平台消息。
+目标：实现第一个真实 ChannelPlugin — Telegram Bot，让系统真正接入外部平台消息。
 
-> 本阶段的核心是：创建 ChannelPlugin 的具体实现（作为插件形式加载），而不是核心硬编码的 adapter 层。这样保证了 Channel 的可扩展性和权限隔离。
+> 本阶段的核心是：以内置插件形式实现 TelegramChannelPlugin，验证 ChannelPlugin 接口设计的合理性，打通"平台消息 → Agent → 平台回复"完整闭环。
 
 任务清单：
 
-- [ ] 落地统一 `InboundMessage` 与 `OutboundMessage`，与 Phase 3 中 ChannelPlugin 接口对齐。
-- [ ] 选择一个平台实现第一个 ChannelPlugin（建议 Telegram，参考 aiogram 异步设计；或 QQ/NapCat，参考 OneBot Webhook 模式）。
-- [ ] 在插件中实现选定的通信方式（HTTP Server + HTTP Client，或 WebSocket 双向，等）。
-- [ ] 打通平台消息 -> InboundMessage -> Plugin 事件处理 -> Agent -> OutboundMessage -> 平台回复链路。
-- [ ] 建立平台消息 ID、聊天 ID、用户 ID 到内部会话 ID 的映射策略（在 Plugin 内完成）。
-- [ ] 实现流式分片发送与速率控制。
-- [ ] 保留关键消息追踪字段用于调试与审计。
-- [ ] 验证外部平台可稳定完成"发消息 -> 得回复"。
-- [ ] 将 Plugin 打包（plugin.yaml + 代码），验证可通过 plugin load 命令加载。
+#### Phase 4.1 — Telegram Bot API 基础
+
+- [ ] 封装 Telegram Bot HTTP API 客户端（getMe、getUpdates、sendMessage、getChat、getChatMember 等）。
+- [ ] 实现 Long Polling 模式（`getUpdates` 轮询 + offset 追踪 + 超时处理）。
+- [ ] 实现 Telegram Update → 内部事件分发（message、edited_message、callback_query 等）。
+- [ ] 处理 Telegram Rate Limiting（429 响应 + Retry-After + 指数退避）。
+
+#### Phase 4.2 — 消息标准化与转换
+
+- [ ] 实现 Telegram Message → `InboundMessage` 转换（文本、群聊/私聊、回复关系、@mention 提取）。
+- [ ] 实现 `OutboundMessage` → Telegram 发送（纯文本、回复、解析模式）。
+- [ ] 实现会话映射策略（Telegram chat_id → 内部 session_id）。
+- [ ] 处理 Telegram 特殊消息类型（命令 /start /help、 sticker、photo 等降级为文本描述）。
+
+#### Phase 4.3 — ChannelPlugin 集成
+
+- [ ] 实现 `TelegramChannelPlugin(ChannelPlugin)` 类。
+- [ ] 实现 `plugin.yaml` manifest（声明 network 出站权限至 api.telegram.org）。
+- [ ] 实现 `on_load` / `on_enable` / `on_disable` 生命周期（启动/停止轮询）。
+- [ ] 实现 `handle_inbound_event` 将 Telegram Update 分发到消息处理流程。
+- [ ] 实现 `send_message` 通过 Bot API 发送回复。
+
+#### Phase 4.4 — 端到端闭环验证
+
+- [ ] 打通完整链路：Telegram Update → InboundMessage → Agent Loop → OutboundMessage → Telegram 回复。
+- [ ] 验证群聊 @mention 触发与私聊自动回复。
+- [ ] 验证指令系统（/help 等命令通过 CommandMatcher 正确匹配）。
+- [ ] 验证插件生命周期（热重载、异常隔离、优雅关闭）。
+- [ ] 编写 Telegram API 客户端和消息转换的单元测试。
 
 前置依赖：Phase 3（ChannelPlugin 接口）。
 
