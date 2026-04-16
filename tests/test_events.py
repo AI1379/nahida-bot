@@ -72,7 +72,9 @@ async def test_event_bus_handler_failure_is_isolated() -> None:
 @pytest.mark.asyncio
 async def test_application_lifecycle_events_are_emitted() -> None:
     """Application should publish lifecycle events through EventBus."""
-    app = Application(settings=Settings(app_name="Lifecycle", debug=False))
+    app = Application(
+        settings=Settings(app_name="Lifecycle", debug=False, db_path=":memory:")
+    )
     sequence: list[str] = []
 
     async def on_init(event: AppInitializing, ctx: EventContext) -> None:  # noqa: ARG001

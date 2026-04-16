@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -26,6 +26,8 @@ from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.plugins.commands import CommandMatcher
 
 if TYPE_CHECKING:
+    from nahida_bot.agent.loop import AgentLoop
+    from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.plugins.manager import PluginManager
 
 logger = structlog.get_logger(__name__)
@@ -55,6 +57,8 @@ class Application:
         self.channel_registry = ChannelRegistry()
         self.plugin_manager: PluginManager | None = None
         self.message_router: MessageRouter | None = None
+        self.agent_loop: AgentLoop | None = None
+        self.memory_store: MemoryStore | None = None
 
         logger.debug(
             "application.instance_created",
@@ -90,13 +94,17 @@ class Application:
                 raise StartupError(
                     f"Lifecycle handler(s) failed during init: {details}"
                 )
+
+            # Initialize database, memory, and agent subsystems
+            await self._init_agent_subsystem()
+
             # Initialize plugin manager
             from nahida_bot.plugins.manager import PluginManager
 
             self.plugin_manager = PluginManager(
                 event_bus=self.event_bus,
-                workspace_manager=None,  # Wire up when workspace is integrated
-                memory_store=None,  # Wire up when memory is integrated
+                workspace_manager=None,
+                memory_store=self.memory_store,
                 channel_registry=self.channel_registry,
             )
 
@@ -107,6 +115,64 @@ class Application:
                 app_name=self.settings.app_name,
             )
             raise StartupError(f"Failed to initialize application: {e}") from e
+
+    async def _init_agent_subsystem(self) -> None:
+        """Create Provider, AgentLoop, and MemoryStore."""
+        from nahida_bot.agent.context import ContextBuilder, ContextBudget
+        from nahida_bot.agent.loop import AgentLoop
+        from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+        from nahida_bot.agent.providers import create_provider
+        from nahida_bot.db.engine import DatabaseEngine
+
+        # Database + Memory
+        db_path = self.settings.db_path
+        engine = DatabaseEngine(db_path)
+        await engine.initialize()
+        self.memory_store = SQLiteMemoryStore(engine)
+        logger.info("application.memory_initialized", db_path=db_path)
+
+        # Provider (LLM backend) — only if configured
+        provider_cfg = self.settings.provider
+        if provider_cfg.api_key and provider_cfg.model:
+            provider = create_provider(
+                provider_cfg.type,
+                base_url=provider_cfg.base_url,
+                api_key=provider_cfg.api_key,
+                model=provider_cfg.model,
+            )
+            context_builder = ContextBuilder(
+                budget=ContextBudget(),
+                provider=provider,
+            )
+            self.agent_loop = AgentLoop(
+                provider=provider,
+                context_builder=context_builder,
+            )
+            logger.info(
+                "application.provider_initialized",
+                provider_type=provider_cfg.type,
+                model=provider_cfg.model,
+            )
+        else:
+            logger.warning(
+                "application.no_provider",
+                msg="Provider not configured — agent loop disabled. "
+                "Set provider.api_key and provider.model in config.",
+            )
+
+    def _get_plugin_configs(self) -> dict[str, dict[str, Any]]:
+        """Extract plugin-specific configs from settings.
+
+        Settings with ``extra="allow"`` stores arbitrary top-level keys.
+        Any key that doesn't match a known Settings field is treated as
+        plugin config. The key name must match a plugin id.
+        """
+        known_fields = set(Settings.model_fields.keys())
+        plugin_configs: dict[str, dict[str, Any]] = {}
+        for key, value in self.settings.model_dump().items():
+            if key not in known_fields and isinstance(value, dict):
+                plugin_configs[key] = value
+        return plugin_configs
 
     async def start(self) -> None:
         """Start the application."""
@@ -122,7 +188,6 @@ class Application:
                 "application.starting",
                 app_name=self.settings.app_name,
             )
-            # Discover and load plugins from standard paths
             if self.plugin_manager is not None:
                 # Discover builtin channels from nahida_bot/channels/
                 try:
@@ -135,18 +200,15 @@ class Application:
                 except ImportError:
                     pass  # No builtin channels package
 
-                # Inject telegram settings into manifest config
-                telegram_cfg = self.settings.telegram
+                # Inject plugin configs from settings into manifest config
+                plugin_configs = self._get_plugin_configs()
                 for record in self.plugin_manager.list_plugins():
-                    if record.manifest.id == "telegram" and telegram_cfg.bot_token:
+                    plugin_id = record.manifest.id
+                    if plugin_id in plugin_configs:
+                        existing = record.manifest.config or {}
+                        merged = {**existing, **plugin_configs[plugin_id]}
                         record.manifest = record.manifest.model_copy(
-                            update={
-                                "config": {
-                                    "bot_token": telegram_cfg.bot_token,
-                                    "polling_timeout": telegram_cfg.polling_timeout,
-                                    "allowed_chats": telegram_cfg.allowed_chats,
-                                }
-                            }
+                            update={"config": merged}
                         )
 
                 # Discover user plugins
@@ -166,6 +228,8 @@ class Application:
                 command_registry=self.plugin_manager.command_registry,
                 command_matcher=CommandMatcher(),
                 channel_registry=self.channel_registry,
+                agent_loop=self.agent_loop,
+                memory_store=self.memory_store,
                 config=RouterConfig(
                     system_prompt=self.settings.system_prompt,
                 ),

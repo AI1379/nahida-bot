@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -44,6 +45,8 @@ class TelegramChannelPlugin(ChannelPlugin):
         from aiogram.client.default import DefaultBotProperties
 
         token = self.manifest.config.get("bot_token", "")
+        if not token:
+            token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         if not token:
             raise RuntimeError(
                 "Telegram bot_token not configured. "

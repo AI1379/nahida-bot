@@ -1,23 +1,24 @@
 """Application configuration."""
 
 import os
+from typing import Any
 
 import yaml
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict
 
 
-class TelegramSettings(BaseModel):
-    """Telegram channel configuration."""
+class ProviderConfig(BaseModel):
+    """LLM provider configuration."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="allow")
 
-    bot_token: str = ""
-    polling_timeout: int = 30
-    allowed_chats: list[str] = []  # empty = all chats allowed
+    type: str = "openai-compatible"
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
 
 
-# TODO: Implement the Setting parsing logic manually, instead of use pydantic-settings.
 class Settings(BaseModel):
     """Main application settings."""
 
@@ -42,14 +43,32 @@ class Settings(BaseModel):
     # Agent / Router
     system_prompt: str = "You are a helpful assistant."
 
-    # Telegram
-    telegram: TelegramSettings = TelegramSettings()
+    # Provider (LLM backend)
+    provider: ProviderConfig = ProviderConfig()
+
+
+def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:
+    """Recursively interpolate ``${VAR}`` and ``${VAR:default}`` in config values."""
+    if isinstance(value, str):
+        if value.startswith("${") and value.endswith("}"):
+            inner = value[2:-1]
+            parts = inner.split(":", 1)
+            env_var = parts[0]
+            default = parts[1] if len(parts) > 1 else None
+            resolved = env_map.get(env_var, os.environ.get(env_var, default))
+            return resolved
+        return value
+    if isinstance(value, dict):
+        return {k: _interpolate_env(v, env_map) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_interpolate_env(v, env_map) for v in value]
+    return value
 
 
 def load_settings(
     config_yaml: str | None = None,
     env_path: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> Settings:
     """Load application settings."""
     if config_yaml:
@@ -57,23 +76,20 @@ def load_settings(
             yaml_config = yaml.safe_load(f)
     else:
         yaml_config = {}
+
     env_path_in_env = os.environ.get("ENV_PATH")
     if env_path_in_env:
         env_path = env_path_in_env
-    if env_path:
-        env_config = dotenv_values(env_path)
-    else:
-        env_config = {}
 
-    # Parse "${ENV_VAR}" syntax in YAML config values
-    for key, value in yaml_config.items():
-        if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-            extract_default = value[2:-1].split(":", 1)
-            env_var = extract_default[0]
-            default_value = extract_default[1] if len(extract_default) > 1 else None
-            yaml_config[key] = env_config.get(
-                env_var, os.environ.get(env_var, default_value)
-            )
+    env_config: dict[str, str | None] = {}
+    if env_path:
+        env_config = dict(dotenv_values(env_path))
+
+    # Build env lookup: .env values take precedence over os.environ
+    env_map = dict(os.environ) | env_config
+
+    # Recursively interpolate ${VAR} and ${VAR:default} in all config values
+    yaml_config = _interpolate_env(yaml_config, env_map)
 
     full_config = yaml_config | env_config | kwargs
 
