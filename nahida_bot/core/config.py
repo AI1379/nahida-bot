@@ -19,6 +19,18 @@ class ProviderConfig(BaseModel):
     model: str = ""
 
 
+class ProviderEntryConfig(BaseModel):
+    """One provider entry in the multi-provider dict."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    type: str = "openai-compatible"
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    models: list[str] = []
+
+
 class Settings(BaseModel):
     """Main application settings."""
 
@@ -44,8 +56,13 @@ class Settings(BaseModel):
     # Agent / Router
     system_prompt: str = "You are a helpful assistant."
 
-    # Provider (LLM backend)
+    # Provider (LLM backend) — single provider (legacy)
     provider: ProviderConfig = ProviderConfig()
+
+    # Multi-provider (new). Dict keyed by provider id.
+    # If non-empty, takes priority over the single `provider` field.
+    providers: dict[str, ProviderEntryConfig] = {}
+    default_provider: str = ""
 
 
 def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:

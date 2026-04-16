@@ -5,7 +5,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+from typing import Any
+
+from nahida_bot.agent.memory.models import (
+    ConversationTurn,
+    MemoryRecord,
+    SessionSummary,
+)
 
 
 class MemoryStore(ABC):
@@ -40,4 +46,26 @@ class MemoryStore(ABC):
     @abstractmethod
     async def evict_before(self, cutoff: datetime) -> int:
         """Delete memories older than cutoff. Returns deleted count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_session(self, session_id: str) -> int:
+        """Delete all turns and keywords for a session. Returns deleted turn count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_sessions(self, *, limit: int = 50) -> list[SessionSummary]:
+        """List sessions with metadata and turn counts."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_session_meta(self, session_id: str) -> dict[str, Any]:
+        """Get session metadata. Returns empty dict if not found."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_session_meta(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Merge updates into session metadata (upsert)."""
         raise NotImplementedError

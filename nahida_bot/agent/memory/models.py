@@ -26,3 +26,15 @@ class MemoryRecord:
     session_id: str
     turn: ConversationTurn
     keywords: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
+class SessionSummary:
+    """Summary of a session for listing purposes."""
+
+    session_id: str
+    workspace_id: str | None
+    created_at: str
+    last_active_at: str
+    turn_count: int
+    metadata: dict[str, Any] = field(default_factory=dict)

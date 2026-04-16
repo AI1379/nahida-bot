@@ -185,6 +185,75 @@ class SQLiteMemoryRepository:
             await self._engine.db.commit()
         return cursor.rowcount
 
+    async def clear_session_turns(self, session_id: str) -> int:
+        """Delete all turns and keywords for a session. Returns deleted turn count."""
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "DELETE FROM memory_keywords WHERE turn_id IN ("
+                "SELECT id FROM memory_turns WHERE session_id = ?"
+                ")",
+                (session_id,),
+            )
+            cursor = await self._engine.execute(
+                "DELETE FROM memory_turns WHERE session_id = ?",
+                (session_id,),
+            )
+            await self._engine.db.commit()
+        return cursor.rowcount
+
+    async def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """List sessions with turn counts."""
+        rows = await self._engine.fetch_all(
+            "SELECT s.session_id, s.workspace_id, s.created_at, "
+            "s.last_active_at, s.metadata_json, "
+            "(SELECT COUNT(*) FROM memory_turns t WHERE t.session_id = s.session_id) AS turn_count "
+            "FROM sessions s ORDER BY s.last_active_at DESC LIMIT ?",
+            (limit,),
+        )
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            d: dict[str, Any] = dict(row)
+            metadata_raw = d.pop("metadata_json", None)
+            if isinstance(metadata_raw, str):
+                try:
+                    d["metadata"] = json.loads(metadata_raw)
+                except (json.JSONDecodeError, ValueError):
+                    d["metadata"] = {}
+            else:
+                d["metadata"] = {}
+            results.append(d)
+        return results
+
+    async def get_session_metadata(self, session_id: str) -> dict[str, Any]:
+        """Get session metadata_json as a dict."""
+        row = await self._engine.fetch_one(
+            "SELECT metadata_json FROM sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        if row is None:
+            return {}
+        raw = row["metadata_json"]
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return {}
+        return {}
+
+    async def update_session_metadata(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Merge updates into session metadata_json (upsert)."""
+        existing = await self.get_session_metadata(session_id)
+        merged = {**existing, **updates}
+        merged_json = json.dumps(merged, ensure_ascii=False)
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+                (merged_json, session_id),
+            )
+            await self._engine.db.commit()
+
     async def _insert_keywords(self, turn_id: int, keywords: list[str]) -> None:
         """Insert keyword associations for a turn.
 

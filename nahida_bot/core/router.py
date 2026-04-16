@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import structlog
 
@@ -23,6 +24,7 @@ from nahida_bot.plugins.commands import CommandMatcher, CommandRegistry
 if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop
     from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.core.events import EventContext, Subscription
 
 logger = structlog.get_logger(__name__)
@@ -53,6 +55,7 @@ class MessageRouter:
         channel_registry: ChannelRegistry,
         agent_loop: AgentLoop | None = None,
         memory_store: MemoryStore | None = None,
+        provider_manager: ProviderManager | None = None,
         config: RouterConfig | None = None,
     ) -> None:
         self._event_bus = event_bus
@@ -61,8 +64,11 @@ class MessageRouter:
         self._channels = channel_registry
         self._agent = agent_loop
         self._memory = memory_store
+        self._provider_manager = provider_manager
         self._config = config or RouterConfig()
         self._subscription: Subscription | None = None
+        # Maps deterministic session key → active session id (for /new)
+        self._active_sessions: dict[str, str] = {}
 
     @property
     def agent(self) -> AgentLoop | None:
@@ -82,6 +88,15 @@ class MessageRouter:
     def memory(self, value: MemoryStore | None) -> None:
         self._memory = value
 
+    @property
+    def provider_manager(self) -> ProviderManager | None:
+        """The provider manager, if configured."""
+        return self._provider_manager
+
+    @provider_manager.setter
+    def provider_manager(self, value: ProviderManager | None) -> None:
+        self._provider_manager = value
+
     async def start(self) -> None:
         """Subscribe to MessageReceived events."""
         self._subscription = self._event_bus.subscribe(
@@ -99,12 +114,26 @@ class MessageRouter:
             self._subscription = None
         logger.info("message_router.stopped")
 
+    def get_active_session_id(self, platform: str, chat_id: str) -> str:
+        """Return the active session ID for a chat.
+
+        If ``/new`` was used, returns the switched session id.
+        Otherwise returns the deterministic ``platform:chat_id`` key.
+        """
+        key = self.make_session_id(platform, chat_id)
+        return self._active_sessions.get(key, key)
+
+    def set_active_session(self, platform: str, chat_id: str, session_id: str) -> None:
+        """Switch the active session for a chat (used by /new)."""
+        key = self.make_session_id(platform, chat_id)
+        self._active_sessions[key] = session_id
+
     async def _handle_message_received(
         self, event: MessageReceived, ctx: EventContext
     ) -> None:
         """Core dispatch logic: command first, then agent."""
         inbound: InboundMessage = event.payload.message
-        session_id = event.payload.session_id
+        session_id = self.get_active_session_id(inbound.platform, inbound.chat_id)
 
         # Step 1: Command matching
         match = self._matcher.match(inbound.text, prefix=inbound.command_prefix)
@@ -123,21 +152,55 @@ class MessageRouter:
         if self._agent is None or not self._config.agent_enabled:
             return
 
+        # Resolve provider for this session
+        provider_slot = await self._resolve_provider(session_id)
+
         # Load history from memory
         history = await self._load_history(session_id)
 
-        # Run agent
-        result = await self._agent.run(
-            user_message=inbound.text,
-            system_prompt=self._config.system_prompt,
-            history_messages=history,
-        )
+        # Build run kwargs — include provider override when available
+        run_kwargs: dict[str, Any] = {
+            "user_message": inbound.text,
+            "system_prompt": self._config.system_prompt,
+            "history_messages": history,
+        }
+        if provider_slot is not None:
+            run_kwargs["provider"] = provider_slot.provider
+            run_kwargs["context_builder"] = provider_slot.context_builder
+
+        result = await self._agent.run(**run_kwargs)
 
         # Persist turns
         await self._persist_turns(session_id, inbound, result)
 
         # Send response
         await self._send_response(inbound, session_id, result.final_response)
+
+    async def _resolve_provider(self, session_id: str) -> Any:
+        """Resolve the provider slot for a session.
+
+        Checks session metadata for a model/provider preference,
+        falls back to the default provider.
+        """
+        if self._provider_manager is None:
+            return None
+
+        # Check session metadata
+        if self._memory is not None:
+            meta = await self._memory.get_session_meta(session_id)
+            if meta:
+                model = meta.get("model")
+                if model:
+                    slot = self._provider_manager.resolve_model(model)
+                    if slot is not None:
+                        return slot
+                provider_id = meta.get("provider_id")
+                if provider_id:
+                    slot = self._provider_manager.get(provider_id)
+                    if slot is not None:
+                        return slot
+
+        return self._provider_manager.default
 
     async def _send_response(
         self, inbound: InboundMessage, session_id: str, text: str
@@ -225,3 +288,9 @@ class MessageRouter:
     def make_session_id(platform: str, chat_id: str) -> str:
         """Deterministic session ID from platform + chat_id."""
         return f"{platform}:{chat_id}"
+
+    @staticmethod
+    def make_new_session_id(platform: str, chat_id: str) -> str:
+        """Generate a new unique session ID for /new."""
+        suffix = uuid4().hex[:8]
+        return f"{platform}:{chat_id}:{suffix}"

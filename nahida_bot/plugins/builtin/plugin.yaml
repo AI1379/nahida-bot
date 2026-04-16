@@ -1,0 +1,8 @@
+id: builtin-commands
+name: "Builtin Commands"
+version: "0.1.0"
+description: "Core commands: /reset, /new, /status, /model, /help"
+type: tool
+entrypoint: "nahida_bot.plugins.builtin.commands:BuiltinCommandsPlugin"
+permissions: {}
+capabilities: {}

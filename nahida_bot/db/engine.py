@@ -42,6 +42,10 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_turns_session_created
         ON memory_turns(session_id, created_at);
     """,
+    # Migration 002: add metadata column to sessions
+    """
+    ALTER TABLE sessions ADD COLUMN metadata_json TEXT;
+    """,
 ]
 
 

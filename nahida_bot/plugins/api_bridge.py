@@ -66,6 +66,7 @@ class RealBotAPI:
         handler_registry: Any,  # HandlerRegistry
         command_registry: Any,  # CommandRegistry
         channel_registry: Any | None = None,  # ChannelRegistry
+        provider_manager: Any | None = None,  # ProviderManager
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -77,6 +78,7 @@ class RealBotAPI:
         self._handler_registry = handler_registry
         self._command_registry = command_registry
         self._channel_registry = channel_registry
+        self._provider_manager = provider_manager
         self._logger = _PluginLogger(plugin_id)
         self._subscriptions: list[Any] = []  # EventBus Subscription objects
 
@@ -234,6 +236,44 @@ class RealBotAPI:
     @property
     def logger(self) -> PluginLogger:
         return self._logger
+
+    # ── Extended Internals (for builtin plugins) ───────
+
+    async def clear_session(self, session_id: str) -> int:
+        """Delete all turns for a session. Returns deleted count."""
+        if self._memory is None:
+            return 0
+        return await self._memory.clear_session(session_id)
+
+    def list_models(self) -> list[dict[str, str]]:
+        """List all available provider+model combinations."""
+        if self._provider_manager is None:
+            return []
+        return self._provider_manager.list_available()
+
+    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
+        """Switch model for a session. Returns provider id or None."""
+        if self._provider_manager is None or self._memory is None:
+            return None
+        slot = self._provider_manager.resolve_model(model_name)
+        if slot is None:
+            return None
+        await self._memory.ensure_session(session_id)
+        await self._memory.update_session_meta(
+            session_id, {"provider_id": slot.id, "model": model_name}
+        )
+        return slot.id
+
+    async def get_session_info(self, session_id: str) -> dict[str, Any]:
+        """Get session metadata and turn count."""
+        if self._memory is None:
+            return {}
+        meta = await self._memory.get_session_meta(session_id)
+        return dict(meta)
+
+    def get_provider_manager(self) -> Any:
+        """Access the ProviderManager (if configured)."""
+        return self._provider_manager
 
     # ── Cleanup ────────────────────────────────────────
 

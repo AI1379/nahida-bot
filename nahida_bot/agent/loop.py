@@ -129,8 +129,17 @@ class AgentLoop:
         history_messages: list[ContextMessage] | None = None,
         workspace_root: Path | None = None,
         tools: list[ToolDefinition] | None = None,
+        provider: ChatProvider | None = None,
+        context_builder: ContextBuilder | None = None,
     ) -> AgentRunResult:
-        """Run the agent loop until terminal assistant response is produced."""
+        """Run the agent loop until terminal assistant response is produced.
+
+        Args:
+            provider: Override provider for this call only.
+            context_builder: Override context builder for this call only.
+        """
+        active_provider = provider or self.provider
+        active_builder = context_builder or self.context_builder
         trace = self.metrics.new_trace() if self.metrics else None
         conversation = list(history_messages or [])
         conversation.append(
@@ -142,7 +151,7 @@ class AgentLoop:
         step = 0
         try:
             for step in range(1, self.config.max_steps + 1):
-                prompt_messages = self.context_builder.build_context(
+                prompt_messages = active_builder.build_context(
                     system_prompt=system_prompt,
                     workspace_root=workspace_root,
                     history_messages=conversation,
@@ -154,6 +163,7 @@ class AgentLoop:
                     tools=tools,
                     step=step,
                     trace=trace,
+                    provider=active_provider,
                 )
 
                 assistant_message = self._build_assistant_message(response)
@@ -219,13 +229,15 @@ class AgentLoop:
         tools: list[ToolDefinition] | None,
         step: int = 0,
         trace: Trace | None = None,
+        provider: ChatProvider | None = None,
     ) -> ProviderResponse:
+        active_provider = provider or self.provider
         attempts = 0
         while True:
             attempts += 1
             t0 = time.monotonic()
             try:
-                response = await self.provider.chat(
+                response = await active_provider.chat(
                     messages=messages,
                     tools=tools,
                     timeout_seconds=self.config.provider_timeout_seconds,

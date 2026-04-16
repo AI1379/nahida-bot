@@ -17,7 +17,11 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", SyntaxWarning)
     import jieba
 
-from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+from nahida_bot.agent.memory.models import (
+    ConversationTurn,
+    MemoryRecord,
+    SessionSummary,
+)
 from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.db.repositories.sqlite_memory_repo import SQLiteMemoryRepository
@@ -144,3 +148,32 @@ class SQLiteMemoryStore(MemoryStore):
     async def evict_before(self, cutoff: datetime) -> int:
         """Delete turns older than cutoff datetime."""
         return await self._repo.delete_turns_before(cutoff)
+
+    async def clear_session(self, session_id: str) -> int:
+        """Delete all turns and keywords for a session."""
+        return await self._repo.clear_session_turns(session_id)
+
+    async def list_sessions(self, *, limit: int = 50) -> list[SessionSummary]:
+        """List sessions with turn counts."""
+        rows = await self._repo.list_sessions(limit=limit)
+        return [
+            SessionSummary(
+                session_id=r["session_id"],
+                workspace_id=r.get("workspace_id"),
+                created_at=r.get("created_at", ""),
+                last_active_at=r.get("last_active_at", ""),
+                turn_count=r.get("turn_count", 0),
+                metadata=r.get("metadata", {}),
+            )
+            for r in rows
+        ]
+
+    async def get_session_meta(self, session_id: str) -> dict[str, Any]:
+        """Get session metadata."""
+        return await self._repo.get_session_metadata(session_id)
+
+    async def update_session_meta(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Merge updates into session metadata."""
+        await self._repo.update_session_metadata(session_id, updates)

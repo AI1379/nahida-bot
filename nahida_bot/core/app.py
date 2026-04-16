@@ -28,6 +28,7 @@ from nahida_bot.plugins.commands import CommandMatcher
 if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop
     from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.db.engine import DatabaseEngine
     from nahida_bot.plugins.manager import PluginManager
 
@@ -61,7 +62,8 @@ class Application:
         self.agent_loop: AgentLoop | None = None
         self.memory_store: MemoryStore | None = None
         self._db_engine: DatabaseEngine | None = None
-        self._provider: object | None = None  # ChatProvider
+        self._provider_manager: ProviderManager | None = None
+        self._providers_to_close: list[object] = []  # ChatProvider instances
 
         logger.debug(
             "application.instance_created",
@@ -109,6 +111,7 @@ class Application:
                 workspace_manager=None,
                 memory_store=self.memory_store,
                 channel_registry=self.channel_registry,
+                provider_manager=self._provider_manager,
             )
 
             self._initialized = True
@@ -120,11 +123,12 @@ class Application:
             raise StartupError(f"Failed to initialize application: {e}") from e
 
     async def _init_agent_subsystem(self) -> None:
-        """Create Provider, AgentLoop, and MemoryStore."""
+        """Create ProviderManager, AgentLoop, and MemoryStore."""
         from nahida_bot.agent.context import ContextBuilder, ContextBudget
         from nahida_bot.agent.loop import AgentLoop
         from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
         from nahida_bot.agent.providers import create_provider
+        from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
         from nahida_bot.db.engine import DatabaseEngine
 
         # Database + Memory
@@ -135,28 +139,79 @@ class Application:
         self.memory_store = SQLiteMemoryStore(engine)
         logger.info("application.memory_initialized", db_path=db_path)
 
-        # Provider (LLM backend) — only if configured
-        provider_cfg = self.settings.provider
-        if provider_cfg.api_key and provider_cfg.model:
-            provider = create_provider(
-                provider_cfg.type,
-                base_url=provider_cfg.base_url,
-                api_key=provider_cfg.api_key,
-                model=provider_cfg.model,
-            )
-            context_builder = ContextBuilder(
-                budget=ContextBudget(),
-                provider=provider,
-            )
+        # Build providers from config
+        slots: list[ProviderSlot] = []
+        providers_cfg = self.settings.providers
+
+        if providers_cfg:
+            # Multi-provider mode
+            for pid, cfg in providers_cfg.items():
+                if not cfg.api_key or not cfg.model:
+                    logger.warning(
+                        "application.provider_skipped",
+                        provider_id=pid,
+                        reason="missing api_key or model",
+                    )
+                    continue
+                provider = create_provider(
+                    cfg.type,
+                    base_url=cfg.base_url,
+                    api_key=cfg.api_key,
+                    model=cfg.model,
+                )
+                cb = ContextBuilder(budget=ContextBudget(), provider=provider)
+                models = cfg.models or [cfg.model]
+                slots.append(
+                    ProviderSlot(
+                        id=pid,
+                        provider=provider,
+                        context_builder=cb,
+                        default_model=cfg.model,
+                        available_models=models,
+                    )
+                )
+                self._providers_to_close.append(provider)
+                logger.info(
+                    "application.provider_initialized",
+                    provider_id=pid,
+                    provider_type=cfg.type,
+                    model=cfg.model,
+                )
+        else:
+            # Legacy single-provider mode
+            provider_cfg = self.settings.provider
+            if provider_cfg.api_key and provider_cfg.model:
+                provider = create_provider(
+                    provider_cfg.type,
+                    base_url=provider_cfg.base_url,
+                    api_key=provider_cfg.api_key,
+                    model=provider_cfg.model,
+                )
+                cb = ContextBuilder(budget=ContextBudget(), provider=provider)
+                slots.append(
+                    ProviderSlot(
+                        id="default",
+                        provider=provider,
+                        context_builder=cb,
+                        default_model=provider_cfg.model,
+                        available_models=[provider_cfg.model],
+                    )
+                )
+                self._providers_to_close.append(provider)
+                logger.info(
+                    "application.provider_initialized",
+                    provider_type=provider_cfg.type,
+                    model=provider_cfg.model,
+                )
+
+        if slots:
+            default_id = self.settings.default_provider or ""
+            self._provider_manager = ProviderManager(slots, default_id=default_id)
+            # Create a single AgentLoop with the default provider as fallback
+            default_slot = self._provider_manager.default or slots[0]
             self.agent_loop = AgentLoop(
-                provider=provider,
-                context_builder=context_builder,
-            )
-            self._provider = provider
-            logger.info(
-                "application.provider_initialized",
-                provider_type=provider_cfg.type,
-                model=provider_cfg.model,
+                provider=default_slot.provider,
+                context_builder=default_slot.context_builder,
             )
         else:
             logger.warning(
@@ -194,6 +249,17 @@ class Application:
                 app_name=self.settings.app_name,
             )
             if self.plugin_manager is not None:
+                # Discover builtin commands from nahida_bot/plugins/builtin/
+                try:
+                    import nahida_bot.plugins.builtin as builtin_pkg
+
+                    builtin_file = builtin_pkg.__file__
+                    if builtin_file is not None:
+                        builtin_path = Path(builtin_file).parent
+                        await self.plugin_manager.discover([builtin_path])
+                except ImportError:
+                    pass
+
                 # Discover builtin channels from nahida_bot/channels/
                 if self.settings.discover_builtin_channels:
                     try:
@@ -236,6 +302,7 @@ class Application:
                 channel_registry=self.channel_registry,
                 agent_loop=self.agent_loop,
                 memory_store=self.memory_store,
+                provider_manager=self._provider_manager,
                 config=RouterConfig(
                     system_prompt=self.settings.system_prompt,
                 ),
@@ -311,11 +378,11 @@ class Application:
                 await self.event_bus.shutdown(timeout=1.0)
 
             # Always clean up resources, even if startup didn't fully complete.
-            if self._provider is not None:
-                close_fn = getattr(self._provider, "close", None)
+            for provider in self._providers_to_close:
+                close_fn = getattr(provider, "close", None)
                 if close_fn is not None:
                     await close_fn()
-                self._provider = None
+            self._providers_to_close.clear()
             if self._db_engine is not None:
                 await self._db_engine.close()
                 self._db_engine = None

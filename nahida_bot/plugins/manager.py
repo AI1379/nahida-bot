@@ -70,11 +70,13 @@ class PluginManager:
         workspace_manager: WorkspaceManager | None = None,
         memory_store: MemoryStore | None = None,
         channel_registry: Any | None = None,
+        provider_manager: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
         self._channel_registry = channel_registry
+        self._provider_manager = provider_manager
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -158,6 +160,7 @@ class PluginManager:
             handler_registry=self._handler_registry,
             command_registry=self._command_registry,
             channel_registry=self._channel_registry,
+            provider_manager=self._provider_manager,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)
