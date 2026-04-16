@@ -1,0 +1,44 @@
+# Nahida Bot 配置文件
+# 参见 nahida_bot.core.config.Settings 了解所有可用字段
+
+# ── 应用 ──────────────────────────────────────────────
+app_name: "Nahida Bot"
+debug: false
+log_level: "INFO"        # DEBUG / INFO / WARNING / ERROR
+# log_json: true          # 设为 true 输出 JSON 格式日志（生产环境推荐）
+
+# ── 服务器 ────────────────────────────────────────────
+host: "127.0.0.1"
+port: 6185
+
+# ── 数据库 ────────────────────────────────────────────
+db_path: "./data/nahida.db"
+
+# ── 插件 ──────────────────────────────────────────────
+plugin_paths:
+  - "./plugins"
+
+# ── Agent / Router ────────────────────────────────────
+system_prompt: "You are a helpful assistant."
+
+# ── LLM Provider ─────────────────────────────────────
+provider:
+  type: "openai-compatible"               # 提供商类型
+  api_key: "${LLM_API_KEY}"               # 从环境变量读取；也可写死但不推荐
+  base_url: "${LLM_BASE_URL}"            # 可选，自定义 API 端点
+  model: "${LLM_MODEL}"                   # 模型名称，如 gpt-4o、deepseek-chat
+
+# ── 插件配置 ──────────────────────────────────────────
+# Settings 的 extra="allow" 机制：顶层 key 如果不是已知字段，
+# 且值为 dict，则按 plugin id 匹配并注入到对应插件的 manifest.config 中。
+# 下面以 telegram 插件为例：
+
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"      # Bot Token，从环境变量读取
+  # polling_timeout: 30                   # 长轮询超时（秒），默认 30
+  # allowed_chats:                        # 留空 = 允许所有聊天
+  #   - "123456789"
+
+# 其他插件同理：key 等于 plugin.yaml 中的 id 即可
+# my_plugin:
+#   some_key: "some_value"
