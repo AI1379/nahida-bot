@@ -179,6 +179,12 @@ class BotAPI(Protocol):
         """Write a file to the workspace. Subject to permission checks."""
         ...
 
+    # ── Event Publishing ───────────────────────────────
+
+    async def publish_event(self, event: Any) -> None:
+        """Publish an event on the event bus."""
+        ...
+
     # ── Logging ────────────────────────────────────────
 
     @property

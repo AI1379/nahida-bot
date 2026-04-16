@@ -6,12 +6,13 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from nahida_bot.core.exceptions import PluginLoadError, PluginStateError
 from nahida_bot.plugins.api_bridge import RealBotAPI
+from nahida_bot.plugins.channel_plugin import ChannelPlugin
 from nahida_bot.plugins.commands import CommandRegistry
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.loader import PluginLoader
@@ -68,10 +69,12 @@ class PluginManager:
         event_bus: EventBus,
         workspace_manager: WorkspaceManager | None = None,
         memory_store: MemoryStore | None = None,
+        channel_registry: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
+        self._channel_registry = channel_registry
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -154,6 +157,7 @@ class PluginManager:
             tool_registry=self._tool_registry,
             handler_registry=self._handler_registry,
             command_registry=self._command_registry,
+            channel_registry=self._channel_registry,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)
@@ -190,6 +194,12 @@ class PluginManager:
 
         if record.state != PluginState.ERROR:
             record.state = PluginState.ENABLED
+            # Auto-register channel plugins
+            if (
+                isinstance(record.instance, ChannelPlugin)
+                and self._channel_registry is not None
+            ):
+                self._channel_registry.register(record.instance)
             await self._publish_plugin_event("PluginEnabled", record)
 
     async def enable_all(self) -> None:
@@ -220,6 +230,12 @@ class PluginManager:
 
         if record.state != PluginState.ERROR:
             record.state = PluginState.DISABLED
+            # Auto-unregister channel plugins
+            if (
+                isinstance(record.instance, ChannelPlugin)
+                and self._channel_registry is not None
+            ):
+                self._channel_registry.unregister(record.instance.channel_id)
             await self._publish_plugin_event("PluginDisabled", record)
 
     # ── Reloading ──────────────────────────────────────

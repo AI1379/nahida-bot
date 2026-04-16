@@ -81,13 +81,18 @@ class PluginLoader:
                 f"already bound to plugin '{existing_owner}'"
             )
 
-        # Ensure plugin_dir is importable
-        plugin_dir_str = str(plugin_dir.resolve())
-        if plugin_dir_str not in sys.path:
-            # FIXME: This mutates process-global import resolution order.
-            # Plugin directories inserted at index 0 can shadow unrelated
-            # modules and create cross-plugin import side effects.
-            sys.path.insert(0, plugin_dir_str)
+        # Builtin modules (e.g. nahida_bot.channels.telegram.plugin) are
+        # already importable without sys.path manipulation.
+        is_builtin = module_path.startswith("nahida_bot.")
+
+        if not is_builtin:
+            # Ensure plugin_dir is importable
+            plugin_dir_str = str(plugin_dir.resolve())
+            if plugin_dir_str not in sys.path:
+                # FIXME: This mutates process-global import resolution order.
+                # Plugin directories inserted at index 0 can shadow unrelated
+                # modules and create cross-plugin import side effects.
+                sys.path.insert(0, plugin_dir_str)
 
         try:
             module = importlib.import_module(module_path)
@@ -96,8 +101,10 @@ class PluginLoader:
                 f"Plugin '{manifest.id}' failed to import module '{module_path}': {exc}"
             ) from exc
 
-        # Force reload if already imported (enables hot-reload)
-        if module_path in sys.modules:
+        # Force reload if already imported (enables hot-reload).
+        # Skip for builtin modules on first load to avoid running module
+        # top-level code twice.
+        if module_path in sys.modules and not is_builtin:
             # FIXME: First-time load reaches this branch right after
             # import_module(), so module top-level code runs twice
             # (import + reload). Keep reload for explicit hot-reload paths

@@ -65,6 +65,7 @@ class RealBotAPI:
         tool_registry: Any,  # ToolRegistry — use Any to avoid circular import
         handler_registry: Any,  # HandlerRegistry
         command_registry: Any,  # CommandRegistry
+        channel_registry: Any | None = None,  # ChannelRegistry
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -75,6 +76,7 @@ class RealBotAPI:
         self._tool_registry = tool_registry
         self._handler_registry = handler_registry
         self._command_registry = command_registry
+        self._channel_registry = channel_registry
         self._logger = _PluginLogger(plugin_id)
         self._subscriptions: list[Any] = []  # EventBus Subscription objects
 
@@ -84,14 +86,23 @@ class RealBotAPI:
         self, target: str, message: OutboundMessage, *, channel: str = ""
     ) -> str:
         self._permissions.check_network_outbound(target)
-        # Full implementation deferred to ChannelPlugin phase (Phase 3.5)
+        if self._channel_registry is not None and channel:
+            channel_plugin = self._channel_registry.get(channel)
+            if channel_plugin is not None:
+                return await channel_plugin.send_message(target, message)
         self._logger.info(
-            "send_message_called",
+            "send_message_fallback",
             target=target,
             channel=channel,
             text_length=len(message.text),
         )
         return f"msg_{self._plugin_id}_0"
+
+    # ── Event Publishing ───────────────────────────────
+
+    async def publish_event(self, event: Any) -> None:
+        """Publish an event on the event bus."""
+        await self._event_bus.publish(event)
 
     # ── Event System ───────────────────────────────────
 

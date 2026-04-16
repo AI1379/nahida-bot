@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.config import Settings, load_settings
 from nahida_bot.core.events import (
     AppInitializing,
@@ -21,6 +22,8 @@ from nahida_bot.core.events import (
 )
 from nahida_bot.core.exceptions import ApplicationError, StartupError
 from nahida_bot.core.logging import configure_logging
+from nahida_bot.core.router import MessageRouter, RouterConfig
+from nahida_bot.plugins.commands import CommandMatcher
 
 if TYPE_CHECKING:
     from nahida_bot.plugins.manager import PluginManager
@@ -49,7 +52,9 @@ class Application:
         self.event_bus = EventBus(
             EventContext(app=self, settings=self.settings, logger=logger)
         )
+        self.channel_registry = ChannelRegistry()
         self.plugin_manager: PluginManager | None = None
+        self.message_router: MessageRouter | None = None
 
         logger.debug(
             "application.instance_created",
@@ -92,6 +97,7 @@ class Application:
                 event_bus=self.event_bus,
                 workspace_manager=None,  # Wire up when workspace is integrated
                 memory_store=None,  # Wire up when memory is integrated
+                channel_registry=self.channel_registry,
             )
 
             self._initialized = True
@@ -118,13 +124,53 @@ class Application:
             )
             # Discover and load plugins from standard paths
             if self.plugin_manager is not None:
+                # Discover builtin channels from nahida_bot/channels/
+                try:
+                    import nahida_bot.channels as channels_pkg
+
+                    channels_file = channels_pkg.__file__
+                    if channels_file is not None:
+                        builtin_channels_path = Path(channels_file).parent
+                        await self.plugin_manager.discover([builtin_channels_path])
+                except ImportError:
+                    pass  # No builtin channels package
+
+                # Inject telegram settings into manifest config
+                telegram_cfg = self.settings.telegram
+                for record in self.plugin_manager.list_plugins():
+                    if record.manifest.id == "telegram" and telegram_cfg.bot_token:
+                        record.manifest = record.manifest.model_copy(
+                            update={
+                                "config": {
+                                    "bot_token": telegram_cfg.bot_token,
+                                    "polling_timeout": telegram_cfg.polling_timeout,
+                                    "allowed_chats": telegram_cfg.allowed_chats,
+                                }
+                            }
+                        )
+
+                # Discover user plugins
                 plugin_paths = [Path(p).resolve() for p in self.settings.plugin_paths]
                 await self.plugin_manager.discover(plugin_paths)
+
                 await self.plugin_manager.load_all()
                 await self.plugin_manager.enable_all()
                 # FIXME: If startup fails after plugins are enabled but before
                 # self._started becomes True, stop() will early-return and skip
                 # plugin_manager.shutdown_all(), leaving partial startup state.
+
+            # Create and start the message router
+            assert self.plugin_manager is not None
+            self.message_router = MessageRouter(
+                event_bus=self.event_bus,
+                command_registry=self.plugin_manager.command_registry,
+                command_matcher=CommandMatcher(),
+                channel_registry=self.channel_registry,
+                config=RouterConfig(
+                    system_prompt=self.settings.system_prompt,
+                ),
+            )
+            await self.message_router.start()
 
             result = await self.event_bus.publish(
                 AppStarted(
@@ -179,6 +225,10 @@ class Application:
                     source="core.app.stop",
                 )
             )
+            # Shut down message router before plugins
+            if self.message_router is not None:
+                await self.message_router.stop()
+
             # Shut down plugins before event bus
             if self.plugin_manager is not None:
                 await self.plugin_manager.shutdown_all()

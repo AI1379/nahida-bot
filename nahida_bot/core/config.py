@@ -7,6 +7,16 @@ from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict
 
 
+class TelegramSettings(BaseModel):
+    """Telegram channel configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    bot_token: str = ""
+    polling_timeout: int = 30
+    allowed_chats: list[str] = []  # empty = all chats allowed
+
+
 # TODO: Implement the Setting parsing logic manually, instead of use pydantic-settings.
 class Settings(BaseModel):
     """Main application settings."""
@@ -28,6 +38,12 @@ class Settings(BaseModel):
 
     # Plugins
     plugin_paths: list[str] = ["./plugins"]
+
+    # Agent / Router
+    system_prompt: str = "You are a helpful assistant."
+
+    # Telegram
+    telegram: TelegramSettings = TelegramSettings()
 
 
 def load_settings(
