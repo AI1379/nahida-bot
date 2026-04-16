@@ -129,6 +129,8 @@ def test_settings():
         host="127.0.0.1",
         port=6666,
         db_path=":memory:",
+        plugin_paths=[],
+        discover_builtin_channels=False,
     )
 
 

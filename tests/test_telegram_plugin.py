@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -56,8 +57,10 @@ class TestTelegramChannelPluginLifecycle:
         manifest = _make_manifest(config={"bot_token": ""})
         plugin = TelegramChannelPlugin(api=api, manifest=manifest)
 
-        with pytest.raises(RuntimeError, match="bot_token not configured"):
-            await plugin.on_load()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+            with pytest.raises(RuntimeError, match="bot_token not configured"):
+                await plugin.on_load()
 
     async def test_on_enable_starts_polling(self) -> None:
         api = _MockAPI()

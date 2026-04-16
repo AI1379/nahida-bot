@@ -73,7 +73,13 @@ async def test_event_bus_handler_failure_is_isolated() -> None:
 async def test_application_lifecycle_events_are_emitted() -> None:
     """Application should publish lifecycle events through EventBus."""
     app = Application(
-        settings=Settings(app_name="Lifecycle", debug=False, db_path=":memory:")
+        settings=Settings(
+            app_name="Lifecycle",
+            debug=False,
+            db_path=":memory:",
+            plugin_paths=[],
+            discover_builtin_channels=False,
+        )
     )
     sequence: list[str] = []
 

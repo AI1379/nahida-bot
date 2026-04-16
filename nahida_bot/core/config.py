@@ -39,6 +39,7 @@ class Settings(BaseModel):
 
     # Plugins
     plugin_paths: list[str] = ["./plugins"]
+    discover_builtin_channels: bool = True
 
     # Agent / Router
     system_prompt: str = "You are a helpful assistant."

@@ -28,6 +28,7 @@ from nahida_bot.plugins.commands import CommandMatcher
 if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop
     from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.db.engine import DatabaseEngine
     from nahida_bot.plugins.manager import PluginManager
 
 logger = structlog.get_logger(__name__)
@@ -59,6 +60,8 @@ class Application:
         self.message_router: MessageRouter | None = None
         self.agent_loop: AgentLoop | None = None
         self.memory_store: MemoryStore | None = None
+        self._db_engine: DatabaseEngine | None = None
+        self._provider: object | None = None  # ChatProvider
 
         logger.debug(
             "application.instance_created",
@@ -128,6 +131,7 @@ class Application:
         db_path = self.settings.db_path
         engine = DatabaseEngine(db_path)
         await engine.initialize()
+        self._db_engine = engine
         self.memory_store = SQLiteMemoryStore(engine)
         logger.info("application.memory_initialized", db_path=db_path)
 
@@ -148,6 +152,7 @@ class Application:
                 provider=provider,
                 context_builder=context_builder,
             )
+            self._provider = provider
             logger.info(
                 "application.provider_initialized",
                 provider_type=provider_cfg.type,
@@ -190,15 +195,16 @@ class Application:
             )
             if self.plugin_manager is not None:
                 # Discover builtin channels from nahida_bot/channels/
-                try:
-                    import nahida_bot.channels as channels_pkg
+                if self.settings.discover_builtin_channels:
+                    try:
+                        import nahida_bot.channels as channels_pkg
 
-                    channels_file = channels_pkg.__file__
-                    if channels_file is not None:
-                        builtin_channels_path = Path(channels_file).parent
-                        await self.plugin_manager.discover([builtin_channels_path])
-                except ImportError:
-                    pass  # No builtin channels package
+                        channels_file = channels_pkg.__file__
+                        if channels_file is not None:
+                            builtin_channels_path = Path(channels_file).parent
+                            await self.plugin_manager.discover([builtin_channels_path])
+                    except ImportError:
+                        pass  # No builtin channels package
 
                 # Inject plugin configs from settings into manifest config
                 plugin_configs = self._get_plugin_configs()
@@ -266,47 +272,54 @@ class Application:
 
     async def stop(self) -> None:
         """Stop the application gracefully."""
-        if not self._started:
-            # FIXME: This branch currently skips plugin shutdown entirely.
-            # Consider cleaning up loaded/enabled plugins even when startup
-            # failed before setting _started = True.
-            logger.warning("application.stop_without_start")
-            if self._shutdown_event is not None:
-                self._shutdown_event.set()
-            return
-
+        was_started = self._started
         try:
-            logger.info(
-                "application.stopping",
-                app_name=self.settings.app_name,
-            )
-            await self.event_bus.publish(
-                AppStopping(
-                    payload=AppLifecyclePayload(
-                        app_name=self.settings.app_name,
-                        debug=self.settings.debug,
-                    ),
-                    source="core.app.stop",
+            if not was_started:
+                logger.warning("application.stop_without_start")
+            else:
+                logger.info(
+                    "application.stopping",
+                    app_name=self.settings.app_name,
                 )
-            )
-            # Shut down message router before plugins
-            if self.message_router is not None:
-                await self.message_router.stop()
+                await self.event_bus.publish(
+                    AppStopping(
+                        payload=AppLifecyclePayload(
+                            app_name=self.settings.app_name,
+                            debug=self.settings.debug,
+                        ),
+                        source="core.app.stop",
+                    )
+                )
+                # Shut down message router before plugins
+                if self.message_router is not None:
+                    await self.message_router.stop()
 
-            # Shut down plugins before event bus
-            if self.plugin_manager is not None:
-                await self.plugin_manager.shutdown_all()
-            self._started = False
-            await self.event_bus.publish(
-                AppStopped(
-                    payload=AppLifecyclePayload(
-                        app_name=self.settings.app_name,
-                        debug=self.settings.debug,
-                    ),
-                    source="core.app.stop",
+                # Shut down plugins before event bus
+                if self.plugin_manager is not None:
+                    await self.plugin_manager.shutdown_all()
+                self._started = False
+
+                await self.event_bus.publish(
+                    AppStopped(
+                        payload=AppLifecyclePayload(
+                            app_name=self.settings.app_name,
+                            debug=self.settings.debug,
+                        ),
+                        source="core.app.stop",
+                    )
                 )
-            )
-            await self.event_bus.shutdown(timeout=1.0)
+                await self.event_bus.shutdown(timeout=1.0)
+
+            # Always clean up resources, even if startup didn't fully complete.
+            if self._provider is not None:
+                close_fn = getattr(self._provider, "close", None)
+                if close_fn is not None:
+                    await close_fn()
+                self._provider = None
+            if self._db_engine is not None:
+                await self._db_engine.close()
+                self._db_engine = None
+
             if self._shutdown_event is not None:
                 self._shutdown_event.set()
             logger.info(
@@ -338,7 +351,7 @@ class Application:
                 registered_signals.append(sig)
             except (NotImplementedError, RuntimeError):
                 # Signal handlers may be unavailable on some platforms/runtimes.
-                logger.warning(
+                logger.debug(
                     "application.signal_handler_unavailable",
                     signal=str(sig),
                 )
@@ -351,7 +364,16 @@ class Application:
         finally:
             for sig in registered_signals:
                 loop.remove_signal_handler(sig)
-            await self.stop()
+            # Shield stop() from a second KeyboardInterrupt during cleanup.
+            try:
+                await asyncio.shield(self.stop())
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # On Windows a second Ctrl+C during shutdown is common.
+                # Force best-effort cleanup.
+                try:
+                    await self.stop()
+                except Exception:  # noqa: BLE001
+                    pass
 
     @property
     def is_initialized(self) -> bool:
