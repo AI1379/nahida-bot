@@ -45,6 +45,10 @@ dev = [
     "pre-commit>=4.0.0",
 ]
 
+telegram = [
+    "aiogram>=3.15.0",
+]
+
 [project.scripts]
 nahida-bot = "nahida_bot.cli:main"
 
