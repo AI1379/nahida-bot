@@ -1,0 +1,16 @@
+id: telegram
+name: "Telegram Channel"
+version: "0.1.0"
+description: "Telegram Bot channel via aiogram"
+type: channel
+entrypoint: "nahida_bot.channels.telegram.plugin:TelegramChannelPlugin"
+
+permissions:
+  network:
+    outbound:
+      - "api.telegram.org"
+    inbound: false
+
+capabilities:
+  channel_protocols:
+    - "http_client"
