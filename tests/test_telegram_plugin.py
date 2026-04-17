@@ -22,17 +22,70 @@ def _make_manifest(**overrides: object) -> PluginManifest:
         "config": {"bot_token": "test-token-123"},
     }
     defaults.update(overrides)  # type: ignore[typeddict-item]
-    return PluginManifest(**defaults)
+    return PluginManifest(**defaults)  # type: ignore[arg-type]
 
 
 class _MockAPI:
-    """Minimal BotAPI mock with publish_event."""
+    """Minimal BotAPI mock satisfying the BotAPI protocol for testing."""
 
     def __init__(self) -> None:
         self.published_events: list[Any] = []
 
+    async def send_message(
+        self, target: str, message: Any, *, channel: str = ""
+    ) -> str:
+        return ""
+
+    def on_event(self, event_type: type) -> Any:
+        return lambda f: f
+
+    def subscribe(self, event_type: type, handler: Any) -> Any:
+        return None
+
+    def register_tool(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Any,
+    ) -> None:
+        pass
+
+    def register_command(
+        self,
+        name: str,
+        handler: Any,
+        *,
+        description: str = "",
+        aliases: list[str] | None = None,
+    ) -> None:
+        pass
+
+    async def get_session(self, session_id: str) -> Any:
+        return None
+
+    async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
+        return []
+
+    async def memory_store(
+        self, key: str, content: str, *, metadata: dict[str, Any] | None = None
+    ) -> None:
+        pass
+
+    async def workspace_read(self, path: str) -> str:
+        return ""
+
+    async def workspace_write(self, path: str, content: str) -> None:
+        pass
+
     async def publish_event(self, event: Any) -> None:
         self.published_events.append(event)
+
+    @property
+    def logger(self) -> Any:
+        from unittest.mock import MagicMock
+
+        return MagicMock()
 
 
 class TestTelegramChannelPluginLifecycle:

@@ -98,7 +98,7 @@ def _make_router(
     memory: Any = None,
     config: RouterConfig | None = None,
 ) -> tuple[MessageRouter, EventBus, ChannelRegistry, CommandRegistry]:
-    event_bus = EventBus(EventContext(app=None, settings=None, logger=MagicMock()))
+    event_bus = EventBus(EventContext(app=None, settings=None, logger=MagicMock()))  # type: ignore[arg-type]
     command_registry = CommandRegistry()
     command_matcher = CommandMatcher()
     channel_registry = ChannelRegistry()

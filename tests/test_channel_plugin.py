@@ -1,5 +1,8 @@
 """Tests for ChannelPlugin base class."""
 
+from typing import Any, Awaitable, Callable
+from unittest.mock import MagicMock
+
 import pytest
 
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage, Plugin
@@ -16,11 +19,67 @@ def _make_manifest(**overrides: object) -> PluginManifest:
         "type": "channel",
     }
     defaults.update(overrides)  # type: ignore[typeddict-item]
-    return PluginManifest(**defaults)
+    return PluginManifest(**defaults)  # type: ignore[arg-type]
 
 
 class _MockAPI:
-    """Minimal BotAPI stub for testing."""
+    """Minimal BotAPI stub satisfying the BotAPI protocol for testing."""
+
+    async def send_message(
+        self, target: str, message: Any, *, channel: str = ""
+    ) -> str:
+        return ""
+
+    def on_event(self, event_type: type) -> Callable:
+        return lambda f: f
+
+    def subscribe(
+        self, event_type: type, handler: Callable[..., Awaitable[None]]
+    ) -> Any:
+        return None
+
+    def register_tool(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Callable[..., Awaitable[str]],
+    ) -> None:
+        pass
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable[..., Awaitable[str]],
+        *,
+        description: str = "",
+        aliases: list[str] | None = None,
+    ) -> None:
+        pass
+
+    async def get_session(self, session_id: str) -> Any:
+        return None
+
+    async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
+        return []
+
+    async def memory_store(
+        self, key: str, content: str, *, metadata: dict[str, Any] | None = None
+    ) -> None:
+        pass
+
+    async def workspace_read(self, path: str) -> str:
+        return ""
+
+    async def workspace_write(self, path: str, content: str) -> None:
+        pass
+
+    async def publish_event(self, event: Any) -> None:
+        pass
+
+    @property
+    def logger(self) -> Any:
+        return MagicMock()
 
 
 class _ConcreteChannel(ChannelPlugin):

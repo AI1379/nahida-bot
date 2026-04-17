@@ -108,7 +108,7 @@ class Application:
 
             self.plugin_manager = PluginManager(
                 event_bus=self.event_bus,
-                workspace_manager=None,
+                workspace_manager=None,  # TODO: Inject a real WorkspaceManager instance here
                 memory_store=self.memory_store,
                 channel_registry=self.channel_registry,
                 provider_manager=self._provider_manager,
