@@ -19,7 +19,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --group telegram
 
       - name: Run Ruff (lint)
         run: uv run ruff check
@@ -39,7 +39,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --group telegram
 
       - name: Run Pyright
         run: uv run pyright
@@ -65,7 +65,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --dev --group telegram
 
       - name: Run tests with coverage
         run: uv run pytest --cov=nahida_bot --cov-report=xml --cov-report=term-missing
