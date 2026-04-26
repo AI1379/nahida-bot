@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from nahida_bot.plugins.base import OutboundMessage, Plugin
+from nahida_bot.plugins.base import MediaDownloadResult, OutboundMessage, Plugin
 
 if TYPE_CHECKING:
     from nahida_bot.plugins.manifest import PluginManifest
@@ -75,3 +75,19 @@ class ChannelPlugin(Plugin):
     async def get_group_info(self, group_id: str) -> dict[str, Any]:
         """Fetch group/chat info from the platform. Optional override."""
         return {}
+
+    async def download_media(
+        self, file_id: str, destination: str | None = None
+    ) -> MediaDownloadResult | None:
+        """Download a media file from the platform by its file identifier.
+
+        Args:
+            file_id: Platform-specific file identifier (e.g. Telegram file_id).
+            destination: Optional local path to save the file. If omitted, the
+                implementation picks a default location.
+
+        Returns:
+            A ``MediaDownloadResult`` on success, or ``None`` if the channel
+            does not support downloads or the file could not be fetched.
+        """
+        return None

@@ -37,12 +37,34 @@ class InboundMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class MediaDownloadResult:
+    """Result of downloading a media file from a platform."""
+
+    path: str  # local file path where the file was saved
+    file_name: str = ""
+    mime_type: str = ""
+    file_size: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class Attachment:
+    """A file attachment for an outbound message."""
+
+    type: str  # "photo", "document", "audio", "video"
+    path: str  # local file path
+    filename: str = ""
+    mime_type: str = ""
+    caption: str = ""
+
+
+@dataclass(slots=True, frozen=True)
 class OutboundMessage:
     """Normalized message to send to an external platform."""
 
     text: str
     reply_to: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    attachments: list[Attachment] = field(default_factory=list)
 
 
 # ── Logger Protocol ────────────────────────────────────────────
