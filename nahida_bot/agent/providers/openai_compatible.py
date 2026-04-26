@@ -195,6 +195,8 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
             if isinstance(tool_calls_raw, list):
                 tool_calls = self._serialize_assistant_tool_calls(tool_calls_raw)
                 if tool_calls:
+                    if not message.content:
+                        payload["content"] = None
                     payload["tool_calls"] = tool_calls
 
         if message.role == "tool" and message.metadata is not None:

@@ -155,7 +155,6 @@ class AgentLoop:
                     system_prompt=system_prompt,
                     workspace_root=workspace_root,
                     history_messages=conversation,
-                    tool_messages=tool_messages,
                 )
 
                 response = await self._call_provider_with_retry(

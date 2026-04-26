@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from nahida_bot.agent.context import ContextBudget, ContextBuilder
+from nahida_bot.agent.context import ContextBudget, ContextBuilder, ContextMessage
 from nahida_bot.agent.loop import (
     AgentLoop,
     AgentLoopConfig,
@@ -30,6 +30,7 @@ from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
 class _QueuedProvider(ChatProvider):
     responses: list[ProviderResponse] = field(default_factory=list)
     failures: list[Exception] = field(default_factory=list)
+    observed_messages: list[list[ContextMessage]] = field(default_factory=list)
     calls: int = 0
     name: str = "queued-provider"
 
@@ -39,6 +40,7 @@ class _QueuedProvider(ChatProvider):
 
     async def chat(self, *, messages, tools=None, timeout_seconds=None):  # noqa: ANN001
         self.calls += 1
+        self.observed_messages.append(list(messages))
         if self.failures:
             failure = self.failures.pop(0)
             raise failure
@@ -141,6 +143,12 @@ async def test_agent_loop_executes_tools_and_continues() -> None:
         "tool_name": "read_file",
         "lifecycle": {"phase": "completed", "attempt": 1},
     }
+    tool_messages = [
+        message for message in provider.observed_messages[1] if message.role == "tool"
+    ]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].metadata is not None
+    assert tool_messages[0].metadata["tool_call_id"] == "tc_1"
 
 
 @pytest.mark.asyncio

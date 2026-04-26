@@ -312,6 +312,7 @@ async def test_openai_provider_serializes_assistant_tool_calls_from_metadata(
 
     assistant_message = captured_payload["messages"][1]
     assert assistant_message["role"] == "assistant"
+    assert assistant_message["content"] is None
     assert assistant_message["tool_calls"][0]["id"] == "call_1"
     assert assistant_message["tool_calls"][0]["function"]["name"] == "search"
     assert (
