@@ -180,6 +180,31 @@ class TestTelegramChannelPluginMessaging:
         call_kwargs = mock_bot.send_message.call_args[1]
         assert call_kwargs["reply_to_message_id"] == 10
 
+    async def test_send_message_retries_retry_after(self) -> None:
+        class _RetryAfter(Exception):
+            retry_after = 0
+
+        api = _MockAPI()
+        manifest = _make_manifest(
+            config={"bot_token": "test", "send_retry_attempts": 2}
+        )
+        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+
+        mock_bot = AsyncMock()
+        mock_sent = MagicMock()
+        mock_sent.message_id = 44
+        mock_bot.send_message.side_effect = [_RetryAfter(), mock_sent]
+        plugin._bot = mock_bot
+
+        from nahida_bot.plugins.base import OutboundMessage
+
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            result = await plugin.send_message("123", OutboundMessage(text="hi"))
+
+        assert result == "44"
+        assert mock_bot.send_message.await_count == 2
+        sleep_mock.assert_awaited_once_with(0.0)
+
     async def test_handle_inbound_publishes_event(self) -> None:
         api = _MockAPI()
         manifest = _make_manifest()
@@ -204,7 +229,7 @@ class TestTelegramChannelPluginMessaging:
         assert inbound.platform == "telegram"
         assert inbound.chat_id == "100"
 
-    async def test_handle_inbound_ignores_non_text(self) -> None:
+    async def test_handle_inbound_degrades_non_text(self) -> None:
         api = _MockAPI()
         manifest = _make_manifest()
         plugin = TelegramChannelPlugin(api=api, manifest=manifest)
@@ -221,7 +246,31 @@ class TestTelegramChannelPluginMessaging:
         }
 
         await plugin.handle_inbound_event(update)
-        assert len(api.published_events) == 0
+        assert len(api.published_events) == 1
+        inbound = api.published_events[0].payload.message
+        assert inbound.text == "[Telegram sticker]"
+
+    async def test_handle_inbound_uses_caption_for_media(self) -> None:
+        api = _MockAPI()
+        manifest = _make_manifest()
+        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+
+        update = {
+            "message": {
+                "message_id": 2,
+                "date": 1700000000,
+                "chat": {"id": 100, "type": "private"},
+                "from_user": {"id": 200},
+                "photo": [{"file_id": "abc"}],
+                "caption": "caption text",
+            }
+        }
+
+        await plugin.handle_inbound_event(update)
+
+        assert len(api.published_events) == 1
+        inbound = api.published_events[0].payload.message
+        assert inbound.text == "caption text"
 
     async def test_handle_inbound_ignores_empty_message(self) -> None:
         api = _MockAPI()

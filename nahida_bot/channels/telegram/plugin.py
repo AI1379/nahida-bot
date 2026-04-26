@@ -88,19 +88,21 @@ class TelegramChannelPlugin(ChannelPlugin):
     async def handle_inbound_event(self, event: dict[str, Any]) -> None:
         """Convert a Telegram Update to InboundMessage and publish.
 
-        Only processes text messages from the ``message`` field. Non-text
-        updates (stickers, photos, callbacks, etc.) are silently ignored
-        for now.
+        Text and captioned messages are passed through directly. Unsupported
+        Telegram message kinds are degraded to a short textual placeholder so
+        the normal router/agent path still receives the event.
         """
         message_data = event.get("message")
         if not message_data or not isinstance(message_data, dict):
             return
 
-        # Skip messages without text (stickers, photos, etc.)
-        if not message_data.get("text"):
+        normalized_message = dict(message_data)
+        text = self._extract_message_text(normalized_message)
+        if not text:
             return
+        normalized_message["text"] = text
 
-        inbound = self._converter.to_inbound(message_data)
+        inbound = self._converter.to_inbound(normalized_message)
         session_id = MessageRouter.make_session_id(inbound.platform, inbound.chat_id)
 
         await self.api.publish_event(
@@ -123,8 +125,24 @@ class TelegramChannelPlugin(ChannelPlugin):
             except ValueError:
                 pass
 
-        sent = await self._bot.send_message(**kwargs)
-        return str(sent.message_id)
+        max_attempts = int(self.manifest.config.get("send_retry_attempts", 3))
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                sent = await self._bot.send_message(**kwargs)
+                return str(sent.message_id)
+            except Exception as exc:
+                retry_after = self._retry_after_seconds(exc)
+                if retry_after is None or attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    "telegram.send_rate_limited",
+                    retry_after=retry_after,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                await asyncio.sleep(retry_after)
 
     async def get_user_info(self, user_id: str) -> dict[str, Any]:
         """Fetch Telegram user profile."""
@@ -163,6 +181,8 @@ class TelegramChannelPlugin(ChannelPlugin):
 
         polling_timeout = self.manifest.config.get("polling_timeout", 30)
         allowed_chats: list[str] = self.manifest.config.get("allowed_chats", [])
+        error_backoff = 1.0
+        max_error_backoff = float(self.manifest.config.get("polling_max_backoff", 30))
 
         while True:
             try:
@@ -184,9 +204,60 @@ class TelegramChannelPlugin(ChannelPlugin):
                                 continue
 
                     await self.handle_inbound_event(update_dict)
+                error_backoff = 1.0
 
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.exception("telegram.poll_error", error=str(exc))
-                await asyncio.sleep(1)  # Back off on error
+                retry_after = self._retry_after_seconds(exc)
+                delay = retry_after if retry_after is not None else error_backoff
+                logger.exception(
+                    "telegram.poll_error",
+                    error=str(exc),
+                    retry_after=retry_after,
+                    backoff_seconds=delay,
+                )
+                await asyncio.sleep(delay)
+                if retry_after is None:
+                    error_backoff = min(error_backoff * 2, max_error_backoff)
+
+    def _extract_message_text(self, message_data: dict[str, Any]) -> str:
+        """Return message text, caption, or a fallback for known non-text types."""
+        text = message_data.get("text")
+        if isinstance(text, str) and text:
+            return text
+
+        caption = message_data.get("caption")
+        if isinstance(caption, str) and caption:
+            return caption
+
+        fallback_by_key = {
+            "sticker": "[Telegram sticker]",
+            "photo": "[Telegram photo]",
+            "video": "[Telegram video]",
+            "voice": "[Telegram voice message]",
+            "audio": "[Telegram audio]",
+            "document": "[Telegram document]",
+            "animation": "[Telegram animation]",
+            "location": "[Telegram location]",
+            "contact": "[Telegram contact]",
+            "poll": "[Telegram poll]",
+        }
+        for key, fallback in fallback_by_key.items():
+            if key in message_data:
+                return fallback
+        return ""
+
+    @staticmethod
+    def _retry_after_seconds(exc: Exception) -> float | None:
+        """Extract Telegram Retry-After seconds from aiogram/http exceptions."""
+        value = getattr(exc, "retry_after", None)
+        if value is None:
+            parameters = getattr(exc, "parameters", None)
+            value = getattr(parameters, "retry_after", None)
+        if value is None:
+            return None
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return None
