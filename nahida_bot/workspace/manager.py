@@ -19,6 +19,83 @@ from nahida_bot.workspace.sandbox import WorkspaceSandbox
 class WorkspaceManager:
     """Manage workspace creation, default workspace, and active selection."""
 
+    default_instruction_files: tuple[str, ...] = ("AGENTS.md", "SOUL.md", "USER.md")
+    default_instruction_content: dict[str, str] = {
+        "AGENTS.md": """# Nahida Bot Workspace
+
+This directory is the agent workspace. Treat files here as user-owned working
+state and use workspace tools before assuming missing context.
+
+## Startup Routine
+
+1. Follow the system prompt first.
+2. Read `SOUL.md` for persona and boundaries.
+3. Read `USER.md` for user preferences and long-running context.
+4. Use skills from `skills/*/SKILL.md` when a task matches their description.
+5. Keep replies concise and actionable unless the user asks for more detail.
+
+## Workspace Rules
+
+- Prefer `workspace_read` before editing a file you have not inspected.
+- Prefer `workspace_write` for durable notes or generated artifacts.
+- Do not store secrets unless the user explicitly asks.
+""",
+        "SOUL.md": """# Nahida Bot Soul
+
+You are Nahida Bot, a practical agent assistant.
+
+## Tone
+
+- Direct, calm, and technically precise.
+- No empty encouragement or performative enthusiasm.
+- Explain tradeoffs when they affect correctness, safety, or user time.
+
+## Boundaries
+
+- Ask only when the missing answer blocks safe progress.
+- Preserve user-owned files and preferences.
+- Treat workspace memory as helpful context, not unquestionable truth.
+""",
+        "USER.md": """# User Profile
+
+Add durable preferences and personal context here.
+
+## Preferences
+
+- Language:
+- Preferred response style:
+- Important constraints:
+
+## Long-Running Context
+
+- Current projects:
+- Things to remember:
+""",
+    }
+    default_skill_files: dict[str, str] = {
+        "skills/workspace-files/SKILL.md": """---
+name: workspace-files
+description: Read and write files in the active workspace.
+---
+# Workspace Files
+
+Use this skill when the user asks you to inspect, create, update, or remember
+workspace files.
+
+## Available Tools
+
+- `workspace_read(path)` reads a UTF-8 text file from the active workspace.
+- `workspace_write(path, content)` writes UTF-8 text into the active workspace.
+
+## Rules
+
+- Use relative paths only.
+- Read an existing file before changing it.
+- Keep generated notes small and easy to scan.
+- Do not write secrets unless the user explicitly asks.
+"""
+    }
+
     def __init__(
         self, base_dir: Path, *, default_workspace_id: str = "default"
     ) -> None:
@@ -40,16 +117,16 @@ class WorkspaceManager:
         self.workspaces_dir.mkdir(parents=True, exist_ok=True)
 
         records = self._load_records()
+        default_workspace_path = self.workspaces_dir / self.default_workspace_id
         if self.default_workspace_id not in records:
             records[self.default_workspace_id] = WorkspaceMetadata.create(
                 self.default_workspace_id,
                 is_default=True,
             )
             self._persist_records(records)
-            (self.workspaces_dir / self.default_workspace_id).mkdir(
-                parents=True,
-                exist_ok=True,
-            )
+        default_workspace_path.mkdir(parents=True, exist_ok=True)
+        self._ensure_default_instruction_files(default_workspace_path)
+        self._ensure_default_skill_files(default_workspace_path)
 
         default_metadata = records[self.default_workspace_id]
         default_metadata.is_default = True
@@ -195,3 +272,24 @@ class WorkspaceManager:
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, destination)
+
+    def _ensure_default_instruction_files(self, workspace_path: Path) -> None:
+        """Create editable instruction files for a new or existing workspace.
+
+        Existing non-empty files are user-owned and are never overwritten.
+        """
+        for filename in self.default_instruction_files:
+            path = workspace_path / filename
+            if not path.exists() or not path.read_text(encoding="utf-8").strip():
+                path.write_text(
+                    self.default_instruction_content[filename],
+                    encoding="utf-8",
+                )
+
+    def _ensure_default_skill_files(self, workspace_path: Path) -> None:
+        """Create default workspace skills without overwriting user content."""
+        for relative_path, content in self.default_skill_files.items():
+            path = workspace_path / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists() or not path.read_text(encoding="utf-8").strip():
+                path.write_text(content, encoding="utf-8")

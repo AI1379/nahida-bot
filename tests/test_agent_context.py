@@ -152,6 +152,95 @@ class TestContextBuilder:
             "workspace_instruction:USER.md"
         ]
 
+    def test_load_workspace_skills_reads_skill_files(self, temp_dir: Path) -> None:
+        """Skill loader should read AgentSkills-compatible SKILL.md files."""
+        # Arrange
+        workspace_dir = temp_dir / "ws"
+        skill_dir = workspace_dir / "skills" / "files"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            """---
+name: files
+description: Work with workspace files.
+---
+# Files
+
+Use workspace_read before workspace_write.
+""",
+            encoding="utf-8",
+        )
+        builder = ContextBuilder()
+
+        # Act
+        skills = builder.load_workspace_skills(workspace_dir)
+
+        # Assert
+        assert len(skills) == 1
+        assert skills[0].source == "workspace_skill:files"
+        assert "Description: Work with workspace files." in skills[0].content
+        assert "workspace_read" in skills[0].content
+        assert skills[0].metadata == {
+            "skill_name": "files",
+            "description": "Work with workspace files.",
+            "path": "skills/files/SKILL.md",
+        }
+
+    def test_workspace_skill_overrides_project_agent_skill(
+        self, temp_dir: Path
+    ) -> None:
+        """Workspace skills should win when names collide."""
+        # Arrange
+        workspace_dir = temp_dir / "ws"
+        project_skill = workspace_dir / ".agents" / "skills" / "files"
+        workspace_skill = workspace_dir / "skills" / "files"
+        project_skill.mkdir(parents=True)
+        workspace_skill.mkdir(parents=True)
+        (project_skill / "SKILL.md").write_text(
+            "---\nname: files\n---\nproject version",
+            encoding="utf-8",
+        )
+        (workspace_skill / "SKILL.md").write_text(
+            "---\nname: files\n---\nworkspace version",
+            encoding="utf-8",
+        )
+        builder = ContextBuilder()
+
+        # Act
+        skills = builder.load_workspace_skills(workspace_dir)
+
+        # Assert
+        assert len(skills) == 1
+        assert "workspace version" in skills[0].content
+        assert "project version" not in skills[0].content
+
+    def test_build_context_injects_skills_after_instructions(
+        self, temp_dir: Path
+    ) -> None:
+        """Context order should include skills after workspace instructions."""
+        # Arrange
+        workspace_dir = temp_dir / "ws"
+        skill_dir = workspace_dir / "skills" / "files"
+        skill_dir.mkdir(parents=True)
+        (workspace_dir / "AGENTS.md").write_text("agents", encoding="utf-8")
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: files\n---\nskill body",
+            encoding="utf-8",
+        )
+        builder = ContextBuilder()
+
+        # Act
+        result = builder.build_context(
+            system_prompt="baseline",
+            workspace_root=workspace_dir,
+        )
+
+        # Assert
+        assert [item.source for item in result] == [
+            "system_baseline",
+            "workspace_instruction:AGENTS.md",
+            "workspace_skill:files",
+        ]
+
     def test_provider_tokenizer_is_used_when_available(self) -> None:
         """Context builder should use provider tokenizer when provider exposes one."""
         # Arrange

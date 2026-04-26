@@ -33,8 +33,52 @@ class TestWorkspaceManager:
         assert metadata.created_at.tzinfo == UTC
         assert metadata.last_active_at.tzinfo == UTC
         assert (temp_dir / "workspaces" / "default").exists()
+        assert (temp_dir / "workspaces" / "default" / "AGENTS.md").exists()
+        assert (temp_dir / "workspaces" / "default" / "SOUL.md").exists()
+        assert (temp_dir / "workspaces" / "default" / "USER.md").exists()
+        assert (
+            temp_dir
+            / "workspaces"
+            / "default"
+            / "skills"
+            / "workspace-files"
+            / "SKILL.md"
+        ).exists()
+        assert "Nahida Bot Workspace" in (
+            temp_dir / "workspaces" / "default" / "AGENTS.md"
+        ).read_text(encoding="utf-8")
         assert (temp_dir / "workspace_index.json").exists()
         assert manager.get_active_workspace().workspace_id == "default"
+
+    def test_initialize_preserves_existing_instruction_files(
+        self, temp_dir: Path
+    ) -> None:
+        """Initialize should not overwrite user-edited workspace instructions."""
+        # Arrange
+        manager = WorkspaceManager(base_dir=temp_dir)
+        manager.initialize()
+        agents_path = temp_dir / "workspaces" / "default" / "AGENTS.md"
+        agents_path.write_text("custom instructions", encoding="utf-8")
+
+        # Act
+        manager.initialize()
+
+        # Assert
+        assert agents_path.read_text(encoding="utf-8") == "custom instructions"
+
+    def test_initialize_replaces_empty_instruction_file(self, temp_dir: Path) -> None:
+        """Initialize should backfill default content into empty instruction files."""
+        # Arrange
+        manager = WorkspaceManager(base_dir=temp_dir)
+        manager.initialize()
+        user_path = temp_dir / "workspaces" / "default" / "USER.md"
+        user_path.write_text("", encoding="utf-8")
+
+        # Act
+        manager.initialize()
+
+        # Assert
+        assert "User Profile" in user_path.read_text(encoding="utf-8")
 
     def test_create_workspace_with_template_copy(self, temp_dir: Path) -> None:
         """Create workspace should copy all template files into target workspace."""
