@@ -32,6 +32,7 @@ from nahida_bot.plugins.manifest import (
 )
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerRegistry, ToolRegistry
+from nahida_bot.plugins.tool_executor import RegistryToolExecutor
 
 __all__ = [
     # Base
@@ -69,5 +70,6 @@ __all__ = [
     "PermissionChecker",
     # Registry
     "HandlerRegistry",
+    "RegistryToolExecutor",
     "ToolRegistry",
 ]

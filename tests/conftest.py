@@ -119,7 +119,7 @@ def mock_http_client():
 
 
 @pytest.fixture
-def test_settings():
+def test_settings(temp_data_dir: Path):
     """创建测试用的应用设置。"""
     from nahida_bot.core.config import Settings
 
@@ -129,6 +129,7 @@ def test_settings():
         host="127.0.0.1",
         port=6666,
         db_path=":memory:",
+        workspace_base_dir=str(temp_data_dir / "workspace"),
         plugin_paths=[],
         discover_builtin_channels=False,
     )
@@ -142,9 +143,8 @@ async def app(test_settings):
     application = Application(settings=test_settings)
     await application.initialize()
     yield application
-    # 清理：如果应用已启动，则停止
-    if application.is_started:
-        await application.stop()
+    # stop() also closes resources opened during initialize().
+    await application.stop()
 
 
 @pytest.fixture

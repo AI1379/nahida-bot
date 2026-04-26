@@ -1,8 +1,18 @@
 id: builtin-commands
 name: "Builtin Commands"
 version: "0.1.0"
-description: "Core commands: /reset, /new, /status, /model, /help"
+description: "Core commands and workspace tools"
 type: tool
 entrypoint: "nahida_bot.plugins.builtin.commands:BuiltinCommandsPlugin"
-permissions: {}
-capabilities: {}
+permissions:
+  filesystem:
+    read:
+      - workspace
+    write:
+      - workspace
+capabilities:
+  tools:
+    - name: workspace_read
+      description: Read a text file from the active workspace
+    - name: workspace_write
+      description: Write a text file to the active workspace

@@ -10,6 +10,7 @@ import structlog
 
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.memory.models import ConversationTurn
+from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.events import (
     EventBus,
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.core.events import EventContext, Subscription
+    from nahida_bot.plugins.registry import ToolRegistry
+    from nahida_bot.workspace.manager import WorkspaceManager
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +59,8 @@ class MessageRouter:
         agent_loop: AgentLoop | None = None,
         memory_store: MemoryStore | None = None,
         provider_manager: ProviderManager | None = None,
+        tool_registry: ToolRegistry | None = None,
+        workspace_manager: WorkspaceManager | None = None,
         config: RouterConfig | None = None,
     ) -> None:
         self._event_bus = event_bus
@@ -65,6 +70,8 @@ class MessageRouter:
         self._agent = agent_loop
         self._memory = memory_store
         self._provider_manager = provider_manager
+        self._tool_registry = tool_registry
+        self._workspace = workspace_manager
         self._config = config or RouterConfig()
         self._subscription: Subscription | None = None
         # Maps deterministic session key → active session id (for /new)
@@ -134,6 +141,7 @@ class MessageRouter:
         """Core dispatch logic: command first, then agent."""
         inbound: InboundMessage = event.payload.message
         session_id = self.get_active_session_id(inbound.platform, inbound.chat_id)
+        workspace_id, workspace_root = self._resolve_workspace_context()
 
         # Step 1: Command matching
         match = self._matcher.match(inbound.text, prefix=inbound.command_prefix)
@@ -156,7 +164,7 @@ class MessageRouter:
         provider_slot = await self._resolve_provider(session_id)
 
         # Load history from memory
-        history = await self._load_history(session_id)
+        history = await self._load_history(session_id, workspace_id=workspace_id)
 
         # Build run kwargs — include provider override when available
         run_kwargs: dict[str, Any] = {
@@ -164,6 +172,11 @@ class MessageRouter:
             "system_prompt": self._config.system_prompt,
             "history_messages": history,
         }
+        if workspace_root is not None:
+            run_kwargs["workspace_root"] = workspace_root
+        tools = self._registered_tools()
+        if tools:
+            run_kwargs["tools"] = tools
         if provider_slot is not None:
             run_kwargs["provider"] = provider_slot.provider
             run_kwargs["context_builder"] = provider_slot.context_builder
@@ -245,12 +258,14 @@ class MessageRouter:
             msg_id=msg_id,
         )
 
-    async def _load_history(self, session_id: str) -> list[ContextMessage]:
+    async def _load_history(
+        self, session_id: str, *, workspace_id: str | None = None
+    ) -> list[ContextMessage]:
         """Load conversation history from memory store."""
         if self._memory is None:
             return []
 
-        await self._memory.ensure_session(session_id)
+        await self._memory.ensure_session(session_id, workspace_id=workspace_id)
         records = await self._memory.get_recent(
             session_id, limit=self._config.max_history_turns
         )
@@ -261,6 +276,28 @@ class MessageRouter:
                 source=r.turn.source,
             )
             for r in records
+        ]
+
+    def _resolve_workspace_context(self) -> tuple[str | None, Any | None]:
+        """Return active workspace id and root path for context injection."""
+        if self._workspace is None:
+            return None, None
+
+        metadata = self._workspace.get_active_workspace()
+        root = self._workspace.workspace_path(metadata.workspace_id)
+        return metadata.workspace_id, root
+
+    def _registered_tools(self) -> list[ToolDefinition]:
+        """Return provider-facing definitions for all registered plugin tools."""
+        if self._tool_registry is None:
+            return []
+        return [
+            ToolDefinition(
+                name=entry.name,
+                description=entry.description,
+                parameters=entry.parameters,
+            )
+            for entry in self._tool_registry.all()
         ]
 
     async def _persist_turns(

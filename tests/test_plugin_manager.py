@@ -11,6 +11,7 @@ from nahida_bot.core.events import (
 )
 from nahida_bot.core.exceptions import PluginStateError
 from nahida_bot.plugins.manager import PluginManager, PluginState
+from nahida_bot.workspace.manager import WorkspaceManager
 
 
 def _create_test_plugin(parent: Path, plugin_id: str) -> Path:
@@ -252,3 +253,32 @@ class ToolPlugin(Plugin):
         # Disable should remove the tool
         await manager.disable("tool_plugin")
         assert manager.tool_registry.get("my_tool") is None
+
+    async def test_builtin_workspace_tools_are_registered_and_execute(
+        self, tmp_path: Path
+    ) -> None:
+        import nahida_bot.plugins.builtin as builtin_pkg
+
+        workspace = WorkspaceManager(tmp_path / "workspace")
+        workspace.initialize()
+        builtin_file = builtin_pkg.__file__
+        assert builtin_file is not None
+        builtin_path = Path(builtin_file).parent
+
+        manager = PluginManager(
+            event_bus=_make_event_bus(),
+            workspace_manager=workspace,
+        )
+        await manager.discover([builtin_path])
+        await manager.load("builtin-commands")
+        await manager.enable("builtin-commands")
+
+        write_tool = manager.tool_registry.get("workspace_write")
+        read_tool = manager.tool_registry.get("workspace_read")
+        assert write_tool is not None
+        assert read_tool is not None
+
+        await write_tool.handler(path="notes/hello.txt", content="hello workspace")
+        result = await read_tool.handler(path="notes/hello.txt")
+
+        assert result == "hello workspace"

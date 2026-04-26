@@ -49,6 +49,9 @@ class Settings(BaseModel):
     # Database
     db_path: str = "./data/nahida.db"
 
+    # Workspace
+    workspace_base_dir: str = "./data/workspace"
+
     # Plugins
     plugin_paths: list[str] = ["./plugins"]
     discover_builtin_channels: bool = True

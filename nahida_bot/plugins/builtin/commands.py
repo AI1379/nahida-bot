@@ -45,6 +45,42 @@ class BuiltinCommandsPlugin(Plugin):
         self.api.register_command(
             "help", self._cmd_help, description="List available commands"
         )
+        self.api.register_tool(
+            "workspace_read",
+            "Read a UTF-8 text file from the active workspace.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path inside the active workspace.",
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            self._tool_workspace_read,
+        )
+        self.api.register_tool(
+            "workspace_write",
+            "Write UTF-8 text content to a file in the active workspace.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path inside the active workspace.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Text content to write.",
+                    },
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+            self._tool_workspace_write,
+        )
 
     # ── Command Handlers ──────────────────────────────────
 
@@ -126,3 +162,12 @@ class BuiltinCommandsPlugin(Plugin):
             desc = f" — {cmd.description}" if cmd.description else ""
             lines.append(f"  /{cmd.name}{aliases}{desc}")
         return "\n".join(lines)
+
+    async def _tool_workspace_read(self, path: str) -> str:
+        """Read a text file from the active workspace."""
+        return await self.api.workspace_read(path)
+
+    async def _tool_workspace_write(self, path: str, content: str) -> str:
+        """Write a text file to the active workspace."""
+        await self.api.workspace_write(path, content)
+        return f"Written workspace file: {path}"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +19,8 @@ from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.channel_plugin import ChannelPlugin
 from nahida_bot.plugins.commands import CommandEntry, CommandMatcher, CommandRegistry
 from nahida_bot.plugins.manifest import PluginManifest
+from nahida_bot.plugins.registry import ToolEntry, ToolRegistry
+from nahida_bot.workspace.manager import WorkspaceManager
 
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -50,11 +53,13 @@ class _MockMemoryStore:
 
     def __init__(self) -> None:
         self.sessions: dict[str, list[ConversationTurn]] = {}
+        self.workspace_ids: dict[str, str | None] = {}
 
     async def ensure_session(
         self, session_id: str, workspace_id: str | None = None
     ) -> None:
         self.sessions.setdefault(session_id, [])
+        self.workspace_ids[session_id] = workspace_id
 
     async def append_turn(self, session_id: str, turn: ConversationTurn) -> int:
         self.sessions.setdefault(session_id, []).append(turn)
@@ -96,6 +101,8 @@ def _make_router(
     *,
     agent: Any = None,
     memory: Any = None,
+    tool_registry: ToolRegistry | None = None,
+    workspace_manager: WorkspaceManager | None = None,
     config: RouterConfig | None = None,
 ) -> tuple[MessageRouter, EventBus, ChannelRegistry, CommandRegistry]:
     event_bus = EventBus(EventContext(app=None, settings=None, logger=MagicMock()))  # type: ignore[arg-type]
@@ -117,6 +124,8 @@ def _make_router(
         channel_registry=channel_registry,
         agent_loop=agent,
         memory_store=memory,
+        tool_registry=tool_registry,
+        workspace_manager=workspace_manager,
         config=config,
     )
     return router, event_bus, channel_registry, command_registry
@@ -227,6 +236,65 @@ class TestMessageRouterAgentDispatch:
         )
         await router.stop()
 
+    async def test_registered_tools_are_passed_to_agent(self) -> None:
+        async def _tool_handler(query: str) -> str:
+            return f"result: {query}"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolEntry(
+                name="search",
+                description="Search memory",
+                parameters={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+                handler=_tool_handler,
+                plugin_id="tool-plugin",
+            )
+        )
+        agent = _MockAgentLoop(response="agent says hi")
+        router, event_bus, _, _ = _make_router(agent=agent, tool_registry=registry)
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("use search"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        tools = agent.calls[0]["tools"]
+        assert len(tools) == 1
+        assert tools[0].name == "search"
+        assert tools[0].parameters["required"] == ["query"]
+
+    async def test_active_workspace_root_is_passed_to_agent(
+        self, tmp_path: Path
+    ) -> None:
+        manager = WorkspaceManager(tmp_path)
+        manager.initialize()
+        agent = _MockAgentLoop(response="agent says hi")
+        router, event_bus, _, _ = _make_router(
+            agent=agent,
+            workspace_manager=manager,
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=_inbound("read workspace"), session_id=""
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert agent.calls[0]["workspace_root"] == manager.workspace_path("default")
+
 
 class TestMessageRouterMemory:
     async def test_history_loaded_from_memory(self) -> None:
@@ -254,6 +322,30 @@ class TestMessageRouterMemory:
         history = agent.calls[0]["history_messages"]
         assert len(history) == 1
         assert history[0].content == "hi"
+
+    async def test_memory_session_is_bound_to_active_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        manager = WorkspaceManager(tmp_path)
+        manager.initialize()
+        memory = _MockMemoryStore()
+        agent = _MockAgentLoop()
+        router, event_bus, _, _ = _make_router(
+            agent=agent,
+            memory=memory,
+            workspace_manager=manager,
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("hello"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert memory.workspace_ids["test:c1"] == "default"
 
     async def test_turns_persisted_after_agent_run(self) -> None:
         memory = _MockMemoryStore()

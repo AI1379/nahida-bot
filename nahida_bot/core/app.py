@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.db.engine import DatabaseEngine
     from nahida_bot.plugins.manager import PluginManager
+    from nahida_bot.workspace.manager import WorkspaceManager
 
 logger = structlog.get_logger(__name__)
 
@@ -61,6 +62,7 @@ class Application:
         self.message_router: MessageRouter | None = None
         self.agent_loop: AgentLoop | None = None
         self.memory_store: MemoryStore | None = None
+        self.workspace_manager: WorkspaceManager | None = None
         self._db_engine: DatabaseEngine | None = None
         self._provider_manager: ProviderManager | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
@@ -102,17 +104,23 @@ class Application:
 
             # Initialize database, memory, and agent subsystems
             await self._init_agent_subsystem()
+            self._init_workspace_subsystem()
 
             # Initialize plugin manager
             from nahida_bot.plugins.manager import PluginManager
+            from nahida_bot.plugins.tool_executor import RegistryToolExecutor
 
             self.plugin_manager = PluginManager(
                 event_bus=self.event_bus,
-                workspace_manager=None,  # TODO: Inject a real WorkspaceManager instance here
+                workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
                 channel_registry=self.channel_registry,
                 provider_manager=self._provider_manager,
             )
+            if self.agent_loop is not None:
+                self.agent_loop.tool_executor = RegistryToolExecutor(
+                    self.plugin_manager.tool_registry
+                )
 
             self._initialized = True
         except Exception as e:
@@ -220,6 +228,19 @@ class Application:
                 "Set provider.api_key and provider.model in config.",
             )
 
+    def _init_workspace_subsystem(self) -> None:
+        """Create and initialize the active workspace manager."""
+        from nahida_bot.workspace.manager import WorkspaceManager
+
+        manager = WorkspaceManager(Path(self.settings.workspace_base_dir))
+        metadata = manager.initialize()
+        self.workspace_manager = manager
+        logger.info(
+            "application.workspace_initialized",
+            workspace_id=metadata.workspace_id,
+            path=str(manager.workspace_path(metadata.workspace_id)),
+        )
+
     def _get_plugin_configs(self) -> dict[str, dict[str, Any]]:
         """Extract plugin-specific configs from settings.
 
@@ -303,6 +324,8 @@ class Application:
                 agent_loop=self.agent_loop,
                 memory_store=self.memory_store,
                 provider_manager=self._provider_manager,
+                tool_registry=self.plugin_manager.tool_registry,
+                workspace_manager=self.workspace_manager,
                 config=RouterConfig(
                     system_prompt=self.settings.system_prompt,
                 ),
