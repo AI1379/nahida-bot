@@ -141,6 +141,15 @@ class AgentLoop:
         active_provider = provider or self.provider
         active_builder = context_builder or self.context_builder
         trace = self.metrics.new_trace() if self.metrics else None
+
+        logger.debug(
+            "agent_loop.run",
+            history_count=len(history_messages or []),
+            history_roles=[m.role for m in (history_messages or [])[:6]],
+            history_sources=[m.source for m in (history_messages or [])[:6]],
+            user_preview=user_message[:80],
+        )
+
         conversation = list(history_messages or [])
         conversation.append(
             ContextMessage(role="user", source="user_input", content=user_message)

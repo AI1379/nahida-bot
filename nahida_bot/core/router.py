@@ -128,12 +128,26 @@ class MessageRouter:
         Otherwise returns the deterministic ``platform:chat_id`` key.
         """
         key = self.make_session_id(platform, chat_id)
-        return self._active_sessions.get(key, key)
+        active = self._active_sessions.get(key, key)
+        logger.debug(
+            "router.resolve_session",
+            key=key,
+            active_session_id=active,
+            has_override=key in self._active_sessions,
+        )
+        return active
 
     def set_active_session(self, platform: str, chat_id: str, session_id: str) -> None:
         """Switch the active session for a chat (used by /new)."""
         key = self.make_session_id(platform, chat_id)
+        old = self._active_sessions.get(key, key)
         self._active_sessions[key] = session_id
+        logger.debug(
+            "router.set_active_session",
+            key=key,
+            old_session_id=old,
+            new_session_id=session_id,
+        )
 
     async def _handle_message_received(
         self, event: MessageReceived, ctx: EventContext
@@ -141,6 +155,13 @@ class MessageRouter:
         """Core dispatch logic: command first, then agent."""
         inbound: InboundMessage = event.payload.message
         session_id = self.get_active_session_id(inbound.platform, inbound.chat_id)
+        logger.debug(
+            "router.dispatch",
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            session_id=session_id,
+            text_preview=inbound.text[:100],
+        )
         workspace_id, workspace_root = self._resolve_workspace_context()
 
         # Step 1: Command matching
@@ -263,11 +284,19 @@ class MessageRouter:
     ) -> list[ContextMessage]:
         """Load conversation history from memory store."""
         if self._memory is None:
+            logger.debug("router.load_history.no_memory")
             return []
 
         await self._memory.ensure_session(session_id, workspace_id=workspace_id)
         records = await self._memory.get_recent(
             session_id, limit=self._config.max_history_turns
+        )
+        logger.debug(
+            "router.load_history",
+            session_id=session_id,
+            workspace_id=workspace_id,
+            record_count=len(records),
+            preview_roles=[r.turn.role for r in records[:6]],
         )
         return [
             ContextMessage(
@@ -306,6 +335,12 @@ class MessageRouter:
         """Persist user message and agent response to memory."""
         if self._memory is None:
             return
+
+        logger.debug(
+            "router.persist_turns",
+            session_id=session_id,
+            user_preview=inbound.text[:80],
+        )
 
         user_turn = ConversationTurn(
             role="user",

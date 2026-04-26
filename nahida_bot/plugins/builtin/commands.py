@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
+
 from nahida_bot.core.router import MessageRouter
 from nahida_bot.plugins.api_bridge import RealBotAPI
 from nahida_bot.plugins.base import InboundMessage, Plugin
+
+_logger = structlog.get_logger(__name__)
 
 
 class BuiltinCommandsPlugin(Plugin):
@@ -87,25 +91,61 @@ class BuiltinCommandsPlugin(Plugin):
     async def _cmd_reset(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
+        _logger.debug(
+            "cmd.reset",
+            session_id=session_id,
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+        )
         deleted = await self._get_real_api().clear_session(session_id)
+        _logger.debug("cmd.reset.done", session_id=session_id, deleted=deleted)
         return f"Session cleared. {deleted} message(s) removed."
 
     async def _cmd_new(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
         new_id = MessageRouter.make_new_session_id(inbound.platform, inbound.chat_id)
+        real_api = self._get_real_api()
+
+        _logger.debug(
+            "cmd.new.attempt",
+            old_session_id=session_id,
+            new_session_id=new_id,
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            has_event_bus=real_api._event_bus is not None,
+        )
+
         # Find the MessageRouter to update the active session mapping.
         # The router is accessible through the event bus context.
-        real_api = self._get_real_api()
         if real_api._event_bus is not None:
             ctx = real_api._event_bus._context
+            _logger.debug(
+                "cmd.new.resolve_context",
+                has_context=ctx is not None,
+                has_app=hasattr(ctx, "app") if ctx is not None else False,
+            )
             if ctx is not None and hasattr(ctx, "app"):
                 router = ctx.app.message_router
+                _logger.debug(
+                    "cmd.new.resolve_router",
+                    has_router=router is not None,
+                    has_memory=router.memory is not None if router else False,
+                )
                 if router is not None:
                     router.set_active_session(inbound.platform, inbound.chat_id, new_id)
                     if router.memory is not None:
                         await router.memory.ensure_session(new_id)
+                        _logger.debug("cmd.new.success", new_session_id=new_id)
+                    else:
+                        _logger.warning("cmd.new.no_memory", new_session_id=new_id)
                     return f"New session started: {new_id}"
+                else:
+                    _logger.warning("cmd.new.no_router")
+            else:
+                _logger.warning("cmd.new.no_app_context")
+        else:
+            _logger.warning("cmd.new.no_event_bus")
         return "Failed to create new session — router not available."
 
     async def _cmd_status(
