@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -20,7 +21,13 @@ from nahida_bot.core.events import (
     MessageSent,
 )
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
-from nahida_bot.plugins.commands import CommandMatcher, CommandRegistry
+from nahida_bot.plugins.commands import (
+    CommandEntry,
+    CommandHandlerResult,
+    CommandMatcher,
+    CommandRegistry,
+    CommandResult,
+)
 
 if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop
@@ -40,6 +47,8 @@ class RouterConfig:
     system_prompt: str = "You are a helpful assistant."
     max_history_turns: int = 50
     agent_enabled: bool = True
+    command_timeout_seconds: float = 30.0
+    command_timeout_message: str = "Command timed out. Please try again later."
 
 
 class MessageRouter:
@@ -169,12 +178,18 @@ class MessageRouter:
         if match.matched:
             entry = self._commands.get(match.name)
             if entry is not None:
-                response_text = await entry.handler(
+                result = await self._execute_command(
+                    entry=entry,
                     args=match.args,
                     inbound=inbound,
                     session_id=session_id,
                 )
-                await self._send_response(inbound, session_id, response_text)
+                outbound = self._coerce_command_result(
+                    result,
+                    default_reply_to=inbound.message_id,
+                )
+                if outbound is not None:
+                    await self._send_outbound(inbound, session_id, outbound)
                 return
 
         # Step 2: Agent loop (if configured)
@@ -243,6 +258,19 @@ class MessageRouter:
         if not text:
             return
 
+        await self._send_outbound(
+            inbound,
+            session_id,
+            OutboundMessage(text=text, reply_to=inbound.message_id),
+        )
+
+    async def _send_outbound(
+        self, inbound: InboundMessage, session_id: str, outbound: OutboundMessage
+    ) -> None:
+        """Send an outbound message through the originating channel."""
+        if not outbound.text and not outbound.attachments:
+            return
+
         channel = self._channels.get(inbound.platform)
         if channel is None:
             logger.warning(
@@ -251,9 +279,7 @@ class MessageRouter:
             )
             return
 
-        outbound = OutboundMessage(text=text, reply_to=inbound.message_id)
-
-        # Publish MessageSending event (plugins can intercept/modify)
+        # Publish MessageSending event for observation/audit hooks.
         await self._event_bus.publish(
             MessageSending(
                 payload=MessagePayload(message=inbound, session_id=session_id),
@@ -278,6 +304,52 @@ class MessageRouter:
             chat_id=inbound.chat_id,
             msg_id=msg_id,
         )
+
+    async def _execute_command(
+        self,
+        *,
+        entry: CommandEntry,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> CommandHandlerResult:
+        """Run a command handler with router-level timeout protection."""
+        try:
+            return await asyncio.wait_for(
+                entry.handler(args=args, inbound=inbound, session_id=session_id),
+                timeout=self._config.command_timeout_seconds,
+            )
+        except TimeoutError:
+            logger.warning(
+                "message_router.command_timeout",
+                command=entry.name,
+                plugin_id=entry.plugin_id,
+                timeout=self._config.command_timeout_seconds,
+            )
+            return self._config.command_timeout_message
+
+    def _coerce_command_result(
+        self, result: CommandHandlerResult, *, default_reply_to: str = ""
+    ) -> OutboundMessage | None:
+        """Normalize supported command return values to OutboundMessage."""
+        if result is None:
+            return None
+        if isinstance(result, str):
+            if not result:
+                return None
+            return OutboundMessage(text=result, reply_to=default_reply_to)
+        if isinstance(result, OutboundMessage):
+            return result
+        if isinstance(result, CommandResult):
+            if result.suppress_response:
+                return None
+            return result.message
+
+        logger.warning(
+            "message_router.command_result_unsupported",
+            result_type=type(result).__name__,
+        )
+        return OutboundMessage(text=str(result))
 
     async def _load_history(
         self, session_id: str, *, workspace_id: str | None = None

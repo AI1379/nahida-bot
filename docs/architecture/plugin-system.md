@@ -214,10 +214,47 @@ class BotAPI(Protocol):
         """向 Agent 注册一个可用工具。LLM 可在对话中调用此工具。"""
         ...
 
+    # ── 命令注册 ──────────────────────────────────────
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable[..., Awaitable[CommandHandlerResult]],
+        *,
+        description: str = "",
+        aliases: list[str] | None = None,
+    ) -> None:
+        """注册一个传统 Bot 命令。命中后由 MessageRouter 直接执行，不进入 LLM。"""
+        ...
+
     # ── 会话 ──────────────────────────────────────────
 
     async def get_session(self, session_id: str) -> SessionInfo | None:
         """获取会话信息。"""
+        ...
+
+    async def clear_session(self, session_id: str) -> int:
+        """清空会话历史，返回删除的消息数。"""
+        ...
+
+    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+        """为指定平台会话切换到一个新的内部 session。"""
+        ...
+
+    async def get_session_info(self, session_id: str) -> dict[str, Any]:
+        """获取会话 metadata，用于状态展示和管理命令。"""
+        ...
+
+    def list_commands(self) -> list[CommandInfo]:
+        """列出已注册命令。"""
+        ...
+
+    def list_models(self) -> list[dict[str, str]]:
+        """列出可用 provider/model 组合。"""
+        ...
+
+    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
+        """为会话设置模型偏好，返回命中的 provider id。"""
         ...
 
     # ── 记忆 ──────────────────────────────────────────
@@ -263,6 +300,23 @@ class PluginLogger(Protocol):
     def error(self, msg: str, **kwargs: object) -> None: ...
     def exception(self, msg: str, **kwargs: object) -> None: ...
 ```
+
+### 3.3.1 CommandResult 与命令执行语义
+
+命令系统用于支持传统 Bot 能力：命令命中后由 `MessageRouter` 直接调用注册的 handler，不经过 Agent Loop 或 LLM。
+
+当前命令 handler 支持以下返回值：
+
+```python
+CommandHandlerResult = str | OutboundMessage | CommandResult | None
+```
+
+- `str`：作为文本回复发送，并默认回复触发命令的原消息。
+- `OutboundMessage`：直接发送，适合附件、平台扩展参数等结构化出站消息。
+- `CommandResult.none()` 或 `None`：显式不发送响应，适合后台任务、状态切换等场景。
+- `CommandResult.text("...")`：显式构造文本结果。
+
+`MessageRouter` 对命令执行有 router 级超时保护，默认 30 秒。超时后返回 `RouterConfig.command_timeout_message`，避免慢命令阻塞消息处理链路。
 
 ### 3.4 消息类型
 
@@ -381,6 +435,24 @@ class MockBotAPI:
         self._tool_handlers[name] = handler
 
     async def get_session(self, session_id: str) -> None:
+        return None
+
+    async def clear_session(self, session_id: str) -> int:
+        return 0
+
+    async def start_new_session(self, platform: str, chat_id: str) -> str:
+        return f"{platform}:{chat_id}:mock"
+
+    async def get_session_info(self, session_id: str) -> dict[str, Any]:
+        return {}
+
+    def list_commands(self) -> list:
+        return []
+
+    def list_models(self) -> list[dict[str, str]]:
+        return []
+
+    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         return None
 
     async def memory_search(self, query: str, *, limit: int = 5) -> list:
@@ -756,7 +828,7 @@ class MessageReceived(Event[MessagePayload]):
     """收到外部平台消息（经 ChannelPlugin 标准化后触发）。"""
 
 class MessageSending(Event[MessagePayload]):
-    """即将发送消息（插件可拦截/修改）。"""
+    """即将发送消息（当前实现用于观察与审计；出站改写 pipeline 尚未实现）。"""
 
 class MessageSent(Event[MessagePayload]):
     """消息已成功发送。"""

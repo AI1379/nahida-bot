@@ -16,6 +16,10 @@ TELEGRAM_MSG_LIMIT = 4096
 # Sentinel pattern used to protect code blocks / inline code during conversion.
 _PLACEHOLDER_RE = re.compile(r"\x00PH(\d+)\x00")
 
+# TODO: Maybe we should use an external Markdown parser library instead of
+# ad-hoc implementations for better robustness and feature support. However, for
+# now this simple approach seems to work well for typical LLM output.
+
 
 def convert_markdown_to_telegram_html(text: str) -> str:
     """Convert a Markdown string to Telegram-compatible HTML."""

@@ -13,7 +13,7 @@ from nahida_bot.plugins.base import (
     SessionInfo,
     SubscriptionHandle,
 )
-from nahida_bot.plugins.commands import CommandEntry
+from nahida_bot.plugins.commands import CommandEntry, CommandHandlerResult, CommandInfo
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
 
@@ -168,7 +168,7 @@ class RealBotAPI:
     def register_command(
         self,
         name: str,
-        handler: Callable[..., Awaitable[str]],
+        handler: Callable[..., Awaitable[CommandHandlerResult]],
         *,
         description: str = "",
         aliases: list[str] | None = None,
@@ -244,6 +244,24 @@ class RealBotAPI:
         if self._memory is None:
             return 0
         return await self._memory.clear_session(session_id)
+
+    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+        """Switch a chat to a new active session through the message router."""
+        from nahida_bot.core.router import MessageRouter
+
+        router = self._event_bus.context.app.message_router
+        if router is None:
+            return None
+
+        new_id = MessageRouter.make_new_session_id(platform, chat_id)
+        router.set_active_session(platform, chat_id, new_id)
+        if router.memory is not None:
+            await router.memory.ensure_session(new_id)
+        return new_id
+
+    def list_commands(self) -> list[CommandInfo]:
+        """List registered commands without exposing registry internals."""
+        return [entry.to_info() for entry in self._command_registry.all_commands()]
 
     def list_models(self) -> list[dict[str, str]]:
         """List all available provider+model combinations."""

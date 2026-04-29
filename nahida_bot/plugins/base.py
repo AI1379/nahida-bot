@@ -14,6 +14,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from nahida_bot.plugins.commands import CommandHandlerResult, CommandInfo
     from nahida_bot.plugins.manifest import PluginManifest
 
 
@@ -165,7 +166,7 @@ class BotAPI(Protocol):
     def register_command(
         self,
         name: str,
-        handler: Callable[..., Awaitable[str]],
+        handler: Callable[..., Awaitable[CommandHandlerResult]],
         *,
         description: str = "",
         aliases: list[str] | None = None,
@@ -177,6 +178,30 @@ class BotAPI(Protocol):
 
     async def get_session(self, session_id: str) -> SessionInfo | None:
         """Look up session metadata."""
+        ...
+
+    async def clear_session(self, session_id: str) -> int:
+        """Delete all turns for a session and return the number removed."""
+        ...
+
+    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+        """Switch the active chat to a new session and return its id."""
+        ...
+
+    async def get_session_info(self, session_id: str) -> dict[str, Any]:
+        """Return command-facing session metadata."""
+        ...
+
+    def list_commands(self) -> list[CommandInfo]:
+        """List registered commands."""
+        ...
+
+    def list_models(self) -> list[dict[str, str]]:
+        """List available provider/model pairs."""
+        ...
+
+    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
+        """Switch the session to a model and return provider id if found."""
         ...
 
     # ── Memory ─────────────────────────────────────────

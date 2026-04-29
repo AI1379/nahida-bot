@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from nahida_bot.plugins.base import InboundMessage
+from nahida_bot.plugins.base import InboundMessage, MemoryRef, OutboundMessage
 from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
 from nahida_bot.plugins.commands import CommandEntry, CommandRegistry
 from nahida_bot.plugins.manifest import PluginManifest
@@ -38,9 +37,28 @@ class _FakeAPI:
         self.commands: dict[str, Any] = {}
         self.tools: dict[str, Any] = {}
         self.files: dict[str, str] = {}
+        self.cleared: list[str] = []
+        self.new_sessions: list[tuple[str, str]] = []
+        self.session_meta: dict[str, Any] = {}
+        self.models = [
+            {"provider_id": "p1", "model": "model-a"},
+            {"provider_id": "p2", "model": "model-b"},
+        ]
+        self.command_registry = CommandRegistry()
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
+
+    async def send_message(
+        self, target: str, message: OutboundMessage, *, channel: str = ""
+    ) -> str:
+        return "msg-1"
+
+    def on_event(self, event_type: type) -> Any:
+        return lambda handler: handler
+
+    def subscribe(self, event_type: type, handler: Any) -> Any:
+        return None
 
     def register_tool(
         self, name: str, description: str, parameters: dict[str, Any], handler: Any
@@ -57,21 +75,31 @@ class _FakeAPI:
     async def workspace_write(self, path: str, content: str) -> None:
         self.files[path] = content
 
+    async def get_session(self, session_id: str) -> Any:
+        return None
 
-class _FakeRealAPI:
-    def __init__(self) -> None:
-        self.cleared: list[str] = []
-        self.session_meta: dict[str, Any] = {}
-        self.models = [
-            {"provider_id": "p1", "model": "model-a"},
-            {"provider_id": "p2", "model": "model-b"},
-        ]
-        self._command_registry = CommandRegistry()
-        self._event_bus: Any = None
+    async def memory_search(self, query: str, *, limit: int = 5) -> list[MemoryRef]:
+        return []
+
+    async def memory_store(
+        self, key: str, content: str, *, metadata: dict[str, Any] | None = None
+    ) -> None:
+        pass
+
+    async def publish_event(self, event: Any) -> None:
+        pass
+
+    @property
+    def logger(self) -> Any:
+        return None
 
     async def clear_session(self, session_id: str) -> int:
         self.cleared.append(session_id)
         return 2
+
+    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+        self.new_sessions.append((platform, chat_id))
+        return f"{platform}:{chat_id}:abc12345"
 
     def list_models(self) -> list[dict[str, str]]:
         return self.models
@@ -84,6 +112,9 @@ class _FakeRealAPI:
 
     async def get_session_info(self, session_id: str) -> dict[str, Any]:
         return dict(self.session_meta)
+
+    def list_commands(self) -> list[Any]:
+        return [entry.to_info() for entry in self.command_registry.all_commands()]
 
 
 @pytest.mark.asyncio
@@ -118,9 +149,8 @@ async def test_reset_status_model_and_help_commands() -> None:
         return "ok"
 
     api = _FakeAPI()
-    real_api = _FakeRealAPI()
-    real_api.session_meta = {"provider_id": "p1", "model": "model-a"}
-    real_api._command_registry.register(
+    api.session_meta = {"provider_id": "p1", "model": "model-a"}
+    api.command_registry.register(
         CommandEntry(
             name="help",
             handler=_help_handler,
@@ -130,7 +160,6 @@ async def test_reset_status_model_and_help_commands() -> None:
         )
     )
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
-    plugin._real_api = real_api  # type: ignore[assignment]
 
     assert await plugin._cmd_reset(args="", inbound=_inbound(), session_id="s1") == (
         "Session cleared. 2 message(s) removed."
@@ -156,19 +185,9 @@ async def test_reset_status_model_and_help_commands() -> None:
 @pytest.mark.asyncio
 async def test_new_command_switches_router_session() -> None:
     api = _FakeAPI()
-    real_api = _FakeRealAPI()
-    router = SimpleNamespace(
-        memory=None,
-        set_active_session=lambda platform, chat_id, session_id: setattr(
-            router, "new_session_id", session_id
-        ),
-    )
-    app = SimpleNamespace(message_router=router)
-    real_api._event_bus = SimpleNamespace(_context=SimpleNamespace(app=app))
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
-    plugin._real_api = real_api  # type: ignore[assignment]
 
     result = await plugin._cmd_new(args="", inbound=_inbound(), session_id="old")
 
-    assert result.startswith("New session started: telegram:c1:")
-    assert router.new_session_id.startswith("telegram:c1:")
+    assert result == "New session started: telegram:c1:abc12345"
+    assert api.new_sessions == [("telegram", "c1")]

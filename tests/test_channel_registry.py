@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.plugins.channel_plugin import ChannelPlugin
+from nahida_bot.plugins.commands import CommandHandlerResult
 from nahida_bot.plugins.manifest import PluginManifest
 
 
@@ -49,7 +50,7 @@ class _MockAPI:
     def register_command(
         self,
         name: str,
-        handler: Callable[..., Awaitable[str]],
+        handler: Callable[..., Awaitable[CommandHandlerResult]],
         *,
         description: str = "",
         aliases: list[str] | None = None,
@@ -57,6 +58,24 @@ class _MockAPI:
         pass
 
     async def get_session(self, session_id: str) -> Any:
+        return None
+
+    async def clear_session(self, session_id: str) -> int:
+        return 0
+
+    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+        return None
+
+    async def get_session_info(self, session_id: str) -> dict[str, Any]:
+        return {}
+
+    def list_commands(self) -> list[Any]:
+        return []
+
+    def list_models(self) -> list[dict[str, str]]:
+        return []
+
+    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         return None
 
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:

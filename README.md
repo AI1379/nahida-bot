@@ -20,28 +20,28 @@ QQ 群：529674493
 
 ## 📈 成长进度（项目状态）
 
-目前小吉祥草王正处于 **Phase 2（Agent 与 Workspace 的萌芽期）**，核心的生命循环机制已经搭建好啦~ 🌱
+目前小吉祥草王已完成 **Phase 4（Telegram 接入 + Multi-Provider + 内置命令）** 的主体闭环，已经具备真实 Channel、Agent、Workspace、Plugin 与记忆持久化的最小可用运行路径。
 
 ### 🌟 已点亮的命座 ✅
 
 - [x] 净土的基石与质量把控（Phase 0）
 - [x] 核心生命循环：应用容器、配置文件、事件脉络与观测日志（Phase 1）
 - [x] 专属花盆（Workspace）基石：空间管理、文件沙盒隔离、记忆上下文注入（Phase 2.1-2.2）
-- [x] 智慧运转（Agent Loop）：消息拼装、模型共鸣、工具协议（Phase 2.3）
-- [x] 梦境链接（Provider 抽象）：OpenAI 兼容接口、错误归一化平权（Phase 2.3）
-- [x] 神力感知（Provider 感知 Token 预算）：精准把控消耗（Phase 2.3）
+- [x] 智慧运转（Agent Loop）：消息拼装、模型调用、工具调用闭环、推理链传播（Phase 2.3-2.8）
+- [x] 记忆流转与梦境刻录：SQLite 会话记忆与关键词检索（Phase 2.5）
+- [x] 插件系统：Manifest、Loader、权限检查、生命周期、命令与工具注册（Phase 3）
+- [x] 接引通道：Telegram 长轮询、消息标准化、媒体降级、出站 HTML 转换（Phase 4）
+- [x] 内置命令：`/reset`、`/new`、`/status`、`/model`、`/help`（Phase 4.5）
 
 ### 🚧 正在进行的光合作用
 
-- [ ] 幻境工具通信闭环（Tool Calling 协议）（Phase 2.4）
-- [ ] 记忆流转与梦境刻录（持久化）（Phase 2.5）
-- [ ] 保护花盆的安全强化魔法（Workspace Sandbox 安全增强）⚠️（Phase 2.7）
-- [ ] 梦境反馈的抗干扰训练（Provider 响应健壮性）（Phase 2.8）
+- [ ] Provider 模型切换增强：同一 Provider 下按请求覆盖具体 model，而不是只切 provider slot。
+- [ ] Workspace Sandbox 安全增强：符号链接、TOCTOU、文件大小、特殊文件对象等防护。
+- [ ] 插件配置、MockBotAPI 和 SDK 分离整理。
+- [ ] Gateway 与 Node 分布式执行闭环。
 
 ### 📜 未来的须弥建设计划
 
-- [ ] 插件系统与连接外部的 Channel 接口（Phase 3）
-- [ ] 各大社交平台的接引通道实现（Phase 4）
 - [ ] 虚空终端的广域部署（Gateway 与 Node 分布式）（Phase 5）
 - [ ] 漂亮的可视化面板与教令院运维工具（WebUI）（Phase 6）
 

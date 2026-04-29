@@ -15,6 +15,12 @@ InboundMessage 标准化
   ↓
 Session Resolver （映射平台用户 -> Bot 会话）
   ↓
+Command Router
+  ├─ 命中命令：执行插件注册的 command handler
+  │   ├─ router 级超时保护
+  │   └─ str / OutboundMessage / CommandResult / None
+  └─ 未命中命令：继续进入 Agent Loop
+  ↓
 Context Builder (workspace 文件注入 + 历史记录)
   ↓
 Agent Loop
@@ -42,7 +48,22 @@ LLM tool_call
   → Loop continues
 ```
 
-## 3. Gateway-Node 流程
+## 3. 命令调用流程
+
+```text
+InboundMessage
+  → CommandMatcher （按平台 command_prefix 匹配）
+  → CommandRegistry lookup
+  → asyncio.wait_for(command_timeout_seconds)
+  → CommandHandlerResult normalize
+    ├─ str → OutboundMessage(text=..., reply_to=inbound.message_id)
+    ├─ OutboundMessage → 原样发送
+    ├─ CommandResult.none() / None → 不发送响应
+    └─ CommandResult.text(...) → 文本响应
+  → ChannelPlugin.send_message
+```
+
+## 4. Gateway-Node 流程
 
 ```text
 Node connect
@@ -53,7 +74,7 @@ Node connect
   → health update
 ```
 
-## 4. 模块契约（建议先固定）
+## 5. 模块契约（建议先固定）
 
 优先稳定以下契约，后续模块都基于这些契约展开：
 
@@ -67,6 +88,8 @@ Node connect
 - **Agent Contract**：`AgentLoop.run()` 输入输出与中断语义
 - **Tool Contract**：tool definition、参数校验、执行结果结构
   - 由 Plugin 通过权限系统注册
+- **Command Contract**：command registration、命令匹配、超时和 `CommandHandlerResult`
+  - 命令用于传统 Bot 操作，命中后不进入 LLM
 - **Plugin Manifest Contract**：`plugin.yaml` 字段与版本兼容策略
   - ChannelPlugin 作为标准 Plugin 的一种，需遵循同一 manifest 规范
 - **Gateway Protocol Contract**：消息类型、错误码、版本字段

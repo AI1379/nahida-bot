@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -17,7 +18,12 @@ from nahida_bot.core.events import (
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.channel_plugin import ChannelPlugin
-from nahida_bot.plugins.commands import CommandEntry, CommandMatcher, CommandRegistry
+from nahida_bot.plugins.commands import (
+    CommandEntry,
+    CommandMatcher,
+    CommandRegistry,
+    CommandResult,
+)
 from nahida_bot.plugins.manifest import PluginManifest
 from nahida_bot.plugins.registry import ToolEntry, ToolRegistry
 from nahida_bot.workspace.manager import WorkspaceManager
@@ -38,6 +44,10 @@ def _inbound(text: str = "hello", platform: str = "test") -> InboundMessage:
 
 
 class _StubChannel(ChannelPlugin):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.sent: list[tuple[str, OutboundMessage]] = []
+
     async def on_load(self) -> None:
         pass
 
@@ -45,6 +55,7 @@ class _StubChannel(ChannelPlugin):
         pass
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
+        self.sent.append((target, message))
         return "msg_1"
 
 
@@ -146,7 +157,7 @@ class TestMessageRouterSessionId:
 
 class TestMessageRouterCommandDispatch:
     async def test_command_match_dispatches_to_handler(self) -> None:
-        router, event_bus, _, command_registry = _make_router()
+        router, event_bus, channel_registry, command_registry = _make_router()
 
         handler_response = "pong!"
         handler = AsyncMock(return_value=handler_response)
@@ -175,6 +186,9 @@ class TestMessageRouterCommandDispatch:
 
         handler.assert_awaited_once()
         assert handler.call_args.kwargs["args"] == ""
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].reply_to == "1"
 
     async def test_command_with_args(self) -> None:
         router, event_bus, _, command_registry = _make_router()
@@ -202,6 +216,94 @@ class TestMessageRouterCommandDispatch:
 
         handler.assert_awaited_once()
         assert handler.call_args.kwargs["args"] == "hello world"
+
+    async def test_command_can_return_outbound_message(self) -> None:
+        router, event_bus, channel_registry, command_registry = _make_router()
+        outbound = OutboundMessage(text="file attached", attachments=[])
+        handler = AsyncMock(return_value=outbound)
+        command_registry.register(
+            CommandEntry(
+                name="report",
+                handler=handler,
+                description="Report",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("/report"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1] is outbound
+
+    async def test_command_can_suppress_response(self) -> None:
+        router, event_bus, channel_registry, command_registry = _make_router()
+        handler = AsyncMock(return_value=CommandResult.none())
+        command_registry.register(
+            CommandEntry(
+                name="silent",
+                handler=handler,
+                description="Silent",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("/silent"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent == []
+
+    async def test_command_timeout_returns_timeout_message(self) -> None:
+        router, event_bus, channel_registry, command_registry = _make_router(
+            config=RouterConfig(
+                command_timeout_seconds=0.01,
+                command_timeout_message="too slow",
+            )
+        )
+
+        async def _slow(**kwargs: object) -> str:
+            await asyncio.sleep(1)
+            return "done"
+
+        command_registry.register(
+            CommandEntry(
+                name="slow",
+                handler=_slow,
+                description="Slow",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("/slow"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].text == "too slow"
 
 
 class TestMessageRouterAgentDispatch:

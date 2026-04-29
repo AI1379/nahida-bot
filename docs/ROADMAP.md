@@ -6,13 +6,13 @@
 
 Nahida Bot 的目标不是做一个普通聊天机器人，而是做一个以 Agent 为核心、以工作空间为中心、可通过插件扩展、可分布式连接 Node 的 Python Bot 框架。
 
-当前仓库还处于早期骨架阶段，主要可见内容是项目元信息、测试与风格约束、基础文档，以及一个最小化的 Python 包结构。因此，这份 ROADMAP 以“从骨架走向可用 MVP，再走向可扩展平台”为主线。
+当前仓库已经越过早期骨架阶段，完成了 Core、Agent、Workspace、Plugin、Telegram Channel、多 Provider 与内置命令的主体闭环。因此，这份 ROADMAP 以“稳定当前 MVP，再走向安全加固、分布式执行与可扩展生态”为主线。
 
 ## 2. 技术路线原则
 
 - 语言与运行时：Python 3.12 + `asyncio`
 - Web 与 Gateway：FastAPI + WebSocket
-- 类型与配置：Pydantic v2 + `pydantic-settings`
+- 类型与配置：Pydantic v2 + 手工分层配置加载（保留显式优先级控制）
 - 数据存储：SQLite + `aiosqlite`
 - 包管理：`uv`
 - CLI：`typer` + `rich`
@@ -27,13 +27,13 @@ Nahida Bot 的目标不是做一个普通聊天机器人，而是做一个以 Ag
 | 模块 | 主参考 | 可借鉴点 | 落地提醒 |
 |------|--------|----------|----------|
 | `core`（应用容器、生命周期） | OpenClaw, AstrBot | 统一启动入口、模块化初始化、优雅退出 | 先保证依赖方向干净，再做功能堆叠 |
-| `core.config`（配置系统） | AstrBot, pydantic-settings 官方示例 | 分层配置、环境变量覆盖、默认值策略 | 配置模型必须强类型，避免魔法字符串 |
+| `core.config`（配置系统） | AstrBot, Pydantic 官方示例 | 分层配置、环境变量覆盖、显式优先级策略 | 配置模型必须强类型，避免魔法字符串；当前采用手工 merge 保持优先级可控 |
 | `agent.loop`（推理回路） | OpenClaw, claude-code（模式层） | 消息拼装、工具调用回填、流式输出链路 | 不复制具体 prompt 或私有实现细节 |
 | `agent.context`（上下文管理） | claude-code（模式层）, LangGraph | 上下文裁剪、历史管理、状态拼接 | 先可用再优化，优先滑窗策略 |
 | `agent.providers`（模型抽象） | OpenClaw, LiteLLM, OpenAI SDK 生态 | Provider 统一接口、错误归一化、重试策略 | 首先打通一个 provider，再扩展 |
 | `agent.providers.adapters`（响应适配） | LiteLLM, 各厂商 API 文档 | 多后端响应归一化、推理链提取、流式解析 | ⚠️ 必须处理 DeepSeek-R1 和 Claude thinking |
 | `workspace`（文件即上下文） | OpenClaw, AstrBot | 指令文件注入、工作区隔离、状态持久化 | 路径安全必须先于易用性 |
-| `workspace.sandbox`（文件沙盒） | AstrBot, claude-code（模式层） | 符号链接防护、TOCTOU 防护、多层防御 | ⚠️ 当前实现不安全，Phase 2.7 必须加固 |
+| `workspace.sandbox`（文件沙盒） | AstrBot, claude-code（模式层） | 符号链接防护、TOCTOU 防护、多层防御 | ⚠️ 当前实现仅适合可信本地 MVP；开放不可信插件/远程执行前必须加固 |
 | `plugins`（声明式扩展） | OpenClaw, nonebot2 插件生态 | 插件发现、生命周期、能力注册 | 不允许绕过权限模型直连核心 |
 | `plugins.permissions`（权限系统） | OpenClaw, Android Manifest 思路 | 声明式权限、运行时拦截、审计日志 | 权限粒度从小开始，逐步放开 |
 | `channels`（平台接入层） | AstrBot, nonebot2, aiogram | 多平台适配、消息标准化、事件分发 | 平台差异收敛在 adapter 层 |
@@ -97,7 +97,7 @@ Python 方案的核心结构可以概括为五层：
 任务清单：
 
 - [x] 实现 `Application` 主类，统一管理生命周期（init/start/stop）。
-- [x] 使用 `pydantic-settings` 建立分层配置（默认值、配置文件、环境变量）。
+- [x] 使用 Pydantic v2 建立分层配置（默认值、配置文件、环境变量/`.env`、调用参数），通过手工 merge 保持优先级可控。
 - [x] 接入 `structlog`，区分开发态可读日志和生产态 JSON 日志。
 - [x] 建立基础异常树（配置错误、启动错误、插件错误、通信错误等）。
 - [x] 实现轻量事件总线（内部事件与订阅机制，基础版）。
@@ -108,7 +108,7 @@ Python 方案的核心结构可以概括为五层：
 
 风险控制：不要在本阶段引入具体平台逻辑，保证核心层中立。
 
-参考来源：OpenClaw（生命周期）、AstrBot（配置日志）、pydantic-settings。
+参考来源：OpenClaw（生命周期）、AstrBot（配置日志）、Pydantic。
 
 事件系统的结构设计、类型约束、依赖注入集成和参考方案，统一维护在 [docs/architecture/event-system.md](architecture/event-system.md)，ROADMAP 仅保留交付目标与勾选状态。
 
@@ -175,7 +175,7 @@ Python 方案的核心结构可以概括为五层：
 
 #### Phase 2.7 - Workspace Sandbox 安全增强
 
-> ⚠️ **重要性**：当前沙盒实现仅使用简单路径检查，存在符号链接攻击、TOCTOU 等安全风险。本阶段必须完成安全加固。
+> ⚠️ **重要性**：当前沙盒实现仅使用简单路径检查，存在符号链接攻击、TOCTOU 等安全风险。为尽快打通可运行 MVP，本阶段未阻塞 Phase 3/4 的可信本地插件与 Telegram 接入；但在开放不可信第三方插件、远程节点执行或更高权限文件工具前，必须完成安全加固。
 
 - [ ] 实现符号链接检测与拒绝（包括指向沙盒内和沙盒外的符号链接）。
 - [ ] 实现 TOCTOU 防护（操作时二次验证路径有效性）。
@@ -253,7 +253,7 @@ Python 方案的核心结构可以概括为五层：
 
 #### Phase 3.3 — APIBridge 与权限
 
-- [x] 实现 `BotAPI` 协议定义（send_message、on_event、subscribe、register_tool、get_session、memory_search/store、workspace_read/write、logger）。
+- [x] 实现 `BotAPI` 协议定义（send_message、on_event、subscribe、register_tool、register_command、session/model 管理、memory_search/store、workspace_read/write、logger）。
 - [x] 实现 `RealBotAPI` 桥接层（将 `BotAPI` 协议连接到 EventBus、WorkspaceManager、MemoryStore）。
 - [x] 实现声明式权限校验（`PermissionChecker`：network outbound/inbound、filesystem read/write zone、memory read/write、subprocess、env_vars 前缀匹配）。
 - [x] 实现审计日志（权限拒绝时通过 structlog 记录 plugin_id、resource、action、target）。
@@ -275,12 +275,83 @@ Python 方案的核心结构可以概括为五层：
 - [x] 实现消息事件类型（`MessageReceived`、`MessageSending`、`MessageSent`）。
 - [x] 实现统一指令系统（`CommandRegistry` + `CommandMatcher`，前缀匹配、别名支持、@mention 剥离）。
 - [x] `InboundMessage` 增加 `command_prefix` 字段，支持各平台自定义前缀。
+- [x] 实现命令返回协议（`str | OutboundMessage | CommandResult | None`）和 router 级命令超时保护。
 - [ ] 实现 HTTP Server 模式的 webhook 端点自动注册（声明了 `http_server` 协议的 ChannelPlugin 自动挂载路由）。
 - [ ] 实现消息标准化流程（平台原生事件 → `InboundMessage` → Agent → `OutboundMessage` → 平台回复）。
 
-#### Phase 3.6 — 内置插件与验证
+#### Phase 3.6 — 内置工具插件与验证
 
-- [ ] 提供基础内置插件（读文件、命令执行、网页读取、记忆检索）。
+> 以下工具清单参考 OpenClaw 的 31 个内置工具（`src/agents/tool-catalog.ts`），按依赖程度分为三类。
+> 仅收录**不需要 Gateway-Node 分布式架构**即可独立实现的工具。
+> 需要 Gateway-Node 的工具（`nodes`、`gateway`、`canvas`、`browser`、`subagents` 编排等）纳入 Phase 5 范围。
+
+**第一类 — 已有基础设施，可直接包装为工具插件：**
+
+这些功能已在 Phase 2 中实现，只需通过插件系统的 `register_tool` 注册为可调用工具。
+
+| 工具 ID | 功能 | 依赖现状 | 备注 |
+|---------|------|---------|------|
+| `read` | 读取工作空间文件 | Workspace sandbox 已实现 | 包装 `workspace.read_file()` |
+| `write` | 创建/覆写工作空间文件 | Workspace sandbox 已实现 | 包装 `workspace.write_file()` |
+| `edit` | 精确编辑文件（行级替换） | Workspace sandbox 已实现 | 需实现行级 diff 编辑逻辑 |
+| `apply_patch` | 多 hunk 文件补丁 | Workspace sandbox 已实现 | 需实现 unified diff 解析与应用 |
+| `memory_search` | 记忆语义检索 | MemoryStore 已实现 | 包装 `memory.search()`，已有 jieba 分词 |
+| `memory_get` | 读取记忆文件 | MemoryStore 已实现 | 包装 `memory.get()` |
+
+**第二类 — 无需 Gateway-Node，需新增实现：**
+
+这些工具需要新的实现，但不依赖分布式架构，可在本地独立运行。
+
+| 工具 ID | 功能 | 实现要点 | 优先级 | 备注 |
+|---------|------|---------|--------|------|
+| `exec` | 执行 shell 命令 | `asyncio.create_subprocess_exec` + 超时 + 输出截断 | P0 | ⚠️ 需权限控制（命令白名单/黑名单） |
+| `web_search` | 网页搜索 | 调用搜索 API（SerpAPI / Bing / DuckDuckGo） | P0 | 可用 `duckduckgo-search` Python 包零成本起步 |
+| `web_fetch` | 获取网页内容 | HTTP GET + HTML→Markdown（`readability-lxml` + `markdownify`） | P0 | 需 SSRF 防护（拒绝私有 IP 段） |
+| `message` | 跨 Channel 发消息 | 调用已注册 ChannelPlugin 的 `send_message` | P1 | 需路由层：target → channel + chat_id |
+| `cron` | 定时任务调度 | 本地调度器（`APScheduler` / `asyncio` 定时器） | P1 | 本地模式不需要 Gateway |
+| `tts` | 文本转语音 | API 调用（edge-tts 免费 / OpenAI TTS） | P2 | 可用 `edge-tts` 零成本起步 |
+| `image` | 图片理解 | 将图片 URL/base64 传给多模态 Provider | P2 | 依赖支持 vision 的 Provider |
+| `image_generate` | 图片生成 | 调用图片生成 API（DALL-E / Stable Diffusion / Flux） | P2 | 需配置图片 Provider |
+| `code_execution` | 沙箱 Python 执行 | `subprocess` + 资源限制 + 输出截断 | P2 | 可参考 OpenClaw 的远程沙箱模式 |
+| `x_search` | 搜索 X/Twitter | 调用 X API v2 | P3 | 需要 X API 凭证 |
+| `music_generate` | 音乐生成 | 调用音乐生成 API | P3 | 需要 Provider 支持 |
+| `video_generate` | 视频生成 | 调用视频生成 API | P3 | 需要 Provider 支持 |
+| `update_plan` | 更新任务计划 | 本地状态管理 | P3 | Agent 内部计划维护 |
+
+**第三类 — 需要 Gateway-Node（不在本阶段范围）：**
+
+| 工具 ID | 功能 | 依赖原因 |
+|---------|------|---------|
+| `nodes` | 发现与操控配对设备 | 需要 Node 注册、心跳、远程执行协议 |
+| `gateway` | 网关管理与配置 | 需要 Gateway 服务运行 |
+| `canvas` | 驱动 Node Canvas 画布 | 需要 Node 端 Canvas 运行时 |
+| `browser` | 浏览器自动化控制 | 需要 Playwright/Chromium 运行时，适合 Node 端 |
+| `sessions_spawn` | 派生子 Agent | 需要 Gateway 的子 Agent 编排协议 |
+| `sessions_yield` | 让步接收子 Agent 结果 | 需要 spawn/yield 配套协议 |
+| `subagents` | 管理子 Agent 生命周期 | 需要分布式 Agent 管理 |
+| `agents_list` | 列出所有 Agent | 需要多 Agent 注册中心 |
+| `sessions_list` | 跨会话列表 | 需要 Gateway 级会话管理（本地可做简化版） |
+| `sessions_history` | 跨会话历史 | 需要 Gateway 级会话存储（本地可做简化版） |
+| `sessions_send` | 跨会话发消息 | 需要 Gateway 级会话路由（本地可做简化版） |
+| `session_status` | 会话状态查询 | 本地可做简化版，完整版需 Gateway |
+
+**实施建议：**
+
+- P0 工具（`exec`、`web_search`、`web_fetch`）应优先实现，它们是 Agent 实用性的关键飞跃。
+- 第一类工具（文件 I/O、记忆）可快速交付，复用已有基础设施。
+- `exec` 必须配合严格的权限声明（`subprocess` 权限 + 命令审计），不可跳过权限校验。
+- `web_fetch` 必须实现 SSRF 防护，拒绝 `127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 等私有网段。
+- `message` 工具可作为 ChannelPlugin 跨消息路由的基础，先支持同 Channel 回复，再扩展跨 Channel。
+
+任务清单：
+
+- [ ] 第一类：将 workspace 文件操作（read/write/edit/apply_patch）注册为内置工具插件。
+- [ ] 第一类：将 memory 操作（memory_search/memory_get）注册为内置工具插件。
+- [ ] 实现 `exec` 工具（shell 命令执行 + 超时 + 输出截断 + 权限控制）。
+- [ ] 实现 `web_search` 工具（DuckDuckGo 搜索 API 集成）。
+- [ ] 实现 `web_fetch` 工具（URL 抓取 + HTML→Markdown + SSRF 防护）。
+- [ ] 实现 `message` 工具（通过 ChannelPlugin 路由发送消息）。
+- [ ] 实现 `cron` 工具（本地定时任务调度）。
 - [ ] 实现插件配置解析（环境变量 `NAHIDA_PLUGIN_{ID}_{KEY}` + `config/plugins/{id}.yaml`，JSON Schema 校验）。
 - [ ] 验证不改核心代码可新增并加载外部插件。
 - [ ] 验证越权行为可拦截、可追踪（权限拒绝触发 `PermissionDenied` + 审计日志）。
@@ -412,6 +483,8 @@ class ChannelPlugin(Plugin):
 - [x] 添加 DB migration 002（sessions.metadata_json 列）。
 - [x] 修复 Windows Ctrl+C 挂起问题（DatabaseEngine 和 Provider 资源清理）。
 
+> ⚠️ **待优化（计划中）**：当前 `/model` 已能在会话 metadata 中记录模型偏好，并解析到对应 ProviderSlot；但同一 ProviderSlot 声明多个可用模型时，Provider 请求仍使用实例默认 `model`。后续应把 selected model 作为 per-request override 传入 Provider，或将每个模型展开为独立 ProviderSlot，确保 `/model` 对同 provider 多模型配置真正生效。
+
 前置依赖：Phase 3（ChannelPlugin 接口）。
 
 风险控制：
@@ -487,7 +560,7 @@ class ChannelPlugin(Plugin):
 1. 项目地基（Phase 0）
 2. 核心运行时（Phase 1）
 3. Agent 与 Workspace 联合阶段（Phase 2.1-2.6）
-4. **Workspace Sandbox 安全加固（Phase 2.7）** ⚠️ 阻断项
+4. **Workspace Sandbox 安全加固（Phase 2.7）** ⚠️ 安全闸门
 5. **Provider 响应健壮性增强（Phase 2.8）** ⚠️ 推荐在 Phase 3 前完成
 6. 插件系统与 Channel 接口定义（Phase 3）
 7. 基于插件系统的 Channel 实现（Phase 4）
@@ -498,14 +571,14 @@ class ChannelPlugin(Plugin):
 这个顺序的核心原因是：
 
 - **Phase 0-2.6** 建立最小智能闭环（应用容器 -> 核心运行时 -> Agent + Workspace）
-- **Phase 2.7-2.8** 安全与健壮性加固（**必须在 Phase 3 前完成，避免在不可靠基础上构建插件生态**）
+- **Phase 2.7-2.8** 安全与健壮性加固（Phase 2.8 已完成；Phase 2.7 作为开放不可信插件/远程执行前的安全闸门）
 - **Phase 3-4** 打通插件和 Channel（先定义接口，允许多种通信协议；再实现具体 Channel 作为插件）
 - **Phase 5-6** 扩展分布式与运维（Gateway-Node + WebUI）
 - **Phase 7** 稳定化与商业化（发版、CI/CD、生态）
 
 关键设计点：
 
-- **Phase 2.7 是阻断项**：不安全的沙盒会威胁整个系统安全，必须在插件系统落地前修复。
+- **Phase 2.7 是安全闸门**：不安全的沙盒会威胁整个系统安全。为快速形成可运行 MVP，可信本地插件和 Telegram 接入可先推进；但开放不可信第三方插件、远程执行、文件写工具扩权前必须修复。
 - **Phase 2.8 推荐优先**：Provider 响应格式差异会直接影响 Agent 能力，尽早适配可减少后续返工。
 - **Phase 3 中的 Channel 接口设计直接服务于 Phase 4**，避免核心层改造。
 
@@ -539,10 +612,10 @@ MVP 建议额外约束：
 
 - Python 方案的性能上限主要依赖异步 I/O 设计和插件隔离质量，而不是单纯依赖语言性能。
 - 插件系统一旦失控，会直接影响安全性和稳定性，因此权限模型必须先于生态扩张落地。
-- Workspace 机制是项目的核心资产，任何能破坏文件安全边界的实现都应视为阻断项。
+- Workspace 机制是项目的核心资产。当前可在可信本地 MVP 中先保持简单沙盒；任何面向不可信插件、远程节点或高权限文件工具的能力，都必须先补齐文件安全边界。
 - Gateway-Node 协议一旦发布，就属于稳定契约，后续只能做兼容性演进。
 
-**⚠️ 关键安全风险（Phase 2 必须解决）**：
+**⚠️ 关键安全风险（开放不可信扩展前必须解决）**：
 
 ### 8.1 Workspace Sandbox 安全风险
 
@@ -561,16 +634,15 @@ MVP 建议额外约束：
 
 ### 8.2 Provider 响应兼容性风险
 
-当前 `agent/providers/openai_compatible.py` 实现的局限性：
+当前 Provider 层已支持 OpenAI 兼容族、DeepSeek、Groq、GLM、Minimax 和 Anthropic/Claude thinking 解析；剩余风险集中在流式响应、拒绝语义和同 Provider 多模型 per-request 覆盖。
 
 | 风险类型 | 严重程度 | 状态 |
 |---------|---------|------|
-| DeepSeek-R1 推理链丢失 | 🟡 中 | 待修复（Phase 2.8） |
-| Claude thinking 块丢失 | 🟡 中 | 待修复（Phase 2.8） |
+| 同 Provider 多模型切换未真正覆盖请求 model | 🟡 中 | 计划中 |
 | 流式响应不支持 | 🟡 中 | 待规划（Phase 3+） |
 | 拒绝标记未处理 | 🟢 低 | 待规划 |
 
-**缓解措施**：在 Phase 2.8 中实现响应适配器模式和推理链支持，详见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md)。
+**缓解措施**：推理链适配已在 Phase 2.8 完成；后续补齐 per-request model override、流式响应和更细的 refusal 语义处理，详见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md)。
 
 额外风险清单：
 

@@ -144,7 +144,7 @@ class MessageReceived(Event[MessagePayload]):
 
 @dataclass(slots=True, frozen=True)
 class MessageSending(Event[MessagePayload]):
-    """Raised before sending a message. Plugins can intercept or modify."""
+    """Raised before sending a message for observation and audit hooks."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -238,6 +238,11 @@ class EventBus:
         self._handlers: dict[type[Event[Any]], list[_HandlerEntry]] = {}
         self._closed = False
         self._pending_tasks: set[asyncio.Task[None]] = set()
+
+    @property
+    def context(self) -> EventContext:
+        """Return the dependency context shared with event handlers."""
+        return self._context
 
     def subscribe(
         self,

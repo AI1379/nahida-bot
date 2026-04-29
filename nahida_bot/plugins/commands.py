@@ -6,16 +6,58 @@ import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from nahida_bot.plugins.base import OutboundMessage
+
+
+@dataclass(slots=True, frozen=True)
+class CommandResult:
+    """Structured result returned by a command handler."""
+
+    message: OutboundMessage | None = None
+    suppress_response: bool = False
+
+    @classmethod
+    def text(cls, text: str) -> "CommandResult":
+        """Create a result that sends a plain text response."""
+        return cls(message=OutboundMessage(text=text))
+
+    @classmethod
+    def none(cls) -> "CommandResult":
+        """Create a result that intentionally sends no response."""
+        return cls(suppress_response=True)
+
+
+CommandHandlerResult = str | OutboundMessage | CommandResult | None
+
+
+@dataclass(slots=True, frozen=True)
+class CommandInfo:
+    """Public command metadata exposed through BotAPI."""
+
+    name: str
+    description: str
+    aliases: tuple[str, ...]
+    plugin_id: str
+
 
 @dataclass(slots=True, frozen=True)
 class CommandEntry:
     """A registered command with its handler and metadata."""
 
     name: str
-    handler: Callable[..., Awaitable[str]]
+    handler: Callable[..., Awaitable[CommandHandlerResult]]
     description: str
     aliases: tuple[str, ...]
     plugin_id: str
+
+    def to_info(self) -> CommandInfo:
+        """Return public metadata for this command."""
+        return CommandInfo(
+            name=self.name,
+            description=self.description,
+            aliases=self.aliases,
+            plugin_id=self.plugin_id,
+        )
 
 
 @dataclass(slots=True, frozen=True)

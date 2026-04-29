@@ -70,6 +70,24 @@ class _MockAPI:
     async def get_session(self, session_id: str) -> Any:
         return None
 
+    async def clear_session(self, session_id: str) -> int:
+        return 0
+
+    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+        return None
+
+    async def get_session_info(self, session_id: str) -> dict[str, Any]:
+        return {}
+
+    def list_commands(self) -> list[Any]:
+        return []
+
+    def list_models(self) -> list[dict[str, str]]:
+        return []
+
+    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
+        return None
+
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
         return []
 
