@@ -281,9 +281,10 @@ Python 方案的核心结构可以概括为五层：
 
 #### Phase 3.6 — 内置工具插件与验证
 
-> 以下工具清单参考 OpenClaw 的 31 个内置工具（`src/agents/tool-catalog.ts`），按依赖程度分为三类。
+> 以下工具清单参考 OpenClaw 的 31 个内置工具（`src/agents/tool-catalog.ts`），按依赖程度分为两类。
 > 仅收录**不需要 Gateway-Node 分布式架构**即可独立实现的工具。
-> 需要 Gateway-Node 的工具（`nodes`、`gateway`、`canvas`、`browser`、`subagents` 编排等）纳入 Phase 5 范围。
+> 需要 Gateway-Node 的工具（`nodes`、`gateway`、`canvas`、`browser`）纳入 Phase 5 范围。
+> Subagent 编排和跨会话管理可在本地单进程内实现，纳入 Phase 3.8。
 
 **第一类 — 已有基础设施，可直接包装为工具插件：**
 
@@ -318,22 +319,14 @@ Python 方案的核心结构可以概括为五层：
 | `video_generate` | 视频生成 | 调用视频生成 API | P3 | 需要 Provider 支持 |
 | `update_plan` | 更新任务计划 | 本地状态管理 | P3 | Agent 内部计划维护 |
 
-**第三类 — 需要 Gateway-Node（不在本阶段范围）：**
+**需要 Gateway-Node（不在本阶段范围，纳入 Phase 5）：**
 
 | 工具 ID | 功能 | 依赖原因 |
 |---------|------|---------|
 | `nodes` | 发现与操控配对设备 | 需要 Node 注册、心跳、远程执行协议 |
 | `gateway` | 网关管理与配置 | 需要 Gateway 服务运行 |
 | `canvas` | 驱动 Node Canvas 画布 | 需要 Node 端 Canvas 运行时 |
-| `browser` | 浏览器自动化控制 | 需要 Playwright/Chromium 运行时，适合 Node 端 |
-| `sessions_spawn` | 派生子 Agent | 需要 Gateway 的子 Agent 编排协议 |
-| `sessions_yield` | 让步接收子 Agent 结果 | 需要 spawn/yield 配套协议 |
-| `subagents` | 管理子 Agent 生命周期 | 需要分布式 Agent 管理 |
-| `agents_list` | 列出所有 Agent | 需要多 Agent 注册中心 |
-| `sessions_list` | 跨会话列表 | 需要 Gateway 级会话管理（本地可做简化版） |
-| `sessions_history` | 跨会话历史 | 需要 Gateway 级会话存储（本地可做简化版） |
-| `sessions_send` | 跨会话发消息 | 需要 Gateway 级会话路由（本地可做简化版） |
-| `session_status` | 会话状态查询 | 本地可做简化版，完整版需 Gateway |
+| `browser` | 浏览器自动化控制 | 需要 Playwright/Chromium 运行时，适合 Node 端；另有官方 Playwright MCP server 可直接对接 |
 
 **实施建议：**
 
@@ -363,6 +356,45 @@ Python 方案的核心结构可以概括为五层：
 - [ ] 实现 `MockBotAPI` 和测试 fixture（插件开发者无需启动 bot 即可单元测试）。
 - [ ] 发布到 PyPI 或本地可安装（`uv` 可安装）。
 - [ ] 验证：一个不依赖 `nahida-bot` 的插件可以安装 SDK 并完成编译 + 单元测试。
+
+#### Phase 3.8 — Subagent 编排与跨会话管理
+
+> Subagent 编排和跨会话操作不需要分布式架构。nahida-bot 是单进程 asyncio 模型，子 Agent 就是同一进程内独立的 `AgentLoop` 实例，会话数据全在本地 SQLite。因此这些能力可在本地完整实现，无需等待 Gateway-Node。
+>
+> 远程执行场景（如 GPU 节点上跑重模型）才需要 Phase 5 的 Gateway-Node。本地编排先落地，远程扩展作为 Phase 5 的增强。
+
+**Subagent 编排（本地实现）：**
+
+| 工具 ID | 功能 | 实现要点 |
+| ------- | ---- | -------- |
+| `agent_spawn` | 派生子 Agent | 创建新 `AgentLoop` 实例 + 独立 context，用 `asyncio.create_task` 并行运行 |
+| `agent_yield` | 等待并获取子 Agent 结果 | 通过 `asyncio.Queue` / `asyncio.Future` 在父子间传递结果 |
+| `agent_list` | 列出所有活跃 Agent | 维护 `dict[agent_id, Task]` 本地注册表 |
+| `agent_stop` | 终止子 Agent | 取消对应 `asyncio.Task`，清理资源 |
+
+**跨会话管理（本地实现）：**
+
+| 工具 ID | 功能 | 实现要点 |
+| ------- | ---- | -------- |
+| `sessions_list` | 列出所有会话 | 查询本地 `MemoryStore` / SQLite |
+| `sessions_history` | 读取任意会话历史 | 查询 `MemoryStore.get_turns()` |
+| `sessions_send` | 向指定会话注入消息 | 在目标会话上下文中追加消息，触发其 AgentLoop |
+| `session_status` | 查询会话运行状态 | 查本地注册表（AgentLoop 是否活跃、当前步骤等） |
+
+任务清单：
+
+- [ ] 实现 `AgentRegistry`（`dict[agent_id, AgentTask]` 注册表，跟踪父子关系、状态、结果）。
+- [ ] 实现 `agent_spawn` 工具（创建子 AgentLoop + 独立 context + system prompt，返回 agent_id）。
+- [ ] 实现 `agent_yield` 工具（等待指定子 Agent 完成，返回其最终回复）。
+- [ ] 实现 `agent_list` 工具（列出所有活跃子 Agent 及其状态）。
+- [ ] 实现 `agent_stop` 工具（取消指定子 Agent 的 asyncio.Task）。
+- [ ] 实现 `sessions_list` 工具（列出所有会话及其元数据）。
+- [ ] 实现 `sessions_history` 工具（读取指定会话的对话历史）。
+- [ ] 实现 `sessions_send` 工具（向指定会话注入消息并触发响应）。
+- [ ] 实现 `session_status` 工具（查询会话是否活跃、当前进度等）。
+- [ ] 实现子 Agent 资源限制（最大并发数、单 Agent 超时、总 token 预算）。
+- [ ] 验证父子 Agent 并行运行、结果正确传递。
+- [ ] 验证子 Agent 异常不影响父 Agent 和其他子 Agent（异常隔离）。
 
 **ChannelPlugin 接口设计（关键产出物）**：
 
@@ -564,15 +596,17 @@ class ChannelPlugin(Plugin):
 5. **Provider 响应健壮性增强（Phase 2.8）** ⚠️ 推荐在 Phase 3 前完成
 6. 插件系统与 Channel 接口定义（Phase 3）
 7. 基于插件系统的 Channel 实现（Phase 4）
-8. Gateway 与 Node（Phase 5）
-9. WebUI 与运维工具（Phase 6）
-10. 稳定性、发布与生态（Phase 7）
+8. Subagent 编排与跨会话管理（Phase 3.8，可在 Phase 4 之后或并行推进）
+9. Gateway 与 Node（Phase 5）
+10. WebUI 与运维工具（Phase 6）
+11. 稳定性、发布与生态（Phase 7）
 
 这个顺序的核心原因是：
 
 - **Phase 0-2.6** 建立最小智能闭环（应用容器 -> 核心运行时 -> Agent + Workspace）
 - **Phase 2.7-2.8** 安全与健壮性加固（Phase 2.8 已完成；Phase 2.7 作为开放不可信插件/远程执行前的安全闸门）
 - **Phase 3-4** 打通插件和 Channel（先定义接口，允许多种通信协议；再实现具体 Channel 作为插件）
+- **Phase 3.8** 本地 Subagent 编排和跨会话管理（不依赖 Gateway-Node，单进程 asyncio 即可实现）
 - **Phase 5-6** 扩展分布式与运维（Gateway-Node + WebUI）
 - **Phase 7** 稳定化与商业化（发版、CI/CD、生态）
 
