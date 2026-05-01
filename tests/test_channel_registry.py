@@ -96,6 +96,11 @@ class _MockAPI:
         pass
 
     @property
+    def scheduler_service(self) -> Any | None:
+        # TODO: Add a proper mock SchedulerService for testing
+        return None
+
+    @property
     def logger(self) -> Any:
         return MagicMock()
 

@@ -82,6 +82,10 @@ class _MockAPI:
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
         return []
 
+    @property
+    def scheduler_service(self) -> Any | None:
+        return None
+
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
     ) -> None:

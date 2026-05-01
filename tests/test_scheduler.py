@@ -165,6 +165,7 @@ async def test_fire_job_failure_releases_claim_for_retry_without_counting_run() 
         assert stored.claimed_at is None
         assert stored.run_count == 0
         assert stored.failure_count == 1
+        assert stored.last_error is not None
         assert "RuntimeError" in stored.last_error
         assert "boom" in stored.last_error
         assert "[Scheduler] Scheduled task failed." == channel.sent[0][1].text
