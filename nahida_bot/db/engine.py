@@ -46,6 +46,38 @@ _SCHEMA_MIGRATIONS = [
     """
     ALTER TABLE sessions ADD COLUMN metadata_json TEXT;
     """,
+    # Migration 003: cron scheduled jobs
+    """
+    CREATE TABLE IF NOT EXISTS cron_jobs (
+        job_id TEXT PRIMARY KEY,
+        platform TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        fire_at TEXT,
+        interval_seconds INTEGER,
+        max_runs INTEGER,
+        run_count INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        next_fire_at TEXT NOT NULL,
+        last_fired_at TEXT,
+        workspace_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cron_active
+        ON cron_jobs(is_active, next_fire_at);
+    """,
+    # Migration 004: cron claim/failure tracking
+    """
+    ALTER TABLE cron_jobs ADD COLUMN claimed_at TEXT;
+    ALTER TABLE cron_jobs ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE cron_jobs ADD COLUMN last_error TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_cron_claimable
+        ON cron_jobs(is_active, claimed_at, next_fire_at);
+    """,
 ]
 
 

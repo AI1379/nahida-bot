@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.db.engine import DatabaseEngine
     from nahida_bot.plugins.manager import PluginManager
+    from nahida_bot.scheduler.service import SchedulerService
     from nahida_bot.workspace.manager import WorkspaceManager
 
 logger = structlog.get_logger(__name__)
@@ -66,6 +67,7 @@ class Application:
         self._db_engine: DatabaseEngine | None = None
         self._provider_manager: ProviderManager | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
+        self.scheduler_service: SchedulerService | None = None
 
         logger.debug(
             "application.instance_created",
@@ -121,6 +123,9 @@ class Application:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
                     self.plugin_manager.tool_registry
                 )
+
+            # Initialize scheduler
+            self._init_scheduler()
 
             self._initialized = True
         except Exception as e:
@@ -241,6 +246,33 @@ class Application:
             path=str(manager.workspace_path(metadata.workspace_id)),
         )
 
+    def _init_scheduler(self) -> None:
+        """Create the SchedulerService (does not start the poll loop)."""
+        from nahida_bot.scheduler.repository import CronRepository
+        from nahida_bot.scheduler.service import SchedulerService
+
+        if self._db_engine is None:
+            return
+
+        repo = CronRepository(self._db_engine)
+        self.scheduler_service = SchedulerService(
+            repo,
+            agent_loop=self.agent_loop,
+            memory_store=self.memory_store,
+            channel_registry=self.channel_registry,
+            provider_manager=self._provider_manager,
+            workspace_manager=self.workspace_manager,
+            tool_registry=(
+                self.plugin_manager.tool_registry
+                if self.plugin_manager is not None
+                else None
+            ),
+            system_prompt=self.settings.system_prompt,
+        )
+        if self.plugin_manager is not None:
+            self.plugin_manager.scheduler_service = self.scheduler_service
+        logger.info("application.scheduler_initialized")
+
     def _get_plugin_configs(self) -> dict[str, dict[str, Any]]:
         """Extract plugin-specific configs from settings.
 
@@ -332,6 +364,14 @@ class Application:
             )
             await self.message_router.start()
 
+            # Start scheduler (after router, so it can resolve sessions)
+            if self.scheduler_service is not None:
+                self.scheduler_service.wire_runtime(
+                    message_router=self.message_router,
+                    tool_registry=self.plugin_manager.tool_registry,
+                )
+                await self.scheduler_service.start()
+
             result = await self.event_bus.publish(
                 AppStarted(
                     payload=AppLifecyclePayload(
@@ -380,6 +420,10 @@ class Application:
                         source="core.app.stop",
                     )
                 )
+                # Shut down scheduler before message router
+                if self.scheduler_service is not None:
+                    await self.scheduler_service.stop()
+
                 # Shut down message router before plugins
                 if self.message_router is not None:
                     await self.message_router.stop()

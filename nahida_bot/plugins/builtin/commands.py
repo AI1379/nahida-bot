@@ -15,6 +15,8 @@ from readability import Document
 
 from nahida_bot.plugins.base import InboundMessage, Plugin
 
+from nahida_bot.core.context import current_session
+
 _logger = structlog.get_logger(__name__)
 
 _MAX_EXEC_OUTPUT = 50_000
@@ -42,6 +44,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_exec_tool()
         self._register_web_fetch_tool()
         self._register_plan_tool()
+        self._register_cron_tools()
 
     # ── Command Registration ────────────────────────────────
 
@@ -479,6 +482,319 @@ class BuiltinCommandsPlugin(Plugin):
             return "Plan cleared."
 
         return f"Error: Unknown action '{action}'."
+
+    # ── Cron Tools ─────────────────────────────────────────
+
+    def _register_cron_tools(self) -> None:
+        self.api.register_tool(
+            "cron_create",
+            "Create a scheduled task that runs a prompt at a specific time or repeatedly at a fixed interval.",
+            {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "The text prompt to execute when the task fires.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["once", "interval"],
+                        "description": "'once' fires at a specific datetime; 'interval' fires repeatedly.",
+                    },
+                    "fire_at": {
+                        "type": "string",
+                        "description": (
+                            "ISO 8601 datetime for 'once' mode, e.g. '2025-06-15T09:00:00'. "
+                            "If no timezone is given, UTC is assumed."
+                        ),
+                    },
+                    "interval_seconds": {
+                        "type": "integer",
+                        "description": "Seconds between fires for 'interval' mode. Minimum 60.",
+                    },
+                    "max_runs": {
+                        "type": "integer",
+                        "description": "Max number of fires (interval mode only). Omit for infinite.",
+                    },
+                },
+                "required": ["prompt", "mode"],
+                "additionalProperties": False,
+            },
+            self._tool_cron_create,
+        )
+        self.api.register_tool(
+            "cron_list",
+            "List all active scheduled tasks for the current chat.",
+            {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            self._tool_cron_list,
+        )
+        self.api.register_tool(
+            "cron_cancel",
+            "Cancel a scheduled task by its job ID.",
+            {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID returned by cron_create or shown in cron_list.",
+                    },
+                },
+                "required": ["job_id"],
+                "additionalProperties": False,
+            },
+            self._tool_cron_cancel,
+        )
+        self.api.register_tool(
+            "cron_update",
+            "Update an active scheduled task's prompt, schedule, or max run count.",
+            {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID returned by cron_create or shown in cron_list.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Replacement prompt to execute when the task fires.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["once", "interval"],
+                        "description": "Switch the task to one-shot or interval mode.",
+                    },
+                    "fire_at": {
+                        "type": "string",
+                        "description": "ISO 8601 datetime for one-shot mode. If no timezone is given, UTC is assumed.",
+                    },
+                    "interval_seconds": {
+                        "type": "integer",
+                        "description": "Seconds between fires for interval mode. Minimum 60.",
+                    },
+                    "max_runs": {
+                        "type": "integer",
+                        "description": "Max number of successful fires for interval mode.",
+                    },
+                },
+                "required": ["job_id"],
+                "additionalProperties": False,
+            },
+            self._tool_cron_update,
+        )
+        self.api.register_tool(
+            "cron_delete",
+            "Permanently delete a scheduled task by its job ID.",
+            {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "The job ID returned by cron_create or shown in cron_list.",
+                    },
+                },
+                "required": ["job_id"],
+                "additionalProperties": False,
+            },
+            self._tool_cron_delete,
+        )
+
+    def _get_scheduler(self) -> Any:
+        """Access the SchedulerService exposed by the plugin API."""
+        return self.api.scheduler_service
+
+    async def _tool_cron_create(
+        self,
+        prompt: str,
+        mode: str,
+        fire_at: str | None = None,
+        interval_seconds: int | None = None,
+        max_runs: int | None = None,
+    ) -> str:
+        ctx = current_session.get()
+        if ctx is None:
+            return "Error: No active session context."
+
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Error: Scheduler is not available."
+
+        if mode == "once":
+            if not fire_at:
+                return "Error: 'fire_at' is required for mode='once'."
+            from datetime import UTC, datetime
+
+            try:
+                dt = datetime.fromisoformat(fire_at)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                fire_at = dt.astimezone(UTC).isoformat()
+            except ValueError:
+                return f"Error: Invalid datetime format: {fire_at}"
+        elif mode == "interval":
+            if not interval_seconds or interval_seconds < 60:
+                return "Error: 'interval_seconds' must be >= 60 for mode='interval'."
+            if max_runs is not None and max_runs <= 0:
+                return "Error: 'max_runs' must be > 0 when provided."
+        else:
+            return f"Error: Invalid mode '{mode}'. Use 'once' or 'interval'."
+
+        try:
+            job = await scheduler.create_job(
+                platform=ctx.platform,
+                chat_id=ctx.chat_id,
+                prompt=prompt,
+                mode=mode,
+                fire_at=fire_at if mode == "once" else None,
+                interval_seconds=interval_seconds,
+                max_runs=max_runs,
+                workspace_id=ctx.workspace_id,
+            )
+        except Exception as e:
+            return f"Error creating scheduled task: {e}"
+
+        # Format summary
+        lines = [f"Scheduled task created (id: {job.job_id})"]
+        if mode == "once":
+            lines.append(f"  Mode: once at {job.next_fire_at}")
+        else:
+            lines.append(f"  Mode: every {interval_seconds}s")
+            if max_runs:
+                lines.append(f"  Max runs: {max_runs}")
+            else:
+                lines.append("  Max runs: infinite")
+        lines.append(f"  Next fire: {job.next_fire_at}")
+        lines.append(f"  Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
+        return "\n".join(lines)
+
+    async def _tool_cron_list(self) -> str:
+        ctx = current_session.get()
+        if ctx is None:
+            return "Error: No active session context."
+
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Error: Scheduler is not available."
+
+        jobs = await scheduler.list_jobs(ctx.platform, ctx.chat_id)
+        if not jobs:
+            return "No active scheduled tasks for this chat."
+
+        lines = [f"Active scheduled tasks ({len(jobs)}):"]
+        for j in jobs:
+            if j.mode == "once":
+                schedule = f"once at {j.next_fire_at}"
+            else:
+                schedule = f"every {j.interval_seconds}s"
+            preview = j.prompt[:60] + ("..." if len(j.prompt) > 60 else "")
+            lines.append(f"  {j.job_id}: [{j.mode}] {schedule} — {preview}")
+            lines.append(f"    runs: {j.run_count}, next: {j.next_fire_at}")
+            if j.failure_count:
+                lines.append(
+                    f"    failures: {j.failure_count}, last error: {j.last_error}"
+                )
+        return "\n".join(lines)
+
+    async def _tool_cron_cancel(self, job_id: str) -> str:
+        ctx = current_session.get()
+        if ctx is None:
+            return "Error: No active session context."
+
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Error: Scheduler is not available."
+
+        # Verify ownership
+        job = await scheduler.get_job(job_id)
+        if job is None:
+            return f"Error: Job '{job_id}' not found."
+        if job.platform != ctx.platform or job.chat_id != ctx.chat_id:
+            return f"Error: Job '{job_id}' does not belong to this chat."
+
+        cancelled = await scheduler.cancel_job(job_id)
+        if cancelled:
+            return f"Cancelled task {job_id}."
+        return f"Task {job_id} is already inactive or completed."
+
+    async def _tool_cron_update(
+        self,
+        job_id: str,
+        prompt: str | None = None,
+        mode: str | None = None,
+        fire_at: str | None = None,
+        interval_seconds: int | None = None,
+        max_runs: int | None = None,
+    ) -> str:
+        ctx = current_session.get()
+        if ctx is None:
+            return "Error: No active session context."
+
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Error: Scheduler is not available."
+
+        job = await scheduler.get_job(job_id)
+        if job is None:
+            return f"Error: Job '{job_id}' not found."
+        if job.platform != ctx.platform or job.chat_id != ctx.chat_id:
+            return f"Error: Job '{job_id}' does not belong to this chat."
+
+        if mode is not None and mode not in {"once", "interval"}:
+            return f"Error: Invalid mode '{mode}'. Use 'once' or 'interval'."
+        if interval_seconds is not None and interval_seconds < 60:
+            return "Error: 'interval_seconds' must be >= 60 for mode='interval'."
+        if max_runs is not None and max_runs <= 0:
+            return "Error: 'max_runs' must be > 0 when provided."
+
+        try:
+            updated = await scheduler.update_job(
+                job_id,
+                prompt=prompt,
+                mode=mode,
+                fire_at=fire_at,
+                interval_seconds=interval_seconds,
+                max_runs=max_runs,
+            )
+        except Exception as e:
+            return f"Error updating scheduled task: {e}"
+
+        lines = [f"Updated task {updated.job_id}."]
+        if updated.mode == "once":
+            lines.append(f"  Mode: once at {updated.next_fire_at}")
+        else:
+            lines.append(f"  Mode: every {updated.interval_seconds}s")
+            lines.append(
+                f"  Max runs: {updated.max_runs if updated.max_runs else 'infinite'}"
+            )
+        lines.append(f"  Next fire: {updated.next_fire_at}")
+        lines.append(
+            f"  Prompt: {updated.prompt[:100]}{'...' if len(updated.prompt) > 100 else ''}"
+        )
+        return "\n".join(lines)
+
+    async def _tool_cron_delete(self, job_id: str) -> str:
+        ctx = current_session.get()
+        if ctx is None:
+            return "Error: No active session context."
+
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Error: Scheduler is not available."
+
+        job = await scheduler.get_job(job_id)
+        if job is None:
+            return f"Error: Job '{job_id}' not found."
+        if job.platform != ctx.platform or job.chat_id != ctx.chat_id:
+            return f"Error: Job '{job_id}' does not belong to this chat."
+
+        deleted = await scheduler.delete_job(job_id)
+        if deleted:
+            return f"Deleted task {job_id}."
+        return f"Task {job_id} was already deleted."
 
     # ── Command Handlers ──────────────────────────────────
 

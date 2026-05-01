@@ -161,6 +161,11 @@ class BotAPI(Protocol):
         """Register a tool that the LLM can call during conversations."""
         ...
 
+    @property
+    def scheduler_service(self) -> Any | None:
+        """Scheduler service exposed to plugins that provide scheduler tools."""
+        ...
+
     # ── Command Registration ───────────────────────────
 
     def register_command(

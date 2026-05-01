@@ -71,12 +71,14 @@ class PluginManager:
         memory_store: MemoryStore | None = None,
         channel_registry: Any | None = None,
         provider_manager: Any | None = None,
+        scheduler_service: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
+        self._scheduler_service = scheduler_service
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -97,6 +99,14 @@ class PluginManager:
     def command_registry(self) -> CommandRegistry:
         """Public read-only access to the command registry."""
         return self._command_registry
+
+    @property
+    def scheduler_service(self) -> Any | None:
+        return self._scheduler_service
+
+    @scheduler_service.setter
+    def scheduler_service(self, value: Any | None) -> None:
+        self._scheduler_service = value
 
     def get_record(self, plugin_id: str) -> PluginRecord | None:
         """Look up a plugin record by ID."""
@@ -161,6 +171,7 @@ class PluginManager:
             command_registry=self._command_registry,
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,
+            scheduler_service=self._scheduler_service,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)

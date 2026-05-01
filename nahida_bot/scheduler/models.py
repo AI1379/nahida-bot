@@ -1,0 +1,44 @@
+"""Scheduler data models."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+
+@dataclass(slots=True, frozen=True)
+class CronJob:
+    """A scheduled cron job persisted in SQLite."""
+
+    job_id: str
+    platform: str
+    chat_id: str
+    session_key: str  # "{platform}:{chat_id}" for active session lookup
+    prompt: str
+    mode: Literal["once", "interval"]
+    fire_at: str | None  # ISO8601 UTC for "once"
+    interval_seconds: int | None  # for "interval"
+    max_runs: int | None  # None = infinite
+    run_count: int
+    is_active: bool
+    created_at: str
+    next_fire_at: str
+    last_fired_at: str | None
+    workspace_id: str | None
+    claimed_at: str | None = None
+    failure_count: int = 0
+    last_error: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class SchedulerConfig:
+    """Configuration for the SchedulerService."""
+
+    poll_interval_seconds: float = 1.0
+    max_concurrent_fires: int = 5
+    job_timeout_seconds: float = 120.0
+    min_interval_seconds: int = 60
+    max_prompt_chars: int = 4000
+    max_jobs_per_chat: int = 20
+    failure_retry_seconds: int = 300
+    max_consecutive_failures: int = 3

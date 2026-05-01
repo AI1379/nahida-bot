@@ -6,10 +6,12 @@ from typing import Any
 
 import pytest
 
+from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.plugins.base import InboundMessage, MemoryRef, OutboundMessage
 from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
 from nahida_bot.plugins.commands import CommandEntry, CommandRegistry
 from nahida_bot.plugins.manifest import PluginManifest
+from nahida_bot.scheduler.models import CronJob
 
 
 def _manifest() -> PluginManifest:
@@ -45,6 +47,7 @@ class _FakeAPI:
             {"provider_id": "p2", "model": "model-b"},
         ]
         self.command_registry = CommandRegistry()
+        self.scheduler_service: Any | None = None
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -125,7 +128,15 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     await plugin.on_load()
 
     assert {"reset", "new", "status", "model", "help"} <= set(api.commands)
-    assert {"workspace_read", "workspace_write"} <= set(api.tools)
+    assert {
+        "workspace_read",
+        "workspace_write",
+        "cron_create",
+        "cron_update",
+        "cron_list",
+        "cron_cancel",
+        "cron_delete",
+    } <= set(api.tools)
     assert api.tools["workspace_read"]["parameters"]["required"] == ["path"]
     assert api.tools["workspace_write"]["parameters"]["required"] == [
         "path",
@@ -191,3 +202,82 @@ async def test_new_command_switches_router_session() -> None:
 
     assert result == "New session started: telegram:c1:abc12345"
     assert api.new_sessions == [("telegram", "c1")]
+
+
+def _cron_job(job_id: str = "job1", *, prompt: str = "old") -> CronJob:
+    return CronJob(
+        job_id=job_id,
+        platform="telegram",
+        chat_id="c1",
+        session_key="telegram:c1",
+        prompt=prompt,
+        mode="interval",
+        fire_at=None,
+        interval_seconds=120,
+        max_runs=None,
+        run_count=0,
+        is_active=True,
+        created_at="2026-01-01T00:00:00+00:00",
+        next_fire_at="2026-01-01T00:02:00+00:00",
+        last_fired_at=None,
+        workspace_id=None,
+    )
+
+
+class _FakeScheduler:
+    def __init__(self) -> None:
+        self.jobs = {"job1": _cron_job()}
+        self.updated: dict[str, Any] = {}
+        self.deleted: list[str] = []
+
+    async def get_job(self, job_id: str) -> CronJob | None:
+        return self.jobs.get(job_id)
+
+    async def list_jobs(self, platform: str, chat_id: str) -> list[CronJob]:
+        return [
+            job
+            for job in self.jobs.values()
+            if job.platform == platform and job.chat_id == chat_id and job.is_active
+        ]
+
+    async def update_job(self, job_id: str, **kwargs: Any) -> CronJob:
+        self.updated = {"job_id": job_id, **kwargs}
+        job = _cron_job(job_id, prompt=kwargs.get("prompt") or "old")
+        self.jobs[job_id] = job
+        return job
+
+    async def delete_job(self, job_id: str) -> bool:
+        self.deleted.append(job_id)
+        return self.jobs.pop(job_id, None) is not None
+
+
+@pytest.mark.asyncio
+async def test_cron_update_and_delete_tools_use_scheduler_api() -> None:
+    api = _FakeAPI()
+    api.scheduler_service = _FakeScheduler()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+    )
+    try:
+        updated = await plugin._tool_cron_update(
+            "job1",
+            prompt="new prompt",
+            interval_seconds=180,
+            max_runs=3,
+        )
+        deleted = await plugin._tool_cron_delete("job1")
+    finally:
+        current_session.reset(token)
+
+    assert "Updated task job1." in updated
+    assert api.scheduler_service.updated == {
+        "job_id": "job1",
+        "prompt": "new prompt",
+        "mode": None,
+        "fire_at": None,
+        "interval_seconds": 180,
+        "max_runs": 3,
+    }
+    assert deleted == "Deleted task job1."
+    assert api.scheduler_service.deleted == ["job1"]

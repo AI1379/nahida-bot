@@ -20,6 +20,7 @@ from nahida_bot.core.events import (
     MessageSending,
     MessageSent,
 )
+from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import (
     CommandEntry,
@@ -173,6 +174,29 @@ class MessageRouter:
         )
         workspace_id, workspace_root = self._resolve_workspace_context()
 
+        # Set session context so tool handlers can access it
+        session_ctx = SessionContext(
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
+        token = current_session.set(session_ctx)
+        try:
+            await self._dispatch_message(
+                inbound, session_id, workspace_id, workspace_root
+            )
+        finally:
+            current_session.reset(token)
+
+    async def _dispatch_message(
+        self,
+        inbound: InboundMessage,
+        session_id: str,
+        workspace_id: str | None,
+        workspace_root: Any,
+    ) -> None:
+        """Command matching + agent execution (called within session context)."""
         # Step 1: Command matching
         match = self._matcher.match(inbound.text, prefix=inbound.command_prefix)
         if match.matched:

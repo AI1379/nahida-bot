@@ -67,6 +67,7 @@ class RealBotAPI:
         command_registry: Any,  # CommandRegistry
         channel_registry: Any | None = None,  # ChannelRegistry
         provider_manager: Any | None = None,  # ProviderManager
+        scheduler_service: Any | None = None,  # SchedulerService
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -79,6 +80,7 @@ class RealBotAPI:
         self._command_registry = command_registry
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
+        self._scheduler_service = scheduler_service
         self._logger = _PluginLogger(plugin_id)
         self._subscriptions: list[Any] = []  # EventBus Subscription objects
 
@@ -162,6 +164,10 @@ class RealBotAPI:
             )
         )
         self._logger.debug("tool_registered", tool_name=name)
+
+    @property
+    def scheduler_service(self) -> Any | None:
+        return self._scheduler_service
 
     # ── Command Registration ───────────────────────────
 
