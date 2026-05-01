@@ -307,6 +307,69 @@ class CronRepository:
         )
         return int(row["count"]) if row is not None else 0
 
+    async def release_stale_claims(self) -> int:
+        """Reset claimed_at for all jobs (recover from crash)."""
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                "UPDATE cron_jobs SET claimed_at = NULL WHERE claimed_at IS NOT NULL"
+            )
+            await self._engine.db.commit()
+            return cursor.rowcount
+
+    async def insert_job_with_quota(
+        self,
+        job: CronJob,
+        *,
+        max_per_chat: int,
+    ) -> None:
+        """Atomic count-check-then-insert. Raises ValueError if quota exceeded."""
+        async with self._engine.write_lock:
+            row = await self._engine.fetch_one(
+                """
+                SELECT COUNT(*) AS count
+                FROM cron_jobs
+                WHERE session_key = ? AND is_active = 1
+                """,
+                (job.session_key,),
+            )
+            count = int(row["count"]) if row is not None else 0
+            if count >= max_per_chat:
+                raise ValueError(
+                    f"active scheduled task limit reached for this chat "
+                    f"({max_per_chat})"
+                )
+            await self._engine.execute(
+                """
+                INSERT INTO cron_jobs (
+                    job_id, platform, chat_id, session_key, prompt, mode,
+                    fire_at, interval_seconds, max_runs, run_count, is_active,
+                    created_at, next_fire_at, last_fired_at, workspace_id,
+                    claimed_at, failure_count, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job.job_id,
+                    job.platform,
+                    job.chat_id,
+                    job.session_key,
+                    job.prompt,
+                    job.mode,
+                    job.fire_at,
+                    job.interval_seconds,
+                    job.max_runs,
+                    job.run_count,
+                    int(job.is_active),
+                    job.created_at,
+                    job.next_fire_at,
+                    job.last_fired_at,
+                    job.workspace_id,
+                    job.claimed_at,
+                    job.failure_count,
+                    job.last_error,
+                ),
+            )
+            await self._engine.db.commit()
+
     async def get_all_active_jobs(self) -> list[CronJob]:
         rows = await self._engine.fetch_all(
             "SELECT * FROM cron_jobs WHERE is_active = 1 ORDER BY next_fire_at"

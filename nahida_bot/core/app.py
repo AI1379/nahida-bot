@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.providers.manager import ProviderManager
+    from nahida_bot.core.session_runner import SessionRunner
     from nahida_bot.db.engine import DatabaseEngine
     from nahida_bot.plugins.manager import PluginManager
     from nahida_bot.scheduler.service import SchedulerService
@@ -67,6 +68,7 @@ class Application:
         self._db_engine: DatabaseEngine | None = None
         self._provider_manager: ProviderManager | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
+        self.session_runner: SessionRunner | None = None
         self.scheduler_service: SchedulerService | None = None
 
         logger.debug(
@@ -247,26 +249,33 @@ class Application:
         )
 
     def _init_scheduler(self) -> None:
-        """Create the SchedulerService (does not start the poll loop)."""
+        """Create the SessionRunner and SchedulerService."""
+        from nahida_bot.core.session_runner import SessionRunner
         from nahida_bot.scheduler.repository import CronRepository
         from nahida_bot.scheduler.service import SchedulerService
 
         if self._db_engine is None:
             return
 
+        tool_registry = (
+            self.plugin_manager.tool_registry
+            if self.plugin_manager is not None
+            else None
+        )
+
+        self.session_runner = SessionRunner(
+            agent_loop=self.agent_loop,
+            memory_store=self.memory_store,
+            provider_manager=self._provider_manager,
+            workspace_manager=self.workspace_manager,
+            tool_registry=tool_registry,
+        )
+
         repo = CronRepository(self._db_engine)
         self.scheduler_service = SchedulerService(
             repo,
-            agent_loop=self.agent_loop,
-            memory_store=self.memory_store,
+            runner=self.session_runner,
             channel_registry=self.channel_registry,
-            provider_manager=self._provider_manager,
-            workspace_manager=self.workspace_manager,
-            tool_registry=(
-                self.plugin_manager.tool_registry
-                if self.plugin_manager is not None
-                else None
-            ),
             system_prompt=self.settings.system_prompt,
         )
         if self.plugin_manager is not None:
@@ -353,10 +362,7 @@ class Application:
                 command_registry=self.plugin_manager.command_registry,
                 command_matcher=CommandMatcher(),
                 channel_registry=self.channel_registry,
-                agent_loop=self.agent_loop,
-                memory_store=self.memory_store,
-                provider_manager=self._provider_manager,
-                tool_registry=self.plugin_manager.tool_registry,
+                runner=self.session_runner,
                 workspace_manager=self.workspace_manager,
                 config=RouterConfig(
                     system_prompt=self.settings.system_prompt,
@@ -366,9 +372,11 @@ class Application:
 
             # Start scheduler (after router, so it can resolve sessions)
             if self.scheduler_service is not None:
+                # Update the shared runner with the final tool registry
+                if self.session_runner is not None:
+                    self.session_runner._tools = self.plugin_manager.tool_registry
                 self.scheduler_service.wire_runtime(
                     message_router=self.message_router,
-                    tool_registry=self.plugin_manager.tool_registry,
                 )
                 await self.scheduler_service.start()
 

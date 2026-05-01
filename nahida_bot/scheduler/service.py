@@ -4,28 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import structlog
 
-from nahida_bot.agent.context import ContextMessage
-from nahida_bot.agent.memory.models import ConversationTurn
-from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
 
 if TYPE_CHECKING:
-    from nahida_bot.agent.loop import AgentLoop
-    from nahida_bot.agent.memory.store import MemoryStore
-    from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.core.channel_registry import ChannelRegistry
-    from nahida_bot.plugins.registry import ToolRegistry
-    from nahida_bot.workspace.manager import WorkspaceManager
-
     from nahida_bot.core.router import MessageRouter
+    from nahida_bot.core.session_runner import SessionRunner
 
 logger = structlog.get_logger(__name__)
 
@@ -38,30 +30,22 @@ class SchedulerService:
     """In-process cron scheduler backed by SQLite.
 
     Uses a poll loop to check for due jobs, then fires them via
-    the AgentLoop and sends responses through the originating channel.
+    the SessionRunner and sends responses through the originating channel.
     """
 
     def __init__(
         self,
         repo: CronRepository,
         *,
-        agent_loop: AgentLoop | None = None,
-        memory_store: MemoryStore | None = None,
+        runner: SessionRunner | None = None,
         channel_registry: ChannelRegistry | None = None,
-        provider_manager: ProviderManager | None = None,
-        workspace_manager: WorkspaceManager | None = None,
-        tool_registry: ToolRegistry | None = None,
         message_router: MessageRouter | None = None,
         system_prompt: str = "You are a helpful assistant.",
         config: SchedulerConfig | None = None,
     ) -> None:
         self._repo = repo
-        self._agent = agent_loop
-        self._memory = memory_store
+        self._runner = runner
         self._channels = channel_registry
-        self._providers = provider_manager
-        self._workspace = workspace_manager
-        self._tools = tool_registry
         self._router = message_router
         self._system_prompt = system_prompt
         self._config = config or SchedulerConfig()
@@ -74,13 +58,10 @@ class SchedulerService:
         self,
         *,
         message_router: MessageRouter | None = None,
-        tool_registry: ToolRegistry | None = None,
     ) -> None:
         """Wire late-bound runtime dependencies (called after plugins load)."""
         if message_router is not None:
             self._router = message_router
-        if tool_registry is not None:
-            self._tools = tool_registry
 
     # ── Lifecycle ─────────────────────────────────────────
 
@@ -88,6 +69,11 @@ class SchedulerService:
         """Start the scheduler poll loop."""
         if self._running:
             return
+
+        # Release orphaned claims from previous crash
+        released = await self._repo.release_stale_claims()
+        if released:
+            logger.info("scheduler.released_stale_claims", count=released)
 
         # Recover persisted active jobs
         active = await self._repo.get_all_active_jobs()
@@ -118,15 +104,20 @@ class SchedulerService:
 
         # Wait for in-flight fire tasks
         if self._active_tasks:
+            graceful_timeout = min(self._config.job_timeout_seconds, 30.0)
             try:
                 await asyncio.wait_for(
                     asyncio.gather(*self._active_tasks, return_exceptions=True),
-                    timeout=5.0,
+                    timeout=graceful_timeout,
                 )
             except TimeoutError:
                 logger.warning(
-                    "scheduler.stop_timeout", pending=len(self._active_tasks)
+                    "scheduler.stop_timeout",
+                    pending=len(self._active_tasks),
+                    timeout=graceful_timeout,
                 )
+                for task in self._active_tasks:
+                    task.cancel()
             self._active_tasks.clear()
 
         logger.info("scheduler.stopped")
@@ -151,7 +142,6 @@ class SchedulerService:
         session_key = f"{platform}:{chat_id}"
         self._validate_prompt(prompt)
         self._validate_max_runs(max_runs)
-        await self._check_chat_quota(session_key)
 
         # Compute next_fire_at
         if mode == "once":
@@ -183,7 +173,9 @@ class SchedulerService:
             workspace_id=workspace_id,
         )
 
-        await self._repo.insert_job(job)
+        await self._repo.insert_job_with_quota(
+            job, max_per_chat=self._config.max_jobs_per_chat
+        )
         logger.info(
             "scheduler.job_created",
             job_id=job_id,
@@ -338,9 +330,13 @@ class SchedulerService:
             )
             await self._mark_failed(job, "timeout")
             await self._send_error(job, "Scheduled task timed out.")
+        except asyncio.CancelledError:
+            logger.info("scheduler.fire_cancelled", job_id=job.job_id)
+            await self._mark_failed(job, "cancelled")
+            raise
         except Exception as exc:
             logger.exception("scheduler.fire_error", job_id=job.job_id)
-            await self._mark_failed(job, type(exc).__name__)
+            await self._mark_failed(job, f"{type(exc).__name__}: {exc}")
             await self._send_error(job, "Scheduled task failed.")
         else:
             fired_at = datetime.now(UTC).isoformat()
@@ -380,7 +376,7 @@ class SchedulerService:
 
     async def _execute_fire(self, job: CronJob) -> None:
         """Run the agent with the job's prompt and send the response."""
-        if self._agent is None:
+        if self._runner is None or not self._runner.has_agent:
             logger.warning("scheduler.no_agent", job_id=job.job_id)
             return
 
@@ -405,49 +401,15 @@ class SchedulerService:
 
     async def _do_fire(self, job: CronJob, session_id: str) -> None:
         """The actual agent execution + response delivery."""
-        # Resolve provider
-        provider_slot = await self._resolve_provider(session_id)
-
-        # Load history
-        history = await self._load_history(session_id)
-
-        # Resolve workspace
-        workspace_root = self._resolve_workspace_root(job.workspace_id)
-
-        # Build tools
-        tools = self._registered_tools()
-
-        # Run agent
-        run_kwargs: dict[str, Any] = {
-            "user_message": job.prompt,
-            "system_prompt": self._system_prompt,
-            "history_messages": history,
-        }
-        if workspace_root is not None:
-            run_kwargs["workspace_root"] = workspace_root
-        if tools:
-            run_kwargs["tools"] = tools
-        if provider_slot is not None:
-            run_kwargs["provider"] = provider_slot.provider
-            run_kwargs["context_builder"] = provider_slot.context_builder
-
-        assert self._agent is not None  # guarded by _execute_fire
-        result = await self._agent.run(**run_kwargs)
-
-        # Persist turns
-        if self._memory is not None:
-            user_turn = ConversationTurn(
-                role="user", content=job.prompt, source="cron_trigger"
-            )
-            await self._memory.append_turn(session_id, user_turn)
-
-            if result.final_response:
-                assistant_turn = ConversationTurn(
-                    role="assistant",
-                    content=result.final_response,
-                    source="agent_response",
-                )
-                await self._memory.append_turn(session_id, assistant_turn)
+        assert self._runner is not None  # guarded by _execute_fire
+        result = await self._runner.run(
+            user_message=job.prompt,
+            session_id=session_id,
+            system_prompt=self._system_prompt,
+            workspace_id=job.workspace_id,
+            tool_filter=_CRON_TOOL_NAMES,
+            source_tag="cron_trigger",
+        )
 
         # Send response via channel
         if result.final_response and self._channels is not None:
@@ -485,61 +447,7 @@ class SchedulerService:
             except Exception:
                 logger.exception("scheduler.send_error_failed", job_id=job.job_id)
 
-    # ── Helpers (mirror MessageRouter logic) ──────────────
-
-    async def _resolve_provider(self, session_id: str) -> Any:
-        """Resolve provider slot, same logic as MessageRouter._resolve_provider."""
-        if self._providers is None:
-            return None
-        if self._memory is not None:
-            meta = await self._memory.get_session_meta(session_id)
-            if meta:
-                model = meta.get("model")
-                if model:
-                    slot = self._providers.resolve_model(model)
-                    if slot is not None:
-                        return slot
-                provider_id = meta.get("provider_id")
-                if provider_id:
-                    slot = self._providers.get(provider_id)
-                    if slot is not None:
-                        return slot
-        return self._providers.default
-
-    async def _load_history(self, session_id: str) -> list[ContextMessage]:
-        """Load conversation history for a session."""
-        if self._memory is None:
-            return []
-        await self._memory.ensure_session(session_id)
-        records = await self._memory.get_recent(session_id, limit=50)
-        return [
-            ContextMessage(
-                role=r.turn.role,  # type: ignore[arg-type]
-                content=r.turn.content,
-                source=r.turn.source,
-            )
-            for r in records
-        ]
-
-    def _resolve_workspace_root(self, workspace_id: str | None) -> Any:
-        """Resolve workspace root path."""
-        if self._workspace is None or workspace_id is None:
-            return None
-        return self._workspace.workspace_path(workspace_id)
-
-    def _registered_tools(self) -> list[ToolDefinition]:
-        """Collect all registered plugin tools as provider definitions."""
-        if self._tools is None:
-            return []
-        return [
-            ToolDefinition(
-                name=entry.name,
-                description=entry.description,
-                parameters=entry.parameters,
-            )
-            for entry in self._tools.all()
-            if entry.name not in _CRON_TOOL_NAMES
-        ]
+    # ── Validators ────────────────────────────────────────
 
     def _validate_prompt(self, prompt: str) -> None:
         if not prompt.strip():
@@ -573,11 +481,3 @@ class SchedulerService:
         if dt <= now:
             raise ValueError("fire_at must be in the future")
         return dt.isoformat()
-
-    async def _check_chat_quota(self, session_key: str) -> None:
-        active_count = await self._repo.count_active_jobs_by_chat(session_key)
-        if active_count >= self._config.max_jobs_per_chat:
-            raise ValueError(
-                "active scheduled task limit reached for this chat "
-                f"({self._config.max_jobs_per_chat})"
-            )

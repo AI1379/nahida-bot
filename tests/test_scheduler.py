@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
@@ -73,6 +74,23 @@ class _Channels:
         return None
 
 
+def _make_service(
+    engine: DatabaseEngine,
+    repo: CronRepository,
+    *,
+    agent: Any = None,
+    channel: _Channel | None = None,
+    config: SchedulerConfig | None = None,
+) -> SchedulerService:
+    runner = SessionRunner(agent_loop=agent)
+    return SchedulerService(
+        repo,
+        runner=runner,
+        channel_registry=cast(Any, _Channels(channel)) if channel else None,
+        config=config,
+    )
+
+
 @pytest.mark.asyncio
 async def test_claim_due_jobs_is_atomic_and_hides_claimed_jobs() -> None:
     engine, repo = await _repo()
@@ -100,10 +118,11 @@ async def test_fire_job_completes_once_job_after_success() -> None:
         await repo.insert_job(_job())
         claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
         channel = _Channel()
-        service = SchedulerService(
+        service = _make_service(
+            engine,
             repo,
-            agent_loop=cast(Any, _Agent()),
-            channel_registry=cast(Any, _Channels(channel)),
+            agent=_Agent(),
+            channel=channel,
             config=SchedulerConfig(job_timeout_seconds=1),
         )
 
@@ -126,10 +145,11 @@ async def test_fire_job_failure_releases_claim_for_retry_without_counting_run() 
         await repo.insert_job(_job())
         claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
         channel = _Channel()
-        service = SchedulerService(
+        service = _make_service(
+            engine,
             repo,
-            agent_loop=cast(Any, _Agent(fail=True)),
-            channel_registry=cast(Any, _Channels(channel)),
+            agent=_Agent(fail=True),
+            channel=channel,
             config=SchedulerConfig(
                 job_timeout_seconds=1,
                 failure_retry_seconds=60,
@@ -145,7 +165,8 @@ async def test_fire_job_failure_releases_claim_for_retry_without_counting_run() 
         assert stored.claimed_at is None
         assert stored.run_count == 0
         assert stored.failure_count == 1
-        assert stored.last_error == "RuntimeError"
+        assert "RuntimeError" in stored.last_error
+        assert "boom" in stored.last_error
         assert "[Scheduler] Scheduled task failed." == channel.sent[0][1].text
     finally:
         await engine.close()
@@ -155,7 +176,7 @@ async def test_fire_job_failure_releases_claim_for_retry_without_counting_run() 
 async def test_update_and_delete_job() -> None:
     engine, repo = await _repo()
     try:
-        service = SchedulerService(repo)
+        service = _make_service(engine, repo)
         fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         job = await service.create_job(
             platform="telegram",
@@ -179,5 +200,58 @@ async def test_update_and_delete_job() -> None:
 
         assert await service.delete_job(job.job_id) is True
         assert await service.get_job(job.job_id) is None
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_claims_recovered_on_start() -> None:
+    engine, repo = await _repo()
+    try:
+        # Insert a job and simulate a stale claim
+        await repo.insert_job(_job())
+        await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+
+        # Verify the claim was set in the DB
+        stored = await repo.get_job("job1")
+        assert stored is not None
+        assert stored.claimed_at is not None
+
+        # Starting the service should release the stale claim
+        service = _make_service(engine, repo)
+        await service.start()
+        await service.stop()
+
+        stored = await repo.get_job("job1")
+        assert stored is not None
+        assert stored.claimed_at is None
+        assert stored.is_active is True
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_quota_enforced_atomically() -> None:
+    engine, repo = await _repo()
+    try:
+        config = SchedulerConfig(max_jobs_per_chat=2)
+        service = _make_service(engine, repo, config=config)
+
+        fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        await service.create_job(
+            platform="telegram", chat_id="c1", prompt="j1", mode="once", fire_at=fire_at
+        )
+        await service.create_job(
+            platform="telegram", chat_id="c1", prompt="j2", mode="once", fire_at=fire_at
+        )
+
+        with pytest.raises(ValueError, match="limit reached"):
+            await service.create_job(
+                platform="telegram",
+                chat_id="c1",
+                prompt="j3",
+                mode="once",
+                fire_at=fire_at,
+            )
     finally:
         await engine.close()

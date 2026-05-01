@@ -16,6 +16,7 @@ from nahida_bot.core.events import (
     MessagePayload,
 )
 from nahida_bot.core.router import MessageRouter, RouterConfig
+from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.channel_plugin import ChannelPlugin
 from nahida_bot.plugins.commands import (
@@ -128,14 +129,19 @@ def _make_router(
     channel = _StubChannel(api=MagicMock(), manifest=manifest)
     channel_registry.register(channel)
 
+    runner = SessionRunner(
+        agent_loop=agent,
+        memory_store=memory,
+        tool_registry=tool_registry,
+        workspace_manager=workspace_manager,
+    )
+
     router = MessageRouter(
         event_bus=event_bus,
         command_registry=command_registry,
         command_matcher=command_matcher,
         channel_registry=channel_registry,
-        agent_loop=agent,
-        memory_store=memory,
-        tool_registry=tool_registry,
+        runner=runner,
         workspace_manager=workspace_manager,
         config=config,
     )
