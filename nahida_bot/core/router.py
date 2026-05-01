@@ -81,32 +81,32 @@ class MessageRouter:
     @property
     def agent(self) -> AgentLoop | None:
         """The agent loop, if configured."""
-        return self._runner._agent if self._runner is not None else None
+        return self._runner.agent if self._runner is not None else None
 
     @agent.setter
     def agent(self, value: AgentLoop | None) -> None:
         if self._runner is not None:
-            self._runner._agent = value
+            self._runner.agent = value
 
     @property
     def memory(self) -> MemoryStore | None:
         """The memory store, if configured."""
-        return self._runner._memory if self._runner is not None else None
+        return self._runner.memory if self._runner is not None else None
 
     @memory.setter
     def memory(self, value: MemoryStore | None) -> None:
         if self._runner is not None:
-            self._runner._memory = value
+            self._runner.memory = value
 
     @property
     def provider_manager(self) -> ProviderManager | None:
         """The provider manager, if configured."""
-        return self._runner._providers if self._runner is not None else None
+        return self._runner.provider_manager if self._runner is not None else None
 
     @provider_manager.setter
     def provider_manager(self, value: ProviderManager | None) -> None:
         if self._runner is not None:
-            self._runner._providers = value
+            self._runner.provider_manager = value
 
     async def start(self) -> None:
         """Subscribe to MessageReceived events."""

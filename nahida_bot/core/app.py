@@ -374,7 +374,9 @@ class Application:
             if self.scheduler_service is not None:
                 # Update the shared runner with the final tool registry
                 if self.session_runner is not None:
-                    self.session_runner._tools = self.plugin_manager.tool_registry
+                    self.session_runner.tool_registry = (
+                        self.plugin_manager.tool_registry
+                    )
                 self.scheduler_service.wire_runtime(
                     message_router=self.message_router,
                 )

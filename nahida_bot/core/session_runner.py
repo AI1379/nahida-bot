@@ -44,6 +44,38 @@ class SessionRunner:
     def has_agent(self) -> bool:
         return self._agent is not None
 
+    @property
+    def agent(self) -> AgentLoop | None:
+        return self._agent
+
+    @agent.setter
+    def agent(self, value: AgentLoop | None) -> None:
+        self._agent = value
+
+    @property
+    def memory(self) -> MemoryStore | None:
+        return self._memory
+
+    @memory.setter
+    def memory(self, value: MemoryStore | None) -> None:
+        self._memory = value
+
+    @property
+    def provider_manager(self) -> ProviderManager | None:
+        return self._providers
+
+    @provider_manager.setter
+    def provider_manager(self, value: ProviderManager | None) -> None:
+        self._providers = value
+
+    @property
+    def tool_registry(self) -> ToolRegistry | None:
+        return self._tools
+
+    @tool_registry.setter
+    def tool_registry(self, value: ToolRegistry | None) -> None:
+        self._tools = value
+
     async def run(
         self,
         *,
