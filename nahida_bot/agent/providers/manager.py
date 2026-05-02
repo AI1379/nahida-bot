@@ -43,9 +43,24 @@ class ProviderManager:
     def resolve_model(self, model_name: str) -> ProviderSlot | None:
         """Find which provider serves a given model name.
 
+        Accepts both bare model names (``"MiniMax-M2.5"``) and compound
+        ``provider_id/model_name`` format (``"minimax/MiniMax-M2.5"``).
+        When a compound name is given, the prefix is matched against slot
+        ids first; if it matches, the suffix is validated against that
+        slot's ``available_models``.  If the prefix does not match any
+        slot, the full string is treated as a bare model name (covers
+        model names that happen to contain ``/``).
+
         If a slot's ``available_models`` is empty, it matches any model
         (the provider may accept dynamic model names).
         """
+        if "/" in model_name:
+            provider_id, _, bare_model = model_name.partition("/")
+            slot = self._slots.get(provider_id)
+            if slot is not None:
+                if not slot.available_models or bare_model in slot.available_models:
+                    return slot
+
         for slot in self._slots.values():
             if not slot.available_models or model_name in slot.available_models:
                 return slot

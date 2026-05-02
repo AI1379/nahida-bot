@@ -279,21 +279,38 @@ class RealBotAPI:
         """Switch model for a session. Returns provider id or None."""
         if self._provider_manager is None or self._memory is None:
             return None
-        slot = self._provider_manager.resolve_model(model_name)
+        # Strip provider prefix from compound "provider_id/model" input
+        # so the stored model name is always the bare form the API expects.
+        bare_name = model_name
+        if "/" in model_name:
+            prefix, _, suffix = model_name.partition("/")
+            if self._provider_manager.get(prefix) is not None:
+                bare_name = suffix
+        slot = self._provider_manager.resolve_model(bare_name)
         if slot is None:
             return None
         await self._memory.ensure_session(session_id)
         await self._memory.update_session_meta(
-            session_id, {"provider_id": slot.id, "model": model_name}
+            session_id, {"provider_id": slot.id, "model": bare_name}
         )
         return slot.id
 
     async def get_session_info(self, session_id: str) -> dict[str, Any]:
-        """Get session metadata and turn count."""
+        """Get session metadata and turn count.
+
+        Falls back to the default provider slot's model info when
+        the session has no explicit model preference stored.
+        """
         if self._memory is None:
             return {}
         meta = await self._memory.get_session_meta(session_id)
-        return dict(meta)
+        result = dict(meta)
+        if not result.get("model") and self._provider_manager is not None:
+            default_slot = self._provider_manager.default
+            if default_slot is not None:
+                result.setdefault("provider_id", default_slot.id)
+                result.setdefault("model", default_slot.default_model)
+        return result
 
     def get_provider_manager(self) -> Any:
         """Access the ProviderManager (if configured)."""

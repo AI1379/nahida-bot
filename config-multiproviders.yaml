@@ -28,29 +28,37 @@ system_prompt: "You are a helpful assistant."
 # 支持多 provider 配置，每个有独立的 api_key、model、models 列表。
 # 通过 /model 命令可在聊天中切换模型。
 #
-# providers:
-#   deepseek-main:
-#     type: deepseek
-#     api_key: "${DEEPSEEK_API_KEY}"
-#     model: "deepseek-chat"
-#     models: ["deepseek-chat", "deepseek-reasoner"]
-#   glm:
-#     type: glm
-#     api_key: "${GLM_API_KEY}"
-#     model: "glm-4-flash"
-#     models: ["glm-4-flash", "glm-4-plus"]
-#
-# default_provider: deepseek-main   # 可选，默认使用第一个 key
+providers:
+  deepseek-main:
+    type: deepseek
+    api_key: "${DEEPSEEK_LLM_API_KEY}"
+    base_url: "${DEEPSEEK_LLM_BASE_URL}"
+    model: "deepseek-v4-pro"
+    models: ["deepseek-v4-pro", "deepseek-v4-flash"]
+  siliconflow:
+    type: "openai-compatible"
+    api_key: "${SILICONFLOW_LLM_API_KEY}"
+    base_url: "${SILICONFLOW_LLM_BASE_URL}"
+    model: "Pro/zai-org/GLM-5"
+    models: ["Pro/zai-org/GLM-5", "Pro/moonshotai/Kimi-K2.5"]
+  minimax:
+    type: minimax
+    api_key: "${MINIMAX_LLM_API_KEY}"
+    base_url: "https://api.minimaxi.com/anthropic"
+    model: "MiniMax-M2.5"
+    models: ["MiniMax-M2.5", "MiniMax-M2.7"]
+
+default_provider: deepseek-main   # 可选，默认使用第一个 key
 
 # 单 provider 模式（兼容旧配置）：
 # model 为默认模型；models 列出该 provider 支持的所有模型，
 # 可通过 /model 命令在聊天中切换。
-provider:
-  type: "openai-compatible"
-  api_key: "${LLM_API_KEY}"
-  base_url: "${LLM_BASE_URL}"
-  model: "${LLM_MODEL}"
-  # models: ["model-a", "model-b"]   # 可选：列出可切换的模型
+# provider:
+#   type: "openai-compatible"
+#   api_key: "${LLM_API_KEY}"
+#   base_url: "${LLM_BASE_URL}"
+#   model: "${LLM_MODEL}"
+#   # models: ["model-a", "model-b"]   # 可选：列出可切换的模型
 
 # ── 插件配置 ──────────────────────────────────────────
 # Settings 的 extra="allow" 机制：顶层 key 如果不是已知字段，

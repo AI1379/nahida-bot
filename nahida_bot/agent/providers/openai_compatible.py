@@ -68,17 +68,23 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
             await self._client.aclose()
             self._client = None
 
+    def _extra_payload(self) -> dict[str, object]:
+        """Hook for subclasses to inject provider-specific parameters."""
+        return {}
+
     async def chat(
         self,
         *,
         messages: list[ContextMessage],
         tools: list[ToolDefinition] | None = None,
         timeout_seconds: float | None = None,
+        model: str | None = None,
     ) -> ProviderResponse:
         """Call OpenAI-compatible chat completion API."""
         payload: dict[str, object] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": self.serialize_messages(messages),
+            **self._extra_payload(),
         }
         if tools:
             payload["tools"] = self.format_tools(tools)
@@ -103,18 +109,21 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
             ) from exc
 
         if response.status_code in (401, 403):
+            body_hint = response.text[:200] if response.text else ""
             raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code}"
+                f"Provider auth rejected request with status {response.status_code} — {body_hint}"
             )
         if response.status_code == 429:
             raise ProviderRateLimitError()
         if response.status_code >= 500:
+            body_hint = response.text[:200] if response.text else ""
             raise ProviderTransportError(
-                f"Provider server error: status {response.status_code}"
+                f"Provider server error: status {response.status_code} — {body_hint}"
             )
         if response.status_code >= 400:
+            body_hint = response.text[:300] if response.text else ""
             raise ProviderBadResponseError(
-                f"Provider rejected request: status {response.status_code}"
+                f"Provider rejected request: status {response.status_code} — {body_hint}"
             )
 
         try:

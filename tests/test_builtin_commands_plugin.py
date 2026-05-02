@@ -108,13 +108,25 @@ class _FakeAPI:
         return self.models
 
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:
-        if model_name == "model-b":
-            self.session_meta = {"provider_id": "p2", "model": model_name}
+        # Mimic RealBotAPI: strip provider prefix from compound input
+        bare_name = model_name
+        if "/" in model_name:
+            prefix, _, suffix = model_name.partition("/")
+            if any(m["provider_id"] == prefix for m in self.models):
+                bare_name = suffix
+        if bare_name == "model-b":
+            self.session_meta = {"provider_id": "p2", "model": bare_name}
             return "p2"
         return None
 
     async def get_session_info(self, session_id: str) -> dict[str, Any]:
-        return dict(self.session_meta)
+        result = dict(self.session_meta)
+        # Mimic RealBotAPI fallback: return default model info when empty
+        if not result.get("model") and self.models:
+            default = self.models[0]
+            result.setdefault("provider_id", default["provider_id"])
+            result.setdefault("model", default["model"])
+        return result
 
     def list_commands(self) -> list[Any]:
         return [entry.to_info() for entry in self.command_registry.all_commands()]
@@ -184,6 +196,11 @@ async def test_reset_status_model_and_help_commands() -> None:
         args="model-b", inbound=_inbound(), session_id="s1"
     )
     assert switched == "Switched to model-b (via p2)"
+    # Compound "provider_id/model" format should also work
+    switched_compound = await plugin._cmd_model(
+        args="p2/model-b", inbound=_inbound(), session_id="s1"
+    )
+    assert switched_compound == "Switched to p2/model-b (via p2)"
     missing = await plugin._cmd_model(
         args="missing", inbound=_inbound(), session_id="s1"
     )
@@ -191,6 +208,24 @@ async def test_reset_status_model_and_help_commands() -> None:
     help_text = await plugin._cmd_help(args="", inbound=_inbound(), session_id="s1")
     assert "/help (h)" in help_text
     assert "Show help" in help_text
+
+
+@pytest.mark.asyncio
+async def test_model_and_status_show_default_for_new_session() -> None:
+    """New sessions with empty metadata should show default model as current."""
+    api = _FakeAPI()
+    # session_meta is empty — simulates a brand-new session
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    # /model should mark the default model as (current)
+    model_list = await plugin._cmd_model(args="", inbound=_inbound(), session_id="s1")
+    assert "p1/model-a (current)" in model_list
+
+    # /status should show the default model name, not "(default)"
+    status = await plugin._cmd_status(args="", inbound=_inbound(), session_id="s1")
+    assert "Provider: p1" in status
+    assert "Model: model-a" in status
+    assert "(default)" not in status
 
 
 @pytest.mark.asyncio

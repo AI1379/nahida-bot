@@ -134,11 +134,15 @@ class AnthropicProvider(ChatProvider):
         """Serialize an assistant ContextMessage into Anthropic format.
 
         Injects ``thinking`` / ``redacted_thinking`` blocks when the message
-        carries reasoning signatures (required for multi-turn replay).
+        carries reasoning content.  For Claude, the ``signature`` field is
+        required; for Anthropic-compatible backends (e.g. Minimax) that don't
+        emit signatures, the thinking block is replayed without one.
         """
         blocks: list[dict[str, object]] = []
 
-        # Inject thinking block when a signature is present
+        # Inject thinking block when reasoning content exists.
+        # Claude provides a signature — Minimax and other compatible backends
+        # may not.  Both must replay thinking for correct multi-turn context.
         if msg.reasoning_signature:
             blocks.append(
                 {
@@ -147,7 +151,6 @@ class AnthropicProvider(ChatProvider):
                     "signature": msg.reasoning_signature,
                 }
             )
-            # Inject redacted_thinking block if flagged
             if msg.has_redacted_thinking:
                 blocks.append(
                     {
@@ -155,6 +158,14 @@ class AnthropicProvider(ChatProvider):
                         "signature": msg.reasoning_signature,
                     }
                 )
+        elif msg.reasoning:
+            # Non-Claude backend (e.g. Minimax) — no signature available.
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "thinking": msg.reasoning,
+                }
+            )
 
         # Text block
         if msg.content:
@@ -214,6 +225,7 @@ class AnthropicProvider(ChatProvider):
         messages: list[ContextMessage],
         tools: list[ToolDefinition] | None = None,
         timeout_seconds: float | None = None,
+        model: str | None = None,
     ) -> ProviderResponse:
         """Call the Anthropic Messages API."""
         system_prompt, serialized_messages = self._serialize_messages_anthropic(
@@ -221,7 +233,7 @@ class AnthropicProvider(ChatProvider):
         )
 
         payload: dict[str, object] = {
-            "model": self.model,
+            "model": model or self.model,
             "max_tokens": self.max_tokens,
             "messages": serialized_messages,
         }
@@ -257,12 +269,14 @@ class AnthropicProvider(ChatProvider):
         if response.status_code == 429:
             raise ProviderRateLimitError()
         if response.status_code >= 500:
+            body_hint = response.text[:200] if response.text else ""
             raise ProviderTransportError(
-                f"Provider server error: status {response.status_code}"
+                f"Provider server error: status {response.status_code} — {body_hint}"
             )
         if response.status_code >= 400:
+            body_hint = response.text[:300] if response.text else ""
             raise ProviderBadResponseError(
-                f"Provider rejected request: status {response.status_code}"
+                f"Provider rejected request: status {response.status_code} — {body_hint}"
             )
 
         try:

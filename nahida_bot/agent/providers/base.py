@@ -89,8 +89,13 @@ class ChatProvider(ABC):
         messages: list[ContextMessage],
         tools: list[ToolDefinition] | None = None,
         timeout_seconds: float | None = None,
+        model: str | None = None,
     ) -> ProviderResponse:
-        """Run a single chat completion round."""
+        """Run a single chat completion round.
+
+        Args:
+            model: Override the default model for this request only.
+        """
         raise NotImplementedError
 
     def format_tools(self, tools: list[ToolDefinition]) -> list[object]:

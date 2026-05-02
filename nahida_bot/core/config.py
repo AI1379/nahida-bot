@@ -17,6 +17,7 @@ class ProviderConfig(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = ""
+    models: list[str] = []
 
 
 class ProviderEntryConfig(BaseModel):

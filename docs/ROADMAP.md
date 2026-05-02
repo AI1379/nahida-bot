@@ -197,6 +197,7 @@ Python 方案的核心结构可以概括为五层：
 - [x] 实现集成式 Provider 架构（`_ReasoningMixin` + 类继承），替代独立 `ResponseAdapter` 协议。
 - [x] 实现标准 OpenAI 响应适配（`OpenAICompatibleProvider` 演进）。
 - [x] 实现 DeepSeek-R1 响应适配（`DeepSeekProvider` 子类，处理 `reasoning_content` 字段）。
+- [x] 实现 DeepSeek V4 thinking 模式支持（`thinking` 开关 + 工具调用轮次 `reasoning_content` 回传）。
 - [x] 实现 Anthropic/Claude 响应适配器（处理 `thinking` 块和 `redacted_thinking` 块）。
 - [x] 定义推理链上下文策略（`ReasoningPolicy`：strip/append/budget）。
 - [x] 在 Agent Loop 中实现推理内容的传播逻辑（`_build_assistant_message` → `ContextMessage`）。
@@ -204,13 +205,14 @@ Python 方案的核心结构可以概括为五层：
 - [x] 实现 Provider 注册表（`@register_provider` + 工厂方法）和子类（GLM、Groq、Minimax）。
 - [x] 编写多后端集成测试（OpenAI/DeepSeek/Anthropic）。
 - [x] 更新 architecture 文档中的 Provider 文档（当前实现部分）。
+- [ ] 实现跨 Provider 的 `reasoning_effort` 聊天指令（DeepSeek/OpenAI/Claude 等均支持，接口已预留）。
 
 **支持的响应格式**：
 
 | 后端 | 特殊字段 | Provider 类 |
 |-----|---------|----------|
 | OpenAI 标准 | `content` | `OpenAICompatibleProvider` |
-| DeepSeek-R1 | `reasoning_content` | `DeepSeekProvider` |
+| DeepSeek-R1/V4 | `reasoning_content` + thinking 模式 | `DeepSeekProvider` |
 | GLM/智谱 | （无特殊字段） | `GLMProvider` |
 | Groq | `reasoning` | `GroqProvider` |
 | Minimax | （无特殊字段） | `MinimaxProvider` |
@@ -514,8 +516,7 @@ class ChannelPlugin(Plugin):
 - [x] 实现 session 管理原语：`clear_session`、`list_sessions`、`get/update_session_meta`。
 - [x] 添加 DB migration 002（sessions.metadata_json 列）。
 - [x] 修复 Windows Ctrl+C 挂起问题（DatabaseEngine 和 Provider 资源清理）。
-
-> ⚠️ **待优化（计划中）**：当前 `/model` 已能在会话 metadata 中记录模型偏好，并解析到对应 ProviderSlot；但同一 ProviderSlot 声明多个可用模型时，Provider 请求仍使用实例默认 `model`。后续应把 selected model 作为 per-request override 传入 Provider，或将每个模型展开为独立 ProviderSlot，确保 `/model` 对同 provider 多模型配置真正生效。
+- [x] 实现 per-request model override：`ChatProvider.chat()` 接受 `model` 参数覆盖默认模型；`SessionRunner` 从会话 metadata 中解析选中的模型名称并传递给 `AgentLoop.run()`，确保同一 Provider 下多模型切换真正生效。
 
 前置依赖：Phase 3（ChannelPlugin 接口）。
 
@@ -668,11 +669,11 @@ MVP 建议额外约束：
 
 ### 8.2 Provider 响应兼容性风险
 
-当前 Provider 层已支持 OpenAI 兼容族、DeepSeek、Groq、GLM、Minimax 和 Anthropic/Claude thinking 解析；剩余风险集中在流式响应、拒绝语义和同 Provider 多模型 per-request 覆盖。
+当前 Provider 层已支持 OpenAI 兼容族、DeepSeek、Groq、GLM、Minimax 和 Anthropic/Claude thinking 解析；剩余风险集中在流式响应和拒绝语义。
 
 | 风险类型 | 严重程度 | 状态 |
 |---------|---------|------|
-| 同 Provider 多模型切换未真正覆盖请求 model | 🟡 中 | 计划中 |
+| ~~同 Provider 多模型切换未真正覆盖请求 model~~ | ~~🟡 中~~ | ~~已完成~~ |
 | 流式响应不支持 | 🟡 中 | 待规划（Phase 3+） |
 | 拒绝标记未处理 | 🟢 低 | 待规划 |
 

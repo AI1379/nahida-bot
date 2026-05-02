@@ -203,13 +203,14 @@ class Application:
                     model=provider_cfg.model,
                 )
                 cb = ContextBuilder(budget=ContextBudget(), provider=provider)
+                models = provider_cfg.models or [provider_cfg.model]
                 slots.append(
                     ProviderSlot(
                         id="default",
                         provider=provider,
                         context_builder=cb,
                         default_model=provider_cfg.model,
-                        available_models=[provider_cfg.model],
+                        available_models=models,
                     )
                 )
                 self._providers_to_close.append(provider)

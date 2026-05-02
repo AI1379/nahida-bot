@@ -131,12 +131,14 @@ class AgentLoop:
         tools: list[ToolDefinition] | None = None,
         provider: ChatProvider | None = None,
         context_builder: ContextBuilder | None = None,
+        model: str | None = None,
     ) -> AgentRunResult:
         """Run the agent loop until terminal assistant response is produced.
 
         Args:
             provider: Override provider for this call only.
             context_builder: Override context builder for this call only.
+            model: Override model name for this call only.
         """
         active_provider = provider or self.provider
         active_builder = context_builder or self.context_builder
@@ -172,6 +174,7 @@ class AgentLoop:
                     step=step,
                     trace=trace,
                     provider=active_provider,
+                    model=model,
                 )
 
                 assistant_message = self._build_assistant_message(response)
@@ -238,6 +241,7 @@ class AgentLoop:
         step: int = 0,
         trace: Trace | None = None,
         provider: ChatProvider | None = None,
+        model: str | None = None,
     ) -> ProviderResponse:
         active_provider = provider or self.provider
         attempts = 0
@@ -249,6 +253,7 @@ class AgentLoop:
                     messages=messages,
                     tools=tools,
                     timeout_seconds=self.config.provider_timeout_seconds,
+                    model=model,
                 )
                 if trace is not None and self.metrics is not None:
                     self.metrics.record_provider_call(

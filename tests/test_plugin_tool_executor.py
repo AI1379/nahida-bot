@@ -24,7 +24,7 @@ class _ToolCallingProvider(ChatProvider):
     def tokenizer(self):
         return None
 
-    async def chat(self, *, messages, tools=None, timeout_seconds=None):  # noqa: ANN001
+    async def chat(self, *, messages, tools=None, timeout_seconds=None, model=None):  # noqa: ANN001
         self.calls += 1
         if self.calls == 1:
             assert tools is not None

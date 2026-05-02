@@ -90,7 +90,7 @@ class SessionRunner:
         if self._agent is None:
             raise RuntimeError("SessionRunner has no agent loop configured")
 
-        provider_slot = await self._resolve_provider(session_id)
+        provider_slot, selected_model = await self._resolve_provider(session_id)
         history = await self._load_history(session_id, workspace_id=workspace_id)
         tools = self._collect_tools(tool_filter)
 
@@ -109,6 +109,8 @@ class SessionRunner:
         if provider_slot is not None:
             run_kwargs["provider"] = provider_slot.provider
             run_kwargs["context_builder"] = provider_slot.context_builder
+        if selected_model is not None:
+            run_kwargs["model"] = selected_model
 
         result = await self._agent.run(**run_kwargs)
         await self._persist_turns(
@@ -118,9 +120,16 @@ class SessionRunner:
 
     # ── Private helpers ──────────────────────────────────────
 
-    async def _resolve_provider(self, session_id: str) -> Any:
+    async def _resolve_provider(self, session_id: str) -> tuple[Any, str | None]:
+        """Resolve provider slot and per-request model override for a session.
+
+        Returns:
+            A tuple of (ProviderSlot | None, model_name | None).
+            The model_name is set when the session explicitly selected a model
+            that differs from the provider slot's default.
+        """
         if self._providers is None:
-            return None
+            return None, None
         if self._memory is not None:
             meta = await self._memory.get_session_meta(session_id)
             if meta:
@@ -128,13 +137,16 @@ class SessionRunner:
                 if model:
                     slot = self._providers.resolve_model(model)
                     if slot is not None:
-                        return slot
+                        # Only override when the selected model differs from
+                        # the slot's default — avoids redundant overrides.
+                        override = model if model != slot.default_model else None
+                        return slot, override
                 provider_id = meta.get("provider_id")
                 if provider_id:
                     slot = self._providers.get(provider_id)
                     if slot is not None:
-                        return slot
-        return self._providers.default
+                        return slot, None
+        return self._providers.default, None
 
     async def _load_history(
         self, session_id: str, *, workspace_id: str | None = None
