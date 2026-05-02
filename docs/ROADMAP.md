@@ -215,7 +215,7 @@ Python 方案的核心结构可以概括为五层：
 | DeepSeek-R1/V4 | `reasoning_content` + thinking 模式 | `DeepSeekProvider` |
 | GLM/智谱 | （无特殊字段） | `GLMProvider` |
 | Groq | `reasoning` | `GroqProvider` |
-| Minimax | （无特殊字段） | `MinimaxProvider` |
+| Minimax | Anthropic Messages API，`thinking` 块 | `MinimaxProvider(AnthropicProvider)` |
 | Claude | `thinking` 块 | `AnthropicProvider` |
 
 **参考实现**：见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md)。
@@ -463,6 +463,149 @@ class ChannelPlugin(Plugin):
 
 参考来源：OpenClaw（插件 contract）、nonebot2（扩展生态）、OneBot 协议、NapCat 设计、Android Manifest 思路。
 
+#### Phase 3.9 — Provider Plugin（模型 Provider 插件化）
+
+> 当前 Provider 通过 `@register_provider` 装饰器静态注册在 `nahida_bot/agent/providers/` 内，
+> 由 `Application._init_agent_subsystem()` 根据配置创建。插件系统完全不感知 Provider 注册。
+> 本阶段目标是让第三方可以通过插件注册新的 Provider 类型，无需修改核心代码。
+
+**现状分析**：
+
+1. **Manifest 无 `provider` 类型** — `type` 字段仅支持 `channel | tool | hook | integration | theme`。
+2. **BotAPI 无 Provider 注册接口** — 插件只能注册 tools、commands、event handlers。
+3. **初始化顺序不对** — `_init_agent_subsystem()`（创建 ProviderManager）在插件加载之前执行。
+4. **Provider 注册表是模块级全局** — `_REGISTRY` dict 在 import 时填充，运行时不可扩展。
+
+**设计方案**：
+
+**1. Manifest 扩展**
+
+```yaml
+# plugin.yaml 示例
+id: "provider-ollama"
+name: "Ollama Provider"
+type: "provider"          # 新增类型
+version: "0.1.0"
+entrypoint: "plugin:OllamaProviderPlugin"
+
+# Provider 插件专属字段
+provider:
+  type_key: "ollama"      # 注册到 create_provider() 的 type 名称
+  config_schema:          # JSON Schema：声明此 Provider 接受哪些配置项
+    type: object
+    required: ["base_url", "model"]
+    properties:
+      base_url: { type: string, default: "http://localhost:11434/v1" }
+      model: { type: string, default: "llama3" }
+      timeout: { type: number, default: 60 }
+```
+
+**2. ProviderPlugin 基类**
+
+```python
+class ProviderPlugin(Plugin):
+    """Provider 插件基类。在 on_load 中注册 Provider 类型。"""
+
+    @abstractmethod
+    def create_provider(self, config: dict[str, Any]) -> ChatProvider:
+        """从配置字典创建 ChatProvider 实例。
+
+        config 由 ProviderManager 根据用户 YAML 配置传入，
+        已完成环境变量插值和类型校验。
+        """
+        ...
+
+    async def on_load(self) -> None:
+        # 默认实现：向运行时注册此 provider 类型
+        self.api.register_provider_type(
+            type_key=self.manifest.provider.type_key,
+            factory=self.create_provider,
+            config_schema=self.manifest.provider.config_schema,
+        )
+```
+
+**3. BotAPI 扩展**
+
+```python
+# BotAPI 协议新增
+def register_provider_type(
+    self,
+    type_key: str,
+    factory: Callable[[dict], ChatProvider],
+    config_schema: dict | None = None,
+) -> None:
+    """注册一个 Provider 类型，使其可在 YAML 配置中使用。"""
+    ...
+```
+
+`RealBotAPI` 实现将调用委托给 `ProviderRegistry.register_runtime()`（新增方法，区别于 `@register_provider` 的 static registration）。
+
+**4. 初始化顺序调整（两阶段）**
+
+```text
+Application.initialize():
+  1. _init_database() + _init_memory()
+  2. _init_plugin_manager()           # 创建 PluginManager
+  3. _load_provider_plugins()         # ← 新增：发现并加载 type=provider 的插件
+  4. _init_agent_subsystem()          # 现在可用插件注册的 Provider 类型
+  5. _init_workspace_subsystem()
+  6. _load_remaining_plugins()        # 加载 tool/channel/hook 等插件
+  7. _init_scheduler()
+```
+
+关键变更：将 `_init_agent_subsystem()` 从当前位置（plugin loading 之前）移到 provider plugin 加载之后。这需要把 `_init_plugin_manager()` 拆分为两个阶段。
+
+**5. Provider Registry 运行时扩展**
+
+```python
+class ProviderRegistry:
+    _static: dict[str, ProviderDescriptor] = {}     # @register_provider 装饰器填充
+    _runtime: dict[str, RuntimeProviderDescriptor] = {}  # 插件 register_provider_type() 填充
+
+    def create_provider(self, type_key: str, **kwargs) -> ChatProvider:
+        # 优先查 static（内置），fallback 到 runtime（插件）
+        desc = self._static.get(type_key) or self._runtime.get(type_key)
+        if desc is None:
+            raise ValueError(f"Unknown provider type: {type_key}")
+        return desc.cls(**kwargs) if desc.cls else desc.factory(kwargs)
+```
+
+**6. 配置集成**
+
+插件注册的 Provider 与内置 Provider 在配置中完全等价：
+
+```yaml
+providers:
+  deepseek-main:
+    type: deepseek           # 内置
+    api_key: "${DEEPSEEK_API_KEY}"
+    ...
+  ollama-local:
+    type: ollama             # ← 由 provider-ollama 插件注册
+    base_url: "http://localhost:11434/v1"
+    model: "llama3"
+```
+
+**任务清单**：
+
+- [ ] `PluginManifest` 新增 `provider` 可选字段（`type_key` + `config_schema`）。
+- [ ] 新增 `ProviderPlugin` 基类（`on_load` 自动注册 `type_key`）。
+- [ ] `BotAPI` 协议新增 `register_provider_type()` 方法。
+- [ ] `RealBotAPI` 实现 `register_provider_type()`，委托给 Provider Registry。
+- [ ] Provider Registry 支持运行时注册（`_runtime` dict + `create_provider` 合并查找）。
+- [ ] `Application.initialize()` 拆分初始化顺序：先加载 provider 插件，再创建 ProviderManager。
+- [ ] 插件清理：provider 插件 `on_unload` 时从 Registry 移除 `type_key`。
+- [ ] 编写 `ProviderPlugin` 集成测试（插件注册 → 配置解析 → Provider 创建 → chat 调用）。
+- [ ] 编写示例 provider 插件（如 `provider-ollama`）作为开发者参考。
+- [ ] 更新 architecture 文档中的 Provider 和 Plugin 文档。
+
+**风险控制**：
+
+- Provider 插件注册的 `type_key` 不可与内置类型冲突（`deepseek`、`anthropic`、`openai-compatible` 等）。
+- Provider 插件的生命周期必须与 AgentLoop 解耦：插件卸载不应中断正在进行的请求。
+- `config_schema` 校验应在 Provider 创建前执行，错误配置不应导致启动崩溃（应 skip 并记录警告）。
+- 安全考虑：Provider 插件处理 API key 等敏感信息，权限系统需增加 `provider` 能力声明。
+
 ### Phase 4 - 基于 ChannelPlugin 的 Telegram 接入 + Multi-Provider + 内置命令
 
 目标：实现 Telegram Bot 接入、多 Provider 支持、以及核心命令插件。
@@ -598,9 +741,10 @@ class ChannelPlugin(Plugin):
 6. 插件系统与 Channel 接口定义（Phase 3）
 7. 基于插件系统的 Channel 实现（Phase 4）
 8. Subagent 编排与跨会话管理（Phase 3.8，可在 Phase 4 之后或并行推进）
-9. Gateway 与 Node（Phase 5）
-10. WebUI 与运维工具（Phase 6）
-11. 稳定性、发布与生态（Phase 7）
+9. Provider 插件化（Phase 3.9，可在 Phase 4 之后或并行推进）
+10. Gateway 与 Node（Phase 5）
+11. WebUI 与运维工具（Phase 6）
+12. 稳定性、发布与生态（Phase 7）
 
 这个顺序的核心原因是：
 
@@ -608,6 +752,7 @@ class ChannelPlugin(Plugin):
 - **Phase 2.7-2.8** 安全与健壮性加固（Phase 2.8 已完成；Phase 2.7 作为开放不可信插件/远程执行前的安全闸门）
 - **Phase 3-4** 打通插件和 Channel（先定义接口，允许多种通信协议；再实现具体 Channel 作为插件）
 - **Phase 3.8** 本地 Subagent 编排和跨会话管理（不依赖 Gateway-Node，单进程 asyncio 即可实现）
+- **Phase 3.9** Provider 插件化（扩展插件系统支持第三方 Provider 注册）
 - **Phase 5-6** 扩展分布式与运维（Gateway-Node + WebUI）
 - **Phase 7** 稳定化与商业化（发版、CI/CD、生态）
 
