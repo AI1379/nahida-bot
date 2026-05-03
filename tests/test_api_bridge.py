@@ -74,8 +74,17 @@ class _Memory:
 class _ChannelRegistry:
     def __init__(self) -> None:
         self.sent: list[tuple[str, OutboundMessage]] = []
+        self.channels: dict[str, Any] = {}
+
+    def register(self, channel: Any) -> None:
+        self.channels[channel.channel_id] = channel
+
+    def unregister(self, channel_id: str) -> None:
+        self.channels.pop(channel_id, None)
 
     def get(self, channel: str) -> Any:
+        if channel in self.channels:
+            return self.channels[channel]
         return self if channel == "telegram" else None
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
@@ -184,6 +193,23 @@ def test_tool_and_command_registration(tmp_path: Path) -> None:
     assert tool_registry.get("search") is not None
     assert command_registry.get("ping") is not None
     assert command_registry.get("p") is not None
+
+
+def test_channel_service_registration_lifecycle(tmp_path: Path) -> None:
+    api, channel_registry, _, _ = _api(tmp_path)
+    channel = SimpleNamespace(channel_id="custom")
+
+    api.register_channel(cast(Any, channel))
+    assert channel_registry.get("custom") is channel
+
+    api.deactivate_service_registrations()
+    assert channel_registry.get("custom") is None
+
+    api.reactivate_service_registrations()
+    assert channel_registry.get("custom") is channel
+
+    api.clear_service_registrations()
+    assert channel_registry.get("custom") is None
 
 
 @pytest.mark.asyncio

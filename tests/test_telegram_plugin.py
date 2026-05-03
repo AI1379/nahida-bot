@@ -32,6 +32,7 @@ class _MockAPI:
     def __init__(self) -> None:
         self.published_events: list[Any] = []
         self.registered_tools: dict[str, dict[str, Any]] = {}
+        self.registered_channels: list[Any] = []
 
     async def send_message(
         self, target: str, message: Any, *, channel: str = ""
@@ -56,6 +57,19 @@ class _MockAPI:
             "parameters": parameters,
             "handler": handler,
         }
+
+    def register_channel(self, channel: Any) -> None:
+        self.registered_channels.append(channel)
+
+    def register_provider_type(
+        self,
+        type_key: str,
+        factory: Any,
+        *,
+        config_schema: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> None:
+        pass
 
     def register_command(
         self,

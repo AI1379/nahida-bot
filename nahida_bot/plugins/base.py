@@ -14,6 +14,8 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from nahida_bot.agent.providers.base import ChatProvider
+    from nahida_bot.plugins.channel_plugin import ChannelPlugin
     from nahida_bot.plugins.commands import CommandHandlerResult, CommandInfo
     from nahida_bot.plugins.manifest import PluginManifest
 
@@ -159,6 +161,23 @@ class BotAPI(Protocol):
         handler: Callable[..., Awaitable[str]],
     ) -> None:
         """Register a tool that the LLM can call during conversations."""
+        ...
+
+    # ── Service Registration ──────────────────────────
+
+    def register_channel(self, channel: ChannelPlugin) -> None:
+        """Register a channel service implemented by this plugin."""
+        ...
+
+    def register_provider_type(
+        self,
+        type_key: str,
+        factory: Callable[[dict[str, Any]], ChatProvider],
+        *,
+        config_schema: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> None:
+        """Register a provider type that can be used from YAML config."""
         ...
 
     @property

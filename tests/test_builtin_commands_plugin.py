@@ -72,6 +72,19 @@ class _FakeAPI:
             "handler": handler,
         }
 
+    def register_channel(self, channel: Any) -> None:
+        pass
+
+    def register_provider_type(
+        self,
+        type_key: str,
+        factory: Any,
+        *,
+        config_schema: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> None:
+        pass
+
     async def workspace_read(self, path: str) -> str:
         return self.files[path]
 

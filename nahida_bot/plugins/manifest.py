@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -72,7 +72,8 @@ class PluginManifest(BaseModel):
     entrypoint: str  # "module_path:ClassName"
     nahida_bot_version: str = ""
     sdk_version: str = ""
-    type: str = "tool"  # channel | tool | hook | integration | theme
+    type: str = "tool"  # channel | tool | hook | integration | theme | provider
+    load_phase: Literal["pre-agent", "post-agent"] = "post-agent"
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     config: dict[str, Any] = Field(default_factory=dict)

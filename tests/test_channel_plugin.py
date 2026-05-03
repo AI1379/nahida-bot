@@ -48,6 +48,19 @@ class _MockAPI:
     ) -> None:
         pass
 
+    def register_channel(self, channel: Any) -> None:
+        pass
+
+    def register_provider_type(
+        self,
+        type_key: str,
+        factory: Any,
+        *,
+        config_schema: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> None:
+        pass
+
     def register_command(
         self,
         name: str,

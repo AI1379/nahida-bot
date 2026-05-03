@@ -12,7 +12,6 @@ import structlog
 
 from nahida_bot.core.exceptions import PluginLoadError, PluginStateError
 from nahida_bot.plugins.api_bridge import RealBotAPI
-from nahida_bot.plugins.channel_plugin import ChannelPlugin
 from nahida_bot.plugins.commands import CommandRegistry
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.loader import PluginLoader
@@ -84,6 +83,28 @@ class PluginManager:
         self._handler_registry = HandlerRegistry()
         self._command_registry = CommandRegistry()
         self._records: dict[str, PluginRecord] = {}
+
+    def set_runtime_services(
+        self,
+        *,
+        workspace_manager: WorkspaceManager | None = None,
+        memory_store: MemoryStore | None = None,
+        provider_manager: Any | None = None,
+        scheduler_service: Any | None = None,
+    ) -> None:
+        """Update services injected into subsequently loaded plugin API bridges."""
+        self._workspace = workspace_manager
+        self._memory = memory_store
+        self._provider_manager = provider_manager
+        self._scheduler_service = scheduler_service
+        for record in self._records.values():
+            if record.api_bridge is not None:
+                record.api_bridge.set_runtime_services(
+                    workspace_manager=workspace_manager,
+                    memory_store=memory_store,
+                    provider_manager=provider_manager,
+                    scheduler_service=scheduler_service,
+                )
 
     @property
     def tool_registry(self) -> ToolRegistry:
@@ -185,10 +206,13 @@ class PluginManager:
         )
         await self._publish_plugin_event("PluginLoaded", record)
 
-    async def load_all(self) -> None:
+    async def load_all(self, *, phase: str | None = None) -> None:
         """Load all discovered plugins. Errors are logged, not raised."""
         for plugin_id in list(self._records):
-            if self._records[plugin_id].state == PluginState.FOUND:
+            record = self._records[plugin_id]
+            if phase is not None and record.manifest.load_phase != phase:
+                continue
+            if record.state == PluginState.FOUND:
                 await self._safe_call(plugin_id, "load")
 
     # ── Enabling ───────────────────────────────────────
@@ -204,22 +228,25 @@ class PluginManager:
         # Re-enabling from DISABLED skips on_load to avoid duplicate init.
         if prev_state == PluginState.LOADED:
             await self._safe_invoke(record.instance, "on_load")
+            if record.state == PluginState.ERROR:
+                self._clear_plugin_registrations(plugin_id, record)
+                return
         await self._safe_invoke(record.instance, "on_enable")
 
         if record.state != PluginState.ERROR:
+            if record.api_bridge is not None:
+                record.api_bridge.reactivate_service_registrations()
             record.state = PluginState.ENABLED
-            # Auto-register channel plugins
-            if (
-                isinstance(record.instance, ChannelPlugin)
-                and self._channel_registry is not None
-            ):
-                self._channel_registry.register(record.instance)
             await self._publish_plugin_event("PluginEnabled", record)
+        else:
+            self._clear_plugin_registrations(plugin_id, record)
 
-    async def enable_all(self) -> None:
+    async def enable_all(self, *, phase: str | None = None) -> None:
         """Enable all loaded plugins."""
         for plugin_id in list(self._records):
             record = self._records[plugin_id]
+            if phase is not None and record.manifest.load_phase != phase:
+                continue
             if record.state in (PluginState.LOADED, PluginState.DISABLED):
                 await self._safe_call(plugin_id, "enable")
 
@@ -238,18 +265,13 @@ class PluginManager:
         # Unsubscribe from EventBus
         if record.api_bridge is not None:
             record.api_bridge.clear_subscriptions()
+            record.api_bridge.deactivate_service_registrations()
 
         if record.instance is not None:
             await self._safe_invoke(record.instance, "on_disable")
 
         if record.state != PluginState.ERROR:
             record.state = PluginState.DISABLED
-            # Auto-unregister channel plugins
-            if (
-                isinstance(record.instance, ChannelPlugin)
-                and self._channel_registry is not None
-            ):
-                self._channel_registry.unregister(record.instance.channel_id)
             await self._publish_plugin_event("PluginDisabled", record)
 
     # ── Reloading ──────────────────────────────────────
@@ -283,6 +305,9 @@ class PluginManager:
 
         if record.instance is not None:
             await self._safe_invoke(record.instance, "on_unload")
+        if record.api_bridge is not None:
+            record.api_bridge.clear_subscriptions()
+            record.api_bridge.clear_service_registrations()
 
         self._loader.unload(record.manifest)
         record.instance = None
@@ -330,6 +355,15 @@ class PluginManager:
                 f"Plugin '{record.manifest.id}' is in state '{record.state.value}', "
                 f"expected {allowed_str}"
             )
+
+    def _clear_plugin_registrations(self, plugin_id: str, record: PluginRecord) -> None:
+        """Remove runtime registrations left behind by a failed plugin hook."""
+        self._tool_registry.unregister_by_plugin(plugin_id)
+        self._handler_registry.unregister_by_plugin(plugin_id)
+        self._command_registry.unregister_by_plugin(plugin_id)
+        if record.api_bridge is not None:
+            record.api_bridge.clear_subscriptions()
+            record.api_bridge.clear_service_registrations()
 
     async def _safe_call(self, plugin_id: str, method: str) -> None:
         """Call a manager method with exception isolation."""

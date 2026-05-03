@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -106,19 +107,32 @@ class Application:
                     f"Lifecycle handler(s) failed during init: {details}"
                 )
 
-            # Initialize database, memory, and agent subsystems
-            await self._init_agent_subsystem()
-            self._init_workspace_subsystem()
-
-            # Initialize plugin manager
+            # Initialize plugin manager early so pre-agent plugins can register
+            # provider types before ProviderManager is built.
             from nahida_bot.plugins.manager import PluginManager
             from nahida_bot.plugins.tool_executor import RegistryToolExecutor
 
             self.plugin_manager = PluginManager(
                 event_bus=self.event_bus,
+                channel_registry=self.channel_registry,
+            )
+            await self._discover_plugins()
+            self._inject_plugin_configs()
+
+            # Import built-in provider modules before runtime provider plugins
+            # run, so type-key conflicts with built-ins are caught consistently.
+            importlib.import_module("nahida_bot.agent.providers")
+
+            await self.plugin_manager.load_all(phase="pre-agent")
+            await self.plugin_manager.enable_all(phase="pre-agent")
+
+            # Initialize database, memory, and agent subsystems
+            await self._init_agent_subsystem()
+            self._init_workspace_subsystem()
+
+            self.plugin_manager.set_runtime_services(
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
-                channel_registry=self.channel_registry,
                 provider_manager=self._provider_manager,
             )
             if self.agent_loop is not None:
@@ -128,6 +142,12 @@ class Application:
 
             # Initialize scheduler
             self._init_scheduler()
+            self.plugin_manager.set_runtime_services(
+                workspace_manager=self.workspace_manager,
+                memory_store=self.memory_store,
+                provider_manager=self._provider_manager,
+                scheduler_service=self.scheduler_service,
+            )
 
             self._initialized = True
         except Exception as e:
@@ -297,6 +317,50 @@ class Application:
                 plugin_configs[key] = value
         return plugin_configs
 
+    async def _discover_plugins(self) -> None:
+        """Discover builtin and user plugins without loading them."""
+        if self.plugin_manager is None:
+            return
+
+        # Discover builtin commands from nahida_bot/plugins/builtin/
+        try:
+            import nahida_bot.plugins.builtin as builtin_pkg
+
+            builtin_file = builtin_pkg.__file__
+            if builtin_file is not None:
+                builtin_path = Path(builtin_file).parent
+                await self.plugin_manager.discover([builtin_path])
+        except ImportError:
+            pass
+
+        # Discover builtin channels from nahida_bot/channels/
+        if self.settings.discover_builtin_channels:
+            try:
+                import nahida_bot.channels as channels_pkg
+
+                channels_file = channels_pkg.__file__
+                if channels_file is not None:
+                    builtin_channels_path = Path(channels_file).parent
+                    await self.plugin_manager.discover([builtin_channels_path])
+            except ImportError:
+                pass
+
+        plugin_paths = [Path(p).resolve() for p in self.settings.plugin_paths]
+        await self.plugin_manager.discover(plugin_paths)
+
+    def _inject_plugin_configs(self) -> None:
+        """Merge config.yaml top-level plugin config into discovered manifests."""
+        if self.plugin_manager is None:
+            return
+
+        plugin_configs = self._get_plugin_configs()
+        for record in self.plugin_manager.list_plugins():
+            plugin_id = record.manifest.id
+            if plugin_id in plugin_configs:
+                existing = record.manifest.config or {}
+                merged = {**existing, **plugin_configs[plugin_id]}
+                record.manifest = record.manifest.model_copy(update={"config": merged})
+
     async def start(self) -> None:
         """Start the application."""
         if not self._initialized:
@@ -312,49 +376,8 @@ class Application:
                 app_name=self.settings.app_name,
             )
             if self.plugin_manager is not None:
-                # Discover builtin commands from nahida_bot/plugins/builtin/
-                try:
-                    import nahida_bot.plugins.builtin as builtin_pkg
-
-                    builtin_file = builtin_pkg.__file__
-                    if builtin_file is not None:
-                        builtin_path = Path(builtin_file).parent
-                        await self.plugin_manager.discover([builtin_path])
-                except ImportError:
-                    pass
-
-                # Discover builtin channels from nahida_bot/channels/
-                if self.settings.discover_builtin_channels:
-                    try:
-                        import nahida_bot.channels as channels_pkg
-
-                        channels_file = channels_pkg.__file__
-                        if channels_file is not None:
-                            builtin_channels_path = Path(channels_file).parent
-                            await self.plugin_manager.discover([builtin_channels_path])
-                    except ImportError:
-                        pass  # No builtin channels package
-
-                # Inject plugin configs from settings into manifest config
-                plugin_configs = self._get_plugin_configs()
-                for record in self.plugin_manager.list_plugins():
-                    plugin_id = record.manifest.id
-                    if plugin_id in plugin_configs:
-                        existing = record.manifest.config or {}
-                        merged = {**existing, **plugin_configs[plugin_id]}
-                        record.manifest = record.manifest.model_copy(
-                            update={"config": merged}
-                        )
-
-                # Discover user plugins
-                plugin_paths = [Path(p).resolve() for p in self.settings.plugin_paths]
-                await self.plugin_manager.discover(plugin_paths)
-
-                await self.plugin_manager.load_all()
-                await self.plugin_manager.enable_all()
-                # FIXME: If startup fails after plugins are enabled but before
-                # self._started becomes True, stop() will early-return and skip
-                # plugin_manager.shutdown_all(), leaving partial startup state.
+                await self.plugin_manager.load_all(phase="post-agent")
+                await self.plugin_manager.enable_all(phase="post-agent")
 
             # Create and start the message router
             assert self.plugin_manager is not None
@@ -417,6 +440,8 @@ class Application:
         try:
             if not was_started:
                 logger.warning("application.stop_without_start")
+                if self.plugin_manager is not None:
+                    await self.plugin_manager.shutdown_all()
             else:
                 logger.info(
                     "application.stopping",
@@ -442,6 +467,7 @@ class Application:
                 # Shut down plugins before event bus
                 if self.plugin_manager is not None:
                     await self.plugin_manager.shutdown_all()
+
                 self._started = False
 
                 await self.event_bus.publish(

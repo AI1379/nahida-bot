@@ -35,6 +35,7 @@ class TestPluginManifest:
         )
         assert m.id == "com.example.test"
         assert m.type == "tool"
+        assert m.load_phase == "post-agent"
         assert m.permissions.network.outbound == []
         assert m.permissions.filesystem.read == ["workspace"]
 
@@ -48,6 +49,7 @@ class TestPluginManifest:
             nahida_bot_version=">=0.1.0",
             sdk_version=">=0.1.0",
             type="channel",
+            load_phase="pre-agent",
             permissions=Permissions(
                 network=NetworkPermission(outbound=["https://api.example.com/*"]),
                 filesystem=FilesystemPermission(
@@ -64,6 +66,7 @@ class TestPluginManifest:
             config={"type": "object", "properties": {"api_key": {"type": "string"}}},
         )
         assert m.type == "channel"
+        assert m.load_phase == "pre-agent"
         assert m.permissions.network.outbound == ["https://api.example.com/*"]
         assert m.capabilities.channel_protocols == ["http_server", "http_client"]
         assert m.permissions.system.subprocess is True

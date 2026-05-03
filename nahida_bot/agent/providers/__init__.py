@@ -23,10 +23,13 @@ from nahida_bot.agent.providers.reasoning import (
 )
 from nahida_bot.agent.providers.registry import (
     ProviderDescriptor,
+    clear_runtime_providers,
     create_provider,
     get_provider_class,
     list_providers,
     register_provider,
+    register_runtime_provider,
+    unregister_runtime_provider,
 )
 
 # Import provider subclasses to trigger @register_provider decorators.
@@ -53,9 +56,12 @@ __all__ = [
     "TokenUsage",
     "ToolCall",
     "ToolDefinition",
+    "clear_runtime_providers",
     "create_provider",
     "extract_think_tags",
     "get_provider_class",
     "list_providers",
     "register_provider",
+    "register_runtime_provider",
+    "unregister_runtime_provider",
 ]

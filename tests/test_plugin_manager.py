@@ -14,7 +14,23 @@ from nahida_bot.plugins.manager import PluginManager, PluginState
 from nahida_bot.workspace.manager import WorkspaceManager
 
 
-def _create_test_plugin(parent: Path, plugin_id: str) -> Path:
+class _ChannelRegistry:
+    def __init__(self) -> None:
+        self.channels: dict[str, object] = {}
+
+    def register(self, channel: object) -> None:
+        self.channels[channel.channel_id] = channel  # type: ignore[attr-defined]
+
+    def unregister(self, channel_id: str) -> None:
+        self.channels.pop(channel_id, None)
+
+    def get(self, channel_id: str) -> object | None:
+        return self.channels.get(channel_id)
+
+
+def _create_test_plugin(
+    parent: Path, plugin_id: str, *, load_phase: str = "post-agent"
+) -> Path:
     """Create a minimal test plugin directory with a unique module name."""
     plugin_dir = parent / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -26,6 +42,7 @@ id: {plugin_id}
 name: {plugin_id.replace("_", " ").title()}
 version: "1.0.0"
 entrypoint: "{module_name}:TestPlugin"
+load_phase: "{load_phase}"
 """
     (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 
@@ -143,6 +160,26 @@ class TestPluginLifecycle:
             assert manager.get_record(pid) is not None
             assert manager.get_record(pid).state == PluginState.ENABLED  # type: ignore[union-attr]
 
+    async def test_load_all_and_enable_all_can_filter_by_phase(
+        self, tmp_path: Path
+    ) -> None:
+        _create_test_plugin(tmp_path, "pre_plugin", load_phase="pre-agent")
+        _create_test_plugin(tmp_path, "post_plugin", load_phase="post-agent")
+
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+
+        await manager.load_all(phase="pre-agent")
+        await manager.enable_all(phase="pre-agent")
+
+        assert manager.get_record("pre_plugin").state == PluginState.ENABLED  # type: ignore[union-attr]
+        assert manager.get_record("post_plugin").state == PluginState.FOUND  # type: ignore[union-attr]
+
+        await manager.load_all(phase="post-agent")
+        await manager.enable_all(phase="post-agent")
+
+        assert manager.get_record("post_plugin").state == PluginState.ENABLED  # type: ignore[union-attr]
+
     async def test_shutdown_all(self, tmp_path: Path) -> None:
         _create_test_plugin(tmp_path, "p1")
         _create_test_plugin(tmp_path, "p2")
@@ -208,6 +245,114 @@ class TestPluginExceptionIsolation:
 
         assert manager.get_record("crasher").state == PluginState.ERROR  # type: ignore[union-attr]
         assert manager.get_record("healthy").state == PluginState.ENABLED  # type: ignore[union-attr]
+
+    async def test_on_load_failure_stops_enable_and_clears_registrations(
+        self, tmp_path: Path
+    ) -> None:
+        from nahida_bot.agent.providers.registry import (
+            clear_runtime_providers,
+            create_provider,
+        )
+
+        plugin_dir = tmp_path / "registering_crasher"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        provider_type = "failed-runtime-provider"
+        clear_runtime_providers(owner_plugin_id="registering_crasher")
+
+        manifest = """
+id: registering_crasher
+name: Registering Crasher
+version: "1.0.0"
+entrypoint: "plugin:RegisteringCrashPlugin"
+"""
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+
+        code = f'''
+from nahida_bot.plugins.base import Plugin
+
+class _FailedChannel:
+    channel_id = "failed-channel"
+
+class RegisteringCrashPlugin(Plugin):
+    async def on_load(self) -> None:
+        self.api.register_channel(_FailedChannel())
+        self.api.register_provider_type(
+            "{provider_type}",
+            lambda config: None,
+        )
+        self.api.register_tool(
+            "failed_tool",
+            "Should be cleaned",
+            {{"type": "object"}},
+            self._handle,
+        )
+        raise RuntimeError("deliberate crash")
+
+    async def on_enable(self) -> None:
+        raise AssertionError("on_enable should not run after on_load failure")
+
+    async def _handle(self) -> str:
+        return "unused"
+'''
+        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+
+        channel_registry = _ChannelRegistry()
+        manager = PluginManager(
+            event_bus=_make_event_bus(),
+            channel_registry=channel_registry,
+        )
+
+        try:
+            await manager.discover([tmp_path])
+            await manager.load("registering_crasher")
+            await manager.enable("registering_crasher")
+
+            record = manager.get_record("registering_crasher")
+            assert record is not None
+            assert record.state == PluginState.ERROR
+            assert "deliberate crash" in record.error_message
+            assert channel_registry.get("failed-channel") is None
+            assert manager.tool_registry.get("failed_tool") is None
+            with pytest.raises(ValueError, match="Unknown provider type"):
+                create_provider(provider_type)
+        finally:
+            clear_runtime_providers(owner_plugin_id="registering_crasher")
+
+    async def test_channel_plugins_are_not_auto_registered(
+        self, tmp_path: Path
+    ) -> None:
+        plugin_dir = tmp_path / "passive_channel"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest = """
+id: passive_channel
+name: Passive Channel
+version: "1.0.0"
+type: channel
+entrypoint: "plugin:PassiveChannel"
+"""
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+
+        code = """
+from nahida_bot.plugins.channel_plugin import ChannelPlugin
+
+class PassiveChannel(ChannelPlugin):
+    async def on_load(self) -> None:
+        pass
+"""
+        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+
+        channel_registry = _ChannelRegistry()
+        manager = PluginManager(
+            event_bus=_make_event_bus(),
+            channel_registry=channel_registry,
+        )
+        await manager.discover([tmp_path])
+        await manager.load("passive_channel")
+        await manager.enable("passive_channel")
+
+        assert manager.get_record("passive_channel").state == PluginState.ENABLED  # type: ignore[union-attr]
+        assert channel_registry.get("passive_channel") is None
 
 
 class TestPluginToolRegistration:

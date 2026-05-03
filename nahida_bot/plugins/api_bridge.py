@@ -18,7 +18,9 @@ from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
 
 if TYPE_CHECKING:
+    from nahida_bot.agent.providers.base import ChatProvider
     from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.plugins.channel_plugin import ChannelPlugin
     from nahida_bot.core.events import EventBus
     from nahida_bot.plugins.manifest import PluginManifest
     from nahida_bot.workspace.manager import WorkspaceManager
@@ -83,6 +85,13 @@ class RealBotAPI:
         self._scheduler_service = scheduler_service
         self._logger = _PluginLogger(plugin_id)
         self._subscriptions: list[Any] = []  # EventBus Subscription objects
+        self._registered_channels: dict[str, ChannelPlugin] = {}
+        self._active_channels: set[str] = set()
+        self._registered_provider_types: dict[
+            str,
+            tuple[Callable[[dict[str, Any]], ChatProvider], dict[str, Any] | None, str],
+        ] = {}
+        self._active_provider_types: set[str] = set()
 
     # ── Messaging ──────────────────────────────────────
 
@@ -164,6 +173,44 @@ class RealBotAPI:
             )
         )
         self._logger.debug("tool_registered", tool_name=name)
+
+    # ── Service Registration ──────────────────────────
+
+    def register_channel(self, channel: ChannelPlugin) -> None:
+        """Register a channel service implemented by this plugin."""
+        if self._channel_registry is None:
+            raise RuntimeError("Channel registry is not available")
+        channel_id = channel.channel_id
+        self._channel_registry.register(channel)
+        self._registered_channels[channel_id] = channel
+        self._active_channels.add(channel_id)
+        self._logger.debug("channel_registered", channel_id=channel_id)
+
+    def register_provider_type(
+        self,
+        type_key: str,
+        factory: Callable[[dict[str, Any]], ChatProvider],
+        *,
+        config_schema: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> None:
+        """Register a runtime Provider type for configuration lookup."""
+        from nahida_bot.agent.providers.registry import register_runtime_provider
+
+        register_runtime_provider(
+            type_key,
+            factory,
+            description=description,
+            config_schema=config_schema,
+            owner_plugin_id=self._plugin_id,
+        )
+        self._registered_provider_types[type_key] = (
+            factory,
+            config_schema,
+            description,
+        )
+        self._active_provider_types.add(type_key)
+        self._logger.debug("provider_type_registered", provider_type=type_key)
 
     @property
     def scheduler_service(self) -> Any | None:
@@ -323,3 +370,60 @@ class RealBotAPI:
         for sub in self._subscriptions:
             sub.unsubscribe()
         self._subscriptions.clear()
+
+    def set_runtime_services(
+        self,
+        *,
+        workspace_manager: WorkspaceManager | None = None,
+        memory_store: MemoryStore | None = None,
+        provider_manager: Any | None = None,
+        scheduler_service: Any | None = None,
+    ) -> None:
+        """Update runtime services after early plugin loading."""
+        self._workspace = workspace_manager
+        self._memory = memory_store
+        self._provider_manager = provider_manager
+        self._scheduler_service = scheduler_service
+
+    def deactivate_service_registrations(self) -> None:
+        """Temporarily deactivate services registered by this plugin."""
+        for channel_id in list(self._active_channels):
+            if self._channel_registry is not None:
+                self._channel_registry.unregister(channel_id)
+            self._active_channels.discard(channel_id)
+
+        from nahida_bot.agent.providers.registry import unregister_runtime_provider
+
+        for type_key in list(self._active_provider_types):
+            unregister_runtime_provider(type_key, owner_plugin_id=self._plugin_id)
+            self._active_provider_types.discard(type_key)
+
+    def reactivate_service_registrations(self) -> None:
+        """Re-register remembered services when a disabled plugin is re-enabled."""
+        for channel_id, channel in self._registered_channels.items():
+            if channel_id not in self._active_channels and self._channel_registry:
+                self._channel_registry.register(channel)
+                self._active_channels.add(channel_id)
+
+        from nahida_bot.agent.providers.registry import register_runtime_provider
+
+        for type_key, (
+            factory,
+            config_schema,
+            description,
+        ) in self._registered_provider_types.items():
+            if type_key not in self._active_provider_types:
+                register_runtime_provider(
+                    type_key,
+                    factory,
+                    description=description,
+                    config_schema=config_schema,
+                    owner_plugin_id=self._plugin_id,
+                )
+                self._active_provider_types.add(type_key)
+
+    def clear_service_registrations(self) -> None:
+        """Permanently unregister services registered by this plugin."""
+        self.deactivate_service_registrations()
+        self._registered_channels.clear()
+        self._registered_provider_types.clear()

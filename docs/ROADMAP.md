@@ -606,6 +606,30 @@ providers:
 - `config_schema` 校验应在 Provider 创建前执行，错误配置不应导致启动崩溃（应 skip 并记录警告）。
 - 安全考虑：Provider 插件处理 API key 等敏感信息，权限系统需增加 `provider` 能力声明。
 
+> **架构反思：加载时序与插件类型泛化**
+>
+> Provider Plugin 的核心难题是**加载时序**——ProviderManager 必须在插件注册 Provider 类型**之后**创建，但常规插件的加载又在 ProviderManager 创建之后。这个"先有鸡还是先有蛋"的问题在插件系统中很常见，典型解法有四种：
+>
+> **1. 阶段化加载（Phase-based loading）**
+>
+> 为插件 manifest 引入 `load_phase` 字段，定义显式加载阶段（如 `pre-agent` / `post-agent`）。Loader 按 phase 顺序依次处理。Provider 插件声明 `load_phase: pre-agent`，普通插件默认 `post-agent`。这是最实用的方案——语义清晰，实现简单，且对现有流程改动最小。`Application.initialize()` 只需把 `_load_plugins()` 拆成 `_load_plugins(phase="pre-agent")` 和 `_load_plugins(phase="post-agent")` 两步。
+>
+> **2. 依赖声明（Dependency declaration）**
+>
+> 插件声明 `provides: ["provider:ollama"]` 和 `requires: ["subsystem:agent"]`，Loader 做拓扑排序决定加载顺序。更灵活但更复杂——需要定义服务命名空间、循环依赖检测、缺失依赖处理等。对只有两三个阶段需求的系统来说过度设计。
+>
+> **3. 惰性初始化（Lazy initialization）**
+>
+> ProviderManager 不在启动时创建，而是在第一次 `SessionRunner.run()` 被调用时按需构建。这样所有插件都可以在常规阶段加载，`register_provider_type()` 注册的类型在第一次请求时被消费。优点是不需要修改初始化流程；缺点是 Provider 配置错误不会在启动时暴露，而是在第一次对话时才失败，增加了运维排查成本。
+>
+> **4. 两遍扫描（Two-pass discovery）**
+>
+> 第一遍扫描所有插件目录，收集 manifest 但不加载代码，只提取类型和能力声明。第二遍根据收集到的信息决定加载顺序。优点是可以在不执行插件代码的情况下做全局规划；缺点是实现复杂，且 manifest 必须包含足够的信息来驱动决策（当前的 manifest 设计不完全满足这个需求）。
+>
+> **推荐方案：阶段化加载（方案 1）**。理由：实现成本最低、语义最直观、对现有架构改动最小。一个 `load_phase` 字段 + `_load_plugins()` 接受 phase 参数即可。如果未来出现更多阶段需求（如 `pre-memory`、`pre-scheduler`），phase 枚举自然扩展。
+>
+> **关于插件类型的泛化**：Channel 和 Provider 是唯一需要特殊处理的两种插件类型。它们的特殊性来源于相同的一个根因——**调用方向与普通插件相反**。普通插件注册回调、核心调用（Tool、Command、Event）。而 Channel 和 Provider 是**核心持有插件实例的引用并主动调用其方法**。其他所有集成点（memory、scheduler、workspace）都是标准的回调注册模式，不需要特殊类型。因此，如果用阶段化加载解决 Provider 的时序问题，再给 Channel 统一一个 `api.register_channel()` 注册方法，则 **`ChannelPlugin` 和 `ProviderPlugin` 都不需要作为独立基类存在**——它们就是声明了不同 `load_phase` 的普通 Plugin，通过 `api.register_channel()` / `api.register_provider_type()` 注册服务，与 `api.register_tool()` / `api.register_command()` 完全对称。
+
 ### Phase 4 - 基于 ChannelPlugin 的 Telegram 接入 + Multi-Provider + 内置命令
 
 目标：实现 Telegram Bot 接入、多 Provider 支持、以及核心命令插件。

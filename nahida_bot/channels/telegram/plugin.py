@@ -70,6 +70,7 @@ class TelegramChannelPlugin(ChannelPlugin):
             bot_username=me.username,
             bot_id=me.id,
         )
+        self.api.register_channel(self)
 
     async def on_enable(self) -> None:
         """Start long polling and register the download_media tool."""
