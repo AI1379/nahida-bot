@@ -23,7 +23,7 @@ Nahida Bot 的核心目标：
 5. **Gateway-Node Layer** — 远程节点通信、分布式执行
 6. **Interface Layer** — CLI / WebUI / API
 
-> **关键改进：Channel 不再是独立层，而是作为 Plugin Layer 的标准接口之一。** 参考 OneBot/NapCat 设计，定义 ChannelPlugin 基类，支持多种通信协议（HTTP Server/Client、WebSocket、SSE）。这样可以：
+> **关键改进：Channel 不再是独立层，而是作为 Plugin Layer 的标准接口之一。** 当前实现采用普通 Plugin 暴露 `ChannelService` 协议，通过 manifest 声明通信能力（HTTP Server/Client、WebSocket、SSE）。这样可以：
 >
 > - 复用插件的权限系统、生命周期管理
 > - 灵活支持多种平台接入方式
@@ -34,8 +34,8 @@ Nahida Bot 的核心目标：
 - 上层可依赖下层，下层不可反向依赖上层。
 - `core` 不依赖任何具体平台实现。
 - `agent` 不依赖具体 `plugin` 或 `channel` 实现。
-- `plugins` （包括 ChannelPlugin）通过协议接入，不直接侵入 `core` 内部状态。
-- **ChannelPlugin** 的具体实现（如 Telegram、QQ）通过标准 Plugin 接口加载，无需核心改动。
+- `plugins` （包括 channel service plugin）通过协议接入，不直接侵入 `core` 内部状态。
+- Channel 的具体实现（如 Telegram、QQ）通过标准 Plugin 接口加载，无需核心改动。
 
 ## 文档目录
 
@@ -47,7 +47,7 @@ Nahida Bot 的核心目标：
 | [sandbox-security.md](sandbox-security.md) | Workspace 沙盒安全增强方案 |
 | [provider-architecture.md](provider-architecture.md) | Provider 多后端架构、格式调研与实现细节 |
 | [plugin-system.md](plugin-system.md) | Plugin 系统完整设计（SDK、Manifest、生命周期、权限、事件集成） |
-| [channel-plugin.md](channel-plugin.md) | ChannelPlugin 设计与通信协议 |
+| [channel-plugin.md](channel-plugin.md) | ChannelService 设计与通信协议 |
 | [security-observability.md](security-observability.md) | 安全基线与可观测性要求 |
 | [priorities-and-strategy.md](priorities-and-strategy.md) | 模块优先级与开发策略 |
 | [event-system.md](event-system.md) | 类型安全事件系统设计 |

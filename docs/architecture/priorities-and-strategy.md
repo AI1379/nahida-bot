@@ -17,10 +17,10 @@
 ### P1 - MVP 关键能力
 
 - `plugins.base + plugins.manifest/loader/manager`：插件发现、加载和生命周期管理
-  - 包括 ChannelPlugin 基类定义（参考 OneBot/NapCat 多协议设计）
+  - 包括 ChannelService 协议与显式服务注册设计（参考 OneBot/NapCat 多协议设计）
   - Plugin manifest 要明确支持的通信方式
 - `plugins.permissions`：声明式权限系统（文件、网络、环境变量等）
-- 首个具体 ChannelPlugin 实现（内置或内置示例）
+- 首个具体 channel service plugin 实现（内置或内置示例）
   - 选择 **Telegram**（推荐：API 简单、建议 aiogram 库参考）
   - 或 **NapCat/QQ**（参考 OneBot webhook + HTTP 双向通信）
   - 设计重点：支持至少两种通信方式（如 HTTP Server + HTTP Client）
@@ -34,8 +34,8 @@
 - `node.client/connector/executor`：Node 连接器和远程执行
 - `gateway.protocol`（版本化）：WebSocket 协议定版
 - `plugins.hook` 和热加载：Hook 系统和插件动态加载
-- 更多 ChannelPlugin 实现（第二、第三个平台）：
-  - 参考第一个 Channel 的设计，复用 ChannelPlugin 基类
+- 更多 channel service plugin 实现（第二、第三个平台）：
+  - 参考第一个 Channel 的设计，复用普通 Plugin + ChannelService 协议模式
   - 可通过开发文档指导第三方贡献 Channel 插件
 
 原因：进入多节点和复杂扩展场景，同时 Channel 生态可独立扩展。

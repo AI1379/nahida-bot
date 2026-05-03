@@ -34,7 +34,7 @@ nahida_bot/
     base.py                      # Channel、Tool、Hook 基类
     builtin/
       __init__.py
-      channel.py                 # ChannelPlugin 基类 (Abstract)
+      channel.py                 # ChannelService 协议 / channel 服务契约
       # 具体 Channel 实现（内置插件示例）：
       # - telegram_channel.py
       # - qq_channel.py (via NapCat)
@@ -63,12 +63,12 @@ nahida_bot/
 
 ## 重点说明
 
-1. **ChannelPlugin 基类** 在 `plugins/base.py` 或专属 `plugins/channel_base.py`
+1. **ChannelService 协议** 在 `plugins/base.py` 或专属协议模块中定义
    - 定义标准接口（`handle_inbound_event`、`send_message`、`get_user_info` 等）
    - 声明支持的通信方式（HTTP Server/Client、WebSocket、SSE）
    - 嵌入权限声明和生命周期挂钩
 
-2. **内置 Channel 实现** 在 `plugins/builtin/` 下，作为 ChannelPlugin 实例
+2. **内置 Channel 实现** 在 `plugins/builtin/` 下，作为普通 Plugin 暴露 channel service
    - 每个 Channel 是一个标准 Plugin，有 `plugin.yaml` 和实现代码
    - 通过 Plugin Manager 加载，享受权限隔离和热加载机制
 

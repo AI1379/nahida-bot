@@ -69,8 +69,7 @@
 nahida-bot-sdk/
   __init__.py
   types.py              # Event, Payload, ToolDefinition 等核心类型
-  plugin_base.py        # Plugin 基类
-  channel_plugin.py     # ChannelPlugin 基类
+  plugin_base.py        # Plugin 基类与 ChannelService 协议
   manifest.py           # PluginManifest 数据模型 (Pydantic)
   permissions.py        # Permission 声明类型
   hooks.py              # 钩子注册装饰器
@@ -585,8 +584,7 @@ entrypoint: "my_plugin:MyPlugin"
 nahida_bot_version: ">=0.1.0,<1.0.0"   # 兼容的 bot 版本范围
 sdk_version: ">=0.1.0,<1.0.0"          # 兼容的 SDK 版本范围
 
-# 类型标签（用于分类和检索）
-type: "tool"  # channel | tool | hook | integration | theme
+# 类型标签（已移除；插件类别由注册行为决定）
 
 # ── 权限声明（最小权限原则） ──
 permissions:
@@ -610,10 +608,6 @@ permissions:
 
 # ── 能力声明 ──
 capabilities:
-  # 如果 type 是 channel，声明通信协议
-  # (仅 ChannelPlugin 需要)
-  channel_protocols: []  # http_server, http_client, ws_server, ws_client, sse
-
   # 插件提供的工具（供 LLM 调用）
   tools: []
   #  - name: "web_search"
@@ -687,7 +681,6 @@ class Permissions(BaseModel):
 
 
 class Capabilities(BaseModel):
-    channel_protocols: list[str] = Field(default_factory=list)
     tools: list[dict[str, str]] = Field(default_factory=list)
     subscribes_to: list[str] = Field(default_factory=list)
 
@@ -700,7 +693,7 @@ class PluginManifest(BaseModel):
     entrypoint: str                      # "module_path:ClassName"
     nahida_bot_version: str = ""
     sdk_version: str = ""
-    type: str = "tool"                   # channel | tool | hook | integration | theme
+    load_phase: Literal["pre-agent", "post-agent"] = "post-agent"
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     config: dict[str, Any] = Field(default_factory=dict)
@@ -825,7 +818,7 @@ class MessagePayload:
     session_id: str
 
 class MessageReceived(Event[MessagePayload]):
-    """收到外部平台消息（经 ChannelPlugin 标准化后触发）。"""
+    """收到外部平台消息（经 channel service 标准化后触发）。"""
 
 class MessageSending(Event[MessagePayload]):
     """即将发送消息（当前实现用于观察与审计；出站改写 pipeline 尚未实现）。"""
@@ -1064,7 +1057,7 @@ plugins/
     plugin.yaml
     qq_channel/
       __init__.py     # from .plugin import QQChannel
-      plugin.py       # class QQChannel(ChannelPlugin): ...
+      plugin.py       # class QQPlugin(Plugin): ...
       handlers.py
       api_client.py
     tests/
@@ -1187,7 +1180,7 @@ async def _safe_call(self, plugin: Plugin, method_name: str) -> None:
 
 | 已有设计 | 本文档整合方式 |
 |---------|-------------|
-| `channel-plugin.md` | ChannelPlugin 作为 Plugin 子类，复用完整的 manifest、权限、生命周期机制。通信方式声明在 `capabilities.channel_protocols` 中。 |
+| `channel-plugin.md` | Channel 作为普通 Plugin 暴露 `ChannelService` 协议，复用完整的 manifest、权限、生命周期机制。注册时通过 `isinstance(channel, ChannelService)` 校验。 |
 | `event-system.md` | Core API 保持不变，增强 publish 为双阶段执行。Facade API（装饰器 + Depends）在插件层实现为 `api.on_event()` 装饰器。 |
 | `directory-structure.md` | `plugins/` 目录结构新增 `api_bridge.py`，`builtin/` 下每个内置插件独立子目录。 |
 | `runtime-flows.md` | 消息主流程不变。新增「插件注册工具 → LLM 调用 → 权限检查 → 执行」的完整链路。 |
@@ -1195,19 +1188,18 @@ async def _safe_call(self, plugin: Plugin, method_name: str) -> None:
 | `data-and-state.md` | 插件配置存储在 `data/plugins/{plugin_id}/`，插件状态纳入 transient/session 层。 |
 | `security-observability.md` | 插件最小权限原则、审计日志、降级告警与安全文档对齐。 |
 
-### 11.2 ChannelPlugin 在本设计中的位置
+### 11.2 Channel Service 在本设计中的位置
 
-ChannelPlugin 是 Plugin 的子类，额外提供：
+Channel 仍然属于插件系统，但运行时模型收敛为“普通 `Plugin` + `ChannelService` 协议 + 显式注册服务”：
 
 ```python
-# nahida_bot_sdk/channel_plugin.py
+from typing import Any, Protocol
 
-class ChannelPlugin(Plugin):
-    """接入外部消息平台的插件基类。"""
 
-    # 在 capabilities.channel_protocols 中声明
+class ChannelService(Protocol):
+    channel_id: str
 
-    async def handle_inbound_event(self, event: dict) -> None:
+    async def handle_inbound_event(self, event: dict[str, Any]) -> None:
         """处理来自外部系统的原生事件，转换为 InboundMessage 并触发 Agent。"""
         ...
 
@@ -1216,17 +1208,9 @@ class ChannelPlugin(Plugin):
     ) -> str:
         """向外部平台发送消息。"""
         ...
-
-    async def get_user_info(self, user_id: str) -> dict:
-        """获取用户信息（可选）。"""
-        return {}
-
-    async def get_group_info(self, group_id: str) -> dict:
-        """获取群组信息（可选）。"""
-        return {}
 ```
 
-ChannelPlugin 的 `plugin.yaml` 中 `type: "channel"` 且 `capabilities.channel_protocols` 非空。Plugin Host 对 ChannelPlugin 有特殊处理：在 `on_enable()` 后自动注册消息路由和 webhook 端点（如果声明了 `http_server` 协议）。
+Channel 插件自己实现该协议，并在 `on_load()` 或其它合适时机调用 `api.register_channel(self)`。注册时通过 `isinstance(channel, ChannelService)` 运行时校验，确保注册对象满足协议要求。Plugin Host 不再对某个专门的 channel 插件子类做特殊处理。
 
 ## 12. 实施计划
 
@@ -1265,12 +1249,12 @@ ChannelPlugin 的 `plugin.yaml` 中 `type: "channel"` 且 `capabilities.channel_
 3. 实现 1-2 个内置插件（如 file_reader、web_fetcher）。
 4. 验证：插件崩溃不影响核心和其他插件。
 
-### Phase 3.5 — ChannelPlugin 接口
+### Phase 3.5 — Channel Service 接口
 
-1. 实现 `ChannelPlugin` 基类。
+1. 定义 `ChannelService` 协议。
 2. 实现 HTTP Server 模式的 webhook 端点自动注册。
 3. 实现消息标准化流程（平台事件 → InboundMessage → Agent → OutboundMessage → 平台回复）。
-4. 验证：ChannelPlugin 可以接收外部事件并触发 Agent 回复。
+4. 验证：普通 plugin 实现 `ChannelService` 后可以接收外部事件并触发 Agent 回复。
 
 ## 13. 设计约束与注意事项
 

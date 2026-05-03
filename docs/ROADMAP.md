@@ -239,7 +239,7 @@ Python 方案的核心结构可以概括为五层：
 
 #### Phase 3.1 — Manifest 与 Loader
 
-- [x] 定义 `plugin.yaml` 字段模型（`PluginManifest` Pydantic 模型：id、name、version、entrypoint、type、permissions、capabilities、config schema、depends_on）。
+- [x] 定义 `plugin.yaml` 字段模型（`PluginManifest` Pydantic 模型：id、name、version、entrypoint、load_phase、permissions、capabilities、config schema、depends_on）。
 - [x] 实现 YAML 解析与校验（`parse_manifest`，缺失字段报错、格式校验）。
 - [x] 定义入口点格式约束（`module:Class`，强制一对一模块绑定）。
 - [x] 实现插件发现（扫描指定目录下的 `plugin.yaml`，支持子目录结构）。
@@ -270,18 +270,20 @@ Python 方案的核心结构可以概括为五层：
 - [x] 实现 `ToolRegistry` 和 `HandlerRegistry`（按 plugin_id 注册/注销，支持批量清理）。
 - [ ] 实现降级策略（ERROR 状态插件的可配置自动重试，含最大次数与冷却时间）。
 
-#### Phase 3.5 — ChannelPlugin 接口与指令系统
+#### Phase 3.5 — Channel Service 接口与指令系统
 
-- [x] 定义 `ChannelPlugin` 基类（`handle_inbound_event`、`send_message`、`get_user_info`、`get_group_info`）。
-- [x] 定义通信方式声明（`SUPPORT_HTTP_SERVER/CLIENT`、`SUPPORT_WEBSOCKET_SERVER/CLIENT`、`SUPPORT_SSE`）。
+- [x] 定义 `ChannelService` 运行时协议（`channel_id`、`handle_inbound_event`、`send_message`）。
+- [x] Channel 注册通过 `isinstance(channel, ChannelService)` 运行时协议校验。
 - [x] 实现消息事件类型（`MessageReceived`、`MessageSending`、`MessageSent`）。
 - [x] 实现统一指令系统（`CommandRegistry` + `CommandMatcher`，前缀匹配、别名支持、@mention 剥离）。
 - [x] `InboundMessage` 增加 `command_prefix` 字段，支持各平台自定义前缀。
 - [x] 实现命令返回协议（`str | OutboundMessage | CommandResult | None`）和 router 级命令超时保护。
-- [ ] 实现 HTTP Server 模式的 webhook 端点自动注册（声明了 `http_server` 协议的 ChannelPlugin 自动挂载路由）。
-- [ ] 实现消息标准化流程（平台原生事件 → `InboundMessage` → Agent → `OutboundMessage` → 平台回复）。
+- [ ] 实现宿主 Web 扩展点（供插件挂载 webhook / route，而不是通过静态协议标签推导宿主行为）。
+- [x] 实现消息标准化流程（平台原生事件 → `InboundMessage` → Agent → `OutboundMessage` → 平台回复）。
 
 #### Phase 3.6 — 内置工具插件与验证
+
+> 当前进度：**部分完成**。内置插件已落地 `workspace_read`、`workspace_write`、`exec`、`web_fetch`、`plan`、`cron_*`；`edit/apply_patch`、记忆工具、消息发送工具和插件配置体系仍待补齐。
 
 > 以下工具清单参考 OpenClaw 的 31 个内置工具（`src/agents/tool-catalog.ts`），按依赖程度分为两类。
 > 仅收录**不需要 Gateway-Node 分布式架构**即可独立实现的工具。
@@ -310,7 +312,7 @@ Python 方案的核心结构可以概括为五层：
 | `exec` | 执行 shell 命令 | `asyncio.create_subprocess_exec` + 超时 + 输出截断 | P0 | ⚠️ 需权限控制（命令白名单/黑名单） |
 | `web_search` | 网页搜索 | 调用搜索 API（SerpAPI / Bing / DuckDuckGo） | P0 | 可用 `duckduckgo-search` Python 包零成本起步 |
 | `web_fetch` | 获取网页内容 | HTTP GET + HTML→Markdown（`readability-lxml` + `markdownify`） | P0 | 需 SSRF 防护（拒绝私有 IP 段） |
-| `message` | 跨 Channel 发消息 | 调用已注册 ChannelPlugin 的 `send_message` | P1 | 需路由层：target → channel + chat_id |
+| `message` | 跨 Channel 发消息 | 调用已注册 channel service 的 `send_message` | P1 | 需路由层：target → channel + chat_id |
 | `cron` | 定时任务调度 | 本地调度器（`APScheduler` / `asyncio` 定时器） | P1 | 本地模式不需要 Gateway |
 | `tts` | 文本转语音 | API 调用（edge-tts 免费 / OpenAI TTS） | P2 | 可用 `edge-tts` 零成本起步 |
 | `image` | 图片理解 | 将图片 URL/base64 传给多模态 Provider | P2 | 依赖支持 vision 的 Provider |
@@ -336,21 +338,23 @@ Python 方案的核心结构可以概括为五层：
 - 第一类工具（文件 I/O、记忆）可快速交付，复用已有基础设施。
 - `exec` 必须配合严格的权限声明（`subprocess` 权限 + 命令审计），不可跳过权限校验。
 - `web_fetch` 必须实现 SSRF 防护，拒绝 `127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16` 等私有网段。
-- `message` 工具可作为 ChannelPlugin 跨消息路由的基础，先支持同 Channel 回复，再扩展跨 Channel。
+- `message` 工具可作为 channel service 跨消息路由的基础，先支持同 Channel 回复，再扩展跨 Channel。
 
 任务清单：
 
 - [ ] 第一类：将 workspace 文件操作（read/write/edit/apply_patch）注册为内置工具插件。
+- [x] 第一类（已落地子集）：`workspace_read` / `workspace_write` 已注册为内置工具插件。
 - [ ] 第一类：将 memory 操作（memory_search/memory_get）注册为内置工具插件。
-- [ ] 实现 `exec` 工具（shell 命令执行 + 超时 + 输出截断 + 权限控制）。
+- [x] 实现 `exec` 工具（shell 命令执行 + 超时 + 输出截断）。
 - [ ] 实现 `web_search` 工具（DuckDuckGo 搜索 API 集成）。
-- [ ] 实现 `web_fetch` 工具（URL 抓取 + HTML→Markdown + SSRF 防护）。
-- [ ] 实现 `message` 工具（通过 ChannelPlugin 路由发送消息）。
-- [ ] 实现 `cron` 工具（本地定时任务调度）。
+- [x] 实现 `web_fetch` 工具（URL 抓取 + HTML→Markdown + SSRF 防护）。
+- [ ] 实现 `message` 工具（通过 channel service 路由发送消息）。
+- [x] 实现 `cron` 工具（本地定时任务调度）。
+- [x] 实现 `plan` 工具（工作区内任务计划创建、查询与更新）。
 - [ ] 实现插件配置解析（环境变量 `NAHIDA_PLUGIN_{ID}_{KEY}` + `config/plugins/{id}.yaml`，JSON Schema 校验）。
-- [ ] 验证不改核心代码可新增并加载外部插件。
+- [x] 验证不改核心代码可新增并加载外部插件。
 - [ ] 验证越权行为可拦截、可追踪（权限拒绝触发 `PermissionDenied` + 审计日志）。
-- [ ] 验证插件崩溃不影响核心和其他插件（异常隔离测试通过）。
+- [x] 验证插件崩溃不影响核心和其他插件（异常隔离测试通过）。
 
 #### Phase 3.7 — SDK 分离（可选前置）
 
@@ -398,97 +402,94 @@ Python 方案的核心结构可以概括为五层：
 - [ ] 验证父子 Agent 并行运行、结果正确传递。
 - [ ] 验证子 Agent 异常不影响父 Agent 和其他子 Agent（异常隔离）。
 
-**ChannelPlugin 接口设计（关键产出物）**：
+**ChannelService 接口设计（关键产出物）**：
 
-参考 OneBot/NapCat，Channel 应该支持多种通信协议组合：
+Channel 应该以普通 Plugin 的形式暴露运行时服务：
 
 ```python
-class ChannelPlugin(Plugin):
-    """所有 Channel 插件必须实现的基类。"""
+class ChannelService(Protocol):
+    @property
+    def channel_id(self) -> str: ...
 
-    async def handle_inbound_event(self, event: dict) -> None:
-        """来自外部平台的事件回调（由 webhook/push 机制触发）。"""
+    async def handle_inbound_event(self, event: dict[str, Any]) -> None:
+        """来自外部平台的事件回调（触发方式由插件自己决定）。"""
         ...
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
         """向外部平台发送消息，返回消息 ID。"""
         ...
-
-    async def get_user_info(self, user_id: str) -> dict:
-        """获取用户信息（可选）。"""
-        ...
-
-    # 支持的通信方式标记（插件可声明一个或多个）
-    SUPPORT_HTTP_SERVER: bool = False      # 本 Bot 提供 HTTP 端点
-    SUPPORT_HTTP_CLIENT: bool = False      # 本 Bot 主动 HTTP 请求外部
-    SUPPORT_WEBSOCKET_SERVER: bool = False # 本 Bot 提供 WebSocket 端点
-    SUPPORT_WEBSOCKET_CLIENT: bool = False # 本 Bot 连接到外部 WebSocket
-    SUPPORT_SSE: bool = False              # 本 Bot 通过 SSE 推送
 ```
 
-**通信方式详解**（第三方 Channel 可选择一个或多个组合）：
+普通 `Plugin` 在 `on_load()` 中通过 `api.register_channel(self)` 显式注册自己为
+channel service；注册时通过 `isinstance(channel, ChannelService)` 校验协议满足。
 
-1. **HTTP Server 模式**（外部推送）
-   - 外部系统向 Bot 的 HTTP 端点发送 webhook 事件
-   - Bot 处理后可通过 HTTP Client 或其他方式回复
-   - 例：`POST /channels/<channel_id>/webhook` 接收平台消息
+**设计收敛说明**：
 
-2. **HTTP Client 模式**（Bot 主动）
-   - Bot 主动轮询或通过心跳获取消息
-   - Bot 通过 HTTP 请求向外部系统发送消息
-   - 例：Telegram Polling 模式、NapCat 的 HTTP API 调用
+- 宿主不再试图用一组固定的“通信协议标签”描述 Channel 插件的内部实现。
+- Channel 插件可以直接使用第三方 SDK、自带 HTTP client、长轮询、webhook、WebSocket 或其它机制；这些属于插件内部实现细节。
+- 宿主真正关心的是两个问题：
+  1. 这个插件是否显式注册了一个 `ChannelService`
+  2. 这个插件是否需要宿主额外提供某种扩展点或共享基础设施
 
-3. **WebSocket Server 模式**（双向长连接）
-   - 外部系统连接到 Bot 的 WebSocket 端点
-   - 双向推送消息和事件
-   - 例：Matrix、自定义 WebSocket 网关
+**长期规划：宿主扩展点与共享基础设施**：
 
-4. **WebSocket Client 模式**（Bot 连接外部）
-   - Bot 主动连接到外部系统的 WebSocket
-   - 接收事件，发送消息
-   - 例：连接到中心网关或云服务
+当插件确实需要复用宿主能力时，不再通过 `channel_protocols` 之类的静态标签声明，而是通过显式的 host service / extension point 暴露：
 
-5. **SSE 模式**（单向服务端推送）
-   - 外部系统通过 HTTP SSE 接收 Bot 的消息
-   - Event 向 Bot 的 HTTP 端点提交
-   - 例：Web 浏览器直接与 Bot 互联
+1. **Web Host 扩展点**
+   - 目标：允许插件挂载 webhook、辅助 route、或少量诊断端点。
+   - 建议形态：`api.mount_router(...)`、`api.register_webhook_endpoint(...)` 或更抽象的 `WebHostService`。
+   - 设计原则：插件依赖的是“宿主提供可挂载的 Web 入口”，而不是直接依赖“宿主当前用 FastAPI”这一实现细节。
+
+2. **共享 HTTP Client 服务**
+   - 目标：让插件在需要时复用连接池、代理、审计、超时和统一出站策略。
+   - 建议形态：`api.get_http_client()` 或 `HttpClientService`。
+   - 设计原则：插件既可以完全自带 SDK/client，也可以选择使用宿主提供的共享客户端；两者都应被允许。
+
+3. **其它可复用宿主服务**
+   - 候选范围：scheduler、secrets/config、对象存储、审计日志、后台任务执行。
+   - 原则：只有当宿主提供这些能力能显著降低插件重复实现和运维成本时，才上升为正式扩展点。
+
+**约束**：
+
+- 插件的“角色”不由 manifest 分类字段决定，而由运行时注册动作决定。
+- Channel / Provider / Tool / Command 不是互斥类别；一个普通 Plugin 可以同时注册多种能力。
+- 若未来需要展示层分类，优先使用文档或 tags，而不是重新引入驱动运行时语义的 `type` 字段。
 
 前置依赖：Phase 2。
 
 风险控制：
 
-- 不要为了"插件方便"绕过权限检查，ChannelPlugin 仍需声明所需权限。
-- ChannelPlugin 的 webhook 端点需要鉴权与频率限制，防止欺骗。
+- 不要为了"插件方便"绕过权限检查，channel service plugin 仍需声明所需权限。
+- channel service plugin 的 webhook 端点需要鉴权与频率限制，防止欺骗。
 - 多 Channel 并存时需要隔离会话上下文，避免消息混淆。
 
 参考来源：OpenClaw（插件 contract）、nonebot2（扩展生态）、OneBot 协议、NapCat 设计、Android Manifest 思路。
 
 #### Phase 3.9 — Provider Plugin（模型 Provider 插件化）
 
-> 当前 Provider 通过 `@register_provider` 装饰器静态注册在 `nahida_bot/agent/providers/` 内，
-> 由 `Application._init_agent_subsystem()` 根据配置创建。插件系统完全不感知 Provider 注册。
-> 本阶段目标是让第三方可以通过插件注册新的 Provider 类型，无需修改核心代码。
+> 当前进度：**部分完成**。运行时 Provider 注册、阶段化插件加载、Provider Registry 扩展和生命周期清理都已落地；后续重点应放在 provider 配置/校验与宿主扩展点，而不是再引入专用 `ProviderPlugin` 基类。
 
-**现状分析**：
+**当前状态**：
 
-1. **Manifest 无 `provider` 类型** — `type` 字段仅支持 `channel | tool | hook | integration | theme`。
-2. **BotAPI 无 Provider 注册接口** — 插件只能注册 tools、commands、event handlers。
-3. **初始化顺序不对** — `_init_agent_subsystem()`（创建 ProviderManager）在插件加载之前执行。
-4. **Provider 注册表是模块级全局** — `_REGISTRY` dict 在 import 时填充，运行时不可扩展。
+1. **Manifest 已支持 provider 加载时序** — `PluginManifest.load_phase` 字段驱动 pre-agent/post-agent 分阶段加载。
+2. **BotAPI/RealBotAPI 已支持 Provider 注册接口** — 插件可通过 `register_provider_type()` 注册运行时 Provider。
+3. **初始化顺序已调整** — `Application.initialize()` 先发现插件、加载 `pre-agent` 插件，再创建 ProviderManager。
+4. **Provider Registry 已可运行时扩展** — 除静态 `_REGISTRY` 外，已有可卸载的 `_RUNTIME_REGISTRY`。
 
 **设计方案**：
 
-**1. Manifest 扩展**
+**1. Manifest 扩展（可选，偏配置与展示）**
 
 ```yaml
 # plugin.yaml 示例
 id: "provider-ollama"
 name: "Ollama Provider"
-type: "provider"          # 新增类型
+load_phase: "pre-agent"    # Provider 插件必须在 Agent 初始化前加载
 version: "0.1.0"
-entrypoint: "plugin:OllamaProviderPlugin"
+entrypoint: "plugin:OllamaPlugin"
 
-# Provider 插件专属字段
+# 可选 provider metadata：仅用于 host 侧配置描述/展示，
+# 不作为运行时“这是 provider 插件”的判定条件
 provider:
   type_key: "ollama"      # 注册到 create_provider() 的 type 名称
   config_schema:          # JSON Schema：声明此 Provider 接受哪些配置项
@@ -500,27 +501,25 @@ provider:
       timeout: { type: number, default: 60 }
 ```
 
-**2. ProviderPlugin 基类**
+**2. 普通 Plugin + register_provider_type()**
 
 ```python
-class ProviderPlugin(Plugin):
-    """Provider 插件基类。在 on_load 中注册 Provider 类型。"""
-
-    @abstractmethod
+class OllamaPlugin(Plugin):
     def create_provider(self, config: dict[str, Any]) -> ChatProvider:
-        """从配置字典创建 ChatProvider 实例。
-
-        config 由 ProviderManager 根据用户 YAML 配置传入，
-        已完成环境变量插值和类型校验。
-        """
-        ...
+        return OllamaProvider(config)
 
     async def on_load(self) -> None:
-        # 默认实现：向运行时注册此 provider 类型
         self.api.register_provider_type(
-            type_key=self.manifest.provider.type_key,
+            type_key="ollama",
             factory=self.create_provider,
-            config_schema=self.manifest.provider.config_schema,
+            config_schema={
+                "type": "object",
+                "required": ["base_url", "model"],
+                "properties": {
+                    "base_url": {"type": "string"},
+                    "model": {"type": "string"},
+                },
+            },
         )
 ```
 
@@ -546,7 +545,7 @@ def register_provider_type(
 Application.initialize():
   1. _init_database() + _init_memory()
   2. _init_plugin_manager()           # 创建 PluginManager
-  3. _load_provider_plugins()         # ← 新增：发现并加载 type=provider 的插件
+  3. _load_provider_plugins()         # ← 新增：发现并加载 load_phase=pre-agent 的插件
   4. _init_agent_subsystem()          # 现在可用插件注册的 Provider 类型
   5. _init_workspace_subsystem()
   6. _load_remaining_plugins()        # 加载 tool/channel/hook 等插件
@@ -588,14 +587,13 @@ providers:
 
 **任务清单**：
 
-- [ ] `PluginManifest` 新增 `provider` 可选字段（`type_key` + `config_schema`）。
-- [ ] 新增 `ProviderPlugin` 基类（`on_load` 自动注册 `type_key`）。
-- [ ] `BotAPI` 协议新增 `register_provider_type()` 方法。
-- [ ] `RealBotAPI` 实现 `register_provider_type()`，委托给 Provider Registry。
-- [ ] Provider Registry 支持运行时注册（`_runtime` dict + `create_provider` 合并查找）。
-- [ ] `Application.initialize()` 拆分初始化顺序：先加载 provider 插件，再创建 ProviderManager。
-- [ ] 插件清理：provider 插件 `on_unload` 时从 Registry 移除 `type_key`。
-- [ ] 编写 `ProviderPlugin` 集成测试（插件注册 → 配置解析 → Provider 创建 → chat 调用）。
+- [ ] 评估是否为 `PluginManifest` 增加可选 `provider` metadata（如 `type_key` + `config_schema`，仅用于 host 侧配置描述/展示）。
+- [x] `BotAPI` 协议新增 `register_provider_type()` 方法。
+- [x] `RealBotAPI` 实现 `register_provider_type()`，委托给 Provider Registry。
+- [x] Provider Registry 支持运行时注册（`_RUNTIME_REGISTRY` + `create_provider` 合并查找）。
+- [x] `Application.initialize()` 拆分初始化顺序：先加载 `pre-agent` 插件，再创建 ProviderManager。
+- [x] 插件清理：provider 插件 disable/unload 时从 Registry 移除 `type_key`。
+- [ ] 编写 Provider 注册集成测试（插件注册 → 配置解析 → Provider 创建 → chat 调用）。
 - [ ] 编写示例 provider 插件（如 `provider-ollama`）作为开发者参考。
 - [ ] 更新 architecture 文档中的 Provider 和 Plugin 文档。
 
@@ -628,9 +626,11 @@ providers:
 >
 > **推荐方案：阶段化加载（方案 1）**。理由：实现成本最低、语义最直观、对现有架构改动最小。一个 `load_phase` 字段 + `_load_plugins()` 接受 phase 参数即可。如果未来出现更多阶段需求（如 `pre-memory`、`pre-scheduler`），phase 枚举自然扩展。
 >
-> **关于插件类型的泛化**：Channel 和 Provider 是唯一需要特殊处理的两种插件类型。它们的特殊性来源于相同的一个根因——**调用方向与普通插件相反**。普通插件注册回调、核心调用（Tool、Command、Event）。而 Channel 和 Provider 是**核心持有插件实例的引用并主动调用其方法**。其他所有集成点（memory、scheduler、workspace）都是标准的回调注册模式，不需要特殊类型。因此，如果用阶段化加载解决 Provider 的时序问题，再给 Channel 统一一个 `api.register_channel()` 注册方法，则 **`ChannelPlugin` 和 `ProviderPlugin` 都不需要作为独立基类存在**——它们就是声明了不同 `load_phase` 的普通 Plugin，通过 `api.register_channel()` / `api.register_provider_type()` 注册服务，与 `api.register_tool()` / `api.register_command()` 完全对称。
+> **关于插件类型的泛化**：Channel 和 Provider 的特殊性不应体现在“独立插件基类”或“静态协议标签”上，而应体现在“普通 Plugin 在生命周期里显式注册服务”。普通插件注册回调、核心调用（Tool、Command、Event）；channel/provider 插件则额外通过 `api.register_channel()` / `api.register_provider_type()` 暴露运行时服务。Provider 的时序需求由 `load_phase` 建模，Channel 通过运行时协议校验确保注册对象合法，二者都不再要求专门基类。
 
-### Phase 4 - 基于 ChannelPlugin 的 Telegram 接入 + Multi-Provider + 内置命令
+> **长期规划：Host 扩展点优先于协议分类**。后续如果需要支持 webhook 挂载、共享 HTTP client、后台任务、统一 secrets/config 等能力，优先新增明确的 host service / extension point，而不是重新引入 `type`、`channel_protocols` 这类静态分类字段。宿主应该表达“我能提供什么能力”，而不是试图推断“插件内部用了什么传输协议或 SDK”。
+
+### Phase 4 - 基于 Channel Service Plugin 的 Telegram 接入 + Multi-Provider + 内置命令
 
 目标：实现 Telegram Bot 接入、多 Provider 支持、以及核心命令插件。
 
@@ -644,18 +644,18 @@ providers:
 - [x] 封装 Telegram Bot HTTP API 客户端（aiogram v3 Bot 封装）。
 - [x] 实现 Long Polling 模式（`getUpdates` 轮询 + offset 追踪 + 超时处理）。
 - [x] 实现 Telegram Update → 内部事件分发（text message 处理）。
-- [ ] 处理 Telegram Rate Limiting（429 响应 + Retry-After + 指数退避）。
+- [x] 处理 Telegram Rate Limiting（429 响应 + Retry-After + 指数退避）。
 
 #### Phase 4.2 — 消息标准化与转换
 
 - [x] 实现 Telegram Message → `InboundMessage` 转换（文本、群聊/私聊、回复关系、@mention 提取）。
 - [x] 实现 `OutboundMessage` → Telegram 发送（纯文本、回复、HTML 解析模式）。
 - [x] 实现会话映射策略（Telegram chat_id → 内部 session_id）。
-- [ ] 处理 Telegram 特殊消息类型（sticker、photo 等降级为文本描述）。
+- [x] 处理 Telegram 特殊消息类型（sticker、photo、document、video、audio、voice、animation 等降级为文本描述）。
 
-#### Phase 4.3 — ChannelPlugin 集成
+#### Phase 4.3 — Channel Service 集成
 
-- [x] 实现 `TelegramChannelPlugin(ChannelPlugin)` 类。
+- [x] 实现 `TelegramPlugin(Plugin + ChannelService)` 类。
 - [x] 实现 `plugin.yaml` manifest（声明 network 出站权限至 api.telegram.org）。
 - [x] 实现 `on_load` / `on_enable` / `on_disable` 生命周期（启动/停止轮询）。
 - [x] 实现 `handle_inbound_event` 将 Telegram Update 分发到消息处理流程。
@@ -664,7 +664,7 @@ providers:
 #### Phase 4.4 — 端到端闭环验证
 
 - [x] 打通完整链路：Telegram Update → InboundMessage → Agent Loop → OutboundMessage → Telegram 回复。
-- [ ] 验证群聊 @mention 触发与私聊自动回复。
+- [x] 验证群聊 @mention 触发与私聊自动回复。
 - [x] 验证指令系统（/help 等命令通过 CommandMatcher 正确匹配）。
 - [x] 验证插件生命周期（热重载、异常隔离、优雅关闭）。
 - [x] 编写 Telegram API 客户端和消息转换的单元测试。
@@ -685,12 +685,12 @@ providers:
 - [x] 修复 Windows Ctrl+C 挂起问题（DatabaseEngine 和 Provider 资源清理）。
 - [x] 实现 per-request model override：`ChatProvider.chat()` 接受 `model` 参数覆盖默认模型；`SessionRunner` 从会话 metadata 中解析选中的模型名称并传递给 `AgentLoop.run()`，确保同一 Provider 下多模型切换真正生效。
 
-前置依赖：Phase 3（ChannelPlugin 接口）。
+前置依赖：Phase 3（ChannelService 接口）。
 
 风险控制：
 
-- 平台差异统一收敛在 ChannelPlugin 实现内部，不渗透进 Agent 核心或其他插件。
-- 第一个 ChannelPlugin 的稳定性直接影响用户体验，务必包含充分的测试和监控。
+- 平台差异统一收敛在 channel service plugin 实现内部，不渗透进 Agent 核心或其他插件。
+- 第一个 channel service plugin 的稳定性直接影响用户体验，务必包含充分的测试和监控。
 - 多 Channel 并存时，核心层应该透明地支持（会话隔离、上下文管理）。
 
 参考来源：AstrBot、nonebot2、aiogram、OneBot 协议、NapCat、Telegram Bot API 生态。
@@ -714,6 +714,17 @@ providers:
 风险控制：协议一旦对外开放，默认只做向后兼容变更。
 
 参考来源：OpenClaw（Gateway-Node 模式）、FastAPI WebSocket 实践。
+
+#### Phase 5.x — Host Extension Points（长期规划）
+
+> 这部分不是近期工作，放入长期规划。目标是在不破坏“普通 Plugin + 显式服务注册”模型的前提下，为插件提供少量高价值的宿主能力。
+
+- [ ] 设计 `WebHostService`：支持插件安全挂载 webhook / route，并统一鉴权、限流、生命周期和可观测性。
+- [ ] 设计共享 `HttpClientService`：支持插件复用连接池、代理、超时、审计和统一出站策略。
+- [ ] 评估 `SchedulerService` / `BackgroundTaskService` 是否需要升级为通用插件扩展点。
+- [ ] 评估配置与 secrets 注入能力，避免插件各自实现环境变量/配置文件解析逻辑。
+- [ ] 明确宿主扩展点 API 稳定性策略：哪些是公共契约，哪些仍是核心内部实现。
+- [ ] 验证“自带 SDK 的插件”和“依赖宿主服务的插件”可以长期共存，不互相绑死实现方式。
 
 ### Phase 6 - WebUI 与运维工具
 
@@ -846,7 +857,7 @@ MVP 建议额外约束：
 | 流式响应不支持 | 🟡 中 | 待规划（Phase 3+） |
 | 拒绝标记未处理 | 🟢 低 | 待规划 |
 
-**缓解措施**：推理链适配已在 Phase 2.8 完成；后续补齐 per-request model override、流式响应和更细的 refusal 语义处理，详见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md)。
+**缓解措施**：推理链适配和 per-request model override 已完成；后续补齐流式响应和更细的 refusal 语义处理，详见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md)。
 
 额外风险清单：
 
