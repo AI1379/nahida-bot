@@ -15,7 +15,6 @@ from typing import (
 
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import ChatProvider
-    from nahida_bot.plugins.channel_plugin import ChannelPlugin
     from nahida_bot.plugins.commands import CommandHandlerResult, CommandInfo
     from nahida_bot.plugins.manifest import PluginManifest
 
@@ -119,6 +118,33 @@ class MemoryRef:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# ── Channel Service Protocol ──────────────────────────────────
+
+
+@runtime_checkable
+class ChannelService(Protocol):
+    """Runtime contract for a channel service exposed by a plugin.
+
+    Channel services are ordinary plugins that explicitly register themselves
+    with ``BotAPI.register_channel()``. Optional helpers such as
+    ``get_user_info()`` or ``download_media()`` are intentionally not part of
+    the required runtime protocol.
+    """
+
+    @property
+    def channel_id(self) -> str:
+        """Unique channel/platform identifier."""
+        ...
+
+    async def handle_inbound_event(self, event: dict[str, Any]) -> None:
+        """Normalize one platform-native event and publish a bot event."""
+        ...
+
+    async def send_message(self, target: str, message: OutboundMessage) -> str:
+        """Send one normalized outbound message to the channel."""
+        ...
+
+
 # ── BotAPI Protocol ───────────────────────────────────────────
 
 
@@ -165,7 +191,7 @@ class BotAPI(Protocol):
 
     # ── Service Registration ──────────────────────────
 
-    def register_channel(self, channel: ChannelPlugin) -> None:
+    def register_channel(self, channel: ChannelService) -> None:
         """Register a channel service implemented by this plugin."""
         ...
 

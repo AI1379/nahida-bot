@@ -1,13 +1,12 @@
 """Tests for ChannelRegistry."""
 
-from typing import Any, Awaitable, Callable
-from unittest.mock import MagicMock
+from typing import Any
 
 from nahida_bot.core.channel_registry import ChannelRegistry
-from nahida_bot.plugins.base import OutboundMessage
-from nahida_bot.plugins.channel_plugin import ChannelPlugin
-from nahida_bot.plugins.commands import CommandHandlerResult
+from nahida_bot.plugins.base import OutboundMessage, Plugin
 from nahida_bot.plugins.manifest import PluginManifest
+
+from .helpers import MockBotAPI
 
 
 def _make_manifest(**overrides: object) -> PluginManifest:
@@ -16,113 +15,24 @@ def _make_manifest(**overrides: object) -> PluginManifest:
         "name": "Test Channel",
         "version": "1.0.0",
         "entrypoint": "test:TestChannel",
-        "type": "channel",
     }
     defaults.update(overrides)  # type: ignore[typeddict-item]
     return PluginManifest(**defaults)  # type: ignore[arg-type]
 
 
-class _MockAPI:
-    """Minimal BotAPI stub satisfying the BotAPI protocol for testing."""
-
-    async def send_message(
-        self, target: str, message: Any, *, channel: str = ""
-    ) -> str:
-        return ""
-
-    def on_event(self, event_type: type) -> Callable:
-        return lambda f: f
-
-    def subscribe(
-        self, event_type: type, handler: Callable[..., Awaitable[None]]
-    ) -> Any:
-        return None
-
-    def register_tool(
-        self,
-        name: str,
-        description: str,
-        parameters: dict[str, Any],
-        handler: Callable[..., Awaitable[str]],
-    ) -> None:
-        pass
-
-    def register_channel(self, channel: Any) -> None:
-        pass
-
-    def register_provider_type(
-        self,
-        type_key: str,
-        factory: Any,
-        *,
-        config_schema: dict[str, Any] | None = None,
-        description: str = "",
-    ) -> None:
-        pass
-
-    def register_command(
-        self,
-        name: str,
-        handler: Callable[..., Awaitable[CommandHandlerResult]],
-        *,
-        description: str = "",
-        aliases: list[str] | None = None,
-    ) -> None:
-        pass
-
-    async def get_session(self, session_id: str) -> Any:
-        return None
-
-    async def clear_session(self, session_id: str) -> int:
-        return 0
-
-    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
-        return None
-
-    async def get_session_info(self, session_id: str) -> dict[str, Any]:
-        return {}
-
-    def list_commands(self) -> list[Any]:
-        return []
-
-    def list_models(self) -> list[dict[str, str]]:
-        return []
-
-    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
-        return None
-
-    async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
-        return []
-
-    async def memory_store(
-        self, key: str, content: str, *, metadata: dict[str, Any] | None = None
-    ) -> None:
-        pass
-
-    async def workspace_read(self, path: str) -> str:
-        return ""
-
-    async def workspace_write(self, path: str, content: str) -> None:
-        pass
-
-    async def publish_event(self, event: Any) -> None:
-        pass
+class _StubChannel(Plugin):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._channel_id = self.manifest.id
 
     @property
-    def scheduler_service(self) -> Any | None:
-        # TODO: Add a proper mock SchedulerService for testing
-        return None
+    def channel_id(self) -> str:
+        return self._channel_id
 
-    @property
-    def logger(self) -> Any:
-        return MagicMock()
-
-
-class _StubChannel(ChannelPlugin):
     async def on_load(self) -> None:
         pass
 
-    async def handle_inbound_event(self, event: dict) -> None:
+    async def handle_inbound_event(self, event: dict[str, Any]) -> None:
         pass
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
@@ -132,7 +42,7 @@ class _StubChannel(ChannelPlugin):
 class TestChannelRegistry:
     def test_register_and_get(self) -> None:
         reg = ChannelRegistry()
-        ch = _StubChannel(api=_MockAPI(), manifest=_make_manifest(id="telegram"))
+        ch = _StubChannel(api=MockBotAPI(), manifest=_make_manifest(id="telegram"))
         reg.register(ch)
         assert reg.get("telegram") is ch
 
@@ -142,7 +52,7 @@ class TestChannelRegistry:
 
     def test_unregister_removes_channel(self) -> None:
         reg = ChannelRegistry()
-        ch = _StubChannel(api=_MockAPI(), manifest=_make_manifest(id="telegram"))
+        ch = _StubChannel(api=MockBotAPI(), manifest=_make_manifest(id="telegram"))
         reg.register(ch)
         reg.unregister("telegram")
         assert reg.get("telegram") is None
@@ -155,8 +65,8 @@ class TestChannelRegistry:
         reg = ChannelRegistry()
         m1 = _make_manifest(id="telegram")
         m2 = _make_manifest(id="telegram")
-        ch1 = _StubChannel(api=_MockAPI(), manifest=m1)
-        ch2 = _StubChannel(api=_MockAPI(), manifest=m2)
+        ch1 = _StubChannel(api=MockBotAPI(), manifest=m1)
+        ch2 = _StubChannel(api=MockBotAPI(), manifest=m2)
         reg.register(ch1)
         reg.register(ch2)
         assert reg.get("telegram") is ch2

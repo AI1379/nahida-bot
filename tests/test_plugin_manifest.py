@@ -34,7 +34,6 @@ class TestPluginManifest:
             entrypoint="test:TestPlugin",
         )
         assert m.id == "com.example.test"
-        assert m.type == "tool"
         assert m.load_phase == "post-agent"
         assert m.permissions.network.outbound == []
         assert m.permissions.filesystem.read == ["workspace"]
@@ -48,7 +47,6 @@ class TestPluginManifest:
             entrypoint="full:FullPlugin",
             nahida_bot_version=">=0.1.0",
             sdk_version=">=0.1.0",
-            type="channel",
             load_phase="pre-agent",
             permissions=Permissions(
                 network=NetworkPermission(outbound=["https://api.example.com/*"]),
@@ -59,16 +57,13 @@ class TestPluginManifest:
                 system=SystemPermission(env_vars=["MY_PLUGIN_*"], subprocess=True),
             ),
             capabilities=Capabilities(
-                channel_protocols=["http_server", "http_client"],
                 tools=[{"name": "web_search", "description": "Search the web"}],
                 subscribes_to=["MessageReceived"],
             ),
             config={"type": "object", "properties": {"api_key": {"type": "string"}}},
         )
-        assert m.type == "channel"
         assert m.load_phase == "pre-agent"
         assert m.permissions.network.outbound == ["https://api.example.com/*"]
-        assert m.capabilities.channel_protocols == ["http_server", "http_client"]
         assert m.permissions.system.subprocess is True
 
     def test_default_permissions(self) -> None:
@@ -91,7 +86,6 @@ name: Hello Plugin
 version: "1.0.0"
 description: Says hello
 entrypoint: hello:HelloPlugin
-type: tool
 permissions:
   network:
     outbound:

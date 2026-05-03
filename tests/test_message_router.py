@@ -17,8 +17,7 @@ from nahida_bot.core.events import (
 )
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.session_runner import SessionRunner
-from nahida_bot.plugins.base import InboundMessage, OutboundMessage
-from nahida_bot.plugins.channel_plugin import ChannelPlugin
+from nahida_bot.plugins.base import InboundMessage, OutboundMessage, Plugin
 from nahida_bot.plugins.commands import (
     CommandEntry,
     CommandMatcher,
@@ -44,15 +43,20 @@ def _inbound(text: str = "hello", platform: str = "test") -> InboundMessage:
     )
 
 
-class _StubChannel(ChannelPlugin):
+class _StubChannel(Plugin):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        self._channel_id = self.manifest.id
         self.sent: list[tuple[str, OutboundMessage]] = []
+
+    @property
+    def channel_id(self) -> str:
+        return self._channel_id
 
     async def on_load(self) -> None:
         pass
 
-    async def handle_inbound_event(self, event: dict) -> None:
+    async def handle_inbound_event(self, event: dict[str, Any]) -> None:
         pass
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
@@ -123,9 +127,7 @@ def _make_router(
     channel_registry = ChannelRegistry()
 
     # Register a stub channel for the "test" platform
-    manifest = PluginManifest(
-        id="test", name="Test", version="1.0", entrypoint="t:T", type="channel"
-    )
+    manifest = PluginManifest(id="test", name="Test", version="1.0", entrypoint="t:T")
     channel = _StubChannel(api=MagicMock(), manifest=manifest)
     channel_registry.register(channel)
 

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 import structlog
 
 from nahida_bot.plugins.base import (
+    ChannelService,
     MemoryRef,
     OutboundMessage,
     PluginLogger,
@@ -20,10 +21,11 @@ from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import ChatProvider
     from nahida_bot.agent.memory.store import MemoryStore
-    from nahida_bot.plugins.channel_plugin import ChannelPlugin
     from nahida_bot.core.events import EventBus
     from nahida_bot.plugins.manifest import PluginManifest
     from nahida_bot.workspace.manager import WorkspaceManager
+
+_PROVIDER_ALLOWED_PHASES = frozenset({"pre-agent"})
 
 
 class _PluginLogger:
@@ -85,7 +87,7 @@ class RealBotAPI:
         self._scheduler_service = scheduler_service
         self._logger = _PluginLogger(plugin_id)
         self._subscriptions: list[Any] = []  # EventBus Subscription objects
-        self._registered_channels: dict[str, ChannelPlugin] = {}
+        self._registered_channels: dict[str, ChannelService] = {}
         self._active_channels: set[str] = set()
         self._registered_provider_types: dict[
             str,
@@ -176,10 +178,15 @@ class RealBotAPI:
 
     # ── Service Registration ──────────────────────────
 
-    def register_channel(self, channel: ChannelPlugin) -> None:
+    def register_channel(self, channel: ChannelService) -> None:
         """Register a channel service implemented by this plugin."""
         if self._channel_registry is None:
             raise RuntimeError("Channel registry is not available")
+        if not isinstance(channel, ChannelService):
+            raise TypeError(
+                f"register_channel() requires a ChannelService implementation, "
+                f"got {type(channel).__name__!r} in plugin '{self._plugin_id}'"
+            )
         channel_id = channel.channel_id
         self._channel_registry.register(channel)
         self._registered_channels[channel_id] = channel
@@ -195,6 +202,11 @@ class RealBotAPI:
         description: str = "",
     ) -> None:
         """Register a runtime Provider type for configuration lookup."""
+        if self._manifest.load_phase not in _PROVIDER_ALLOWED_PHASES:
+            raise RuntimeError(
+                "Provider types may only be registered from pre-agent plugins "
+                f"(plugin '{self._plugin_id}' has load_phase={self._manifest.load_phase!r})"
+            )
         from nahida_bot.agent.providers.registry import register_runtime_provider
 
         register_runtime_provider(

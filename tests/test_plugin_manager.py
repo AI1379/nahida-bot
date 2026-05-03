@@ -263,6 +263,7 @@ class TestPluginExceptionIsolation:
 id: registering_crasher
 name: Registering Crasher
 version: "1.0.0"
+load_phase: "pre-agent"
 entrypoint: "plugin:RegisteringCrashPlugin"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
@@ -272,6 +273,12 @@ from nahida_bot.plugins.base import Plugin
 
 class _FailedChannel:
     channel_id = "failed-channel"
+
+    async def handle_inbound_event(self, event):
+        return None
+
+    async def send_message(self, target, message):
+        return "failed-message-id"
 
 class RegisteringCrashPlugin(Plugin):
     async def on_load(self) -> None:
@@ -328,17 +335,26 @@ class RegisteringCrashPlugin(Plugin):
 id: passive_channel
 name: Passive Channel
 version: "1.0.0"
-type: channel
 entrypoint: "plugin:PassiveChannel"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 
         code = """
-from nahida_bot.plugins.channel_plugin import ChannelPlugin
+from nahida_bot.plugins.base import Plugin
 
-class PassiveChannel(ChannelPlugin):
+class PassiveChannel(Plugin):
+    @property
+    def channel_id(self) -> str:
+        return self.manifest.id
+
     async def on_load(self) -> None:
         pass
+
+    async def handle_inbound_event(self, event: dict) -> None:
+        pass
+
+    async def send_message(self, target: str, message) -> str:
+        return ""
 """
         (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
 

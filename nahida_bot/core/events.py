@@ -139,7 +139,7 @@ class MessagePayload:
 
 @dataclass(slots=True, frozen=True)
 class MessageReceived(Event[MessagePayload]):
-    """Raised after a ChannelPlugin normalizes an inbound platform event."""
+    """Raised after a channel service plugin normalizes an inbound event."""
 
 
 @dataclass(slots=True, frozen=True)

@@ -1,16 +1,17 @@
-"""Tests for TelegramChannelPlugin."""
+"""Tests for TelegramPlugin."""
 
 from __future__ import annotations
 
 import os
 import tempfile
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nahida_bot.channels.telegram.plugin import TelegramChannelPlugin
+from nahida_bot.channels.telegram.plugin import TelegramPlugin
 from nahida_bot.plugins.manifest import PluginManifest
+
+from .helpers import RecordingMockBotAPI
 
 
 def _make_manifest(**overrides: object) -> PluginManifest:
@@ -18,123 +19,18 @@ def _make_manifest(**overrides: object) -> PluginManifest:
         "id": "telegram",
         "name": "Telegram Channel",
         "version": "0.1.0",
-        "entrypoint": "nahida_bot.channels.telegram.plugin:TelegramChannelPlugin",
-        "type": "channel",
+        "entrypoint": "nahida_bot.channels.telegram.plugin:TelegramPlugin",
         "config": {"bot_token": "test-token-123"},
     }
     defaults.update(overrides)  # type: ignore[typeddict-item]
     return PluginManifest(**defaults)  # type: ignore[arg-type]
 
 
-class _MockAPI:
-    """Minimal BotAPI mock satisfying the BotAPI protocol for testing."""
-
-    def __init__(self) -> None:
-        self.published_events: list[Any] = []
-        self.registered_tools: dict[str, dict[str, Any]] = {}
-        self.registered_channels: list[Any] = []
-
-    async def send_message(
-        self, target: str, message: Any, *, channel: str = ""
-    ) -> str:
-        return ""
-
-    def on_event(self, event_type: type) -> Any:
-        return lambda f: f
-
-    def subscribe(self, event_type: type, handler: Any) -> Any:
-        return None
-
-    def register_tool(
-        self,
-        name: str,
-        description: str,
-        parameters: dict[str, Any],
-        handler: Any,
-    ) -> None:
-        self.registered_tools[name] = {
-            "description": description,
-            "parameters": parameters,
-            "handler": handler,
-        }
-
-    def register_channel(self, channel: Any) -> None:
-        self.registered_channels.append(channel)
-
-    def register_provider_type(
-        self,
-        type_key: str,
-        factory: Any,
-        *,
-        config_schema: dict[str, Any] | None = None,
-        description: str = "",
-    ) -> None:
-        pass
-
-    def register_command(
-        self,
-        name: str,
-        handler: Any,
-        *,
-        description: str = "",
-        aliases: list[str] | None = None,
-    ) -> None:
-        pass
-
-    async def get_session(self, session_id: str) -> Any:
-        return None
-
-    async def clear_session(self, session_id: str) -> int:
-        return 0
-
-    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
-        return None
-
-    async def get_session_info(self, session_id: str) -> dict[str, Any]:
-        return {}
-
-    def list_commands(self) -> list[Any]:
-        return []
-
-    def list_models(self) -> list[dict[str, str]]:
-        return []
-
-    async def set_session_model(self, session_id: str, model_name: str) -> str | None:
-        return None
-
-    async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
-        return []
-
-    @property
-    def scheduler_service(self) -> Any | None:
-        return None
-
-    async def memory_store(
-        self, key: str, content: str, *, metadata: dict[str, Any] | None = None
-    ) -> None:
-        pass
-
-    async def workspace_read(self, path: str) -> str:
-        return ""
-
-    async def workspace_write(self, path: str, content: str) -> None:
-        pass
-
-    async def publish_event(self, event: Any) -> None:
-        self.published_events.append(event)
-
-    @property
-    def logger(self) -> Any:
-        from unittest.mock import MagicMock
-
-        return MagicMock()
-
-
-class TestTelegramChannelPluginLifecycle:
+class TestTelegramPluginLifecycle:
     async def test_on_load_creates_bot(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_me = MagicMock()
@@ -146,11 +42,13 @@ class TestTelegramChannelPluginLifecycle:
             await plugin.on_load()
 
         assert plugin._bot is mock_bot
+        assert plugin.channel_id == "telegram"
+        assert api.registered_channels == [plugin]
 
     async def test_on_load_raises_without_token(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest(config={"bot_token": ""})
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TELEGRAM_BOT_TOKEN", None)
@@ -158,9 +56,9 @@ class TestTelegramChannelPluginLifecycle:
                 await plugin.on_load()
 
     async def test_on_enable_starts_polling(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
         plugin._bot = AsyncMock()  # Pretend on_load succeeded
 
         await plugin.on_enable()
@@ -170,9 +68,9 @@ class TestTelegramChannelPluginLifecycle:
         await plugin.on_disable()
 
     async def test_on_disable_stops_polling(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
         plugin._bot = AsyncMock()
 
         await plugin.on_enable()
@@ -182,11 +80,11 @@ class TestTelegramChannelPluginLifecycle:
         assert plugin._polling_task is None
 
 
-class TestTelegramChannelPluginMessaging:
+class TestTelegramPluginMessaging:
     async def test_send_message_converts_markdown_to_html(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_sent = MagicMock()
@@ -204,9 +102,9 @@ class TestTelegramChannelPluginMessaging:
         assert "**bold**" not in call_kwargs["text"]
 
     async def test_send_message_plain_text(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_sent = MagicMock()
@@ -225,9 +123,9 @@ class TestTelegramChannelPluginMessaging:
         assert call_kwargs.get("reply_to_message_id") is None
 
     async def test_send_message_with_reply(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_sent = MagicMock()
@@ -246,11 +144,11 @@ class TestTelegramChannelPluginMessaging:
         class _RetryAfter(Exception):
             retry_after = 0
 
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest(
             config={"bot_token": "test", "send_retry_attempts": 2}
         )
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_sent = MagicMock()
@@ -270,9 +168,9 @@ class TestTelegramChannelPluginMessaging:
 
 class TestTelegramInboundMedia:
     async def test_handle_inbound_publishes_event(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         update = {
             "message": {
@@ -294,9 +192,9 @@ class TestTelegramInboundMedia:
         assert inbound.chat_id == "100"
 
     async def test_handle_inbound_photo_with_caption(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         update = {
             "message": {
@@ -320,9 +218,9 @@ class TestTelegramInboundMedia:
         assert "[Media: type=photo, file_id=big_photo]" in inbound.text
 
     async def test_handle_inbound_photo_no_caption(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         update = {
             "message": {
@@ -341,9 +239,9 @@ class TestTelegramInboundMedia:
         assert "[Media: type=photo, file_id=photo_abc]" in inbound.text
 
     async def test_handle_inbound_document(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         update = {
             "message": {
@@ -367,9 +265,9 @@ class TestTelegramInboundMedia:
         assert "[Media: type=document, file_id=doc_xyz]" in inbound.text
 
     async def test_handle_inbound_sticker(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         update = {
             "message": {
@@ -387,9 +285,9 @@ class TestTelegramInboundMedia:
         assert "[Media: type=sticker, file_id=sticker_abc]" in inbound.text
 
     async def test_handle_inbound_ignores_empty_message(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         # No message field at all (e.g. callback_query)
         update = {"callback_query": {"id": "1", "data": "click"}}
@@ -398,9 +296,9 @@ class TestTelegramInboundMedia:
         assert len(api.published_events) == 0
 
     def test_extract_media_info_photo(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         msg_data = {
             "photo": [
@@ -415,9 +313,9 @@ class TestTelegramInboundMedia:
         assert info["width"] == 800
 
     def test_extract_media_info_document(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         msg_data = {
             "document": {
@@ -434,9 +332,9 @@ class TestTelegramInboundMedia:
         assert info["file_name"] == "test.txt"
 
     def test_extract_media_info_returns_none_for_text(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         info = plugin._extract_media_info({"text": "hello"})
         assert info is None
@@ -444,9 +342,9 @@ class TestTelegramInboundMedia:
 
 class TestTelegramOutboundAttachments:
     async def test_send_photo_attachment(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_sent = MagicMock()
@@ -477,9 +375,9 @@ class TestTelegramOutboundAttachments:
             os.unlink(tmp_path)
 
     async def test_send_document_attachment(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_sent = MagicMock()
@@ -510,9 +408,9 @@ class TestTelegramOutboundAttachments:
             os.unlink(tmp_path)
 
     async def test_send_attachment_missing_file(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         plugin._bot = mock_bot
@@ -531,9 +429,9 @@ class TestTelegramOutboundAttachments:
 
 class TestTelegramDownloadMedia:
     async def test_on_enable_registers_download_tool(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
         plugin._bot = AsyncMock()
 
         await plugin.on_enable()
@@ -545,7 +443,7 @@ class TestTelegramDownloadMedia:
         assert tool["parameters"]["required"] == ["file_id"]
 
     async def test_download_media_returns_result(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         tmp_dir = tempfile.mkdtemp()
         manifest = _make_manifest(
             config={
@@ -553,7 +451,7 @@ class TestTelegramDownloadMedia:
                 "media_download_dir": tmp_dir,
             }
         )
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_file = MagicMock()
@@ -577,9 +475,9 @@ class TestTelegramDownloadMedia:
         assert result.file_size == 9
 
     async def test_download_media_with_destination(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest(config={"bot_token": "test"})
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_file = MagicMock()
@@ -601,18 +499,18 @@ class TestTelegramDownloadMedia:
             assert result.path == dest
 
     async def test_download_media_returns_none_without_bot(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
         plugin._bot = None
 
         result = await plugin.download_media("any_id")
         assert result is None
 
     async def test_download_media_returns_none_on_get_file_failure(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         manifest = _make_manifest()
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
 
         mock_bot = AsyncMock()
         mock_bot.get_file.side_effect = Exception("file not found")
@@ -622,7 +520,7 @@ class TestTelegramDownloadMedia:
         assert result is None
 
     async def test_download_tool_handler_success(self) -> None:
-        api = _MockAPI()
+        api = RecordingMockBotAPI()
         media_dir = tempfile.mkdtemp()
         manifest = _make_manifest(
             config={
@@ -630,7 +528,7 @@ class TestTelegramDownloadMedia:
                 "media_download_dir": media_dir,
             }
         )
-        plugin = TelegramChannelPlugin(api=api, manifest=manifest)
+        plugin = TelegramPlugin(api=api, manifest=manifest)
         plugin._bot = AsyncMock()
 
         await plugin.on_enable()
@@ -658,32 +556,3 @@ class TestTelegramDownloadMedia:
         assert result["file_size"] > 0
 
         await plugin.on_disable()
-
-    async def test_base_channel_plugin_download_returns_none(self) -> None:
-        """ChannelPlugin base class returns None by default."""
-        from nahida_bot.plugins.channel_plugin import ChannelPlugin
-
-        class _ConcreteChannel(ChannelPlugin):
-            async def on_load(self) -> None:
-                pass
-
-            async def handle_inbound_event(self, event: dict[str, Any]) -> None:
-                pass
-
-            async def send_message(self, target: str, message: Any) -> str:
-                return ""
-
-        api = _MockAPI()
-        manifest = _make_manifest()
-        plugin = _ConcreteChannel(api=api, manifest=manifest)
-        result = await plugin.download_media("any_file_id")
-        assert result is None
-
-
-class TestTelegramChannelPluginCommunicationFlags:
-    def test_supports_http_client(self) -> None:
-        assert TelegramChannelPlugin.SUPPORT_HTTP_CLIENT is True
-        assert TelegramChannelPlugin.SUPPORT_HTTP_SERVER is False
-        assert TelegramChannelPlugin.SUPPORT_WEBSOCKET_CLIENT is False
-        assert TelegramChannelPlugin.SUPPORT_WEBSOCKET_SERVER is False
-        assert TelegramChannelPlugin.SUPPORT_SSE is False

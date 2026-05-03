@@ -9,6 +9,11 @@ from typing import Any, cast
 
 import pytest
 
+from nahida_bot.agent.providers.registry import (
+    clear_runtime_providers,
+    create_provider,
+    unregister_runtime_provider,
+)
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.core.events import Event, EventBus, EventContext
 from nahida_bot.plugins.api_bridge import RealBotAPI
@@ -24,6 +29,8 @@ from nahida_bot.plugins.manifest import (
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerRegistry, ToolRegistry
 from nahida_bot.workspace.manager import WorkspaceManager
+
+from .helpers import StubChannelService
 
 
 class _Logger:
@@ -121,8 +128,10 @@ def _manifest() -> PluginManifest:
 
 def _api(
     tmp_path: Path,
+    *,
+    manifest: PluginManifest | None = None,
 ) -> tuple[RealBotAPI, _ChannelRegistry, ToolRegistry, CommandRegistry]:
-    manifest = _manifest()
+    manifest = manifest or _manifest()
     event_bus = EventBus(
         EventContext(
             app=cast(Any, SimpleNamespace()),
@@ -197,9 +206,9 @@ def test_tool_and_command_registration(tmp_path: Path) -> None:
 
 def test_channel_service_registration_lifecycle(tmp_path: Path) -> None:
     api, channel_registry, _, _ = _api(tmp_path)
-    channel = SimpleNamespace(channel_id="custom")
+    channel = StubChannelService(channel_id="custom")
 
-    api.register_channel(cast(Any, channel))
+    api.register_channel(channel)
     assert channel_registry.get("custom") is channel
 
     api.deactivate_service_registrations()
@@ -210,6 +219,43 @@ def test_channel_service_registration_lifecycle(tmp_path: Path) -> None:
 
     api.clear_service_registrations()
     assert channel_registry.get("custom") is None
+
+
+def test_register_channel_rejects_non_channel_service(tmp_path: Path) -> None:
+    api, _, _, _ = _api(tmp_path)
+
+    with pytest.raises(TypeError, match="ChannelService"):
+        api.register_channel(cast(Any, SimpleNamespace(channel_id="custom")))
+
+
+def test_register_provider_type_requires_pre_agent_phase(tmp_path: Path) -> None:
+    api, _, _, _ = _api(tmp_path)
+
+    with pytest.raises(RuntimeError, match="pre-agent"):
+        api.register_provider_type("runtime-provider", lambda config: cast(Any, None))
+
+
+def test_register_provider_type_allows_pre_agent_plugin(tmp_path: Path) -> None:
+    provider_type = "bridge-test-runtime-provider"
+    unregister_runtime_provider(provider_type)
+    manifest = _manifest().model_copy(
+        update={"load_phase": "pre-agent", "id": "bridge-test-provider"}
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+
+    class _RuntimeProvider:
+        def __init__(self, config: dict[str, Any]) -> None:
+            self.config = config
+
+    try:
+        api.register_provider_type(
+            provider_type,
+            lambda config: cast(Any, _RuntimeProvider(config)),
+        )
+        provider = create_provider(provider_type, model="demo-model")
+        assert provider.config["model"] == "demo-model"
+    finally:
+        clear_runtime_providers(owner_plugin_id=manifest.id)
 
 
 @pytest.mark.asyncio

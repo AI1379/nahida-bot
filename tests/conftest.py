@@ -214,3 +214,7 @@ def live_anthropic_config() -> dict[str, str] | None:
         "api_key": api_key,
         "model": os.getenv("NAHIDA_LIVE_ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
     }
+
+
+# Plugin test helpers live in tests/helpers.py.
+# Import them there: from .helpers import MockBotAPI, ...

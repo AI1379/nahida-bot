@@ -2,7 +2,6 @@ id: builtin-commands
 name: "Builtin Commands"
 version: "0.1.0"
 description: "Core commands, workspace tools, exec, web fetch, and plan management"
-type: tool
 entrypoint: "nahida_bot.plugins.builtin.commands:BuiltinCommandsPlugin"
 permissions:
   filesystem:

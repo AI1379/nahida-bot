@@ -1,4 +1,4 @@
-"""TelegramChannelPlugin — Telegram Bot via aiogram long polling."""
+"""TelegramPlugin — Telegram Bot via aiogram long polling."""
 
 from __future__ import annotations
 
@@ -16,8 +16,12 @@ from nahida_bot.channels.telegram.markdown_converter import (
 from nahida_bot.channels.telegram.message_converter import TelegramMessageConverter
 from nahida_bot.core.events import MessagePayload, MessageReceived
 from nahida_bot.core.router import MessageRouter
-from nahida_bot.plugins.base import Attachment, MediaDownloadResult, OutboundMessage
-from nahida_bot.plugins.channel_plugin import ChannelPlugin
+from nahida_bot.plugins.base import (
+    Attachment,
+    MediaDownloadResult,
+    OutboundMessage,
+    Plugin,
+)
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -27,7 +31,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-class TelegramChannelPlugin(ChannelPlugin):
+class TelegramPlugin(Plugin):
     """Telegram Bot channel using aiogram v3 long polling.
 
     Uses ``Bot.get_updates()`` for polling and ``Bot.send_message()`` for
@@ -35,14 +39,18 @@ class TelegramChannelPlugin(ChannelPlugin):
     MessageRouter handles command/agent dispatch.
     """
 
-    SUPPORT_HTTP_CLIENT = True  # Bot makes outbound HTTP to Telegram API
-
     def __init__(self, api: BotAPIProtocol, manifest: PluginManifest) -> None:
         super().__init__(api, manifest)
+        self._channel_id = manifest.id
         self._bot: Bot | None = None
         self._polling_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._converter = TelegramMessageConverter(bot_username=None)
         self._update_offset = 0
+
+    @property
+    def channel_id(self) -> str:
+        """Unique identifier used by the channel registry."""
+        return self._channel_id
 
     async def on_load(self) -> None:
         """Create the aiogram Bot instance and verify the token."""

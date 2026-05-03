@@ -2,6 +2,7 @@
 
 from nahida_bot.plugins.base import (
     BotAPI,
+    ChannelService,
     InboundMessage,
     MemoryRef,
     OutboundMessage,
@@ -10,7 +11,6 @@ from nahida_bot.plugins.base import (
     SessionInfo,
     SubscriptionHandle,
 )
-from nahida_bot.plugins.channel_plugin import ChannelPlugin
 from nahida_bot.plugins.commands import (
     CommandEntry,
     CommandMatch,
@@ -45,7 +45,7 @@ __all__ = [
     "SessionInfo",
     "SubscriptionHandle",
     # Channel
-    "ChannelPlugin",
+    "ChannelService",
     # Commands
     "CommandEntry",
     "CommandMatch",

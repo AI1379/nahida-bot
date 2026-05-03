@@ -50,7 +50,6 @@ class Permissions(BaseModel):
 class Capabilities(BaseModel):
     """Capability declarations for a plugin."""
 
-    channel_protocols: list[str] = Field(default_factory=list)
     tools: list[dict[str, str]] = Field(default_factory=list)
     subscribes_to: list[str] = Field(default_factory=list)
 
@@ -72,7 +71,6 @@ class PluginManifest(BaseModel):
     entrypoint: str  # "module_path:ClassName"
     nahida_bot_version: str = ""
     sdk_version: str = ""
-    type: str = "tool"  # channel | tool | hook | integration | theme | provider
     load_phase: Literal["pre-agent", "post-agent"] = "post-agent"
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
