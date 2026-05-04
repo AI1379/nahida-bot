@@ -60,3 +60,33 @@ telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"
   # polling_timeout: 30
   # allowed_chats: []
+
+# Milky QQ Channel（可选）
+# 启用前请先启动 Lagrange.Milky，并确保 nahida_bot/channels/milky/plugin.yaml
+# 可被内置 channel discovery 扫描到。保持注释状态不会启用 Milky。
+#
+# milky:
+#   base_url: "http://127.0.0.1:3000"
+#   access_token: "${MILKY_ACCESS_TOKEN}"
+#   api_prefix: "/api"
+#   event_path: "/event"
+#   # ws_url: "ws://127.0.0.1:3000/event"  # 可选：覆盖由 base_url 推导出的 WS 地址
+#   command_prefix: "/"
+#   group_trigger_mode: "mention"  # mention / command / always
+#   allowed_friends: []            # QQ 号白名单；空列表表示不限制
+#   allowed_groups: []             # 群号白名单；空列表表示不限制
+#   connect_timeout: 10.0
+#   heartbeat_timeout: 30.0
+#   reconnect_initial_delay: 1.0
+#   reconnect_max_delay: 30.0
+#   send_retry_attempts: 3
+#   send_retry_backoff: 1.0
+#   max_text_length: 4000
+#   media_download_dir: "./data/temp/media"
+#   enable_media_download_tool: true
+#   resource_url_ttl_hint: 300
+#   cache_media_on_receive: true
+#   max_forward_depth: 3
+#   max_forward_messages: 80
+#   forward_render_max_chars: 12000
+#   scene_cache_size: 4096

@@ -685,6 +685,156 @@ providers:
 - [x] 修复 Windows Ctrl+C 挂起问题（DatabaseEngine 和 Provider 资源清理）。
 - [x] 实现 per-request model override：`ChatProvider.chat()` 接受 `model` 参数覆盖默认模型；`SessionRunner` 从会话 metadata 中解析选中的模型名称并传递给 `AgentLoop.run()`，确保同一 Provider 下多模型切换真正生效。
 
+#### Phase 4.6 — Milky QQ Channel Plugin（临时新增计划项）
+
+目标：基于 Milky 协议和 Lagrange.Milky 实现一个 QQ Channel 插件，复用现有 `Plugin + ChannelService` 运行时模型，打通 QQ 私聊/群聊消息到 Agent 的完整闭环。
+
+> 设计决策：不复用 `milky-python-sdk` 的 Client 或 Bot 框架。Nahida Bot 侧直接实现 Milky HTTP API client 和 WebSocket `/event` 事件流；仅参考 `milky-python-sdk` 的消息结构、segment 命名和类型建模方式，避免把第三方生命周期、事件分发和命令系统引入 Nahida。
+
+> 参考事实：Milky 协议端通过 `/api/:api` 接收 HTTP POST API 调用，通过 `/event` 推送事件，事件传输支持 SSE、WebSocket、WebHook；Lagrange.Milky 当前实现 WebSocket 和 WebHook，SSE 标记为 wontimpl。因此 Nahida Bot 侧优先实现 WebSocket client 模式，WebHook 等待 Host Web 扩展点成熟后再接入。Milky 与 OneBot 不同，当前没有定义可在同一条 WebSocket 上同时承载 API 请求和事件响应的 `{action, params, echo}` RPC envelope。
+
+##### Phase 4.6.1 — 目录与依赖基线
+
+- [x] 新增 `nahida_bot/channels/milky/` 目录。
+- [x] 新增 `__init__.py`，导出 `MilkyPlugin`。
+- [x] 新增 `plugin.yaml`，`id` 使用 `milky`，`entrypoint` 指向 `nahida_bot.channels.milky.plugin:MilkyPlugin`。
+- [x] 评估并加入最小运行依赖：HTTP 使用现有可用异步 HTTP 客户端（优先复用项目已有依赖），WebSocket 使用项目现有依赖或补充 `websockets`。（当前 `pyproject.toml` 已包含 `httpx` 与 `websockets`，无需新增依赖。）
+- [x] 明确首版不引入 `milky-python-sdk` 作为运行时依赖。
+
+##### Phase 4.6.2 — 配置模型
+
+- [x] 定义 `MilkyPluginConfig`：`base_url`、`access_token`、`api_prefix`、`event_path`、`command_prefix`、`allowed_friends`、`allowed_groups`。
+- [x] 定义 WebSocket 配置：`ws_url` 可选覆盖、`connect_timeout`、`heartbeat_timeout`、`reconnect_initial_delay`、`reconnect_max_delay`。
+- [x] 定义群聊触发策略：`group_trigger_mode` 支持 `mention`、`command`、`always`，默认 `mention`。
+- [x] 定义发送策略：`send_retry_attempts`、`send_retry_backoff`、`max_text_length`。
+- [x] 定义媒体策略：`media_download_dir`、`enable_media_download_tool`、`resource_url_ttl_hint`。
+
+##### Phase 4.6.3 — Milky HTTP API Client
+
+- [x] 新增 `client.py`，实现轻量 `MilkyClient`，不依赖 `milky-python-sdk`。
+- [x] 封装 `post_api(api_name: str, payload: dict[str, Any]) -> dict[str, Any]`，请求路径为 `{base_url}/{api_prefix}/{api_name}` 或 Milky 标准 `/api/:api`。
+- [x] 支持 `access_token` 鉴权，按 Milky/Lagrange.Milky 文档实现 `Authorization: Bearer {access_token}`。
+- [x] 统一处理 HTTP 状态码、Milky API 错误响应、JSON 解析错误和超时。
+- [x] 定义 `MilkyClientError`、`MilkyAuthError`、`MilkyAPIError`、`MilkyNetworkError`、`MilkyHTTPStatusError`、`MilkyResponseError`。
+- [x] 实现基础 API 方法：`get_login_info()`、`get_impl_info()`、`send_private_message()`、`send_group_message()`、`get_resource_temp_url()`、`get_forwarded_messages()`。
+- [x] 实现文件 API 基础方法：`upload_private_file()`、`upload_group_file()`、`get_private_file_download_url()`、`get_group_file_download_url()`。
+- [x] 为发送消息实现有限重试，避免对非幂等 API 进行不可控重放；首版仅对明确的连接类网络错误和 HTTP 429 重试。
+- [x] 支持 `close()`，确保插件禁用时释放连接池。
+
+##### Phase 4.6.4 — 消息结构与 Segment 建模
+
+- [x] 新增 `segments.py`，用 dataclass 建模 Milky incoming/outgoing segment。
+- [x] 参考 `milky-python-sdk` 的结构命名和字段组织，但实现本项目自己的类型，避免依赖其 Client。
+- [x] 覆盖首版 incoming segment：`text`、`mention`、`mention_all`、`reply`、`image`、`record`、`video`、`file`、`forward`、`market_face`、`light_app`、`xml`、未知 segment。
+- [x] 覆盖首版 outgoing segment：`text`、`mention`、`mention_all`、`face`、`reply`、`image`、`record`、`video`、`forward`、`light_app`。
+- [x] 将文件发送建模为独立 `OutgoingFileUpload`，避免误把文件当作 `send_message` 的 message segment；后续由 Milky file API 负责实际发送。
+- [x] 为合并转发建模 `IncomingForwardSegment` / `IncomingForwardedMessage` 与 `OutgoingForwardSegment` / `OutgoingForwardedMessage`，支持多层嵌套和渲染深度限制。
+- [x] 未识别 segment 必须保留原始 dict，转换为可读降级文本，不允许静默丢弃。
+- [x] 为 segment parser 增加单元测试，固定 Milky dict 与内部结构之间的转换样例。
+
+> 后续实现提醒：入站 `forward` 段只是 `forward_id` 引用，真正内容需要 Phase 4.6.3 的 client 支持 `get_forwarded_messages()` 后在 Phase 4.6.6 里递归拉取并填充到 `IncomingForwardSegment.messages`。递归必须受 `max_forward_depth`、`max_forward_messages` 和 `forward_render_max_chars` 限制。
+
+##### Phase 4.6.5 — WebSocket Event Stream
+
+- [x] 新增 `event_stream.py`，实现 `MilkyEventStream`。
+- [x] 连接 Lagrange.Milky WebSocket `/event`，只接收事件，不通过该连接发送 API 请求。
+- [x] 支持 access token 鉴权，和 HTTP client 使用同一份配置；优先使用 `Authorization: Bearer {access_token}`，在默认 connector 不支持 header 参数时可退回 query token。
+- [x] 接收 JSON 文本帧，解析为 `dict[str, Any]` 后交给回调。
+- [x] 实现断线重连和指数退避，记录 `milky.ws_connected`、`milky.ws_disconnected`、`milky.ws_reconnect_scheduled`。
+- [x] 支持 `start()` / `stop()`，`stop()` 必须能取消任务并关闭 socket，不能阻塞应用退出。
+- [x] 忽略或记录非消息事件：`bot_online`、`bot_offline`、`message_recall` 等，后续按需要扩展。
+- [x] 暂不实现 SSE；WebHook 模式依赖 Phase 5.x `WebHostService`，不在 MVP 中临时启动独立 HTTP server。
+
+##### Phase 4.6.6 — 入站消息转换
+
+- [x] 新增 `message_converter.py`，实现 `MilkyMessageConverter`。
+- [x] 支持 Milky `message_receive` 事件。
+- [x] 将私聊消息转为 `InboundMessage(platform="milky", is_group=False)`。
+- [x] 将群聊消息转为 `InboundMessage(platform="milky", is_group=True)`。
+- [x] 映射字段：`message_seq` -> `message_id`，`peer_id` -> `chat_id`，`sender_id` -> `user_id`，事件时间 -> `timestamp`。
+- [x] 将 `reply` segment 映射到 `reply_to`。
+- [x] 将 `text` segment 拼接为正文。
+- [x] 将 `mention` segment 转为可读 `@QQ号`；如果 mention 目标是当前 bot 且群聊触发策略需要，则剥离该 mention。
+- [x] 将图片、文件、语音、视频等媒体 segment 降级为 `[Media: type=..., resource_id=...]` 文本，原始数据保留在 `raw_event`。
+- [x] 支持 `allowed_friends` / `allowed_groups` 过滤。
+- [x] 支持 `group_trigger_mode`：群聊默认只响应 @bot 或命令前缀，避免无差别响应群消息。
+- [x] 支持基于 `get_forwarded_messages()` 的合并转发递归解析，并受 `max_forward_depth`、`max_forward_messages`、`forward_render_max_chars` 限制。
+- [x] 对 Lagrange.Milky 暂未实现合并转发拉取的情况做容错，保留 forward 引用与 preview 文本，不中断入站消息处理。
+
+##### Phase 4.6.7 — 出站消息转换与发送
+
+- [x] 新增 `segment_converter.py`，实现 `OutboundMessage` -> Milky outgoing segments / file upload payloads。
+- [x] 首版文本回复转换为 `text` segment。
+- [x] 如果 `OutboundMessage.reply_to` 存在，前置 `reply` segment。
+- [x] 支持通过 `OutboundMessage.extra` 显式传递 `message_scene`（`friend` / `group`）和 `peer_id`。
+- [x] `send_message(target, message)` 支持目标前缀约定：`friend:<id>`、`group:<id>`；无前缀时根据 `message.extra` 或最近入站会话场景推断。
+- [x] 私聊调用 `send_private_message()`，群聊调用 `send_group_message()`。
+- [x] 返回 Milky `message_seq` 或协议端返回的等价消息 id。
+- [x] 图片、语音、视频附件转换为对应 outgoing media segment；文件附件转换为 `OutgoingFileUpload` 并走 Milky file API。
+- [x] 支持通过 `OutboundMessage.extra["milky_forward"]` / `extra["milky_segments"]` 发送合并转发与 Milky 原生媒体段。
+- [x] 对 Lagrange.Milky 暂未实现 rich segment 发送的情况做容错，发送失败时降级为纯文本摘要再重试。
+
+##### Phase 4.6.8 — Plugin 生命周期集成
+
+- [x] 新增 `plugin.py`，实现 `MilkyPlugin(Plugin)` 并满足 `ChannelService` 运行时协议。
+- [x] `channel_id` 返回 `"milky"`。
+- [x] `on_load()`：解析配置、创建 `MilkyClient`、调用 `get_login_info()` 获取 bot id、初始化 converter、注册 channel。
+- [x] `on_enable()`：启动 `MilkyEventStream` 后台任务，注册可选媒体工具。
+- [x] `on_disable()`：停止 event stream，关闭 HTTP client。
+- [x] `handle_inbound_event()`：过滤事件类型，转换 `InboundMessage`，生成 session id，发布 `MessageReceived`。
+- [x] `send_message()`：调用出站转换与 API client。
+- [x] 日志字段统一包含 `channel="milky"`，后续真实联调时继续补齐 `peer_id`、`message_scene`、`message_seq` 的发送/接收细节日志。
+
+##### Phase 4.6.9 — 媒体资源工具
+
+> 注意：Lagrange.milky 的媒体部分可能会有问题，需要在收到消息的时候立刻把其中的媒体文件缓存下来，否则 URL 可能会过期。目前暂不确定这个是 milky-tea 的问题还是 Lagrange.milky 的问题，这里可能需要处理。
+>
+> 注 2：检查了一下 milky 的文档，似乎图片的预期就是一个临时的 URL ，但是 Milky 又确实提供了一个通过 resource_id 获取 temp_url 的 api 端点，这里可能需要考虑一下。
+
+- [x] 注册 `get_resource_temp_url` 工具：基于 Milky `resource_id` 获取临时 URL。（当前工具名为 `milky_get_resource_temp_url`，避免与其他 channel 的工具冲突。）
+- [ ] 评估是否实现 `download_media` 工具；如果实现，下载目录沿用 Telegram 的 `media_download_dir` 思路。
+- [x] 工具返回 JSON，包含 `resource_id`、`url`、`expires_hint` 等字段；`path`、`file_size` 留待 `download_media` 工具实现。
+- [ ] 媒体工具必须处理 access token、下载失败、资源过期和文件大小限制。（临时 URL 获取已走 `MilkyClient` 鉴权；下载失败、文件大小限制留待 `download_media`。）
+
+##### Phase 4.6.10 — 测试与文档
+
+- [x] 编写 `tests/channels/milky/test_client.py`：API 成功、API 错误、鉴权错误、网络错误、超时。（当前文件为 `tests/test_milky_client.py`）
+- [x] 编写 `tests/channels/milky/test_segments.py`：incoming/outgoing segment 解析和未知 segment 降级。（当前文件为 `tests/test_milky_segments.py`）
+- [x] 编写 `tests/channels/milky/test_message_converter.py`：私聊、群聊、@bot、reply、媒体降级、允许列表过滤。（当前文件为 `tests/test_milky_message_converter.py`）
+- [x] 编写 `tests/channels/milky/test_event_stream.py`：事件帧解析、断线重连、取消退出。（当前文件为 `tests/test_milky_event_stream.py`）
+- [x] 编写 `tests/channels/milky/test_plugin.py`：`on_load` 注册 channel、`handle_inbound_event` 发布 `MessageReceived`、`send_message` 私聊/群聊路由。（当前文件为 `tests/test_milky_plugin.py`）
+- [ ] 编写 `docs/channels/milky.md`：覆盖 Lagrange.Milky `appsettings.jsonc` 示例、Nahida Bot 插件配置、网络安全建议、常见调试项和已知不支持项。
+- [x] 在 ROADMAP 或架构文档中记录与 OneBot 单 WebSocket RPC 的差异，避免后续误判 Milky `/event` 能发送 API 请求。
+
+MVP 验收：
+
+- [ ] 使用本地 Lagrange.Milky WebSocket 模式接收 QQ 私聊消息并回复。
+- [ ] 使用本地 Lagrange.Milky WebSocket 模式在群聊中通过 @ 或命令前缀触发并回复。
+- [ ] 文本、@、回复、图片资源描述至少能稳定进入 Agent 上下文；文本回复能稳定发回 QQ。
+- [ ] 断线重连不会阻塞应用关闭；access token 错误、API 错误和协议端离线均有可读日志。
+- [ ] 不依赖 `milky-python-sdk` 运行时 Client；消息结构实现可追溯到 Milky 官方文档，并参考 `milky-python-sdk` 的类型设计。
+
+前置依赖：
+
+- Phase 3.5 `ChannelService` 接口与消息标准化流程。
+- Phase 4 Telegram Channel 的插件生命周期、发送重试和媒体工具经验。
+- Phase 5.x `WebHostService`（仅 WebHook 模式需要；WebSocket MVP 不阻塞）。
+
+风险控制：
+
+- Milky 协议端本身提供 HTTP 服务，默认只建议连接 `127.0.0.1` 或内网地址，必须支持 `access_token`。
+- QQ 消息段比当前 `InboundMessage.text` 更丰富，首版不得丢弃原始事件，所有未完全支持的段必须保存在 `raw_event` 并以结构化文本降级。
+- Lagrange.Milky 对部分 Milky 能力标记为 wontimpl，插件实现必须以能力探测和错误降级为准，不能假设完整协议覆盖。
+- WebHook 模式不要绕过插件宿主扩展点临时开 HTTP server，避免生命周期、鉴权和端口管理分裂。
+- 自写 HTTP/WebSocket 客户端需要补齐错误处理和测试，避免把协议细节散落在 `plugin.py` 中。
+
+参考来源：
+
+- Milky 协议文档：`https://milky.ntqqrev.org/`
+- Lagrange.Milky README：`https://github.com/LagrangeDev/LagrangeV2/blob/main/Lagrange.Milky/README.md`
+- Lagrange.Milky 配置文档：`https://lagrangedev.github.io/Lagrange.Milky.Document/configuration/overview`
+- `milky-python-sdk`：仅参考消息结构设计，不作为运行时 Client 依赖，`https://github.com/notnotype/milky-python-sdk`
+
 前置依赖：Phase 3（ChannelService 接口）。
 
 风险控制：
