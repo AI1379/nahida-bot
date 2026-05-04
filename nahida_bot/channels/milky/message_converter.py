@@ -1,0 +1,185 @@
+"""Milky incoming message conversion."""
+
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+from nahida_bot.channels.milky._parsing import coerce_int, coerce_str
+from nahida_bot.channels.milky.config import MilkyPluginConfig
+from nahida_bot.channels.milky.segments import (
+    IncomingForwardSegment,
+    IncomingForwardedMessage,
+    IncomingMentionSegment,
+    IncomingReplySegment,
+    IncomingSegment,
+    parse_incoming_segments,
+    render_segments_plain_text,
+)
+from nahida_bot.plugins.base import InboundMessage
+
+
+class ForwardMessageClient(Protocol):
+    """Small client surface needed for resolving merged forwards."""
+
+    async def get_forwarded_messages(
+        self, forward_id: str
+    ) -> list[IncomingForwardedMessage]: ...
+
+
+class WarningLogger(Protocol):
+    """Logger callable compatible with structlog warning methods."""
+
+    def __call__(self, event: str, **kwargs: object) -> object: ...
+
+
+class MilkyMessageConverter:
+    """Convert Milky ``message_receive`` data into ``InboundMessage``."""
+
+    def __init__(
+        self,
+        config: MilkyPluginConfig,
+        *,
+        self_id: int = 0,
+        forward_client: ForwardMessageClient | None = None,
+        logger_warning: WarningLogger | None = None,
+    ) -> None:
+        self._config = config
+        self._self_id = self_id
+        self._forward_client = forward_client
+        self._logger_warning = logger_warning
+
+    async def to_inbound(
+        self, message_data: dict[str, Any], *, raw_event: dict[str, Any] | None = None
+    ) -> InboundMessage | None:
+        """Convert one Milky incoming message, returning None if filtered."""
+        scene = coerce_str(message_data.get("message_scene"))
+        peer_id = coerce_str(message_data.get("peer_id"))
+        sender_id = coerce_str(message_data.get("sender_id"))
+        is_group = scene == "group"
+
+        if not self._is_allowed(scene, peer_id):
+            return None
+
+        segments = parse_incoming_segments(message_data.get("segments"))
+        if self._forward_client is not None and self._config.max_forward_depth > 0:
+            segments = await self._resolve_forward_segments(segments, depth=0)
+
+        if is_group and not self._should_accept_group_message(segments):
+            return None
+
+        visible_segments = (
+            self._strip_self_mentions(segments) if is_group else list(segments)
+        )
+        text = render_segments_plain_text(
+            visible_segments,
+            max_forward_depth=self._config.max_forward_depth,
+        ).strip()
+        if len(text) > self._config.forward_render_max_chars:
+            text = text[: self._config.forward_render_max_chars] + "\n[Truncated]"
+
+        if not text:
+            return None
+
+        return InboundMessage(
+            message_id=coerce_str(message_data.get("message_seq"), "0"),
+            platform="milky",
+            chat_id=peer_id,
+            user_id=sender_id or "0",
+            text=text,
+            raw_event=raw_event or message_data,
+            is_group=is_group,
+            reply_to=self._reply_to(segments),
+            timestamp=float(coerce_int(message_data.get("time"))),
+            command_prefix=self._config.command_prefix,
+        )
+
+    async def _resolve_forward_segments(
+        self, segments: list[IncomingSegment], *, depth: int
+    ) -> list[IncomingSegment]:
+        resolved: list[IncomingSegment] = []
+        for segment in segments:
+            if (
+                isinstance(segment, IncomingForwardSegment)
+                and segment.forward_id
+                and depth < self._config.max_forward_depth
+                and self._forward_client is not None
+            ):
+                try:
+                    messages = await self._forward_client.get_forwarded_messages(
+                        segment.forward_id
+                    )
+                    messages = messages[: self._config.max_forward_messages]
+                    messages = [
+                        IncomingForwardedMessage(
+                            message_seq=message.message_seq,
+                            sender_name=message.sender_name,
+                            avatar_url=message.avatar_url,
+                            time=message.time,
+                            segments=await self._resolve_forward_segments(
+                                message.segments, depth=depth + 1
+                            ),
+                            raw=message.raw,
+                        )
+                        for message in messages
+                    ]
+                    resolved.append(segment.with_messages(messages))
+                except Exception as exc:  # noqa: BLE001
+                    if self._logger_warning is not None:
+                        self._logger_warning(
+                            "milky.forward_resolve_failed",
+                            forward_id=segment.forward_id,
+                            error=str(exc),
+                        )
+                    resolved.append(segment)
+            else:
+                resolved.append(segment)
+        return resolved
+
+    def _is_allowed(self, scene: str, peer_id: str) -> bool:
+        if scene == "friend" and self._config.allowed_friends:
+            return peer_id in self._config.allowed_friends
+        if scene == "group" and self._config.allowed_groups:
+            return peer_id in self._config.allowed_groups
+        return True
+
+    def _should_accept_group_message(self, segments: list[IncomingSegment]) -> bool:
+        if self._config.group_trigger_mode == "always":
+            return True
+        text = render_segments_plain_text(
+            segments, max_forward_depth=self._config.max_forward_depth
+        ).lstrip()
+        if self._config.group_trigger_mode == "command":
+            return text.startswith(self._config.command_prefix)
+        return self._has_self_mention(segments) or text.startswith(
+            self._config.command_prefix
+        )
+
+    def _has_self_mention(self, segments: list[IncomingSegment]) -> bool:
+        if self._self_id <= 0:
+            return False
+        return any(
+            isinstance(segment, IncomingMentionSegment)
+            and segment.user_id == self._self_id
+            for segment in segments
+        )
+
+    def _strip_self_mentions(
+        self, segments: list[IncomingSegment]
+    ) -> list[IncomingSegment]:
+        if self._self_id <= 0:
+            return list(segments)
+        return [
+            segment
+            for segment in segments
+            if not (
+                isinstance(segment, IncomingMentionSegment)
+                and segment.user_id == self._self_id
+            )
+        ]
+
+    @staticmethod
+    def _reply_to(segments: list[IncomingSegment]) -> str:
+        for segment in segments:
+            if isinstance(segment, IncomingReplySegment) and segment.message_seq:
+                return str(segment.message_seq)
+        return ""

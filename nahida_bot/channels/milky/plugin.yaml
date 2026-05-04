@@ -1,0 +1,38 @@
+id: milky
+name: "Milky QQ Channel"
+version: "0.1.0"
+description: "QQ channel via Milky-compatible protocol services such as Lagrange.Milky"
+entrypoint: "nahida_bot.channels.milky.plugin:MilkyPlugin"
+
+permissions:
+  network:
+    outbound:
+      - "127.0.0.1"
+      - "localhost"
+    inbound: false
+
+config:
+  base_url: "http://127.0.0.1:3000"
+  access_token: ""
+  api_prefix: "/api"
+  event_path: "/event"
+  ws_url: ""
+  command_prefix: "/"
+  group_trigger_mode: "mention"
+  allowed_friends: []
+  allowed_groups: []
+  connect_timeout: 10.0
+  heartbeat_timeout: 30.0
+  reconnect_initial_delay: 1.0
+  reconnect_max_delay: 30.0
+  send_retry_attempts: 3
+  send_retry_backoff: 1.0
+  max_text_length: 4000
+  media_download_dir: "./data/temp/media"
+  enable_media_download_tool: true
+  resource_url_ttl_hint: 300
+  cache_media_on_receive: true
+  max_forward_depth: 3
+  max_forward_messages: 80
+  forward_render_max_chars: 12000
+  scene_cache_size: 4096
