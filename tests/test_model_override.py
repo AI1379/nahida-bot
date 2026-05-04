@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -136,7 +136,7 @@ class TestSessionRunnerModelResolution:
 
         runner = SessionRunner(
             provider_manager=pm,
-            memory_store=memory,
+            memory_store=cast(Any, memory),
         )
         resolved_slot, model = await runner._resolve_provider("s1")
 
@@ -155,7 +155,7 @@ class TestSessionRunnerModelResolution:
 
         runner = SessionRunner(
             provider_manager=pm,
-            memory_store=memory,
+            memory_store=cast(Any, memory),
         )
         resolved_slot, model = await runner._resolve_provider("s1")
 
@@ -170,7 +170,7 @@ class TestSessionRunnerModelResolution:
 
         runner = SessionRunner(
             provider_manager=pm,
-            memory_store=memory,
+            memory_store=cast(Any, memory),
         )
         resolved_slot, model = await runner._resolve_provider("s1")
 
@@ -186,7 +186,7 @@ class TestSessionRunnerModelResolution:
 
         runner = SessionRunner(
             provider_manager=pm,
-            memory_store=memory,
+            memory_store=cast(Any, memory),
         )
         resolved_slot, model = await runner._resolve_provider("s1")
 
@@ -204,7 +204,7 @@ class TestSessionRunnerModelResolution:
 
         runner = SessionRunner(
             provider_manager=pm,
-            memory_store=memory,
+            memory_store=cast(Any, memory),
         )
         resolved_slot, model = await runner._resolve_provider("s1")
 
@@ -258,8 +258,8 @@ class TestSessionRunnerEndToEnd:
         spy_loop = _SpyAgentLoop()
 
         runner = SessionRunner(
-            agent_loop=spy_loop,
-            memory_store=memory,
+            agent_loop=cast(Any, spy_loop),
+            memory_store=cast(Any, memory),
             provider_manager=pm,
         )
         await runner.run(
@@ -279,8 +279,8 @@ class TestSessionRunnerEndToEnd:
         spy_loop = _SpyAgentLoop()
 
         runner = SessionRunner(
-            agent_loop=spy_loop,
-            memory_store=memory,
+            agent_loop=cast(Any, spy_loop),
+            memory_store=cast(Any, memory),
             provider_manager=pm,
         )
         await runner.run(

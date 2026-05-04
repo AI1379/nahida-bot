@@ -252,7 +252,7 @@ def test_register_provider_type_allows_pre_agent_plugin(tmp_path: Path) -> None:
             provider_type,
             lambda config: cast(Any, _RuntimeProvider(config)),
         )
-        provider = create_provider(provider_type, model="demo-model")
+        provider = cast(Any, create_provider(provider_type, model="demo-model"))
         assert provider.config["model"] == "demo-model"
     finally:
         clear_runtime_providers(owner_plugin_id=manifest.id)

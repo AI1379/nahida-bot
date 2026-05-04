@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -309,7 +309,8 @@ def test_full_tool_call_roundtrip_serialization() -> None:
         serialized[1]["reasoning_content"]
         == "Need today's date to find tomorrow's weather."
     )
-    assert serialized[1]["tool_calls"][0]["function"]["name"] == "get_date"
+    first_tool_calls = cast(list[dict[str, Any]], serialized[1]["tool_calls"])
+    assert first_tool_calls[0]["function"]["name"] == "get_date"
 
     # Tool result has tool_call_id
     assert serialized[2]["tool_call_id"] == "call_date"
@@ -319,7 +320,8 @@ def test_full_tool_call_roundtrip_serialization() -> None:
         serialized[3]["reasoning_content"]
         == "Today is 2026-05-02. Now call weather for Hangzhou tomorrow."
     )
-    assert serialized[3]["tool_calls"][0]["function"]["name"] == "get_weather"
+    second_tool_calls = cast(list[dict[str, Any]], serialized[3]["tool_calls"])
+    assert second_tool_calls[0]["function"]["name"] == "get_weather"
 
     # Tool result has tool_call_id
     assert serialized[4]["tool_call_id"] == "call_weather"
