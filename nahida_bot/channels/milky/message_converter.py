@@ -7,15 +7,19 @@ from typing import Any, Protocol
 from nahida_bot.channels.milky._parsing import coerce_int, coerce_str
 from nahida_bot.channels.milky.config import MilkyPluginConfig
 from nahida_bot.channels.milky.segments import (
+    IncomingFileSegment,
     IncomingForwardSegment,
     IncomingForwardedMessage,
+    IncomingImageSegment,
     IncomingMentionSegment,
+    IncomingRecordSegment,
     IncomingReplySegment,
     IncomingSegment,
+    IncomingVideoSegment,
     parse_incoming_segments,
     render_segments_plain_text,
 )
-from nahida_bot.plugins.base import InboundMessage
+from nahida_bot.plugins.base import InboundAttachment, InboundMessage
 
 
 class ForwardMessageClient(Protocol):
@@ -80,6 +84,8 @@ class MilkyMessageConverter:
         if not text:
             return None
 
+        attachments = self._extract_attachments(segments)
+
         return InboundMessage(
             message_id=coerce_str(message_data.get("message_seq"), "0"),
             platform="milky",
@@ -91,6 +97,7 @@ class MilkyMessageConverter:
             reply_to=self._reply_to(segments),
             timestamp=float(coerce_int(message_data.get("time"))),
             command_prefix=self._config.command_prefix,
+            attachments=attachments,
         )
 
     async def _resolve_forward_segments(
@@ -183,3 +190,60 @@ class MilkyMessageConverter:
             if isinstance(segment, IncomingReplySegment) and segment.message_seq:
                 return str(segment.message_seq)
         return ""
+
+    @staticmethod
+    def _extract_attachments(
+        segments: list[IncomingSegment],
+    ) -> list[InboundAttachment]:
+        """Extract first-class InboundAttachment objects from media segments."""
+        attachments: list[InboundAttachment] = []
+        for segment in segments:
+            if isinstance(segment, IncomingImageSegment):
+                attachments.append(
+                    InboundAttachment(
+                        kind="image",
+                        platform_id=segment.resource_id,
+                        url=segment.temp_url,
+                        width=segment.width,
+                        height=segment.height,
+                        alt_text=segment.summary,
+                        metadata={
+                            "sub_type": segment.sub_type,
+                            "trusted_url": bool(segment.temp_url),
+                        },
+                    )
+                )
+            elif isinstance(segment, IncomingRecordSegment):
+                attachments.append(
+                    InboundAttachment(
+                        kind="audio",
+                        platform_id=segment.resource_id,
+                        url=segment.temp_url,
+                        metadata={"duration": segment.duration},
+                    )
+                )
+            elif isinstance(segment, IncomingVideoSegment):
+                attachments.append(
+                    InboundAttachment(
+                        kind="video",
+                        platform_id=segment.resource_id,
+                        url=segment.temp_url,
+                        width=segment.width,
+                        height=segment.height,
+                        metadata={"duration": segment.duration},
+                    )
+                )
+            elif isinstance(segment, IncomingFileSegment):
+                attachments.append(
+                    InboundAttachment(
+                        kind="file",
+                        platform_id=segment.file_id,
+                        file_size=segment.file_size,
+                        metadata={
+                            "file_name": segment.file_name,
+                            "file_size": segment.file_size,
+                            "file_hash": segment.file_hash,
+                        },
+                    )
+                )
+        return attachments

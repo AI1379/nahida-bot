@@ -6,10 +6,34 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal
 
-from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.tokenization import Tokenizer
 
 ToolType = Literal["function"]
+
+
+@dataclass(slots=True, frozen=True)
+class ModelCapabilities:
+    """Declares what a specific provider/model combination can do.
+
+    Resolution priority: explicit config > provider defaults > unknown defaults to off.
+    """
+
+    text_input: bool = True
+    image_input: bool = False
+    tool_calling: bool = True
+    reasoning: bool = False
+    prompt_cache: bool = False
+    prompt_cache_images: bool = False
+    explicit_context_cache: bool = False
+    prompt_cache_min_tokens: int = 0
+    max_image_count: int = 0
+    max_image_bytes: int = 0
+    supported_image_mime_types: tuple[str, ...] = (
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -39,6 +63,7 @@ class TokenUsage:
     output_tokens: int = 0
     cached_tokens: int = 0
     reasoning_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     @property
     def total(self) -> int:
@@ -133,6 +158,46 @@ class ChatProvider(ABC):
         """
         payload: dict[str, object] = {
             "role": message.role,
-            "content": message.content,
+            "content": self._serialize_openai_content(message),
         }
         return payload
+
+    def _serialize_openai_content(self, message: ContextMessage) -> object:
+        """Serialize text/image parts using OpenAI-compatible content blocks."""
+        if not message.parts:
+            return message.content
+
+        blocks: list[dict[str, object]] = []
+        for part in message.parts:
+            block = self._serialize_openai_part(part)
+            if block is not None:
+                blocks.append(block)
+
+        if blocks and all(block.get("type") == "text" for block in blocks):
+            return "\n".join(
+                str(block.get("text", "")) for block in blocks if block.get("text")
+            )
+        return blocks or message.content
+
+    def _serialize_openai_part(self, part: ContextPart) -> dict[str, object] | None:
+        if part.type in {"text", "image_description"}:
+            if not part.text:
+                return None
+            return {"type": "text", "text": part.text}
+
+        if part.type == "image_url":
+            if not part.url:
+                return None
+            return {"type": "image_url", "image_url": {"url": part.url}}
+
+        if part.type == "image_base64":
+            if not part.data or not part.mime_type:
+                return None
+            return {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{part.mime_type};base64,{part.data}",
+                },
+            }
+
+        return None

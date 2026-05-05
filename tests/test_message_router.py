@@ -433,6 +433,33 @@ class TestMessageRouterMemory:
         assert len(history) == 1
         assert history[0].content == "hi"
 
+    async def test_active_session_override_uses_new_session_history(self) -> None:
+        memory = _MockMemoryStore()
+        await memory.ensure_session("test:c1")
+        await memory.append_turn(
+            "test:c1",
+            ConversationTurn(role="user", content="old session", source="user_input"),
+        )
+        await memory.ensure_session("test:c1:new")
+
+        agent = _MockAgentLoop()
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+        router.set_active_session("test", "c1", "test:c1:new")
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("fresh start"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert len(agent.calls) == 1
+        assert agent.calls[0]["history_messages"] == []
+        assert len(memory.sessions["test:c1"]) == 1
+        assert len(memory.sessions["test:c1:new"]) == 2
+
     async def test_memory_session_is_bound_to_active_workspace(
         self, tmp_path: Path
     ) -> None:

@@ -193,6 +193,14 @@ class MessageRouter:
         if match.matched:
             entry = self._commands.get(match.name)
             if entry is not None:
+                logger.debug(
+                    "router.command_matched",
+                    command=match.name,
+                    session_id=session_id,
+                    platform=inbound.platform,
+                    chat_id=inbound.chat_id,
+                    args_preview=match.args[:80],
+                )
                 result = await self._execute_command(
                     entry=entry,
                     args=match.args,
@@ -204,6 +212,16 @@ class MessageRouter:
                     default_reply_to=inbound.message_id,
                 )
                 if outbound is not None:
+                    active_after_command = self.get_active_session_id(
+                        inbound.platform, inbound.chat_id
+                    )
+                    logger.debug(
+                        "router.command_completed",
+                        command=match.name,
+                        original_session_id=session_id,
+                        active_session_id=active_after_command,
+                        active_session_changed=active_after_command != session_id,
+                    )
                     await self._send_outbound(inbound, session_id, outbound)
                 return
 
@@ -218,6 +236,7 @@ class MessageRouter:
             session_id=session_id,
             system_prompt=self._config.system_prompt,
             workspace_id=workspace_id,
+            attachments=inbound.attachments,
             source_tag="user_input",
         )
 

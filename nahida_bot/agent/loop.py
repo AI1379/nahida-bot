@@ -12,7 +12,7 @@ from typing import Any
 
 import structlog
 
-from nahida_bot.agent.context import ContextBuilder, ContextMessage
+from nahida_bot.agent.context import ContextBuilder, ContextMessage, ContextPart
 from nahida_bot.agent.metrics import MetricsCollector, Trace
 from nahida_bot.agent.providers import (
     ChatProvider,
@@ -126,6 +126,7 @@ class AgentLoop:
         *,
         user_message: str,
         system_prompt: str,
+        user_parts: list[ContextPart] | None = None,
         history_messages: list[ContextMessage] | None = None,
         workspace_root: Path | None = None,
         tools: list[ToolDefinition] | None = None,
@@ -143,9 +144,14 @@ class AgentLoop:
         active_provider = provider or self.provider
         active_builder = context_builder or self.context_builder
         trace = self.metrics.new_trace() if self.metrics else None
+        provider_default_model = getattr(active_provider, "model", "")
 
         logger.debug(
             "agent_loop.run",
+            trace_id=trace.trace_id if trace else "",
+            provider_name=getattr(active_provider, "name", ""),
+            provider_default_model=provider_default_model,
+            model_override=model or "",
             history_count=len(history_messages or []),
             history_roles=[m.role for m in (history_messages or [])[:6]],
             history_sources=[m.source for m in (history_messages or [])[:6]],
@@ -154,7 +160,12 @@ class AgentLoop:
 
         conversation = list(history_messages or [])
         conversation.append(
-            ContextMessage(role="user", source="user_input", content=user_message)
+            ContextMessage(
+                role="user",
+                source="user_input",
+                content=user_message,
+                parts=list(user_parts or []),
+            )
         )
         tool_messages: list[ContextMessage] = []
         assistant_messages: list[ContextMessage] = []
@@ -166,6 +177,15 @@ class AgentLoop:
                     system_prompt=system_prompt,
                     workspace_root=workspace_root,
                     history_messages=conversation,
+                )
+                logger.debug(
+                    "agent_loop.context_built",
+                    trace_id=trace.trace_id if trace else "",
+                    step=step,
+                    message_count=len(prompt_messages),
+                    roles=[m.role for m in prompt_messages],
+                    sources=[m.source for m in prompt_messages],
+                    model_override=model or "",
                 )
 
                 response = await self._call_provider_with_retry(
@@ -249,11 +269,39 @@ class AgentLoop:
             attempts += 1
             t0 = time.monotonic()
             try:
+                effective_model = model or getattr(active_provider, "model", "")
+                logger.debug(
+                    "agent_loop.provider_call_start",
+                    trace_id=trace.trace_id if trace else "",
+                    provider_name=getattr(active_provider, "name", ""),
+                    provider_api_family=getattr(active_provider, "api_family", ""),
+                    provider_default_model=getattr(active_provider, "model", ""),
+                    requested_model=model or "",
+                    effective_model=effective_model,
+                    step=step,
+                    attempt=attempts,
+                    message_count=len(messages),
+                    tool_count=len(tools or []),
+                    roles=[m.role for m in messages],
+                    sources=[m.source for m in messages],
+                )
                 response = await active_provider.chat(
                     messages=messages,
                     tools=tools,
                     timeout_seconds=self.config.provider_timeout_seconds,
                     model=model,
+                )
+                logger.debug(
+                    "agent_loop.provider_call_done",
+                    trace_id=trace.trace_id if trace else "",
+                    provider_name=getattr(active_provider, "name", ""),
+                    effective_model=effective_model,
+                    step=step,
+                    attempt=attempts,
+                    latency_seconds=round(time.monotonic() - t0, 3),
+                    finish_reason=response.finish_reason or "",
+                    tool_call_count=len(response.tool_calls),
+                    content_chars=len(response.content or ""),
                 )
                 if trace is not None and self.metrics is not None:
                     self.metrics.record_provider_call(
@@ -270,6 +318,18 @@ class AgentLoop:
                         retryable=exc.retryable,
                     )
                 can_retry = exc.retryable and attempts <= self.config.retry_attempts
+                logger.warning(
+                    "agent_loop.provider_call_failed",
+                    trace_id=trace.trace_id if trace else "",
+                    provider_name=getattr(active_provider, "name", ""),
+                    requested_model=model or "",
+                    effective_model=model or getattr(active_provider, "model", ""),
+                    step=step,
+                    attempt=attempts,
+                    error_code=exc.code,
+                    retryable=exc.retryable,
+                    will_retry=can_retry,
+                )
                 if not can_retry:
                     raise
                 await asyncio.sleep(self.config.retry_backoff_seconds)

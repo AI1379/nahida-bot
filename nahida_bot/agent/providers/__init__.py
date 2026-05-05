@@ -2,6 +2,7 @@
 
 from nahida_bot.agent.providers.base import (
     ChatProvider,
+    ModelCapabilities,
     ProviderResponse,
     TokenUsage,
     ToolCall,
@@ -43,6 +44,7 @@ import nahida_bot.agent.providers.anthropic as _anthropic  # noqa: F401
 __all__ = [
     "AnthropicProvider",
     "ChatProvider",
+    "ModelCapabilities",
     "OpenAICompatibleProvider",
     "ProviderAuthError",
     "ProviderBadResponseError",

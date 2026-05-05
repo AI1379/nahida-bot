@@ -101,14 +101,27 @@ class _ChannelRegistry:
 
 class _ProviderManager:
     def __init__(self) -> None:
-        self.slot = SimpleNamespace(id="p1")
+        self.slot = SimpleNamespace(id="p1", default_model="model-a")
+        self.slot_p2 = SimpleNamespace(id="p2", default_model="model-b")
 
     def list_available(self) -> list[dict[str, str]]:
-        return [{"provider_id": "p1", "model": "model-a"}]
+        return [
+            {"provider_id": "p1", "model": "model-a"},
+            {"provider_id": "p2", "model": "model-b"},
+        ]
 
     def resolve_model(self, model_name: str) -> Any:
         if model_name == "model-a":
             return self.slot
+        return None
+
+    def resolve_model_selection(self, model_name: str) -> Any:
+        if model_name == "model-a":
+            return self.slot, "model-a"
+        if model_name == "p2/model-b":
+            return self.slot_p2, "model-b"
+        if model_name == "model-b":
+            return self.slot_p2, "model-b"
         return None
 
 
@@ -279,10 +292,14 @@ async def test_event_subscription_and_cleanup(tmp_path: Path) -> None:
 async def test_provider_model_helpers(tmp_path: Path) -> None:
     api, _, _, _ = _api(tmp_path)
 
-    assert api.list_models() == [{"provider_id": "p1", "model": "model-a"}]
+    assert api.list_models() == [
+        {"provider_id": "p1", "model": "model-a"},
+        {"provider_id": "p2", "model": "model-b"},
+    ]
     assert await api.set_session_model("s1", "model-a") == "p1"
+    assert await api.set_session_model("s1", "p2/model-b") == "p2"
     assert await api.set_session_model("s1", "missing") is None
     assert await api.get_session_info("s1") == {
-        "provider_id": "p1",
-        "model": "model-a",
+        "provider_id": "p2",
+        "model": "model-b",
     }

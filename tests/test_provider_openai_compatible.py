@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.providers import (
     OpenAICompatibleProvider,
     ProviderAuthError,
@@ -19,6 +19,78 @@ from nahida_bot.agent.providers import (
 
 def _build_transport(handler):  # noqa: ANN001
     return httpx.MockTransport(handler)
+
+
+def test_openai_serializes_multimodal_parts() -> None:
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+    )
+
+    payload = provider.serialize_messages(
+        [
+            ContextMessage(
+                role="user",
+                source="u",
+                content="[image]",
+                parts=[
+                    ContextPart(type="text", text="describe this"),
+                    ContextPart(
+                        type="image_url",
+                        url="https://example.com/img.jpg",
+                        media_id="img_1",
+                    ),
+                    ContextPart(
+                        type="image_base64",
+                        data="abc123",
+                        mime_type="image/png",
+                        media_id="img_2",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    content = payload[0]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {"type": "text", "text": "describe this"}
+    assert content[1] == {
+        "type": "image_url",
+        "image_url": {"url": "https://example.com/img.jpg"},
+    }
+    assert content[2] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,abc123"},
+    }
+
+
+def test_openai_serializes_text_only_parts_as_plain_string() -> None:
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+    )
+
+    payload = provider.serialize_messages(
+        [
+            ContextMessage(
+                role="user",
+                source="u",
+                content="fallback",
+                parts=[
+                    ContextPart(type="text", text="what is this?"),
+                    ContextPart(
+                        type="image_description",
+                        text="A small diagram",
+                        media_id="img_1",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    assert payload[0]["content"] == "what is this?\nA small diagram"
 
 
 @pytest.mark.asyncio

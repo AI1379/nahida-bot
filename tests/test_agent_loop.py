@@ -7,7 +7,12 @@ import json
 
 import pytest
 
-from nahida_bot.agent.context import ContextBudget, ContextBuilder, ContextMessage
+from nahida_bot.agent.context import (
+    ContextBudget,
+    ContextBuilder,
+    ContextMessage,
+    ContextPart,
+)
 from nahida_bot.agent.loop import (
     AgentLoop,
     AgentLoopConfig,
@@ -91,6 +96,37 @@ async def test_agent_loop_returns_direct_response_without_tools() -> None:
     assert result.final_response == "hello"
     assert result.steps == 1
     assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_passes_user_parts_to_provider() -> None:
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="looks good", tool_calls=[])]
+    )
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    loop = AgentLoop(provider=provider, context_builder=builder)
+
+    await loop.run(
+        user_message="describe this",
+        user_parts=[
+            ContextPart(type="text", text="describe this"),
+            ContextPart(
+                type="image_url",
+                url="https://example.com/image.jpg",
+                media_id="img_1",
+            ),
+        ],
+        system_prompt="sys",
+    )
+
+    user_messages = [
+        msg for msg in provider.observed_messages[0] if msg.source == "user_input"
+    ]
+    assert len(user_messages) == 1
+    assert [part.type for part in user_messages[0].parts] == ["text", "image_url"]
 
 
 @pytest.mark.asyncio

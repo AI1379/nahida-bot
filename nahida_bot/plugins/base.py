@@ -23,6 +23,22 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True, frozen=True)
+class InboundAttachment:
+    """First-class inbound media object from an external platform."""
+
+    kind: str  # image, audio, video, file
+    platform_id: str  # resource_id / file_id
+    url: str = ""  # temp URL, may expire
+    path: str = ""  # local cached path, if downloaded
+    mime_type: str = ""
+    file_size: int = 0
+    width: int = 0
+    height: int = 0
+    alt_text: str = ""  # platform summary or generated description
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
 class InboundMessage:
     """Normalized message received from an external platform."""
 
@@ -36,6 +52,7 @@ class InboundMessage:
     reply_to: str = ""
     timestamp: float = 0.0
     command_prefix: str = "/"  # Prefix used for command matching on this platform
+    attachments: list[InboundAttachment] = field(default_factory=list)
 
 
 @dataclass(slots=True, frozen=True)

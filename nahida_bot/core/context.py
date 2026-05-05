@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from nahida_bot.plugins.base import InboundAttachment
+
 
 @dataclass(slots=True, frozen=True)
 class SessionContext:
@@ -19,4 +21,10 @@ class SessionContext:
 # Set by MessageRouter before each agent run; read by tool handlers.
 current_session: ContextVar[SessionContext | None] = ContextVar(
     "current_session", default=None
+)
+
+# Set by SessionRunner during an agent run so built-in tool handlers can resolve
+# media attached to the in-flight turn before that turn is persisted to memory.
+current_attachments: ContextVar[tuple[InboundAttachment, ...]] = ContextVar(
+    "current_attachments", default=()
 )

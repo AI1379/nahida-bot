@@ -135,6 +135,12 @@ async def test_reply_and_media_rendering() -> None:
     assert inbound.reply_to == "7"
     assert "[Media: type=image, resource_id=img-1" in inbound.text
     assert "[File: name=report.pdf, file_id=file-1" in inbound.text
+    assert [attachment.kind for attachment in inbound.attachments] == ["image", "file"]
+    assert inbound.attachments[0].platform_id == "img-1"
+    assert inbound.attachments[0].width == 640
+    assert inbound.attachments[0].metadata["trusted_url"] is False
+    assert inbound.attachments[1].platform_id == "file-1"
+    assert inbound.attachments[1].file_size == 1024
 
 
 async def test_resolves_forward_messages() -> None:

@@ -316,12 +316,26 @@ class RealBotAPI:
 
         router = self._event_bus.context.app.message_router
         if router is None:
+            self._logger.warning(
+                "session_new_failed",
+                platform=platform,
+                chat_id=chat_id,
+                reason="router_unavailable",
+            )
             return None
 
+        old_id = router.get_active_session_id(platform, chat_id)
         new_id = MessageRouter.make_new_session_id(platform, chat_id)
         router.set_active_session(platform, chat_id, new_id)
         if router.memory is not None:
             await router.memory.ensure_session(new_id)
+        self._logger.debug(
+            "session_new_created",
+            platform=platform,
+            chat_id=chat_id,
+            old_session_id=old_id,
+            new_session_id=new_id,
+        )
         return new_id
 
     def list_commands(self) -> list[CommandInfo]:
@@ -337,20 +351,33 @@ class RealBotAPI:
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         """Switch model for a session. Returns provider id or None."""
         if self._provider_manager is None or self._memory is None:
+            self._logger.debug(
+                "session_model_set_skipped",
+                session_id=session_id,
+                requested_model=model_name,
+                reason="missing_provider_manager_or_memory",
+            )
             return None
-        # Strip provider prefix from compound "provider_id/model" input
-        # so the stored model name is always the bare form the API expects.
-        bare_name = model_name
-        if "/" in model_name:
-            prefix, _, suffix = model_name.partition("/")
-            if self._provider_manager.get(prefix) is not None:
-                bare_name = suffix
-        slot = self._provider_manager.resolve_model(bare_name)
-        if slot is None:
+        resolved = self._provider_manager.resolve_model_selection(model_name)
+        if resolved is None:
+            self._logger.debug(
+                "session_model_not_found",
+                session_id=session_id,
+                requested_model=model_name,
+            )
             return None
+        slot, bare_name = resolved
         await self._memory.ensure_session(session_id)
         await self._memory.update_session_meta(
             session_id, {"provider_id": slot.id, "model": bare_name}
+        )
+        self._logger.debug(
+            "session_model_set",
+            session_id=session_id,
+            requested_model=model_name,
+            provider_id=slot.id,
+            stored_model=bare_name,
+            default_model=slot.default_model,
         )
         return slot.id
 
@@ -369,6 +396,13 @@ class RealBotAPI:
             if default_slot is not None:
                 result.setdefault("provider_id", default_slot.id)
                 result.setdefault("model", default_slot.default_model)
+        self._logger.debug(
+            "session_info_resolved",
+            session_id=session_id,
+            provider_id=result.get("provider_id", ""),
+            model=result.get("model", ""),
+            has_explicit_meta=bool(meta),
+        )
         return result
 
     def get_provider_manager(self) -> Any:

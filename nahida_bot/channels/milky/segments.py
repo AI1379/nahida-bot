@@ -528,16 +528,14 @@ def render_segment_plain_text(
         return f"[Reply: message_seq={segment.message_seq}{quoted}]"
     if isinstance(segment, IncomingImageSegment):
         size = f", size={segment.width}x{segment.height}" if segment.width else ""
-        url = f", temp_url={segment.temp_url}" if segment.temp_url else ""
         return (
             f"[Media: type=image, resource_id={segment.resource_id}"
-            f"{size}{url}, summary={segment.summary}]"
+            f"{size}, summary={segment.summary}]"
         )
     if isinstance(segment, IncomingRecordSegment):
-        url = f", temp_url={segment.temp_url}" if segment.temp_url else ""
         return (
             f"[Media: type=record, resource_id={segment.resource_id}, "
-            f"duration={segment.duration}s{url}]"
+            f"duration={segment.duration}s]"
         )
     if isinstance(segment, IncomingVideoSegment):
         size = f", size={segment.width}x{segment.height}" if segment.width else ""

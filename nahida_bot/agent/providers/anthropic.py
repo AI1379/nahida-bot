@@ -12,8 +12,9 @@ import json
 from dataclasses import dataclass, field
 
 import httpx
+import structlog
 
-from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ProviderResponse,
@@ -30,6 +31,8 @@ from nahida_bot.agent.providers.errors import (
 )
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
+
+logger = structlog.get_logger(__name__)
 
 # Anthropic stop_reason → normalised finish_reason mapping
 _STOP_REASON_MAP: dict[str, str] = {
@@ -126,9 +129,60 @@ class AnthropicProvider(ChatProvider):
                 result.append(self._serialize_tool_result_message(msg))
             else:
                 # user messages
-                result.append({"role": "user", "content": msg.content})
+                result.append(self._serialize_user_message(msg))
 
         return system_prompt, result
+
+    def _serialize_user_message(self, msg: ContextMessage) -> dict[str, object]:
+        if not msg.parts:
+            return {"role": "user", "content": msg.content}
+
+        blocks: list[dict[str, object]] = []
+        for part in msg.parts:
+            block = self._serialize_user_part(part)
+            if block is not None:
+                blocks.append(block)
+
+        if not blocks:
+            blocks.append({"type": "text", "text": msg.content})
+        return {"role": "user", "content": blocks}
+
+    def _serialize_user_part(self, part: ContextPart) -> dict[str, object] | None:
+        if part.type in {"text", "image_description"}:
+            if not part.text:
+                return None
+            return {"type": "text", "text": part.text}
+
+        if part.type == "image_url":
+            if not part.url:
+                return None
+            block: dict[str, object] = {
+                "type": "image",
+                "source": {
+                    "type": "url",
+                    "url": part.url,
+                },
+            }
+            if part.cache_control:
+                block["cache_control"] = {"type": part.cache_control}
+            return block
+
+        if part.type == "image_base64":
+            if not part.data or not part.mime_type:
+                return None
+            block = {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": part.mime_type,
+                    "data": part.data,
+                },
+            }
+            if part.cache_control:
+                block["cache_control"] = {"type": part.cache_control}
+            return block
+
+        return None
 
     def _serialize_assistant_message(self, msg: ContextMessage) -> dict[str, object]:
         """Serialize an assistant ContextMessage into Anthropic format.
@@ -251,6 +305,18 @@ class AnthropicProvider(ChatProvider):
         }
 
         try:
+            logger.debug(
+                "provider.anthropic.request",
+                provider_name=self.name,
+                base_url=self.base_url,
+                endpoint="/v1/messages",
+                model=payload["model"],
+                message_count=len(messages),
+                serialized_message_count=len(serialized_messages),
+                has_system=system_prompt is not None,
+                tool_count=len(tools or []),
+                timeout_seconds=timeout,
+            )
             client = self._ensure_client()
             response = await client.post(
                 endpoint, json=payload, headers=headers, timeout=timeout
@@ -278,6 +344,12 @@ class AnthropicProvider(ChatProvider):
             raise ProviderBadResponseError(
                 f"Provider rejected request: status {response.status_code} — {body_hint}"
             )
+        logger.debug(
+            "provider.anthropic.response",
+            provider_name=self.name,
+            model=payload["model"],
+            status_code=response.status_code,
+        )
 
         try:
             body = response.json()
@@ -392,9 +464,13 @@ class AnthropicProvider(ChatProvider):
         input_tokens = usage_raw.get("input_tokens", 0)
         output_tokens = usage_raw.get("output_tokens", 0)
         cache_read = usage_raw.get("cache_read_input_tokens", 0)
+        cache_creation = usage_raw.get("cache_creation_input_tokens", 0)
 
         return TokenUsage(
             input_tokens=input_tokens if isinstance(input_tokens, int) else 0,
             output_tokens=output_tokens if isinstance(output_tokens, int) else 0,
             cached_tokens=cache_read if isinstance(cache_read, int) else 0,
+            cache_creation_tokens=(
+                cache_creation if isinstance(cache_creation, int) else 0
+            ),
         )

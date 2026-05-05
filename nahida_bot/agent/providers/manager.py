@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from nahida_bot.agent.context import ContextBuilder
-from nahida_bot.agent.providers.base import ChatProvider
+from nahida_bot.agent.providers.base import ChatProvider, ModelCapabilities
 
 
 @dataclass(slots=True)
@@ -17,6 +17,20 @@ class ProviderSlot:
     context_builder: ContextBuilder
     default_model: str
     available_models: list[str] = field(default_factory=list)
+    capabilities_by_model: dict[str, ModelCapabilities] = field(default_factory=dict)
+
+    def supports_model(self, model: str) -> bool:
+        """Return whether this provider slot can serve ``model``."""
+        return not self.available_models or model in self.available_models
+
+    def resolve_capabilities(self, model: str | None = None) -> ModelCapabilities:
+        """Return capabilities for a specific model, falling back to slot default."""
+        resolved_model = model or self.default_model
+        if resolved_model in self.capabilities_by_model:
+            return self.capabilities_by_model[resolved_model]
+        if self.default_model in self.capabilities_by_model:
+            return self.capabilities_by_model[self.default_model]
+        return ModelCapabilities()
 
 
 class ProviderManager:
@@ -40,8 +54,10 @@ class ProviderManager:
         """Look up a provider slot by id."""
         return self._slots.get(provider_id)
 
-    def resolve_model(self, model_name: str) -> ProviderSlot | None:
-        """Find which provider serves a given model name.
+    def resolve_model_selection(
+        self, model_name: str
+    ) -> tuple[ProviderSlot, str] | None:
+        """Find the provider and provider-local model name for ``model_name``.
 
         Accepts both bare model names (``"MiniMax-M2.5"``) and compound
         ``provider_id/model_name`` format (``"minimax/MiniMax-M2.5"``).
@@ -58,12 +74,22 @@ class ProviderManager:
             provider_id, _, bare_model = model_name.partition("/")
             slot = self._slots.get(provider_id)
             if slot is not None:
-                if not slot.available_models or bare_model in slot.available_models:
-                    return slot
+                if slot.supports_model(bare_model):
+                    return slot, bare_model
+                return None
 
         for slot in self._slots.values():
-            if not slot.available_models or model_name in slot.available_models:
-                return slot
+            if slot.supports_model(model_name):
+                return slot, model_name
+        return None
+
+    def resolve_model(self, model_name: str) -> ProviderSlot | None:
+        """Find which provider serves a given model name."""
+        resolved = self.resolve_model_selection(model_name)
+        if resolved is None:
+            return None
+        slot, _ = resolved
+        return slot
         return None
 
     def list_available(self) -> list[dict[str, str]]:

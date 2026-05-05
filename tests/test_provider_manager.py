@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+from nahida_bot.agent.providers.base import ModelCapabilities
 from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
 
 
@@ -71,6 +72,24 @@ class TestProviderManagerResolveModel:
         pm = ProviderManager([s1])
         assert pm.resolve_model("nonexistent") is None
 
+    def test_resolve_model_selection_returns_slot_and_bare_model(self) -> None:
+        s1 = _slot("deepseek", models=["deepseek-chat", "deepseek-reasoner"])
+        pm = ProviderManager([s1])
+        assert pm.resolve_model_selection("deepseek-reasoner") == (
+            s1,
+            "deepseek-reasoner",
+        )
+
+    def test_resolve_model_selection_compound_returns_provider_local_model(
+        self,
+    ) -> None:
+        s1 = _slot("deepseek", models=["deepseek-chat", "deepseek-reasoner"])
+        pm = ProviderManager([s1])
+        assert pm.resolve_model_selection("deepseek/deepseek-reasoner") == (
+            s1,
+            "deepseek-reasoner",
+        )
+
 
 class TestProviderManagerListAvailable:
     def test_list_all(self) -> None:
@@ -95,3 +114,52 @@ class TestProviderManagerSlotIds:
     def test_slot_ids(self) -> None:
         pm = ProviderManager([_slot("a"), _slot("b"), _slot("c")])
         assert pm.slot_ids == ["a", "b", "c"]
+
+
+class TestProviderSlotCapabilities:
+    def test_default_capabilities(self) -> None:
+        s = _slot()
+        assert s.resolve_capabilities() == ModelCapabilities()
+        assert s.resolve_capabilities().image_input is False
+
+    def test_resolve_capabilities_returns_default_model(self) -> None:
+        cap = ModelCapabilities(image_input=True)
+        s = ProviderSlot(
+            id="vision",
+            provider=MagicMock(),
+            context_builder=MagicMock(),
+            default_model="gpt-5.2",
+            capabilities_by_model={"gpt-5.2": cap},
+        )
+        resolved = s.resolve_capabilities(None)
+        assert resolved.image_input is True
+
+    def test_resolve_capabilities_returns_model_specific(self) -> None:
+        default_cap = ModelCapabilities(image_input=False)
+        model_cap = ModelCapabilities(image_input=True)
+        s = ProviderSlot(
+            id="openai",
+            provider=MagicMock(),
+            context_builder=MagicMock(),
+            default_model="gpt-5-nano",
+            capabilities_by_model={
+                "gpt-5-nano": default_cap,
+                "gpt-5.2": model_cap,
+            },
+        )
+        assert s.resolve_capabilities("gpt-5-nano").image_input is False
+        assert s.resolve_capabilities("gpt-5.2").image_input is True
+
+    def test_resolve_capabilities_unknown_model_falls_back_to_default_model(
+        self,
+    ) -> None:
+        cap = ModelCapabilities(image_input=False, tool_calling=True)
+        s = ProviderSlot(
+            id="test",
+            provider=MagicMock(),
+            context_builder=MagicMock(),
+            default_model="model-a",
+            capabilities_by_model={"model-a": cap},
+        )
+        assert s.resolve_capabilities("unknown-model").image_input is False
+        assert s.resolve_capabilities("unknown-model").tool_calling is True

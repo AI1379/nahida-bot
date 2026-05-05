@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 
 import httpx
+import structlog
 
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.providers.base import (
@@ -25,6 +26,8 @@ from nahida_bot.agent.providers.errors import (
 from nahida_bot.agent.providers.reasoning import _ReasoningMixin
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
+
+logger = structlog.get_logger(__name__)
 
 
 @register_provider("openai-compatible", "OpenAI-compatible Provider")
@@ -97,6 +100,17 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
         }
 
         try:
+            logger.debug(
+                "provider.openai_compatible.request",
+                provider_name=self.name,
+                base_url=self.base_url,
+                endpoint="/chat/completions",
+                model=payload["model"],
+                message_count=len(messages),
+                serialized_message_count=len(payload["messages"]),  # type: ignore[arg-type]
+                tool_count=len(tools or []),
+                timeout_seconds=timeout,
+            )
             client = self._ensure_client()
             response = await client.post(
                 endpoint, json=payload, headers=headers, timeout=timeout
@@ -125,6 +139,12 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
             raise ProviderBadResponseError(
                 f"Provider rejected request: status {response.status_code} — {body_hint}"
             )
+        logger.debug(
+            "provider.openai_compatible.response",
+            provider_name=self.name,
+            model=payload["model"],
+            status_code=response.status_code,
+        )
 
         try:
             body = response.json()
@@ -192,7 +212,7 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
     def _serialize_message(self, message: ContextMessage) -> dict[str, object]:
         payload: dict[str, object] = {
             "role": message.role,
-            "content": message.content,
+            "content": self._serialize_openai_content(message),
         }
 
         # Inject reasoning into assistant history
@@ -204,7 +224,7 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
             if isinstance(tool_calls_raw, list):
                 tool_calls = self._serialize_assistant_tool_calls(tool_calls_raw)
                 if tool_calls:
-                    if not message.content:
+                    if not message.content and not message.parts:
                         payload["content"] = None
                     payload["tool_calls"] = tool_calls
 

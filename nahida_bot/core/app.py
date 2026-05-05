@@ -29,6 +29,7 @@ from nahida_bot.plugins.commands import CommandMatcher
 if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop
     from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.agent.providers import ModelCapabilities
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.core.session_runner import SessionRunner
     from nahida_bot.db.engine import DatabaseEngine
@@ -178,67 +179,46 @@ class Application:
         slots: list[ProviderSlot] = []
         providers_cfg = self.settings.providers
 
-        if providers_cfg:
-            # Multi-provider mode
-            for pid, cfg in providers_cfg.items():
-                if not cfg.api_key or not cfg.model:
-                    logger.warning(
-                        "application.provider_skipped",
-                        provider_id=pid,
-                        reason="missing api_key or model",
-                    )
-                    continue
-                provider = create_provider(
-                    cfg.type,
-                    base_url=cfg.base_url,
-                    api_key=cfg.api_key,
-                    model=cfg.model,
-                )
-                cb = ContextBuilder(budget=ContextBudget(), provider=provider)
-                models = cfg.models or [cfg.model]
-                slots.append(
-                    ProviderSlot(
-                        id=pid,
-                        provider=provider,
-                        context_builder=cb,
-                        default_model=cfg.model,
-                        available_models=models,
-                    )
-                )
-                self._providers_to_close.append(provider)
-                logger.info(
-                    "application.provider_initialized",
+        for pid, cfg in providers_cfg.items():
+            model_entries = _provider_model_entries(cfg.models)
+            if not cfg.api_key or not model_entries:
+                logger.warning(
+                    "application.provider_skipped",
                     provider_id=pid,
-                    provider_type=cfg.type,
-                    model=cfg.model,
+                    reason="missing api_key or models",
                 )
-        else:
-            # Legacy single-provider mode
-            provider_cfg = self.settings.provider
-            if provider_cfg.api_key and provider_cfg.model:
-                provider = create_provider(
-                    provider_cfg.type,
-                    base_url=provider_cfg.base_url,
-                    api_key=provider_cfg.api_key,
-                    model=provider_cfg.model,
+                continue
+
+            default_model = model_entries[0][0]
+            available_models = [name for name, _ in model_entries]
+            capabilities_by_model = {
+                name: _model_capabilities_from_config(raw)
+                for name, raw in model_entries
+            }
+            provider = create_provider(
+                cfg.type,
+                base_url=cfg.base_url,
+                api_key=cfg.api_key,
+                model=default_model,
+            )
+            cb = ContextBuilder(budget=ContextBudget(), provider=provider)
+            slots.append(
+                ProviderSlot(
+                    id=pid,
+                    provider=provider,
+                    context_builder=cb,
+                    default_model=default_model,
+                    available_models=available_models,
+                    capabilities_by_model=capabilities_by_model,
                 )
-                cb = ContextBuilder(budget=ContextBudget(), provider=provider)
-                models = provider_cfg.models or [provider_cfg.model]
-                slots.append(
-                    ProviderSlot(
-                        id="default",
-                        provider=provider,
-                        context_builder=cb,
-                        default_model=provider_cfg.model,
-                        available_models=models,
-                    )
-                )
-                self._providers_to_close.append(provider)
-                logger.info(
-                    "application.provider_initialized",
-                    provider_type=provider_cfg.type,
-                    model=provider_cfg.model,
-                )
+            )
+            self._providers_to_close.append(provider)
+            logger.info(
+                "application.provider_initialized",
+                provider_id=pid,
+                provider_type=cfg.type,
+                model=default_model,
+            )
 
         if slots:
             default_id = self.settings.default_provider or ""
@@ -253,7 +233,7 @@ class Application:
             logger.warning(
                 "application.no_provider",
                 msg="Provider not configured — agent loop disabled. "
-                "Set provider.api_key and provider.model in config.",
+                "Set providers.<id>.api_key and providers.<id>.models in config.",
             )
 
     def _init_workspace_subsystem(self) -> None:
@@ -271,6 +251,10 @@ class Application:
 
     def _init_scheduler(self) -> None:
         """Create the SessionRunner and SchedulerService."""
+        from pathlib import Path
+
+        from nahida_bot.agent.media.cache import MediaCache
+        from nahida_bot.agent.media.resolver import MediaPolicy, MediaResolver
         from nahida_bot.core.session_runner import SessionRunner
         from nahida_bot.scheduler.repository import CronRepository
         from nahida_bot.scheduler.service import SchedulerService
@@ -284,13 +268,69 @@ class Application:
             else None
         )
 
+        # Build media infrastructure from multimodal config
+        multimodal = self.settings.multimodal
+        cache_dir = str(Path(self.settings.db_path).parent / "media_cache")
+        media_cache = MediaCache(
+            cache_dir, ttl_seconds=multimodal.media_cache_ttl_seconds
+        )
+        media_policy = MediaPolicy(
+            max_image_bytes=multimodal.max_image_bytes,
+            supported_mime_types=("image/jpeg", "image/png", "image/webp"),
+            max_images_per_turn=multimodal.max_images_per_turn,
+            cache_ttl_seconds=multimodal.media_cache_ttl_seconds,
+            cache_dir=cache_dir,
+        )
+        media_resolver = MediaResolver(cache=media_cache, policy=media_policy)
+
         self.session_runner = SessionRunner(
             agent_loop=self.agent_loop,
             memory_store=self.memory_store,
             provider_manager=self._provider_manager,
             workspace_manager=self.workspace_manager,
             tool_registry=tool_registry,
+            multimodal_config=multimodal,
+            media_resolver=media_resolver,
+            channel_registry=self.channel_registry,
         )
+
+        # Register image_understand tool when fallback mode is "tool"
+        if multimodal.image_fallback_mode == "tool" and tool_registry is not None:
+            from nahida_bot.plugins.registry import ToolEntry
+
+            if tool_registry.get("image_understand") is None:
+                tool_registry.register(
+                    ToolEntry(
+                        name="image_understand",
+                        description=(
+                            "Analyze an image attached to the current conversation. "
+                            "Returns a detailed description, any visible text (OCR), "
+                            "and safety observations."
+                        ),
+                        parameters={
+                            "type": "object",
+                            "properties": {
+                                "media_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "The media ID of the image to analyze. "
+                                        "Use 'latest' for the most recent image."
+                                    ),
+                                },
+                                "question": {
+                                    "type": "string",
+                                    "description": (
+                                        "Optional specific question about the image."
+                                    ),
+                                },
+                            },
+                            "required": ["media_id"],
+                            "additionalProperties": False,
+                        },
+                        handler=self.session_runner.handle_image_understand_tool,
+                        plugin_id="builtin",
+                    )
+                )
 
         repo = CronRepository(self._db_engine)
         self.scheduler_service = SchedulerService(
@@ -555,3 +595,40 @@ class Application:
     def is_started(self) -> bool:
         """Check if application is started."""
         return self._started
+
+
+def _model_capabilities_from_config(raw: dict[str, Any]) -> "ModelCapabilities":
+    """Create ModelCapabilities from config, ignoring unknown keys."""
+    from nahida_bot.agent.providers import ModelCapabilities
+
+    if not raw:
+        return ModelCapabilities()
+    allowed = set(ModelCapabilities.__dataclass_fields__.keys())
+    values = {key: value for key, value in raw.items() if key in allowed}
+    if "supported_image_mime_types" in values and isinstance(
+        values["supported_image_mime_types"], list
+    ):
+        values["supported_image_mime_types"] = tuple(
+            str(item) for item in values["supported_image_mime_types"]
+        )
+    return ModelCapabilities(**values)
+
+
+def _provider_model_entries(
+    raw_models: list[Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Normalize provider model config into ``(model_name, capabilities)`` pairs."""
+    from nahida_bot.core.config import ProviderModelConfig
+
+    entries: list[tuple[str, dict[str, Any]]] = []
+    for raw in raw_models:
+        if isinstance(raw, str):
+            name = raw.strip()
+            if name:
+                entries.append((name, {}))
+            continue
+        if isinstance(raw, ProviderModelConfig):
+            name = raw.name.strip()
+            if name:
+                entries.append((name, raw.capabilities))
+    return entries

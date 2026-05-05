@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nahida_bot.agent.context import ContextBudget, ContextBuilder, ContextMessage
+import pytest
+
+from nahida_bot.agent.context import (
+    ContextBudget,
+    ContextBuilder,
+    ContextMessage,
+    ContextPart,
+)
 from nahida_bot.agent.providers import ChatProvider, ProviderResponse
 from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
 
@@ -72,14 +79,15 @@ class TestContextBuilder:
 
         # Assert
         assert [item.source for item in result] == [
-            "system_baseline",
-            "workspace_instruction:AGENTS.md",
-            "workspace_instruction:SOUL.md",
-            "workspace_instruction:USER.md",
+            "combined_system",
             "history",
             "history",
             "tool_call",
         ]
+        assert "**system_baseline**" in result[0].content
+        assert "**workspace_instruction:AGENTS.md**" in result[0].content
+        assert "**workspace_instruction:SOUL.md**" in result[0].content
+        assert "**workspace_instruction:USER.md**" in result[0].content
 
     def test_budget_sliding_window_keeps_latest_messages(self, temp_dir: Path) -> None:
         """Sliding window should keep newest dynamic messages first."""
@@ -235,11 +243,10 @@ Use workspace_read before workspace_write.
         )
 
         # Assert
-        assert [item.source for item in result] == [
-            "system_baseline",
-            "workspace_instruction:AGENTS.md",
-            "workspace_skill:files",
-        ]
+        assert [item.source for item in result] == ["combined_system"]
+        assert "**system_baseline**" in result[0].content
+        assert "**workspace_instruction:AGENTS.md**" in result[0].content
+        assert "**workspace_skill:files**" in result[0].content
 
     def test_provider_tokenizer_is_used_when_available(self) -> None:
         """Context builder should use provider tokenizer when provider exposes one."""
@@ -302,3 +309,82 @@ Use workspace_read before workspace_write.
 
         # Assert
         assert len(result) >= 1
+
+
+class TestContextPart:
+    def test_text_part(self) -> None:
+        part = ContextPart(type="text", text="hello")
+        assert part.type == "text"
+        assert part.text == "hello"
+        assert part.url == ""
+        assert part.data == ""
+
+    def test_image_url_part(self) -> None:
+        part = ContextPart(type="image_url", url="http://example.com/img.jpg")
+        assert part.type == "image_url"
+        assert part.url == "http://example.com/img.jpg"
+
+    def test_image_base64_part(self) -> None:
+        part = ContextPart(
+            type="image_base64",
+            data="iVBORw0KGgo=",
+            mime_type="image/png",
+            media_id="img_123",
+        )
+        assert part.type == "image_base64"
+        assert part.data == "iVBORw0KGgo="
+        assert part.mime_type == "image/png"
+
+    def test_frozen(self) -> None:
+        import dataclasses
+
+        part = ContextPart(type="text", text="hello")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            part.text = "changed"  # type: ignore[misc]
+
+
+class TestContextMessageParts:
+    def test_default_empty_parts(self) -> None:
+        msg = ContextMessage(role="user", source="test", content="hello")
+        assert msg.parts == []
+
+    def test_with_parts(self) -> None:
+        parts = [
+            ContextPart(type="text", text="describe this"),
+            ContextPart(
+                type="image_url",
+                url="http://example.com/img.jpg",
+                media_id="img_123",
+            ),
+        ]
+        msg = ContextMessage(
+            role="user",
+            source="user_input",
+            content="[Image attached]",
+            parts=parts,
+        )
+        assert len(msg.parts) == 2
+        assert msg.parts[0].type == "text"
+        assert msg.parts[1].type == "image_url"
+
+    def test_backward_compat_no_parts(self) -> None:
+        msg = ContextMessage(role="user", source="test", content="hello")
+        assert msg.content == "hello"
+        assert msg.parts == []
+        assert msg.reasoning is None
+
+    def test_token_budget_counts_parts(self) -> None:
+        builder = ContextBuilder(
+            tokenizer=CharacterEstimateTokenizer(chars_per_token=1)
+        )
+        without_parts = ContextMessage(role="user", source="test", content="hello")
+        with_parts = ContextMessage(
+            role="user",
+            source="test",
+            content="hello",
+            parts=[ContextPart(type="image_base64", data="x" * 100)],
+        )
+
+        assert builder._estimate_tokens([with_parts]) > builder._estimate_tokens(
+            [without_parts]
+        )

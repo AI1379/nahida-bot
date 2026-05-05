@@ -71,7 +71,7 @@ def test_parse_text_mention_and_media_segments() -> None:
     rendered = render_segments_plain_text(segments)
     assert "hello @Alice" in rendered
     assert "[Media: type=image, resource_id=img-1" in rendered
-    assert "temp_url=https://example.com/i.jpg" in rendered
+    assert "temp_url=https://example.com/i.jpg" not in rendered
     assert "[Media: type=record, resource_id=voice-1" in rendered
     assert "[Media: type=video, resource_id=video-1" in rendered
     assert "[File: name=report.pdf, file_id=file-1" in rendered

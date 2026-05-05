@@ -1,23 +1,26 @@
 """Application configuration."""
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+ImageFallbackMode = Literal["auto", "tool", "off"]
+MediaContextPolicy = Literal["cache_aware", "description_only", "native_recent"]
 
 
-class ProviderConfig(BaseModel):
-    """LLM provider configuration."""
+class ProviderModelConfig(BaseModel):
+    """One model entry under a provider."""
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    type: str = "openai-compatible"
-    api_key: str = ""
-    base_url: str = ""
-    model: str = ""
-    models: list[str] = []
+    name: str
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+
+
+ProviderModelEntry = str | ProviderModelConfig
 
 
 class ProviderEntryConfig(BaseModel):
@@ -28,8 +31,21 @@ class ProviderEntryConfig(BaseModel):
     type: str = "openai-compatible"
     api_key: str = ""
     base_url: str = ""
-    model: str = ""
-    models: list[str] = []
+    models: list[ProviderModelEntry] = Field(default_factory=list)
+
+
+class MultimodalConfig(BaseModel):
+    """Multimodal context configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    image_fallback_mode: ImageFallbackMode = "auto"
+    media_context_policy: MediaContextPolicy = "cache_aware"
+    image_fallback_provider: str = ""
+    image_fallback_model: str = ""
+    max_images_per_turn: int = Field(default=4, ge=0)
+    max_image_bytes: int = Field(default=10485760, ge=0)  # 10 MB
+    media_cache_ttl_seconds: int = Field(default=3600, ge=0)
 
 
 class Settings(BaseModel):
@@ -60,13 +76,12 @@ class Settings(BaseModel):
     # Agent / Router
     system_prompt: str = "You are a helpful assistant."
 
-    # Provider (LLM backend) — single provider (legacy)
-    provider: ProviderConfig = ProviderConfig()
-
-    # Multi-provider (new). Dict keyed by provider id.
-    # If non-empty, takes priority over the single `provider` field.
+    # LLM providers. Dict keyed by provider id.
     providers: dict[str, ProviderEntryConfig] = {}
     default_provider: str = ""
+
+    # Multimodal context
+    multimodal: MultimodalConfig = MultimodalConfig()
 
 
 def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:

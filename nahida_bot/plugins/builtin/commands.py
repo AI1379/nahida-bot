@@ -851,16 +851,45 @@ class BuiltinCommandsPlugin(Plugin):
                 return "No providers configured."
             info = await self.api.get_session_info(session_id)
             current_model = info.get("model", "")
+            current_provider = info.get("provider_id", "")
+            _logger.debug(
+                "cmd.model.list",
+                session_id=session_id,
+                current_provider=current_provider,
+                current_model=current_model,
+                model_count=len(models),
+            )
             lines = ["Available models:"]
             for entry in models:
-                marker = " (current)" if entry["model"] == current_model else ""
+                marker = (
+                    " (current)"
+                    if entry["provider_id"] == current_provider
+                    and entry["model"] == current_model
+                    else ""
+                )
                 lines.append(f"  {entry['provider_id']}/{entry['model']}{marker}")
             return "\n".join(lines)
 
         model_name = args.strip()
+        _logger.debug(
+            "cmd.model.switch_attempt",
+            session_id=session_id,
+            requested_model=model_name,
+        )
         provider_id = await self.api.set_session_model(session_id, model_name)
         if provider_id is not None:
+            _logger.debug(
+                "cmd.model.switch_success",
+                session_id=session_id,
+                requested_model=model_name,
+                provider_id=provider_id,
+            )
             return f"Switched to {model_name} (via {provider_id})"
+        _logger.debug(
+            "cmd.model.switch_not_found",
+            session_id=session_id,
+            requested_model=model_name,
+        )
         return f"Model '{model_name}' not found in any provider."
 
     async def _cmd_help(

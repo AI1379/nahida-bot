@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import structlog
 import yaml
 
 from nahida_bot.agent.tokenization import Tokenizer, resolve_tokenizer
+from nahida_bot.core.logging import log_trace
+
+logger = structlog.get_logger(__name__)
 
 
 class ReasoningPolicy(Enum):
@@ -34,6 +38,22 @@ MessageRole = Literal["system", "user", "assistant", "tool"]
 
 
 @dataclass(slots=True, frozen=True)
+class ContextPart:
+    """Multimodal content part for provider request context.
+
+    ``type`` values: ``text``, ``image_url``, ``image_base64``, ``image_description``.
+    """
+
+    type: str
+    text: str = ""
+    url: str = ""
+    data: str = ""  # base64, only after size/mime validation
+    mime_type: str = ""
+    media_id: str = ""
+    cache_control: str = ""  # "ephemeral" | ""
+
+
+@dataclass(slots=True, frozen=True)
 class ContextMessage:
     """Single message unit used to build provider request context."""
 
@@ -46,6 +66,9 @@ class ContextMessage:
     reasoning: str | None = None
     reasoning_signature: str | None = None
     has_redacted_thinking: bool = False
+
+    # Multimodal support (Phase 2.9 — default empty for backward compat)
+    parts: list[ContextPart] = field(default_factory=list)
 
 
 @dataclass(slots=True, frozen=True)
@@ -99,6 +122,34 @@ class ContextBuilder:
             fallback_tokenizer=fallback_tokenizer,
         )
 
+    def _merge_all_system_messages(
+        self, messages: list[ContextMessage]
+    ) -> list[ContextMessage]:
+        """Combine all system messages into one, concatenating content and merging metadata."""
+
+        # TODO: Optimizable. Just for convenience now.
+        system_messages = [msg for msg in messages if msg.role == "system"]
+        if not system_messages:
+            return []
+
+        combined_content = "\n\n".join(
+            f"**{message.source}**\n\n{message.content}" for message in system_messages
+        )
+
+        merged_metadata: dict[str, object] = {}
+        for message in system_messages:
+            if message.metadata:
+                merged_metadata.update(message.metadata)
+
+        return [
+            ContextMessage(
+                role="system",
+                source="combined_system",
+                content=combined_content,
+                metadata=merged_metadata if merged_metadata else None,
+            )
+        ]
+
     def load_workspace_instructions(self, workspace_root: Path) -> list[ContextMessage]:
         """Load instruction files in strict priority order."""
         messages: list[ContextMessage] = []
@@ -144,6 +195,7 @@ class ContextBuilder:
         workspace_root: Path | None = None,
         history_messages: list[ContextMessage] | None = None,
         tool_messages: list[ContextMessage] | None = None,
+        single_system_message: bool = True,
     ) -> list[ContextMessage]:
         """Build ordered context and apply budget policy.
 
@@ -165,16 +217,65 @@ class ContextBuilder:
             prefix_messages.extend(self.load_workspace_instructions(workspace_root))
             prefix_messages.extend(self.load_workspace_skills(workspace_root))
 
+        # All possible system messages are pushed to prefix now, so merge them here.
+        if single_system_message:
+            prefix_messages = self._merge_all_system_messages(prefix_messages)
+
         dynamic_messages = [*(history_messages or []), *(tool_messages or [])]
         merged = [*prefix_messages, *dynamic_messages]
 
-        if self._estimate_tokens(merged) <= self.budget.usable_tokens:
+        merged_tokens = self._estimate_tokens(merged)
+        logger.debug(
+            "context_builder.build_start",
+            prefix_count=len(prefix_messages),
+            dynamic_count=len(dynamic_messages),
+            merged_count=len(merged),
+            merged_tokens=merged_tokens,
+            usable_tokens=self.budget.usable_tokens,
+            roles=[m.role for m in merged],
+            sources=[m.source for m in merged],
+        )
+        log_trace(
+            logger,
+            "context_builder.message_trace",
+            messages=[
+                {
+                    "index": idx,
+                    "role": message.role,
+                    "source": message.source,
+                    "content_chars": len(message.content),
+                    "content_preview": message.content[:200],
+                    "part_types": [part.type for part in message.parts],
+                    "has_reasoning": bool(message.reasoning),
+                    "has_reasoning_signature": bool(message.reasoning_signature),
+                }
+                for idx, message in enumerate(merged)
+            ],
+        )
+
+        if merged_tokens <= self.budget.usable_tokens:
+            logger.debug(
+                "context_builder.build_done",
+                reason="within_budget",
+                message_count=len(merged),
+                estimated_tokens=merged_tokens,
+                usable_tokens=self.budget.usable_tokens,
+            )
             return merged
 
         windowed_dynamic, dropped = self._sliding_window(
             dynamic_messages, prefix_messages
         )
         windowed = [*prefix_messages, *windowed_dynamic]
+        logger.debug(
+            "context_builder.sliding_window_applied",
+            kept_dynamic_count=len(windowed_dynamic),
+            dropped_count=len(dropped),
+            windowed_tokens=self._estimate_tokens(windowed),
+            usable_tokens=self.budget.usable_tokens,
+            dropped_roles=[m.role for m in dropped],
+            dropped_sources=[m.source for m in dropped],
+        )
 
         if not dropped:
             return windowed
@@ -186,6 +287,13 @@ class ContextBuilder:
             summary_message=summary_message,
         )
         if with_summary is not None:
+            logger.debug(
+                "context_builder.build_done",
+                reason="summary_fit",
+                message_count=len(with_summary),
+                estimated_tokens=self._estimate_tokens(with_summary),
+                summary_chars=len(summary_message.content),
+            )
             return with_summary
 
         compact_summary = self._truncate_message_to_budget(
@@ -193,6 +301,12 @@ class ContextBuilder:
             self.budget.usable_tokens - self._estimate_tokens(windowed),
         )
         if compact_summary is None:
+            logger.debug(
+                "context_builder.build_done",
+                reason="window_without_summary",
+                message_count=len(windowed),
+                estimated_tokens=self._estimate_tokens(windowed),
+            )
             return windowed
 
         maybe_summarized = self._fit_summary_with_window(
@@ -201,8 +315,21 @@ class ContextBuilder:
             summary_message=compact_summary,
         )
         if maybe_summarized is not None:
+            logger.debug(
+                "context_builder.build_done",
+                reason="compact_summary_fit",
+                message_count=len(maybe_summarized),
+                estimated_tokens=self._estimate_tokens(maybe_summarized),
+                summary_chars=len(compact_summary.content),
+            )
             return maybe_summarized
 
+        logger.debug(
+            "context_builder.build_done",
+            reason="window_after_summary_failed",
+            message_count=len(windowed),
+            estimated_tokens=self._estimate_tokens(windowed),
+        )
         return windowed
 
     def _sliding_window(
@@ -320,14 +447,34 @@ class ContextBuilder:
                 if message.metadata is not None
                 else ""
             )
+            parts_serialized = self._serialize_parts_for_budget(message)
             serialized = (
                 f"role:{message.role}\n"
                 f"source:{message.source}\n"
                 f"content:{message.content}\n"
+                f"parts:{parts_serialized}\n"
                 f"metadata:{metadata_serialized}"
             )
             total += self.tokenizer.count_tokens(serialized)
         return total
+
+    def _serialize_parts_for_budget(self, message: ContextMessage) -> str:
+        if not message.parts:
+            return ""
+        return json.dumps(
+            [
+                {
+                    "type": part.type,
+                    "text": part.text,
+                    "url": part.url,
+                    "data": part.data,
+                    "mime_type": part.mime_type,
+                    "media_id": part.media_id,
+                }
+                for part in message.parts
+            ],
+            sort_keys=True,
+        )
 
     def _parse_skill_file(
         self, skill_file: Path, workspace_root: Path

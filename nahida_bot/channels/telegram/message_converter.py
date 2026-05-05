@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from nahida_bot.plugins.base import InboundMessage
+from nahida_bot.plugins.base import InboundAttachment, InboundMessage
 
 
 class TelegramMessageConverter:
@@ -45,6 +45,8 @@ class TelegramMessageConverter:
         msg_date = msg_data.get("date")
         timestamp = msg_date if isinstance(msg_date, (int, float)) else time.time()
 
+        attachments = self._extract_attachments(msg_data)
+
         return InboundMessage(
             message_id=str(msg_data.get("message_id", "0")),
             platform="telegram",
@@ -56,4 +58,102 @@ class TelegramMessageConverter:
             reply_to=reply_to,
             timestamp=float(timestamp),
             command_prefix="/",
+            attachments=attachments,
         )
+
+    @staticmethod
+    def _extract_attachments(msg_data: dict[str, Any]) -> list[InboundAttachment]:
+        """Extract InboundAttachment objects from Telegram media fields."""
+        attachments: list[InboundAttachment] = []
+
+        photos = msg_data.get("photo")
+        if isinstance(photos, list) and photos:
+            largest = photos[-1]
+            if isinstance(largest, dict):
+                attachments.append(
+                    InboundAttachment(
+                        kind="image",
+                        platform_id=str(largest.get("file_id", "")),
+                        width=_safe_int(largest.get("width")),
+                        height=_safe_int(largest.get("height")),
+                    )
+                )
+
+        sticker = msg_data.get("sticker")
+        if isinstance(sticker, dict) and not photos:
+            attachments.append(
+                InboundAttachment(
+                    kind="image",
+                    platform_id=str(sticker.get("file_id", "")),
+                    alt_text=sticker.get("emoji", ""),
+                    metadata={"sticker": True},
+                )
+            )
+
+        doc = msg_data.get("document")
+        if isinstance(doc, dict):
+            attachments.append(
+                InboundAttachment(
+                    kind="file",
+                    platform_id=str(doc.get("file_id", "")),
+                    mime_type=str(doc.get("mime_type", "")),
+                    file_size=_safe_int(doc.get("file_size")),
+                    metadata={"file_name": doc.get("file_name", "")},
+                )
+            )
+
+        video = msg_data.get("video")
+        if isinstance(video, dict):
+            attachments.append(
+                InboundAttachment(
+                    kind="video",
+                    platform_id=str(video.get("file_id", "")),
+                    mime_type=str(video.get("mime_type", "")),
+                    file_size=_safe_int(video.get("file_size")),
+                    width=_safe_int(video.get("width")),
+                    height=_safe_int(video.get("height")),
+                )
+            )
+
+        audio = msg_data.get("audio")
+        if isinstance(audio, dict):
+            attachments.append(
+                InboundAttachment(
+                    kind="audio",
+                    platform_id=str(audio.get("file_id", "")),
+                    mime_type=str(audio.get("mime_type", "")),
+                    file_size=_safe_int(audio.get("file_size")),
+                    metadata={"file_name": audio.get("file_name", "")},
+                )
+            )
+
+        voice = msg_data.get("voice")
+        if isinstance(voice, dict):
+            attachments.append(
+                InboundAttachment(
+                    kind="audio",
+                    platform_id=str(voice.get("file_id", "")),
+                    mime_type=str(voice.get("mime_type", "")),
+                    metadata={"duration": voice.get("duration", 0), "voice": True},
+                )
+            )
+
+        animation = msg_data.get("animation")
+        if isinstance(animation, dict):
+            attachments.append(
+                InboundAttachment(
+                    kind="video",
+                    platform_id=str(animation.get("file_id", "")),
+                    mime_type=str(animation.get("mime_type", "")),
+                    metadata={"animation": True},
+                )
+            )
+
+        return attachments
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

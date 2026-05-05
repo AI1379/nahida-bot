@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
-from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.providers.anthropic import AnthropicProvider
 
 
@@ -33,6 +33,61 @@ def _mock_anthropic_provider(monkeypatch, handler) -> AnthropicProvider:
         api_key="test-key",
         model="claude-sonnet-4-20250514",
     )
+
+
+def test_anthropic_serializes_multimodal_user_parts() -> None:
+    provider = AnthropicProvider(
+        base_url="https://api.anthropic.com",
+        api_key="test-key",
+        model="claude-sonnet-4-20250514",
+    )
+
+    system, messages = provider._serialize_messages_anthropic(
+        [
+            ContextMessage(
+                role="user",
+                source="u",
+                content="[image]",
+                parts=[
+                    ContextPart(type="text", text="describe this"),
+                    ContextPart(
+                        type="image_url",
+                        url="https://example.com/img.jpg",
+                    ),
+                    ContextPart(
+                        type="image_base64",
+                        data="abc123",
+                        mime_type="image/png",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    assert system is None
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": "https://example.com/img.jpg",
+                    },
+                },
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "abc123",
+                    },
+                },
+            ],
+        }
+    ]
 
 
 # ── Text-only response ──
