@@ -25,32 +25,52 @@ plugin_paths:
 system_prompt: "You are a helpful assistant."
 
 # ── LLM Providers（dict 格式，key 即 provider id）───
-# 支持多 provider 配置，每个有独立的 api_key、model、models 列表。
-# 通过 /model 命令可在聊天中切换模型。
+# 支持多 provider 配置，每个 provider 有独立的 api_key 和 models 列表。
+# models 的第一个元素是该 provider 的默认模型；每个模型可以是字符串，
+# 也可以是 {name, capabilities} 对象。通过 /model 命令可在聊天中切换模型。
 #
 # providers:
 #   deepseek-main:
 #     type: deepseek
 #     api_key: "${DEEPSEEK_API_KEY}"
-#     model: "deepseek-chat"
 #     models: ["deepseek-chat", "deepseek-reasoner"]
 #   glm:
 #     type: glm
 #     api_key: "${GLM_API_KEY}"
-#     model: "glm-4-flash"
 #     models: ["glm-4-flash", "glm-4-plus"]
+#   vision:
+#     type: openai-compatible
+#     api_key: "${VISION_API_KEY}"
+#     base_url: "${VISION_BASE_URL}"
+#     models:
+#       - name: "vision-model"
+#         capabilities:
+#           image_input: true
+#           max_image_count: 4
 #
 # default_provider: deepseek-main   # 可选，默认使用第一个 key
 
-# 单 provider 模式（兼容旧配置）：
-# model 为默认模型；models 列出该 provider 支持的所有模型，
-# 可通过 /model 命令在聊天中切换。
-provider:
-  type: "openai-compatible"
-  api_key: "${LLM_API_KEY}"
-  base_url: "${LLM_BASE_URL}"
-  model: "${LLM_MODEL}"
-  # models: ["model-a", "model-b"]   # 可选：列出可切换的模型
+providers:
+  default:
+    type: "openai-compatible"
+    api_key: "${LLM_API_KEY}"
+    base_url: "${LLM_BASE_URL}"
+    models:
+      - "${LLM_MODEL}"
+
+default_provider: default
+
+# ── 多模态 / 图片理解 ─────────────────────────────────
+# 主模型有 models[].capabilities.image_input=true 时会直接传图；
+# 主模型没有 image_input 时，按 image_fallback_mode 决定是否调用 fallback vision。
+multimodal:
+  image_fallback_mode: "auto"        # auto / tool / off
+  media_context_policy: "cache_aware" # cache_aware / native_recent / description_only
+  image_fallback_provider: ""        # 例如 "vision"
+  image_fallback_model: ""           # 例如 "vision-model"
+  max_images_per_turn: 4
+  max_image_bytes: 10485760
+  media_cache_ttl_seconds: 3600
 
 # ── 插件配置 ──────────────────────────────────────────
 # Settings 的 extra="allow" 机制：顶层 key 如果不是已知字段，

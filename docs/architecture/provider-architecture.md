@@ -1,6 +1,6 @@
 # Provider 多后端架构
 
-> ⚠️ **当前实现风险提示**：现有 `agent/providers/openai_compatible.py` 仅处理标准 OpenAI 响应格式，未考虑不同 LLM 后端的响应差异，特别是推理链（thinking chain）支持。
+> 当前 Provider 层已经完成 OpenAI 兼容族、DeepSeek/Groq reasoning 字段和 Anthropic Messages API 的基础适配。剩余架构重点不再是“只支持标准 OpenAI 响应”的早期风险，而是模型能力声明、流式响应、多模态输入和持久化上下文策略。
 
 ## A. 各后端响应格式调研
 
@@ -1089,6 +1089,8 @@ tests/
 
 4. **Anthropic `serialize_messages` 返回值**：返回 `tuple[str | None, list[dict]]` 而非 `list[dict]`，因为 Anthropic 要求 system prompt 作为独立顶层参数传递。
 
+5. **Reasoning 上下文策略尚未完全落地**：`ContextBudget` 已有 `reasoning_policy` 和 `max_reasoning_tokens` 字段，`AgentLoop._build_assistant_message()` 也会把 Provider 返回的 reasoning 写入 `ContextMessage`；但当前 `ContextBuilder` 的预算估算、裁剪和 `SessionRunner._load_history()` 恢复路径没有实际保留/应用 reasoning、signature 或 metadata。文档中“上下文策略完整实现”的描述应视为目标状态，后续需要补齐实现和测试。
+
 **Provider 注册表状态**（通过 `list_providers()` 可查）：
 
 | Provider Type | Class | API Family | Key Features |
@@ -1115,7 +1117,186 @@ tests/
 
 ---
 
-## F. 流式响应（未来扩展）
+## F. 图像理解与多模态上下文（规划）
+
+目标：当当前 session 的主模型原生支持图片输入时，把图片作为结构化内容块直接传入模型；当主模型不支持图片输入时，提供 `image_understand` 能力，由配置的 vision fallback 模型生成图片描述，再把描述和图片引用转交给主模型。这个能力属于 Provider/Context 边界，不能只做成某个 Channel 的文本降级。
+
+### F.1 能力模型
+
+新增显式能力声明，按“provider slot + 具体 model”解析，而不是只按 Provider 类型判断：
+
+```python
+@dataclass(slots=True, frozen=True)
+class ModelCapabilities:
+    text_input: bool = True
+    image_input: bool = False
+    tool_calling: bool = True
+    reasoning: bool = False
+    prompt_cache: bool = False
+    prompt_cache_images: bool = False
+    explicit_context_cache: bool = False
+    prompt_cache_min_tokens: int = 0
+    max_image_count: int = 0
+    max_image_bytes: int = 0
+    supported_image_mime_types: tuple[str, ...] = ("image/jpeg", "image/png", "image/webp")
+```
+
+解析优先级：
+
+1. **显式配置优先**：`providers.<id>.models[]` 中模型对象的 `capabilities` 覆盖所有推断；字符串模型名使用默认关闭能力。
+2. **Provider 内置默认值**：OpenAI/Anthropic/Gemini 等 Provider 可以按已知模型名前缀提供保守默认。
+3. **可选远端探测**：如果某 Provider 支持 list models 或模型元数据，可补充能力，但不能覆盖显式配置。
+4. **未知能力默认关闭**：未知模型不假设支持图片输入，避免把图片 URL/base64 发给不兼容接口。
+
+`ProviderSlot` 应持有 `capabilities_by_model`，`ProviderManager.resolve_model()` 返回 slot 后，`SessionRunner` 使用实际 `selected_model or slot.default_model` 解析本轮能力。配置层不再有 provider 级 `model` 或 `capabilities`；默认模型就是 `models` 列表第一个元素。
+
+缓存相关能力也必须显式建模。OpenAI prompt caching 是自动前缀缓存，图片、工具和完整 messages 都可能被缓存，但要求内容块和参数保持一致；Anthropic 支持 `cache_control`，缓存顺序为 tools -> system -> messages，图片/文档块可作为 user message content 缓存；Gemini 同时有隐式缓存和显式 cached content。不同 Provider 对“图片是否可缓存、是否需要显式 cache id、最小 token 阈值和 TTL”的语义不同，不能只用一个布尔值表示。
+
+### F.2 消息与上下文数据结构
+
+当前 `InboundMessage.text` 只能承载纯文本，Milky 图片会降级成 `[Media: type=image, resource_id=...]`。规划新增第一类入站媒体对象，并保留文本降级作为可读 fallback：
+
+```python
+@dataclass(slots=True, frozen=True)
+class InboundAttachment:
+    kind: str                 # image, audio, video, file
+    platform_id: str          # resource_id/file_id/message scoped id
+    url: str = ""             # temp URL, may expire
+    path: str = ""            # local cached path, if downloaded
+    mime_type: str = ""
+    file_size: int = 0
+    width: int = 0
+    height: int = 0
+    alt_text: str = ""        # platform summary or generated description
+    metadata: dict[str, object] = field(default_factory=dict)
+```
+
+`InboundMessage` 增加 `attachments: list[InboundAttachment] = field(default_factory=list)`。`ContextMessage` 保持 `content: str` 兼容旧代码，同时增加 `parts: list[ContextPart]`：
+
+```python
+@dataclass(slots=True, frozen=True)
+class ContextPart:
+    type: str                 # text, image_url, image_base64, image_description
+    text: str = ""
+    url: str = ""
+    data: str = ""            # base64 only after size/mime validation
+    mime_type: str = ""
+    media_id: str = ""
+```
+
+Provider 的 `serialize_messages()` 负责把 `ContextPart` 转成各自格式：
+
+- OpenAI 兼容 vision：`content: [{"type":"text"}, {"type":"image_url"}]`
+- Anthropic：`content: [{"type":"text"}, {"type":"image", "source": ...}]`
+- Gemini 原生：`parts: [text, inline_data/file_data]`
+
+### F.3 主路径：原生多模态
+
+当本轮主模型 `image_input=True`：
+
+1. Channel converter 解析图片段，生成 `InboundAttachment(kind="image")`，优先带 `path`，没有本地缓存时带临时 URL。
+2. `SessionRunner` 在调用 `AgentLoop.run()` 前把用户文本和图片附件组装成 `ContextMessage(parts=[text, image...])`。
+3. `ContextBuilder` 预算时同时估算文本 token、图片预算和缓存收益；超过 `max_image_count` 时优先保留最近且可稳定重放的图片，其余降级为描述或平台摘要。
+4. Provider 序列化时只发送经过校验的 URL/base64/path，不把原始 `raw_event` 直接透传给模型。
+5. `MemoryStore` 持久化用户回合时保存文本、媒体引用 metadata、缓存键和已生成描述；默认不保存原始 base64。
+
+### F.4 Fallback 路径：`image_understand`
+
+当本轮主模型 `image_input=False` 且消息含图片：
+
+1. `SessionRunner` 注入一个内置工具定义 `image_understand`，并在用户消息中保留稳定占位符，例如 `[Image: media_id=..., resource_id=..., summary=...]`。
+2. 默认策略建议为 `image_fallback_mode: auto`：首轮进入主模型前，先用 fallback vision 模型生成简洁图片描述，作为同一用户回合的 `image_description` part 注入。这样用户只发“这是什么？”时不依赖非视觉主模型自行决定调用工具。
+3. 同时保留工具模式：`image_fallback_mode: tool` 时，主模型可按需调用 `image_understand(media_id, question?)`；工具从当前 session 的媒体缓存中读取图片，调用 fallback Provider，然后把结构化结果回填给主模型。
+4. 工具输出包含 `media_id`、`description`、`detected_text`、`safety_notes`、`model`、`created_at`，并缓存到本轮媒体 metadata，供多轮复用。
+5. 如果 fallback 模型失败，主模型仍收到平台摘要和错误可读说明，不能让整个对话中断。
+
+配置建议：
+
+```yaml
+multimodal:
+  image_fallback_mode: auto   # auto / tool / off
+  image_fallback_provider: vision
+  image_fallback_model: gpt-5.2
+  max_images_per_turn: 4
+  max_image_bytes: 10485760
+
+providers:
+  vision:
+    type: openai-compatible
+    api_key: "${VISION_API_KEY}"
+    base_url: "${VISION_BASE_URL}"
+    models:
+      - name: "gpt-5.2"
+        capabilities:
+          image_input: true
+          tool_calling: false
+```
+
+### F.5 多轮上下文策略
+
+- **短期窗口**：最近 N 轮内、URL 未过期且预算允许时，可继续保留原生图片 part；如果 Provider 支持图片 prompt cache，并且图片内容块可稳定重放，应优先保留而不是立刻压成描述。
+- **长期历史**：只保留 `media_id`、平台资源 id、尺寸、mime、hash、描述和时间戳。过期 URL 不进入 Provider 请求。
+- **描述复用**：同一图片 hash + 同一 fallback prompt 复用描述，避免多轮重复调用 vision 模型。
+- **用户追问**：如果用户后续说“刚才那张图”，上下文里至少有最近图片的 `media_id` 和描述；若主模型是 vision 且本地缓存仍在，可重新附图，否则使用已缓存描述。
+- **裁剪规则**：默认裁剪优先级从低到高为旧且不可缓存的图片原始内容、旧图片描述、旧文本摘要、最近且可缓存的图片原始内容、最近用户文本。图片签名/资源 id 不能伪装成可访问内容，必须带可用性状态。
+
+### F.5b KV / Prompt Cache 策略
+
+这里的“KV cache”指 Provider 在 prefill 阶段对 prompt 前缀产生的 key/value tensors 或等价内部表示做复用；对 API 用户暴露时通常叫 prompt caching 或 context caching。它不是 Nahida 本地可直接读写的会话状态，但我们的上下文构造会显著影响命中率。
+
+关键约束：
+
+- **缓存通常匹配前缀**：稳定内容应放在前面，变化内容放在后面。系统 prompt、工具 schema、workspace 指令、长期摘要、已确认稳定的媒体块，应尽量保持顺序和序列化字节稳定。
+- **图片可能被缓存**：OpenAI 和 Anthropic 都允许图片内容块参与缓存；Gemini 的显式 cached content 也适合长媒体或文档。删除图片可以减少本轮输入，但会失去后续对同一图片追问时的图片缓存收益。
+- **动态 URL 会破坏缓存**：如果每轮重新获取不同 `temp_url`，即使图片实际相同，也会表现为不同内容块。对支持图片缓存的 Provider，短期重放应优先使用稳定的本地缓存 hash/base64 或 Provider 文件/cache id，而不是每轮刷新平台临时 URL。
+- **base64 不是默认长期存储**：base64 可提供稳定内容块，但会放大请求体和本地存储风险。默认只在短期内从 `MediaCache` 重新生成，并受 `max_image_bytes`、TTL 和日志脱敏限制。
+- **显式缓存优先于重复内联**：Gemini cached content、Anthropic `cache_control`、OpenAI `prompt_cache_key`/retention 这类 Provider 特性应通过 Provider 层暴露；一旦有显式 cache id，就在后续请求中引用 cache id，而不是长期重复内联图片。
+
+默认策略建议设为 `media_context_policy: cache_aware`：
+
+| 场景 | 策略 |
+|---|---|
+| 主模型不支持 vision | 不保留原图给主模型；保存 fallback 描述和媒体 metadata |
+| 主模型支持 vision，图片刚进入最近 N 轮 | 保留原生图片 part，并保持内容块序列化稳定 |
+| 主模型支持 vision，图片被连续追问 | 优先复用 Provider 显式 cache id；否则复用稳定本地缓存生成的同一 image part |
+| 图片 URL 已过期且无本地缓存 | 降级为已生成描述和 unavailable 状态 |
+| 图片很旧、很大或超过预算 | 保留描述、hash、尺寸和 `media_id`，移除原生图片 part |
+
+需要新增指标：
+
+- Provider 返回的 `cached_tokens` / `cache_read_input_tokens` / `cached_content_token_count` 等缓存命中字段。
+- 每轮媒体 part 数量、图片 token/字节估算、被原生保留/被描述替代/不可用的原因。
+- fallback vision 调用次数、命中描述缓存次数、显式 Provider cache id 命中次数。
+
+官方参考：
+
+- OpenAI Prompt Caching：`https://platform.openai.com/docs/guides/prompt-caching`
+- Anthropic Prompt Caching：`https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching`
+- Gemini Context Caching：`https://ai.google.dev/gemini-api/docs/caching`
+
+### F.6 Channel 与资源安全
+
+Milky/Telegram 等 Channel 只负责把平台媒体标准化，不直接决定是否送入模型。媒体处理需要统一组件：
+
+- `MediaResolver`：把 `resource_id`、Telegram file id 或 URL 解析成可访问资源。
+- `MediaCache`：按 session/media_id/hash 管理本地缓存、TTL、大小限制和清理。
+- `MediaPolicy`：限制 MIME、文件大小、像素数、下载域名、重定向和 SSRF 风险。
+- 日志脱敏：不记录带 access token 的临时 URL，不把 base64 写入日志或 SQLite。
+
+### F.7 测试要求
+
+- `ProviderManager`：模型能力显式配置、默认推断、未知模型默认无 vision。
+- `ContextBuilder`：混合 text/image parts 的预算、裁剪和摘要降级。
+- Provider 序列化：OpenAI vision、Anthropic image blocks、非 vision Provider 拒绝原生图片 part。
+- `SessionRunner`：vision 主模型走原生图片；非 vision 主模型触发 auto fallback；`tool` 模式注册并执行 `image_understand`。
+- Prompt/cache 行为：稳定图片 part 在连续追问中保持相同序列化；动态 `temp_url` 不应替代可用的稳定缓存引用；Provider usage 中的缓存字段被记录。
+- Channel converter：Milky image segment 和 Telegram photo/document 生成 `InboundAttachment`，原始事件仍保留。
+- Memory：持久化/恢复媒体 metadata 和描述，不持久化 base64，不恢复过期 URL。
+- 安全：超大文件、错误 MIME、过期资源、下载失败、fallback Provider 失败均有可解释降级。
+
+---
+
+## G. 流式响应（未来扩展）
 
 ```python
 # Phase 3: 扩展 ChatProvider.chat 签名
@@ -1140,7 +1321,7 @@ async def chat(
 
 ---
 
-## G. 测试要求
+## H. 测试要求
 
 ```python
 # === TokenUsage ===

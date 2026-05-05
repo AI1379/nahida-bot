@@ -25,40 +25,52 @@ plugin_paths:
 system_prompt: "You are a helpful assistant."
 
 # ── LLM Providers（dict 格式，key 即 provider id）───
-# 支持多 provider 配置，每个有独立的 api_key、model、models 列表。
-# 通过 /model 命令可在聊天中切换模型。
+# 支持多 provider 配置，每个 provider 有独立的 api_key 和 models 列表。
+# models 的第一个元素是该 provider 的默认模型；每个模型可以是字符串，
+# 也可以是 {name, capabilities} 对象。通过 /model 命令可在聊天中切换模型。
 #
 providers:
   deepseek-main:
     type: deepseek
     api_key: "${DEEPSEEK_LLM_API_KEY}"
     base_url: "${DEEPSEEK_LLM_BASE_URL}"
-    model: "deepseek-v4-pro"
     models: ["deepseek-v4-pro", "deepseek-v4-flash"]
   siliconflow:
     type: "openai-compatible"
     api_key: "${SILICONFLOW_LLM_API_KEY}"
     base_url: "${SILICONFLOW_LLM_BASE_URL}"
-    model: "Pro/zai-org/GLM-5"
-    models: ["Pro/zai-org/GLM-5", "Pro/moonshotai/Kimi-K2.5"]
+    models:
+      - "Pro/zai-org/GLM-5"
+      - name: "Qwen/Qwen3.6-35B-A3B"
+        capabilities:
+          image_input: true
+          max_image_count: 4
+          max_image_bytes: 10485760
   minimax:
     type: minimax
     api_key: "${MINIMAX_LLM_API_KEY}"
     base_url: "https://api.minimaxi.com/anthropic"
-    model: "MiniMax-M2.5"
     models: ["MiniMax-M2.5", "MiniMax-M2.7"]
 
 default_provider: deepseek-main   # 可选，默认使用第一个 key
 
-# 单 provider 模式（兼容旧配置）：
-# model 为默认模型；models 列出该 provider 支持的所有模型，
-# 可通过 /model 命令在聊天中切换。
-# provider:
-#   type: "openai-compatible"
-#   api_key: "${LLM_API_KEY}"
-#   base_url: "${LLM_BASE_URL}"
-#   model: "${LLM_MODEL}"
-#   # models: ["model-a", "model-b"]   # 可选：列出可切换的模型
+# ── 多模态 / 图片理解 ─────────────────────────────────
+# image_fallback_mode:
+#   auto: 主模型不支持 image_input 时，自动调用 fallback vision 模型生成描述
+#   tool: 主模型不支持 image_input 时，注入 image_understand 工具，由主模型按需调用
+#   off:  不处理图片，只保留普通文本
+# media_context_policy:
+#   cache_aware: 最近图片尽量保留原生内容块，旧图片降级为描述
+#   native_recent: 仅最近图片保留原生内容块
+#   description_only: 历史图片只使用描述
+multimodal:
+  image_fallback_mode: "auto"
+  media_context_policy: "cache_aware"
+  image_fallback_provider: "siliconflow"
+  image_fallback_model: "Qwen/Qwen3.6-35B-A3B"
+  max_images_per_turn: 4
+  max_image_bytes: 10485760
+  media_cache_ttl_seconds: 3600
 
 # ── 插件配置 ──────────────────────────────────────────
 # Settings 的 extra="allow" 机制：顶层 key 如果不是已知字段，

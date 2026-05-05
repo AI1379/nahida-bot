@@ -229,6 +229,60 @@ Python 方案的核心结构可以概括为五层：
 
 参考来源：OpenClaw（Agent + Workspace 模式）、claude-code（流程模式层）、AstrBot（运行时文件组织）、LiteLLM/OpenAI SDK。
 
+#### Phase 2.9 - 图像理解与多模态上下文
+
+> 当前进度：**Phase 2.9 主链路已完成，安全与平台兼容性已加固**。MediaResolver/MediaCache/MediaPolicy 已实现；双 Channel 入站 attachment 已完成；Provider 能力配置可注入 ProviderSlot；vision 主模型路径已覆盖；非 vision fallback 三模式（auto/tool/off）已实现；`image_understand` 工具已能读取当前回合和 session 历史图片；多轮上下文 cache-aware 策略已实现基础版；Memory 持久化已保存 attachment 元数据、缓存路径/描述和 assistant reasoning，并避免持久化平台临时 URL；缓存观测指标已记录；Anthropic `cache_control` 注入已支持；本地单元测试已通过。
+
+设计原则：
+
+- 主模型支持图片输入时，优先原生传图，不先压成文字描述。
+- 主模型不支持图片输入时，提供 `image_understand` 能力，并支持自动 fallback 描述，保证“这张图是什么？”这类消息可直接工作。
+- 能力判断以显式配置为准，Provider/模型名启发式只作为保守默认，未知模型默认不支持图片输入。
+- 多轮上下文采用 cache-aware 策略：短期内可保留稳定的原生图片内容块来争取 Provider prompt/KV cache 命中；长期不持久化 base64 或过期 URL，只保存媒体引用、缓存路径、hash、描述、Provider cache id 和可用性状态。
+
+任务清单：
+
+- [x] 定义首版 `ModelCapabilities`，支持按 provider slot 和具体 model 解析 `image_input`、`tool_calling`、`max_image_count`、`max_image_bytes`、支持 MIME 等能力。（`MediaCapabilities` 可后续按需要拆分。）
+- [x] 扩展配置：新增 `multimodal.image_fallback_mode`（auto/tool/off）、`media_context_policy`（cache_aware/description_only/native_recent）、`image_fallback_provider`、`image_fallback_model`、图片数量/大小限制；Provider 配置改为 `models` 列表，模型对象通过 `capabilities` 声明能力。
+- [x] 扩展 `ProviderSlot` / `ProviderManager`：`resolve_model()` 后可返回本轮实际模型能力；`Application` 初始化时消费 Provider 能力配置。
+- [x] 扩展 `InboundMessage`：新增 `attachments`，用标准 `InboundAttachment` 表示图片、语音、视频和文件；Milky 和 Telegram converter 均已填充 `attachments`，同时保留文本降级和 `raw_event`。
+- [x] 扩展 `ContextMessage`：在兼容 `content: str` 的前提下新增 `parts`，支持 `text`、`image_url`、`image_base64`、`image_description` 等内容块。
+- [x] 实现 `MediaResolver` / `MediaCache` / `MediaPolicy`：统一处理平台资源解析、下载缓存、TTL、MIME/大小限制、URL 脱敏和清理；下载路径已加入 scheme/host/private IP 防护和 streaming 大小限制，平台生成的可信临时 URL 可显式放行本机 Channel 服务。
+- [x] Provider 序列化支持图片内容块：OpenAI 兼容 vision 和 Anthropic image blocks 已支持；非 vision 路由当前不生成原生图片 part。
+- [x] 建模 Provider prompt/context cache 能力：记录 `prompt_cache`、`prompt_cache_images`、`explicit_context_cache`、最小 token 阈值和 TTL；支持 Anthropic `cache_control`、Gemini cached content、OpenAI prompt cache usage/retention 等 Provider 差异。
+- [x] 在 `SessionRunner` / Agent 前置阶段实现首版路由：vision 主模型走原生图片；非 vision 主模型保留文本降级。
+- [x] 非 vision 主模型按 `image_fallback_mode` 自动描述或仅注入 `image_understand` 工具。
+- [x] 实现内置 `image_understand` 工具：读取当前回合或当前 session 历史中的 `media_id`，调用 fallback vision Provider，返回描述/OCR/安全备注；工具注册已去重。
+- [x] 多轮上下文策略：最近图片可按能力和缓存收益继续附图，旧图片转为缓存描述；用户追问”刚才那张图”时能通过 `media_id` 找到描述或可用本地缓存。Provider 显式 cache id 仍保留为后续增强项。
+- [x] 更新 Memory 持久化：保存用户入站 attachment metadata、缓存路径、描述和可用性状态；不持久化平台临时 URL 或 base64。
+- [x] 增加缓存观测指标：记录 cached tokens/cache read tokens、显式 cache id 命中、图片 part 保留/降级原因、fallback vision 调用次数。
+- [x] 补齐首批测试：能力解析、配置校验、Milky/Telegram attachment 转换、`_build_user_parts` 边界条件、`_persist_turns` 附件元数据、Agent parts 传递、Provider 多模态序列化。
+- [x] 补齐后续测试：fallback 工具、自动 fallback、多轮追问、prompt cache 稳定序列化、资源过期、安全限制、Telegram opaque file_id 下载、缓存元数据损坏和混合附件顺序。
+
+**参考实现**：见 [docs/architecture/provider-architecture.md](architecture/provider-architecture.md#f-图像理解与多模态上下文规划)。
+
+实现核对/已发现偏差：
+
+- `docs/architecture/provider-architecture.md` 曾描述 reasoning 上下文策略已完整实现；实际代码已有字段传播，但 `ContextBuilder` 和 `SessionRunner._load_history()` 尚未真正应用/恢复 reasoning、signature 和 metadata。这属于架构承诺尚未落地，不是优化性偏移。
+- Milky 配置已有 `cache_media_on_receive`，ROADMAP 也提到“收到消息立刻缓存媒体”，但当前实现只注册了 `milky_get_resource_temp_url`，还没有入站缓存下载。这属于 planned 行为未落地。
+- ~~Milky converter 当前把图片降级为文本并保留 raw event，避免了 Agent 层感知平台结构。这是合理的 MVP 优化，但需要在 Phase 2.9 中升级为第一类 attachment，否则会限制原生多模态能力。~~ 已完成：Milky 和 Telegram converter 均已填充 `InboundMessage.attachments`，同时保留文本降级。
+- 2026-05-05 修复核对：`image_understand` 曾只注册但无法读取当前回合图片，属于架构实现缺口；现已通过 request context 保存当前 attachments，并从 Memory 恢复历史 attachments。Telegram 图片仅有 `file_id`、无 URL，属于平台能力差异；现通过 channel `download_media()` 钩子落成本地文件后再交给 `MediaResolver`。Milky 文本渲染曾暴露 `temp_url`，属于安全偏移；现已移除文本侧临时 URL，并在持久化层默认不保存 attachment URL。
+
+前置依赖：
+
+- Phase 2.8 Provider 抽象、模型切换和上下文构建链路。
+- Phase 3.6 内置工具注册与执行闭环。
+- Phase 4 Channel 媒体 segment 解析与资源 URL/缓存能力。
+
+风险控制：
+
+- 不要用模型名硬编码替代显式能力配置；模型能力变化必须可由配置覆盖。
+- 不把带 token 的临时 URL、base64 图片或本地敏感路径写入日志/长期记忆。
+- 不要为了“省历史”无条件删除最近图片。对支持图片缓存的 Provider，删除原生图片可能降低后续追问的 cache 命中率；应按 `media_context_policy`、预算、TTL 和缓存指标决策。
+- fallback 描述是模型生成的二手信息，必须保留 `media_id` 和可用性状态，避免后续多轮把描述误当作原图。
+
+参考来源：OpenAI/Anthropic/Gemini 多模态消息格式和 prompt/context cache 文档、LiteLLM 能力声明思路、现有 Milky/Telegram 媒体处理经验。
+
 ### Phase 3 - 插件系统与 Channel 接口定义
 
 目标：建立声明式、可治理的插件系统，并定义 Channel 作为标准插件接口。
@@ -315,7 +369,7 @@ Python 方案的核心结构可以概括为五层：
 | `message` | 跨 Channel 发消息 | 调用已注册 channel service 的 `send_message` | P1 | 需路由层：target → channel + chat_id |
 | `cron` | 定时任务调度 | 本地调度器（`APScheduler` / `asyncio` 定时器） | P1 | 本地模式不需要 Gateway |
 | `tts` | 文本转语音 | API 调用（edge-tts 免费 / OpenAI TTS） | P2 | 可用 `edge-tts` 零成本起步 |
-| `image` | 图片理解 | 将图片 URL/base64 传给多模态 Provider | P2 | 依赖支持 vision 的 Provider |
+| `image_understand` | 图片理解 | 对非 vision 主模型调用 fallback vision Provider 生成描述；vision 主模型优先原生传图 | P2 | 详见 Phase 2.9 |
 | `image_generate` | 图片生成 | 调用图片生成 API（DALL-E / Stable Diffusion / Flux） | P2 | 需配置图片 Provider |
 | `code_execution` | 沙箱 Python 执行 | `subprocess` + 资源限制 + 输出截断 | P2 | 可参考 OpenClaw 的远程沙箱模式 |
 | `x_search` | 搜索 X/Twitter | 调用 X API v2 | P3 | 需要 X API 凭证 |
@@ -494,10 +548,13 @@ provider:
   type_key: "ollama"      # 注册到 create_provider() 的 type 名称
   config_schema:          # JSON Schema：声明此 Provider 接受哪些配置项
     type: object
-    required: ["base_url", "model"]
+    required: ["base_url", "models"]
     properties:
       base_url: { type: string, default: "http://localhost:11434/v1" }
-      model: { type: string, default: "llama3" }
+      models:
+        type: array
+        items: { type: string }
+        default: ["llama3"]
       timeout: { type: number, default: 60 }
 ```
 
@@ -672,7 +729,7 @@ providers:
 #### Phase 4.5 — Multi-Provider 支持与内置命令
 
 - [x] 实现 `ProviderManager`：多 LLM Provider 注册、按 id 或 model 名称解析。
-- [x] 实现 `ProviderEntryConfig`：dict 格式的多 provider 配置（key 即 provider id）。
+- [x] 实现 `ProviderEntryConfig`：dict 格式的多 provider 配置（key 即 provider id），`models[0]` 为 provider 默认模型；旧单 provider `provider` 配置、provider 级 `model/capabilities/model_capabilities` 和运行时 `ProviderSlot.capabilities` 已废弃移除，能力只按模型解析。
 - [x] 实现 per-request provider 切换：session metadata 存储模型偏好，MessageRouter 解析。
 - [x] 实现 `BuiltinCommandsPlugin` 内置命令插件：
   - `/reset` 清空当前会话历史
