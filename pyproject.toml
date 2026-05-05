@@ -76,6 +76,8 @@ skip-magic-trailing-comma = false
 [tool.pyright]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
 reportMissingTypeStubs = false
 reportMissingImports = true
 reportUnusedImport = "warning"
