@@ -69,3 +69,13 @@ class MemoryStore(ABC):
     ) -> None:
         """Merge updates into session metadata (upsert)."""
         raise NotImplementedError
+
+    @abstractmethod
+    async def persist_active_session(self, chat_key: str, session_id: str) -> None:
+        """Persist the active session override for a chat key."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def load_active_sessions(self) -> dict[str, str]:
+        """Load all persisted session overrides as {chat_key: session_id}."""
+        raise NotImplementedError

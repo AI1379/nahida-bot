@@ -254,6 +254,38 @@ class SQLiteMemoryRepository:
             )
             await self._engine.db.commit()
 
+    # -- Active session overrides --
+
+    async def set_active_session(self, chat_key: str, session_id: str) -> None:
+        """Persist the active session override for a chat."""
+        now_iso = _utc_now_iso()
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "INSERT INTO active_sessions (chat_key, session_id, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(chat_key) DO UPDATE SET "
+                "session_id = excluded.session_id, updated_at = excluded.updated_at",
+                (chat_key, session_id, now_iso),
+            )
+            await self._engine.db.commit()
+
+    async def get_active_session(self, chat_key: str) -> str | None:
+        """Return the persisted session override for a chat, or None."""
+        row = await self._engine.fetch_one(
+            "SELECT session_id FROM active_sessions WHERE chat_key = ?",
+            (chat_key,),
+        )
+        if row is not None:
+            return str(row["session_id"])
+        return None
+
+    async def load_all_active_sessions(self) -> dict[str, str]:
+        """Return all persisted session overrides as {chat_key: session_id}."""
+        rows = await self._engine.fetch_all(
+            "SELECT chat_key, session_id FROM active_sessions"
+        )
+        return {str(row["chat_key"]): str(row["session_id"]) for row in rows}
+
     async def _insert_keywords(self, turn_id: int, keywords: list[str]) -> None:
         """Insert keyword associations for a turn.
 

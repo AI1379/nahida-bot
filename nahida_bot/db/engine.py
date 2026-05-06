@@ -78,6 +78,14 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_cron_claimable
         ON cron_jobs(is_active, claimed_at, next_fire_at);
     """,
+    # Migration 005: active session overrides (survives restart)
+    """
+    CREATE TABLE IF NOT EXISTS active_sessions (
+        chat_key TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

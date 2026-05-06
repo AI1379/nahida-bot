@@ -70,6 +70,7 @@ class _MockMemoryStore:
     def __init__(self) -> None:
         self.sessions: dict[str, list[ConversationTurn]] = {}
         self.workspace_ids: dict[str, str | None] = {}
+        self.persisted_overrides: dict[str, str] = {}
 
     async def ensure_session(
         self, session_id: str, workspace_id: str | None = None
@@ -97,6 +98,12 @@ class _MockMemoryStore:
 
     async def evict_before(self, cutoff: Any) -> int:
         return 0
+
+    async def persist_active_session(self, chat_key: str, session_id: str) -> None:
+        self.persisted_overrides[chat_key] = session_id
+
+    async def load_active_sessions(self) -> dict[str, str]:
+        return dict(self.persisted_overrides)
 
 
 class _MockAgentLoop:
@@ -505,3 +512,54 @@ class TestMessageRouterMemory:
         assert turns[0].content == "question"
         assert turns[1].role == "assistant"
         assert turns[1].content == "answer"
+
+    async def test_set_active_session_persists_override(self) -> None:
+        memory = _MockMemoryStore()
+        router, _, _, _ = _make_router(memory=memory)
+
+        router.set_active_session("test", "c1", "test:c1:abc")
+
+        # Fire-and-forget persistence needs a loop tick to complete
+        await asyncio.sleep(0)
+        assert memory.persisted_overrides == {"test:c1": "test:c1:abc"}
+
+    async def test_active_session_restored_on_start(self) -> None:
+        memory = _MockMemoryStore()
+        memory.persisted_overrides["test:c1"] = "test:c1:xyz"
+
+        agent = _MockAgentLoop()
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+
+        # Override was NOT set via set_active_session — only in persisted storage
+        assert router.get_active_session_id("test", "c1") == "test:c1"
+
+        await router.start()
+        # After start, the persisted override should be loaded
+        assert router.get_active_session_id("test", "c1") == "test:c1:xyz"
+        await router.stop()
+
+    async def test_restored_session_used_for_message_dispatch(self) -> None:
+        memory = _MockMemoryStore()
+        await memory.ensure_session("test:c1")
+        await memory.append_turn(
+            "test:c1",
+            ConversationTurn(role="user", content="old", source="user_input"),
+        )
+        await memory.ensure_session("test:c1:restored")
+        memory.persisted_overrides["test:c1"] = "test:c1:restored"
+
+        agent = _MockAgentLoop()
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("hello"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        # Agent should have been called with the restored session's (empty) history
+        assert len(agent.calls) == 1
+        assert agent.calls[0]["history_messages"] == []

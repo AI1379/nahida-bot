@@ -109,13 +109,14 @@ class MessageRouter:
             self._runner.provider_manager = value
 
     async def start(self) -> None:
-        """Subscribe to MessageReceived events."""
+        """Subscribe to MessageReceived events and restore session overrides."""
         self._subscription = self._event_bus.subscribe(
             MessageReceived,
             self._handle_message_received,
             priority=0,
             timeout=120.0,
         )
+        await self.restore_active_sessions()
         logger.info("message_router.started")
 
     async def stop(self) -> None:
@@ -124,6 +125,41 @@ class MessageRouter:
             self._subscription.unsubscribe()
             self._subscription = None
         logger.info("message_router.stopped")
+
+    def _persist_override(self, key: str, session_id: str) -> None:
+        """Fire-and-forget persist of the session override."""
+        memory = self.memory
+        if memory is None:
+            return
+
+        async def _do_persist() -> None:
+            try:
+                await memory.persist_active_session(key, session_id)
+            except Exception:
+                logger.warning("router.persist_override_failed", key=key, exc_info=True)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_do_persist())
+        except RuntimeError:
+            pass
+
+    async def restore_active_sessions(self) -> None:
+        """Load persisted session overrides from the memory store."""
+        memory = self.memory
+        if memory is None:
+            return
+        try:
+            overrides = await memory.load_active_sessions()
+            if overrides:
+                self._active_sessions.update(overrides)
+                logger.info(
+                    "router.restored_sessions",
+                    count=len(overrides),
+                    keys=list(overrides.keys()),
+                )
+        except Exception:
+            logger.warning("router.restore_sessions_failed", exc_info=True)
 
     def get_active_session_id(self, platform: str, chat_id: str) -> str:
         """Return the active session ID for a chat.
@@ -146,6 +182,7 @@ class MessageRouter:
         key = self.make_session_id(platform, chat_id)
         old = self._active_sessions.get(key, key)
         self._active_sessions[key] = session_id
+        self._persist_override(key, session_id)
         logger.debug(
             "router.set_active_session",
             key=key,

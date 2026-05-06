@@ -177,3 +177,11 @@ class SQLiteMemoryStore(MemoryStore):
     ) -> None:
         """Merge updates into session metadata."""
         await self._repo.update_session_metadata(session_id, updates)
+
+    async def persist_active_session(self, chat_key: str, session_id: str) -> None:
+        """Persist the active session override for a chat key."""
+        await self._repo.set_active_session(chat_key, session_id)
+
+    async def load_active_sessions(self) -> dict[str, str]:
+        """Load all persisted session overrides."""
+        return await self._repo.load_all_active_sessions()
