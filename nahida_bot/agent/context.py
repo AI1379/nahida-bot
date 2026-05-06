@@ -122,34 +122,6 @@ class ContextBuilder:
             fallback_tokenizer=fallback_tokenizer,
         )
 
-    def _merge_all_system_messages(
-        self, messages: list[ContextMessage]
-    ) -> list[ContextMessage]:
-        """Combine all system messages into one, concatenating content and merging metadata."""
-
-        # TODO: Optimizable. Just for convenience now.
-        system_messages = [msg for msg in messages if msg.role == "system"]
-        if not system_messages:
-            return []
-
-        combined_content = "\n\n".join(
-            f"**{message.source}**\n\n{message.content}" for message in system_messages
-        )
-
-        merged_metadata: dict[str, object] = {}
-        for message in system_messages:
-            if message.metadata:
-                merged_metadata.update(message.metadata)
-
-        return [
-            ContextMessage(
-                role="system",
-                source="combined_system",
-                content=combined_content,
-                metadata=merged_metadata if merged_metadata else None,
-            )
-        ]
-
     def load_workspace_instructions(self, workspace_root: Path) -> list[ContextMessage]:
         """Load instruction files in strict priority order."""
         messages: list[ContextMessage] = []
@@ -195,7 +167,6 @@ class ContextBuilder:
         workspace_root: Path | None = None,
         history_messages: list[ContextMessage] | None = None,
         tool_messages: list[ContextMessage] | None = None,
-        single_system_message: bool = True,
     ) -> list[ContextMessage]:
         """Build ordered context and apply budget policy.
 
@@ -216,10 +187,6 @@ class ContextBuilder:
         if workspace_root is not None:
             prefix_messages.extend(self.load_workspace_instructions(workspace_root))
             prefix_messages.extend(self.load_workspace_skills(workspace_root))
-
-        # All possible system messages are pushed to prefix now, so merge them here.
-        if single_system_message:
-            prefix_messages = self._merge_all_system_messages(prefix_messages)
 
         dynamic_messages = [*(history_messages or []), *(tool_messages or [])]
         merged = [*prefix_messages, *dynamic_messages]

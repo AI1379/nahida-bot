@@ -79,15 +79,18 @@ class TestContextBuilder:
 
         # Assert
         assert [item.source for item in result] == [
-            "combined_system",
+            "system_baseline",
+            "workspace_instruction:AGENTS.md",
+            "workspace_instruction:SOUL.md",
+            "workspace_instruction:USER.md",
             "history",
             "history",
             "tool_call",
         ]
-        assert "**system_baseline**" in result[0].content
-        assert "**workspace_instruction:AGENTS.md**" in result[0].content
-        assert "**workspace_instruction:SOUL.md**" in result[0].content
-        assert "**workspace_instruction:USER.md**" in result[0].content
+        assert result[0].content == "baseline"
+        assert result[1].content == "agents"
+        assert result[2].content == "soul"
+        assert result[3].content == "user"
 
     def test_budget_sliding_window_keeps_latest_messages(self, temp_dir: Path) -> None:
         """Sliding window should keep newest dynamic messages first."""
@@ -243,10 +246,13 @@ Use workspace_read before workspace_write.
         )
 
         # Assert
-        assert [item.source for item in result] == ["combined_system"]
-        assert "**system_baseline**" in result[0].content
-        assert "**workspace_instruction:AGENTS.md**" in result[0].content
-        assert "**workspace_skill:files**" in result[0].content
+        assert [item.source for item in result] == [
+            "system_baseline",
+            "workspace_instruction:AGENTS.md",
+            "workspace_skill:files",
+        ]
+        assert result[0].content == "baseline"
+        assert result[1].content == "agents"
 
     def test_provider_tokenizer_is_used_when_available(self) -> None:
         """Context builder should use provider tokenizer when provider exposes one."""

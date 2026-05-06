@@ -179,6 +179,40 @@ class ChatProvider(ABC):
             )
         return blocks or message.content
 
+    @staticmethod
+    def _coalesce_system_messages(
+        messages: list[ContextMessage],
+    ) -> list[ContextMessage]:
+        """Merge all system-role messages into a single message at the start.
+
+        Providers whose backends require exactly one system message at the
+        beginning should call this before serialization.
+        """
+        system_parts: list[str] = []
+        non_system: list[ContextMessage] = []
+        merged_metadata: dict[str, object] = {}
+
+        for msg in messages:
+            if msg.role == "system":
+                system_parts.append(
+                    f"**{msg.source}**\n\n{msg.content}" if msg.source else msg.content
+                )
+                if msg.metadata:
+                    merged_metadata.update(msg.metadata)
+            else:
+                non_system.append(msg)
+
+        if not system_parts:
+            return non_system
+
+        merged = ContextMessage(
+            role="system",
+            source="combined_system",
+            content="\n\n".join(system_parts),
+            metadata=merged_metadata if merged_metadata else None,
+        )
+        return [merged, *non_system]
+
     def _serialize_openai_part(self, part: ContextPart) -> dict[str, object] | None:
         if part.type in {"text", "image_description"}:
             if not part.text:

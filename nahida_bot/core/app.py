@@ -195,12 +195,15 @@ class Application:
                 name: _model_capabilities_from_config(raw)
                 for name, raw in model_entries
             }
-            provider = create_provider(
-                cfg.type,
-                base_url=cfg.base_url,
-                api_key=cfg.api_key,
-                model=default_model,
-            )
+            provider_kwargs: dict[str, object] = {
+                "base_url": cfg.base_url,
+                "api_key": cfg.api_key,
+                "model": default_model,
+            }
+            merge_flag = getattr(cfg, "merge_system_messages", None)
+            if merge_flag is not None:
+                provider_kwargs["merge_system_messages"] = merge_flag
+            provider = create_provider(cfg.type, **provider_kwargs)
             cb = ContextBuilder(budget=ContextBudget(), provider=provider)
             slots.append(
                 ProviderSlot(

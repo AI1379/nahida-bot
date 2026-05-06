@@ -46,6 +46,7 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
     api_family: str = "openai-completions"
     tokenizer_impl: Tokenizer | None = None
     reasoning_key: str = "reasoning_content"
+    merge_system_messages: bool = False
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
     @property
@@ -84,9 +85,14 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
         model: str | None = None,
     ) -> ProviderResponse:
         """Call OpenAI-compatible chat completion API."""
+        prepared = (
+            ChatProvider._coalesce_system_messages(messages)
+            if self.merge_system_messages
+            else messages
+        )
         payload: dict[str, object] = {
             "model": model or self.model,
-            "messages": self.serialize_messages(messages),
+            "messages": self.serialize_messages(prepared),
             **self._extra_payload(),
         }
         if tools:
