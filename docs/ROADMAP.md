@@ -29,6 +29,7 @@ Nahida Bot 的目标不是做一个普通聊天机器人，而是做一个以 Ag
 | `core`（应用容器、生命周期） | OpenClaw, AstrBot | 统一启动入口、模块化初始化、优雅退出 | 先保证依赖方向干净，再做功能堆叠 |
 | `core.config`（配置系统） | AstrBot, Pydantic 官方示例 | 分层配置、环境变量覆盖、显式优先级策略 | 配置模型必须强类型，避免魔法字符串；当前采用手工 merge 保持优先级可控 |
 | `agent.loop`（推理回路） | OpenClaw, claude-code（模式层） | 消息拼装、工具调用回填、流式输出链路 | 不复制具体 prompt 或私有实现细节 |
+| `agent.reply_signals`（回复信号协议） | OpenClaw（sentinel token 协议） | 哨兵令牌检测、静默回复抑制、心跳确认、尾部剥离 | 令牌检测必须精确，不能误杀正常大写文本 |
 | `agent.context`（上下文管理） | claude-code（模式层）, LangGraph | 上下文裁剪、历史管理、状态拼接 | 先可用再优化，优先滑窗策略 |
 | `agent.providers`（模型抽象） | OpenClaw, LiteLLM, OpenAI SDK 生态 | Provider 统一接口、错误归一化、重试策略 | 首先打通一个 provider，再扩展 |
 | `agent.providers.adapters`（响应适配） | LiteLLM, 各厂商 API 文档 | 多后端响应归一化、推理链提取、流式解析 | ⚠️ 必须处理 DeepSeek-R1 和 Claude thinking |
@@ -282,6 +283,122 @@ Python 方案的核心结构可以概括为五层：
 - fallback 描述是模型生成的二手信息，必须保留 `media_id` 和可用性状态，避免后续多轮把描述误当作原图。
 
 参考来源：OpenAI/Anthropic/Gemini 多模态消息格式和 prompt/context cache 文档、LiteLLM 能力声明思路、现有 Milky/Telegram 媒体处理经验。
+
+#### Phase 2.10 - 回复信号协议（Reply Signal Protocol）
+
+> 参考 OpenClaw 的 sentinel token 设计（`NO_REPLY`、`HEARTBEAT_OK`、`ANNOUNCE_SKIP`、`REPLY_SKIP`），为 Agent 回复管线引入结构化的回复控制信号。当前 nahida-bot 的回复路径（`AgentLoop.run()` → `SessionRunner.run()` → `MessageRouter._send_response()`）没有任何"不回复"语义 — 只要模型返回了文本，就一定会发送给用户。这在多种场景下会造成不必要的噪音。
+
+**设计原则**：
+
+- 哨兵令牌（sentinel token）是 AI 模型通过文本输出传递的控制信号，不依赖工具调用或元数据通道。
+- 令牌必须是模型整个回复的唯一内容（精确匹配），不允许附加在正常文本后面。
+- 检测层应覆盖：完整回复检测、流式前缀检测（用于抑制 typing 指示器）、尾部剥离（处理模型意外追加令牌的情况）。
+- 哨兵令牌的具体值通过 system prompt 注入，模型在推理时选择输出。令牌字符串本身不硬编码在业务逻辑中，而是通过配置或常量模块集中管理。
+
+**令牌定义**：
+
+| 令牌 | 作用 | 注入方式 |
+| ----- | ----- | ------- |
+| `NO_REPLY` | 完全抑制回复，不向用户发送任何消息 | system prompt 静默回复章节 |
+| `HEARTBEAT_OK` | 心跳/定时任务轮询确认，抑制空回复 | system prompt 心跳章节（可选） |
+
+> `ANNOUNCE_SKIP` 和 `REPLY_SKIP` 等 agent 间通信令牌纳入 Phase 3.8 Subagent 编排阶段，不在本阶段实现。
+
+**适用场景**：
+
+1. **工具调用后无需文字补充** — 搜索/天气等工具已直接返回结构化结果，Agent 不需要再说"这是你要的信息"。
+2. **定时任务/心跳空转** — scheduler 定时触发但无事可报时，用 `HEARTBEAT_OK` 抑制空消息。
+3. **群聊噪音控制** — 不是每条消息都需要 bot 回应，`NO_REPLY` 让模型判断是否应该静默。
+4. **主动消息工具已发送** — 如果 Agent 通过 `message` 工具已直接发送了回复，主回复可以用 `NO_REPLY` 避免重复。
+
+**System Prompt 章节**（参考 OpenClaw 格式，适配 nahida-bot 语境）：
+
+```markdown
+## Silent Replies
+Use NO_REPLY ONLY when no user-visible reply is required.
+
+Rules:
+- Valid cases: silent housekeeping, deliberate no-op, or after a messaging tool already delivered the user-visible reply.
+- Never use it to avoid doing requested work or to end an actionable turn early.
+- It must be your ENTIRE message - nothing else.
+- Never append it to an actual response.
+- Never wrap it in markdown or code blocks.
+```
+
+```markdown
+## Heartbeats
+If you receive a heartbeat/scheduled poll and there is nothing that needs attention, reply exactly:
+HEARTBEAT_OK
+If something needs attention, do NOT include "HEARTBEAT_OK"; reply with the alert text instead.
+```
+
+**实现要点**：
+
+1. **令牌常量模块**（`nahida_bot/agent/reply_signals.py`）：
+   - 定义 `NO_REPLY`、`HEARTBEAT_OK` 常量字符串。
+   - `is_silent_reply(text) -> bool`：精确匹配检测（大小写不敏感，允许前后空白）。
+   - `is_silent_prefix(text) -> bool`：流式前缀检测（`"NO"`, `"NO_"`, `"NO_RE"` 等片段），用于抑制 typing 指示器。
+   - `strip_trailing_token(text) -> str | None`：尾部令牌剥离；剥离后为空则返回 `None` 表示静默。
+   - `is_heartbeat_ack(text) -> bool`：心跳确认检测。
+
+2. **SessionRunner 集成**：
+   - `SessionRunner.run()` 返回后，`MessageRouter._dispatch_message()` 在调用 `_send_response()` 前检查 sentinel token。
+   - 如果检测到 `NO_REPLY`，跳过发送，记录 `router.reply_suppressed` 日志。
+   - 如果检测到 `HEARTBEAT_OK`，跳过发送，记录 `router.heartbeat_ack` 日志。
+   - 持久化时：`NO_REPLY` 的 assistant turn 不持久化（避免历史中堆积无意义令牌）；`HEARTBEAT_OK` 同理。
+
+3. **System Prompt 注入**：
+   - `RouterConfig` 或 `AgentLoopConfig` 增加 `enable_silent_reply` 开关（默认开启）。
+   - Context Builder 在拼接 system prompt 时，根据开关决定是否追加 Silent Replies 章节。
+   - Heartbeat 章节仅在 scheduler 触发的运行中注入（通过 `source_tag` 或新参数区分）。
+
+4. **Scheduler 集成**：
+   - `SchedulerService.fire()` 调用 `SessionRunner.run()` 时传入 `source_tag="scheduler"` 或 `trigger_type="heartbeat"`。
+   - SessionRunner 根据触发类型决定是否在 system prompt 中注入 Heartbeat 章节。
+
+**检测层设计（参考 OpenClaw 的多层防护）**：
+
+```text
+模型输出文本
+  ↓
+1. 精确匹配 → is_silent_reply(text)
+   整个文本.trim() 匹配 "NO_REPLY"（大小写不敏感）
+   匹配 → 抑制回复，不持久化 assistant turn
+  ↓ 不匹配
+2. JSON 包络检测 → is_silent_envelope(text)
+   {"action": "NO_REPLY"} 格式也视为静默
+  ↓ 不匹配
+3. 尾部剥离 → strip_trailing_token(text)
+   移除末尾的 NO_REPLY，返回剩余文本
+   剩余为空 → 抑制回复
+   剩余非空 → 发送剩余文本
+  ↓
+4. 正常发送
+```
+
+任务清单：
+
+- [ ] 创建 `nahida_bot/agent/reply_signals.py`，定义令牌常量和检测函数。
+- [ ] 在 `MessageRouter._dispatch_message()` 中集成 sentinel token 检测，命中时跳过 `_send_response()`。
+- [ ] 在 `SessionRunner._persist_turns()` 中处理静默回复（不持久化令牌 turn）。
+- [ ] 在 Context Builder 中实现 Silent Replies 章节注入（受 `enable_silent_reply` 开关控制）。
+- [ ] 在 Context Builder 中实现 Heartbeat 章节注入（仅 scheduler 触发时）。
+- [ ] 在 `RouterConfig` 或 `AgentLoopConfig` 中增加 `enable_silent_reply` 配置项。
+- [ ] 在 `SchedulerService.fire()` 中传递触发类型标识，使 SessionRunner 能区分 heartbeat 和正常对话。
+- [ ] 编写 `reply_signals.py` 的单元测试（精确匹配、前缀匹配、尾部剥离、JSON 包络、大小写）。
+- [ ] 编写集成测试：sentinel token 不发送消息、不持久化 assistant turn、正常文本不受影响。
+- [ ] 更新 `docs/architecture/runtime-flows.md` 中的消息主流程图。
+
+前置依赖：Phase 2.6（Agent Loop 稳定性增强）。
+
+风险控制：
+
+- 令牌检测必须精确，不能误杀正常文本（如用户消息中恰好包含 "NO_REPLY" 或模型输出的正常大写内容）。OpenClaw 通过大小写检查和下划线约束来防护。
+- 流式场景下，前缀检测只应用于 typing 指示器控制，不能在流式中间截断最终回复。
+- System prompt 中的令牌指导必须明确告知模型"必须是整个消息"，避免模型在正常回复末尾追加令牌。
+- 配置开关默认开启，但允许关闭（某些场景可能不需要静默回复能力）。
+
+参考来源：OpenClaw（sentinel token 协议设计、多层检测、system prompt 格式）。
 
 ### Phase 3 - 插件系统与 Channel 接口定义
 
@@ -980,18 +1097,20 @@ MVP 验收：
 3. Agent 与 Workspace 联合阶段（Phase 2.1-2.6）
 4. **Workspace Sandbox 安全加固（Phase 2.7）** ⚠️ 安全闸门
 5. **Provider 响应健壮性增强（Phase 2.8）** ⚠️ 推荐在 Phase 3 前完成
-6. 插件系统与 Channel 接口定义（Phase 3）
-7. 基于插件系统的 Channel 实现（Phase 4）
-8. Subagent 编排与跨会话管理（Phase 3.8，可在 Phase 4 之后或并行推进）
-9. Provider 插件化（Phase 3.9，可在 Phase 4 之后或并行推进）
-10. Gateway 与 Node（Phase 5）
-11. WebUI 与运维工具（Phase 6）
-12. 稳定性、发布与生态（Phase 7）
+6. **回复信号协议（Phase 2.10）** — Agent 回复管线的静默/心跳控制
+7. 插件系统与 Channel 接口定义（Phase 3）
+8. 基于插件系统的 Channel 实现（Phase 4）
+9. Subagent 编排与跨会话管理（Phase 3.8，可在 Phase 4 之后或并行推进）
+10. Provider 插件化（Phase 3.9，可在 Phase 4 之后或并行推进）
+11. Gateway 与 Node（Phase 5）
+12. WebUI 与运维工具（Phase 6）
+13. 稳定性、发布与生态（Phase 7）
 
 这个顺序的核心原因是：
 
 - **Phase 0-2.6** 建立最小智能闭环（应用容器 -> 核心运行时 -> Agent + Workspace）
 - **Phase 2.7-2.8** 安全与健壮性加固（Phase 2.8 已完成；Phase 2.7 作为开放不可信插件/远程执行前的安全闸门）
+- **Phase 2.10** 回复控制增强（在 Phase 3 之前完善 Agent 输出管线，为后续 scheduler 心跳和群聊噪音控制打基础）
 - **Phase 3-4** 打通插件和 Channel（先定义接口，允许多种通信协议；再实现具体 Channel 作为插件）
 - **Phase 3.8** 本地 Subagent 编排和跨会话管理（不依赖 Gateway-Node，单进程 asyncio 即可实现）
 - **Phase 3.9** Provider 插件化（扩展插件系统支持第三方 Provider 注册）

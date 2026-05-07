@@ -28,7 +28,14 @@ Agent Loop
   ├─ Tool calls (optional)
   └─ 最终回复组装
   ↓
-OutboundMessage
+Sentinel Token 检测（Phase 2.10）
+  ├─ 精确匹配 NO_REPLY → 抑制回复，不持久化 assistant turn
+  ├─ JSON 包络 {"action":"NO_REPLY"} → 抑制回复
+  ├─ 尾部剥离 NO_REPLY → 剥离后为空则抑制，非空则发送剩余文本
+  ├─ 精确匹配 HEARTBEAT_OK → 心跳确认，抑制回复
+  └─ 未命中 → 正常发送
+  ↓
+OutboundMessage（若未被抑制）
   ↓
 channel service plugin 发送
   ├─ 调用外部 API
@@ -86,6 +93,7 @@ Node connect
   - 支持的通信方式声明（HTTP Server/Client、WebSocket、SSE）
   - 权限和生命周期钩子
 - **Agent Contract**：`AgentLoop.run()` 输入输出与中断语义
+- **Reply Signal Contract**：sentinel token 检测函数（`is_silent_reply`、`is_heartbeat_ack`、`strip_trailing_token`）、检测后对 `OutboundMessage` 的抑制策略、assistant turn 持久化决策。参考 Phase 2.10 回复信号协议。
 - **Tool Contract**：tool definition、参数校验、执行结果结构
   - 由 Plugin 通过权限系统注册
 - **Command Contract**：command registration、命令匹配、超时和 `CommandHandlerResult`
