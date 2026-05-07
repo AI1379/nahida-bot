@@ -203,6 +203,17 @@ class Application:
             merge_flag = getattr(cfg, "merge_system_messages", None)
             if merge_flag is not None:
                 provider_kwargs["merge_system_messages"] = merge_flag
+            for extra_field in (
+                "max_output_tokens",
+                "store_responses",
+                "use_previous_response_id",
+                "stream_responses",
+                "reasoning_effort",
+                "built_in_tools",
+            ):
+                value = getattr(cfg, extra_field, None)
+                if value is not None:
+                    provider_kwargs[extra_field] = value
             provider = create_provider(cfg.type, **provider_kwargs)
             cb = ContextBuilder(budget=ContextBudget(), provider=provider)
             slots.append(

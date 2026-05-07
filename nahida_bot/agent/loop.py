@@ -204,7 +204,7 @@ class AgentLoop:
 
                 if not response.tool_calls:
                     return AgentRunResult(
-                        final_response=response.content or "",
+                        final_response=self._display_content(response),
                         assistant_messages=assistant_messages,
                         tool_messages=tool_messages,
                         steps=step,
@@ -338,12 +338,31 @@ class AgentLoop:
         self,
         response: ProviderResponse,
     ) -> ContextMessage | None:
-        if response.content is None and not response.tool_calls:
+        display_content = self._display_content(response)
+        has_hidden_output = any(
+            response.extra.get(key) is not None
+            for key in (
+                "response_id",
+                "response_output",
+                "generated_images",
+                "builtin_tool_calls",
+            )
+        )
+        if not display_content and not response.tool_calls and not has_hidden_output:
             return None
 
         metadata: dict[str, object] = {}
         if response.finish_reason is not None:
             metadata["finish_reason"] = response.finish_reason
+        for key in (
+            "response_id",
+            "response_output",
+            "generated_images",
+            "builtin_tool_calls",
+        ):
+            value = response.extra.get(key)
+            if value is not None:
+                metadata[key] = value
         if response.tool_calls:
             metadata["tool_calls"] = [
                 {
@@ -357,12 +376,38 @@ class AgentLoop:
         return ContextMessage(
             role="assistant",
             source="provider_response",
-            content=response.content or "",
+            content=display_content,
             metadata=metadata or None,
             reasoning=response.reasoning_content,
             reasoning_signature=response.reasoning_signature,
             has_redacted_thinking=response.has_redacted_thinking,
         )
+
+    def _display_content(self, response: ProviderResponse) -> str:
+        if response.content:
+            return response.content
+
+        generated = response.extra.get("generated_images")
+        if isinstance(generated, list) and generated:
+            return "[generated image available]"
+
+        builtin_calls = response.extra.get("builtin_tool_calls")
+        if isinstance(builtin_calls, list) and builtin_calls:
+            return "[built-in tool output available]"
+
+        if response.reasoning_content:
+            return "[reasoning output available]"
+
+        if response.refusal:
+            return response.refusal
+
+        response_shape = response.extra.get("response_shape")
+        if isinstance(response_shape, dict):
+            output_types = response_shape.get("output_types")
+            if isinstance(output_types, list) and output_types:
+                return "[empty response output received]"
+
+        return ""
 
     async def _execute_tools(
         self,
