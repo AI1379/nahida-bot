@@ -78,6 +78,7 @@ multimodal:
 
 telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"
+  # proxy: "${TELEGRAM_PROXY:}"     # SOCKS5/HTTP 代理，如 socks5://127.0.0.1:1080
   # polling_timeout: 30
   # allowed_chats: []
 

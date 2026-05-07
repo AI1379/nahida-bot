@@ -67,10 +67,19 @@ class TelegramPlugin(Plugin):
                 "in config.yaml"
             )
 
-        self._bot = Bot(
-            token=token,
-            default=DefaultBotProperties(parse_mode="HTML"),
-        )
+        proxy = os.environ.get("TELEGRAM_PROXY") or self.manifest.config.get("proxy")
+
+        bot_kwargs: dict[str, Any] = {
+            "token": token,
+            "default": DefaultBotProperties(parse_mode="HTML"),
+        }
+        if proxy:
+            from aiogram.client.session.aiohttp import AiohttpSession
+
+            bot_kwargs["session"] = AiohttpSession(proxy=proxy)
+            logger.info("telegram.proxy_configured", proxy=proxy)
+
+        self._bot = Bot(**bot_kwargs)
         me = await self._bot.get_me()
         self._converter = TelegramMessageConverter(bot_username=me.username)
         logger.info(
