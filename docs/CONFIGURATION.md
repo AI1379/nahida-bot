@@ -87,6 +87,21 @@ Set per-model under `capabilities` to declare what the model supports:
 | `max_image_count` | `int` | `0` | Max images per request (0 = unlimited) |
 | `max_image_bytes` | `int` | `0` | Max bytes per image (0 = unlimited) |
 | `supported_image_mime_types` | `list[str]` | `["image/jpeg", "image/png", "image/webp"]` | Accepted MIME types |
+| `image_generation` | `bool` | `false` | Model can generate images via built-in tool |
+| `web_search` | `bool` | `false` | Model supports built-in web search |
+| `file_search` | `bool` | `false` | Model supports built-in file search |
+| `code_interpreter` | `bool` | `false` | Model supports built-in code interpreter |
+
+### OpenAI Responses API Options
+
+These fields apply only when `type: "openai-responses"`:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `store_responses` | `bool` | `false` | Enable response persistence for `previous_response_id` chaining |
+| `reasoning_effort` | `str` | `null` | Reasoning depth: `"low"`, `"medium"`, `"high"` |
+| `max_output_tokens` | `int` | `null` | Max output tokens (replaces `max_tokens`) |
+| `built_in_tools` | `list[str]` | `null` | Built-in tools to enable: `"web_search"`, `"file_search"`, `"image_generation"`, `"code_interpreter"` |
 
 ### Provider Types
 
@@ -98,6 +113,7 @@ Set per-model under `capabilities` to declare what the model supports:
 | `groq` | `GroqProvider` | Groq (OpenAI-compatible, different reasoning key) |
 | `anthropic` | `AnthropicProvider` | Anthropic Claude (independent protocol) |
 | `minimax` | `MinimaxProvider` | Minimax (Anthropic-compatible endpoint) |
+| `openai-responses` | `OpenAIResponsesProvider` | OpenAI Responses API (`/v1/responses`) with built-in tools and stateful chaining |
 
 ### Example
 
@@ -127,6 +143,22 @@ providers:
     api_key: "${MINIMAX_LLM_API_KEY}"
     base_url: "https://api.minimaxi.com/anthropic"
     models: ["MiniMax-M2.5"]
+
+  openai:
+    type: "openai-responses"
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com"
+    store_responses: true
+    reasoning_effort: "medium"
+    built_in_tools: ["web_search", "image_generation"]
+    models:
+      - name: "gpt-5.2"
+        capabilities:
+          image_input: true
+          image_generation: true
+          web_search: true
+          tool_calling: true
+          reasoning: true
 
 default_provider: deepseek-main
 ```
@@ -263,6 +295,7 @@ Common environment variables referenced in config:
 | `SILICONFLOW_LLM_API_KEY` | SiliconFlow provider | API key |
 | `SILICONFLOW_LLM_BASE_URL` | SiliconFlow provider | API base URL |
 | `MINIMAX_LLM_API_KEY` | Minimax provider | API key |
+| `OPENAI_API_KEY` | OpenAI Responses provider | API key |
 | `MILKY_ACCESS_TOKEN` | Milky channel | Access token |
 | `ENV_PATH` | Config loader | Override `.env` file path |
 

@@ -53,6 +53,29 @@ providers:
     base_url: "https://api.minimaxi.com/anthropic"
     models: ["MiniMax-M2.5", "MiniMax-M2.7"]
 
+  # OpenAI Responses API（可选）
+  # 使用 /responses 端点，支持内置工具（web_search、image_generation 等）
+  # 和有状态对话链（previous_response_id）。Reasoning 摘要可通过
+  # reasoning_effort 参数控制深度。
+  #
+  openai:
+    type: "openai-responses"
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "${OPENAI_API_BASE_URL}"
+    store_responses: true
+    use_previous_response_id: false
+    stream_responses: true
+    reasoning_effort: "medium"
+    # built_in_tools: ["web_search", "image_generation"]
+    models:
+      - name: "gpt-5.4"
+        capabilities:
+          image_input: true
+          image_generation: true
+          web_search: true
+          tool_calling: true
+          reasoning: true
+
 default_provider: deepseek-main   # 可选，默认使用第一个 key
 
 # ── 多模态 / 图片理解 ─────────────────────────────────
