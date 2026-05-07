@@ -83,9 +83,16 @@ class AgentLoopConfig:
     provider_timeout_seconds: float = 30.0
     retry_attempts: int = 2
     retry_backoff_seconds: float = 0.2
+    tool_timeout_seconds: float = 135.0
     tool_retry_attempts: int = 1
     tool_retry_backoff_seconds: float = 0.1
     max_tool_log_chars: int = 400
+    tool_use_system_prompt: str = (
+        "Tool use policy: When a tool is needed, call it through the structured "
+        "tool/function calling interface. Do not merely say that you will call a "
+        "tool. After tool results are provided, continue reasoning from the "
+        "results and produce the final user-facing answer."
+    )
     provider_error_template: str = (
         "Service temporarily unavailable ({code}). Please try again later."
     )
@@ -145,6 +152,9 @@ class AgentLoop:
         active_builder = context_builder or self.context_builder
         trace = self.metrics.new_trace() if self.metrics else None
         provider_default_model = getattr(active_provider, "model", "")
+        effective_system_prompt = self._system_prompt_with_tool_guidance(
+            system_prompt, tools
+        )
 
         logger.debug(
             "agent_loop.run",
@@ -174,7 +184,7 @@ class AgentLoop:
         try:
             for step in range(1, self.config.max_steps + 1):
                 prompt_messages = active_builder.build_context(
-                    system_prompt=system_prompt,
+                    system_prompt=effective_system_prompt,
                     workspace_root=workspace_root,
                     history_messages=conversation,
                 )
@@ -203,6 +213,12 @@ class AgentLoop:
                     conversation.append(assistant_message)
 
                 if not response.tool_calls:
+                    self._log_terminal_without_tool_calls(
+                        response=response,
+                        tools=tools,
+                        step=step,
+                        trace=trace,
+                    )
                     return AgentRunResult(
                         final_response=self._display_content(response),
                         assistant_messages=assistant_messages,
@@ -224,6 +240,13 @@ class AgentLoop:
                 )
                 tool_messages.extend(executed_messages)
                 conversation.extend(executed_messages)
+                logger.debug(
+                    "agent_loop.tools_executed",
+                    trace_id=trace.trace_id if trace else "",
+                    step=step,
+                    tool_call_count=len(response.tool_calls),
+                    tool_message_count=len(executed_messages),
+                )
 
             final_fallback = (
                 assistant_messages[-1].content if assistant_messages else ""
@@ -252,6 +275,15 @@ class AgentLoop:
                 trace_id=trace.trace_id if trace else None,
                 error=exc.code,
             )
+
+    def _system_prompt_with_tool_guidance(
+        self,
+        system_prompt: str,
+        tools: list[ToolDefinition] | None,
+    ) -> str:
+        if not tools or not self.config.tool_use_system_prompt:
+            return system_prompt
+        return f"{system_prompt.rstrip()}\n\n{self.config.tool_use_system_prompt}"
 
     async def _call_provider_with_retry(
         self,
@@ -333,6 +365,37 @@ class AgentLoop:
                 if not can_retry:
                     raise
                 await asyncio.sleep(self.config.retry_backoff_seconds)
+
+    def _log_terminal_without_tool_calls(
+        self,
+        *,
+        response: ProviderResponse,
+        tools: list[ToolDefinition] | None,
+        step: int,
+        trace: Trace | None,
+    ) -> None:
+        if not tools:
+            return
+
+        content = self._display_content(response)
+        tool_names = [tool.name for tool in tools]
+        lowered = content.lower()
+        looks_like_tool_promise = (
+            "tool" in lowered
+            or "工具" in content
+            or any(name.lower() in lowered for name in tool_names)
+        )
+        log = logger.warning if looks_like_tool_promise else logger.debug
+        log(
+            "agent_loop.terminal_without_tool_calls",
+            trace_id=trace.trace_id if trace else "",
+            step=step,
+            finish_reason=response.finish_reason or "",
+            content_preview=content[:200],
+            available_tools=tool_names[:20],
+            available_tool_count=len(tool_names),
+            looks_like_tool_promise=looks_like_tool_promise,
+        )
 
     def _build_assistant_message(
         self,
@@ -462,15 +525,55 @@ class AgentLoop:
 
         for attempt in range(1, max_attempts + 1):
             t0 = time.monotonic()
+            logger.debug(
+                "agent_loop.tool_call_start",
+                trace_id=trace.trace_id if trace else "",
+                step=step,
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.call_id,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                timeout_seconds=self.config.tool_timeout_seconds,
+            )
             try:
-                raw_result = await self.tool_executor.execute(tool_call)
+                raw_result = await asyncio.wait_for(
+                    self.tool_executor.execute(tool_call),
+                    timeout=self.config.tool_timeout_seconds,
+                )
                 result = self._coerce_tool_result(raw_result)
+            except TimeoutError:
+                result = ToolExecutionResult.error(
+                    code="tool_timeout",
+                    message=(
+                        "Tool execution timed out after "
+                        f"{self.config.tool_timeout_seconds:.1f}s"
+                    ),
+                    retryable=False,
+                )
+                logger.warning(
+                    "agent_loop.tool_call_timeout",
+                    trace_id=trace.trace_id if trace else "",
+                    step=step,
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.call_id,
+                    attempt=attempt,
+                    timeout_seconds=self.config.tool_timeout_seconds,
+                )
             except Exception as exc:
                 result = ToolExecutionResult.error(
                     code="tool_execution_exception",
                     message=f"Tool execution raised: {type(exc).__name__}",
                     retryable=False,
                     logs=[str(exc)],
+                )
+                logger.warning(
+                    "agent_loop.tool_call_exception",
+                    trace_id=trace.trace_id if trace else "",
+                    step=step,
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.call_id,
+                    attempt=attempt,
+                    error_type=type(exc).__name__,
                 )
 
             if trace is not None and self.metrics is not None:
@@ -489,6 +592,19 @@ class AgentLoop:
                 continue
 
             phase = "failed" if result.is_error else "completed"
+            logger.debug(
+                "agent_loop.tool_call_done",
+                trace_id=trace.trace_id if trace else "",
+                step=step,
+                tool_name=tool_call.name,
+                tool_call_id=tool_call.call_id,
+                attempt=attempt,
+                phase=phase,
+                success=not result.is_error,
+                error_code=result.error_code or "",
+                retryable=result.retryable,
+                latency_seconds=round(time.monotonic() - t0, 3),
+            )
             return result, attempt, phase
 
         return (

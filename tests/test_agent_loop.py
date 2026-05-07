@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import json
 
@@ -77,6 +78,16 @@ class _QueuedToolExecutor(ToolExecutor):
         if not self.responses:
             raise RuntimeError("No queued tool response")
         return self.responses.pop(0)
+
+
+@dataclass
+class _HangingToolExecutor(ToolExecutor):
+    calls: list[ToolCall] = field(default_factory=list)
+
+    async def execute(self, tool_call: ToolCall) -> ToolExecutionResult:
+        self.calls.append(tool_call)
+        await asyncio.sleep(60)
+        return ToolExecutionResult.success(output="too late")
 
 
 @pytest.mark.asyncio
@@ -185,6 +196,101 @@ async def test_agent_loop_executes_tools_and_continues() -> None:
     assert len(tool_messages) == 1
     assert tool_messages[0].metadata is not None
     assert tool_messages[0].metadata["tool_call_id"] == "tc_1"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_supports_multiple_tool_rounds() -> None:
+    """Loop should allow a provider to request tools across multiple steps."""
+    provider = _QueuedProvider(
+        responses=[
+            ProviderResponse(
+                content="first tool",
+                tool_calls=[
+                    ToolCall(call_id="tc_1", name="search", arguments={"q": "x"})
+                ],
+            ),
+            ProviderResponse(
+                content="second tool",
+                tool_calls=[
+                    ToolCall(call_id="tc_2", name="read_file", arguments={"path": "a"})
+                ],
+            ),
+            ProviderResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tool_executor = _RecorderToolExecutor()
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=400, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=builder,
+        tool_executor=tool_executor,
+    )
+
+    result = await loop.run(
+        user_message="hi",
+        system_prompt="sys",
+        tools=[
+            ToolDefinition(
+                name="search",
+                description="search",
+                parameters={
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            ),
+            ToolDefinition(
+                name="read_file",
+                description="read",
+                parameters={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            ),
+        ],
+    )
+
+    assert result.final_response == "final"
+    assert result.steps == 3
+    assert [call.name for call in tool_executor.calls] == ["search", "read_file"]
+    assert [message.metadata["tool_call_id"] for message in result.tool_messages] == [  # type: ignore
+        "tc_1",
+        "tc_2",
+    ]
+    assert provider.observed_messages[2][-2].role == "assistant"
+    assert provider.observed_messages[2][-1].role == "tool"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_injects_tool_use_guidance_when_tools_are_available() -> None:
+    provider = _QueuedProvider(responses=[ProviderResponse(content="ok")])
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    loop = AgentLoop(provider=provider, context_builder=builder)
+
+    await loop.run(
+        user_message="hi",
+        system_prompt="sys",
+        tools=[
+            ToolDefinition(
+                name="search",
+                description="search",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    system_messages = [
+        message for message in provider.observed_messages[0] if message.role == "system"
+    ]
+    assert len(system_messages) == 1
+    assert "structured tool/function calling interface" in system_messages[0].content
 
 
 @pytest.mark.asyncio
@@ -370,6 +476,59 @@ async def test_agent_loop_stops_retrying_non_retryable_tool_errors() -> None:
         "tool_name": "search",
         "lifecycle": {"phase": "failed", "attempt": 1},
     }
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_times_out_hanging_tool_and_continues() -> None:
+    """A stuck tool should be converted into a tool-result error for the model."""
+    provider = _QueuedProvider(
+        responses=[
+            ProviderResponse(
+                content="calling tool",
+                tool_calls=[
+                    ToolCall(call_id="tc_1", name="search", arguments={"q": "x"})
+                ],
+            ),
+            ProviderResponse(content="done after timeout", tool_calls=[]),
+        ]
+    )
+    tool_executor = _HangingToolExecutor()
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=260, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=builder,
+        tool_executor=tool_executor,
+        config=AgentLoopConfig(
+            tool_timeout_seconds=0.01,
+            tool_retry_attempts=0,
+        ),
+    )
+
+    result = await loop.run(
+        user_message="hi",
+        system_prompt="sys",
+        tools=[
+            ToolDefinition(
+                name="search",
+                description="search",
+                parameters={
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            )
+        ],
+    )
+
+    assert result.final_response == "done after timeout"
+    assert result.steps == 2
+    assert len(tool_executor.calls) == 1
+    payload = json.loads(result.tool_messages[0].content)
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "tool_timeout"
 
 
 @pytest.mark.asyncio

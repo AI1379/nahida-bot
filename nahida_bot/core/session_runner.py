@@ -206,6 +206,8 @@ class SessionRunner:
                 steps=result.steps,
                 error=result.error,
                 response_chars=len(result.final_response or ""),
+                assistant_message_count=len(result.assistant_messages),
+                tool_message_count=len(result.tool_messages),
             )
             await self._persist_turns(
                 session_id,
