@@ -35,6 +35,12 @@ class ModelCapabilities:
         "image/webp",
     )
 
+    # Built-in tool capabilities (Responses API)
+    image_generation: bool = False
+    web_search: bool = False
+    file_search: bool = False
+    code_interpreter: bool = False
+
 
 @dataclass(slots=True, frozen=True)
 class ToolDefinition:

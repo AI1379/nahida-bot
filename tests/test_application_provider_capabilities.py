@@ -13,12 +13,16 @@ def test_model_capabilities_from_config_parses_known_fields() -> None:
             "image_input": True,
             "prompt_cache": True,
             "supported_image_mime_types": ["image/png"],
+            "image_generation": True,
+            "web_search": True,
             "unknown": "ignored",
         }
     )
 
     assert cap.image_input is True
     assert cap.prompt_cache is True
+    assert cap.image_generation is True
+    assert cap.web_search is True
     assert cap.supported_image_mime_types == ("image/png",)
 
 

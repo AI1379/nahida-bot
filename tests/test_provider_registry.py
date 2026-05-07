@@ -30,6 +30,7 @@ class TestProviderRegistry:
         assert "glm" in registered_types
         assert "groq" in registered_types
         assert "minimax" in registered_types
+        assert "openai-responses" in registered_types
 
     def test_get_provider_class_returns_correct_class(self) -> None:
         from nahida_bot.agent.providers.openai_compatible import (

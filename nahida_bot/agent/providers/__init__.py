@@ -18,6 +18,7 @@ from nahida_bot.agent.providers.errors import (
 )
 from nahida_bot.agent.providers.anthropic import AnthropicProvider
 from nahida_bot.agent.providers.openai_compatible import OpenAICompatibleProvider
+from nahida_bot.agent.providers.openai_responses import OpenAIResponsesProvider
 from nahida_bot.agent.providers.reasoning import (
     ReasoningPolicy,
     extract_think_tags,
@@ -40,12 +41,14 @@ import nahida_bot.agent.providers.glm as _glm  # noqa: F401
 import nahida_bot.agent.providers.groq as _groq  # noqa: F401
 import nahida_bot.agent.providers.minimax as _minimax  # noqa: F401
 import nahida_bot.agent.providers.anthropic as _anthropic  # noqa: F401
+import nahida_bot.agent.providers.openai_responses as _openai_responses  # noqa: F401
 
 __all__ = [
     "AnthropicProvider",
     "ChatProvider",
     "ModelCapabilities",
     "OpenAICompatibleProvider",
+    "OpenAIResponsesProvider",
     "ProviderAuthError",
     "ProviderBadResponseError",
     "ProviderDescriptor",
