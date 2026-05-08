@@ -111,3 +111,57 @@ telegram:
 #   max_forward_messages: 80
 #   forward_render_max_chars: 12000
 #   scene_cache_size: 4096
+
+# ── Agent Loop ──────────────────────────────────────────
+# 控制 Agent 循环的行为：迭代轮数、超时、重试策略等。
+# 以下均为默认值，不写则使用默认值。
+#
+# agent:
+#   max_steps: 8                        # 最大工具调用迭代轮数
+#   provider_timeout_seconds: 30.0      # 单次 LLM 调用超时（秒）
+#   retry_attempts: 2                   # LLM 调用重试次数
+#   retry_backoff_seconds: 0.2          # 重试退避间隔（秒）
+#   tool_timeout_seconds: 135.0         # 工具执行超时（秒）
+#   tool_retry_attempts: 1              # 工具执行重试次数
+#   tool_retry_backoff_seconds: 0.1     # 工具重试退避间隔（秒）
+#   max_tool_log_chars: 400             # 工具日志截断长度
+#   # tool_use_system_prompt: "..."     # 注入的工具使用提示
+#   # provider_error_template: "..."    # Provider 错误消息模板
+
+# ── Context Budget ──────────────────────────────────────
+# 控制上下文窗口大小和 reasoning chain 预算。
+# 以下均为默认值，不写则使用默认值。
+#
+# context:
+#   max_tokens: 8000                    # 最大 token 预算
+#   reserved_tokens: 1000               # 为输出保留的 token
+#   # max_chars: null                   # 字符数上限（兼容旧逻辑，优先使用 max_tokens）
+#   # reserved_chars: 0                 # 字符保留数
+#   summary_max_chars: 600              # 历史摘要最大字符数
+#   reasoning_policy: "budget"          # strip / append / budget
+#   max_reasoning_tokens: 2000          # reasoning chain token 预算
+
+# ── Scheduler ──────────────────────────────────────────
+# 控制定时任务调度行为。
+# 以下均为默认值，不写则使用默认值。
+#
+# scheduler:
+#   poll_interval_seconds: 1.0          # 调度轮询间隔（秒）
+#   max_concurrent_fires: 5             # 最大并发执行数
+#   job_timeout_seconds: 120.0          # 单任务超时（秒）
+#   min_interval_seconds: 60            # cron 最小间隔（秒）
+#   max_prompt_chars: 4000              # 定时任务 prompt 最大字符数
+#   max_jobs_per_chat: 20               # 每个会话最大任务数
+#   failure_retry_seconds: 300          # 失败重试等待（秒）
+#   max_consecutive_failures: 3         # 连续失败上限
+
+# ── Router ─────────────────────────────────────────────
+# 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。
+# 以下均为默认值，不写则使用默认值。
+#
+# router:
+#   # system_prompt: "..."              # 与顶层 system_prompt 重复，优先使用顶层字段
+#   max_history_turns: 50               # 最大历史轮数
+#   agent_enabled: true                 # 是否启用 Agent
+#   command_timeout_seconds: 30.0       # 命令执行超时（秒）
+#   command_timeout_message: "Command timed out. Please try again later."

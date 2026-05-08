@@ -33,6 +33,7 @@ class ReasoningPolicy(Enum):
 
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import ChatProvider
+    from nahida_bot.core.config import ContextConfig
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
 
@@ -98,6 +99,25 @@ class ContextBudget:
 
         usable = self.max_tokens - self.reserved_tokens
         return usable if usable > 0 else 0
+
+
+def build_context_budget(cfg: ContextConfig) -> ContextBudget:
+    """Build a ContextBudget dataclass from a ContextConfig Pydantic model."""
+    _policy_map = {
+        "strip": ReasoningPolicy.STRIP,
+        "append": ReasoningPolicy.APPEND,
+        "budget": ReasoningPolicy.BUDGET,
+    }
+    policy = _policy_map.get(cfg.reasoning_policy, ReasoningPolicy.BUDGET)
+    return ContextBudget(
+        max_tokens=cfg.max_tokens,
+        reserved_tokens=cfg.reserved_tokens,
+        max_chars=cfg.max_chars,
+        reserved_chars=cfg.reserved_chars,
+        summary_max_chars=cfg.summary_max_chars,
+        reasoning_policy=policy,
+        max_reasoning_tokens=cfg.max_reasoning_tokens,
+    )
 
 
 class ContextBuilder:

@@ -1,36 +1,40 @@
-# Configuration Reference
+# 配置参考
 
-Nahida Bot reads its configuration from a YAML file, a `.env` file for secrets, and environment variables. Values are merged in this precedence order:
+Nahida Bot 从 YAML 文件、`.env` 文件和环境变量读取配置。值的合并优先级从高到低：
 
-1. CLI flags (`--debug`, `--config-yaml`)
-2. `.env` file values
-3. YAML config file
-4. Built-in defaults
+1. CLI 参数（`--debug`、`--config-yaml`）
+2. `.env` 文件中的值
+3. YAML 配置文件
+4. 内置默认值
 
-Environment variable interpolation is available in any YAML value via `${VAR}` or `${VAR:fallback}` syntax.
+所有 YAML 值都支持环境变量插值，语法为 `${VAR}` 或 `${VAR:fallback}`。
 
 ---
 
-## Top-Level Settings
+## 顶层设置
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `app_name` | `str` | `"Nahida Bot"` | Application name, used in logs and lifecycle events |
-| `debug` | `bool` | `false` | Debug mode. Forces `log_level` to `DEBUG` unless explicitly set |
-| `log_level` | `str` | `"INFO"` | Log level: `TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `log_json` | `bool\|null` | `null` | JSON log output. `null` = auto (JSON in production, console in debug) |
-| `host` | `str` | `"127.0.0.1"` | Server bind host (reserved) |
-| `port` | `int` | `6185` | Server bind port (reserved) |
-| `db_path` | `str` | `"./data/nahida.db"` | SQLite database file path |
-| `workspace_base_dir` | `str` | `"./data/workspace"` | Workspace storage directory |
-| `plugin_paths` | `list[str]` | `["./plugins"]` | Additional plugin directories to scan |
-| `discover_builtin_channels` | `bool` | `true` | Auto-discover built-in channel plugins |
-| `system_prompt` | `str` | `"You are a helpful assistant."` | Default system prompt for agent conversations |
-| `default_provider` | `str` | `""` | Provider ID to use by default. Empty = first provider in `providers` |
-| `providers` | `dict` | `{}` | LLM provider configuration (see below) |
-| `multimodal` | `object` | (see below) | Image/media handling configuration |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `app_name` | `str` | `"Nahida Bot"` | 应用名称，用于日志和生命周期事件 |
+| `debug` | `bool` | `false` | 调试模式。开启后若未显式设置 `log_level`，则强制为 `DEBUG` |
+| `log_level` | `str` | `"INFO"` | 日志级别：`TRACE`、`DEBUG`、`INFO`、`WARNING`、`ERROR` |
+| `log_json` | `bool\|null` | `null` | JSON 日志输出。`null` = 自动（生产环境用 JSON，调试模式用控制台） |
+| `host` | `str` | `"127.0.0.1"` | 服务器绑定地址（保留） |
+| `port` | `int` | `6185` | 服务器绑定端口（保留） |
+| `db_path` | `str` | `"./data/nahida.db"` | SQLite 数据库文件路径 |
+| `workspace_base_dir` | `str` | `"./data/workspace"` | 工作区存储目录 |
+| `plugin_paths` | `list[str]` | `["./plugins"]` | 额外的插件扫描目录 |
+| `discover_builtin_channels` | `bool` | `true` | 自动发现内置频道插件 |
+| `system_prompt` | `str` | `"You are a helpful assistant."` | Agent 对话的默认系统提示词 |
+| `default_provider` | `str` | `""` | 默认使用的 provider ID。空值 = 使用 `providers` 中的第一个 |
+| `providers` | `dict` | `{}` | LLM provider 配置（见下文） |
+| `multimodal` | `object` | （见下文） | 图片/媒体处理配置 |
+| `agent` | `object` | （见下文） | Agent 循环配置 |
+| `context` | `object` | （见下文） | 上下文窗口预算配置 |
+| `scheduler` | `object` | （见下文） | 定时任务调度配置 |
+| `router` | `object` | （见下文） | 消息路由配置 |
 
-### Example
+### 示例
 
 ```yaml
 app_name: "Nahida Bot"
@@ -45,77 +49,77 @@ default_provider: deepseek-main
 
 ## LLM Providers
 
-The `providers` key is a dictionary. Each key is an arbitrary provider ID used in `default_provider` and `/model` commands.
+`providers` 是一个字典，每个键是自定义的 provider ID，用于 `default_provider` 和 `/model` 命令中引用。
 
-### Provider Entry
+### Provider 条目
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `type` | `str` | `"openai-compatible"` | Provider type. See [Provider Types](#provider-types) |
-| `api_key` | `str` | `""` | API key. Provider is skipped if empty |
-| `base_url` | `str` | `""` | API endpoint base URL |
-| `models` | `list` | `[]` | Model list. First entry is the default model |
-| `merge_system_messages` | `bool` | `false` | Coalesce all system messages into one before sending (for backends that require it) |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `type` | `str` | `"openai-compatible"` | Provider 类型，见 [Provider 类型](#provider-类型) |
+| `api_key` | `str` | `""` | API 密钥，为空时跳过该 provider |
+| `base_url` | `str` | `""` | API 端点基础 URL |
+| `models` | `list` | `[]` | 模型列表，第一个元素为默认模型 |
+| `merge_system_messages` | `bool` | `false` | 发送前合并所有 system 消息为一条（用于需要单一 system 的后端） |
 
-### Model Entry
+### 模型条目
 
-Each item in `models` can be a plain string or an object:
+`models` 中的每个元素可以是纯字符串或对象：
 
 ```yaml
 models:
-  - "deepseek-v4-pro"                      # simple string
-  - name: "Qwen/Qwen3.6-35B-A3B"           # extended with capabilities
+  - "deepseek-v4-pro"                      # 纯字符串
+  - name: "Qwen/Qwen3.6-35B-A3B"           # 带 capabilities 的对象
     capabilities:
       image_input: true
       max_image_count: 4
 ```
 
-### Model Capabilities
+### 模型能力声明
 
-Set per-model under `capabilities` to declare what the model supports:
+在 `capabilities` 下按模型声明其支持的能力：
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `text_input` | `bool` | `true` | Accepts text input |
-| `image_input` | `bool` | `false` | Accepts images natively |
-| `tool_calling` | `bool` | `true` | Supports function/tool calling |
-| `reasoning` | `bool` | `false` | Supports reasoning/thinking tokens |
-| `prompt_cache` | `bool` | `false` | Supports prompt caching |
-| `prompt_cache_images` | `bool` | `false` | Cache images in prompts |
-| `explicit_context_cache` | `bool` | `false` | Requires explicit cache control markers |
-| `prompt_cache_min_tokens` | `int` | `0` | Minimum tokens for cache breakpoint |
-| `max_image_count` | `int` | `0` | Max images per request (0 = unlimited) |
-| `max_image_bytes` | `int` | `0` | Max bytes per image (0 = unlimited) |
-| `supported_image_mime_types` | `list[str]` | `["image/jpeg", "image/png", "image/webp"]` | Accepted MIME types |
-| `image_generation` | `bool` | `false` | Model can generate images via built-in tool |
-| `web_search` | `bool` | `false` | Model supports built-in web search |
-| `file_search` | `bool` | `false` | Model supports built-in file search |
-| `code_interpreter` | `bool` | `false` | Model supports built-in code interpreter |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `text_input` | `bool` | `true` | 接受文本输入 |
+| `image_input` | `bool` | `false` | 原生接受图片输入 |
+| `tool_calling` | `bool` | `true` | 支持函数/工具调用 |
+| `reasoning` | `bool` | `false` | 支持推理/思维链 token |
+| `prompt_cache` | `bool` | `false` | 支持 prompt 缓存 |
+| `prompt_cache_images` | `bool` | `false` | 在 prompt 中缓存图片 |
+| `explicit_context_cache` | `bool` | `false` | 需要显式缓存控制标记 |
+| `prompt_cache_min_tokens` | `int` | `0` | 缓存断点的最小 token 数 |
+| `max_image_count` | `int` | `0` | 每次请求最大图片数（0 = 不限） |
+| `max_image_bytes` | `int` | `0` | 单张图片最大字节数（0 = 不限） |
+| `supported_image_mime_types` | `list[str]` | `["image/jpeg", "image/png", "image/webp"]` | 接受的 MIME 类型 |
+| `image_generation` | `bool` | `false` | 模型可通过内置工具生成图片 |
+| `web_search` | `bool` | `false` | 模型支持内置网页搜索 |
+| `file_search` | `bool` | `false` | 模型支持内置文件搜索 |
+| `code_interpreter` | `bool` | `false` | 模型支持内置代码解释器 |
 
-### OpenAI Responses API Options
+### OpenAI Responses API 选项
 
-These fields apply only when `type: "openai-responses"`:
+以下字段仅在 `type: "openai-responses"` 时生效：
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `store_responses` | `bool` | `false` | Enable response persistence for `previous_response_id` chaining |
-| `reasoning_effort` | `str` | `null` | Reasoning depth: `"low"`, `"medium"`, `"high"` |
-| `max_output_tokens` | `int` | `null` | Max output tokens (replaces `max_tokens`) |
-| `built_in_tools` | `list[str]` | `null` | Built-in tools to enable: `"web_search"`, `"file_search"`, `"image_generation"`, `"code_interpreter"` |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `store_responses` | `bool` | `false` | 启用响应持久化，用于 `previous_response_id` 链式调用 |
+| `reasoning_effort` | `str` | `null` | 推理深度：`"low"`、`"medium"`、`"high"` |
+| `max_output_tokens` | `int` | `null` | 最大输出 token（替代 `max_tokens`） |
+| `built_in_tools` | `list[str]` | `null` | 启用的内置工具：`"web_search"`、`"file_search"`、`"image_generation"`、`"code_interpreter"` |
 
-### Provider Types
+### Provider 类型
 
-| Type | Class | Description |
-|------|-------|-------------|
-| `openai-compatible` | `OpenAICompatibleProvider` | Generic `/chat/completions` endpoint |
-| `deepseek` | `DeepSeekProvider` | DeepSeek (extends OpenAI-compatible, adds thinking mode) |
-| `glm` | `GLMProvider` | GLM / ZhiPu (fully OpenAI-compatible) |
-| `groq` | `GroqProvider` | Groq (OpenAI-compatible, different reasoning key) |
-| `anthropic` | `AnthropicProvider` | Anthropic Claude (independent protocol) |
-| `minimax` | `MinimaxProvider` | Minimax (Anthropic-compatible endpoint) |
-| `openai-responses` | `OpenAIResponsesProvider` | OpenAI Responses API (`/v1/responses`) with built-in tools and stateful chaining |
+| 类型 | 类 | 说明 |
+|------|----|------|
+| `openai-compatible` | `OpenAICompatibleProvider` | 通用 `/chat/completions` 端点 |
+| `deepseek` | `DeepSeekProvider` | DeepSeek（扩展 OpenAI 兼容，增加思维模式） |
+| `glm` | `GLMProvider` | GLM / 智谱（完全 OpenAI 兼容） |
+| `groq` | `GroqProvider` | Groq（OpenAI 兼容，不同的 reasoning 字段名） |
+| `anthropic` | `AnthropicProvider` | Anthropic Claude（独立协议） |
+| `minimax` | `MinimaxProvider` | Minimax（Anthropic 兼容端点） |
+| `openai-responses` | `OpenAIResponsesProvider` | OpenAI Responses API（`/v1/responses`），支持内置工具和有状态链式调用 |
 
-### Example
+### 示例
 
 ```yaml
 providers:
@@ -165,21 +169,21 @@ default_provider: deepseek-main
 
 ---
 
-## Multimodal / Image Handling
+## 多模态 / 图片处理
 
-Configured under the `multimodal` key.
+在 `multimodal` 键下配置。
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `image_fallback_mode` | `str` | `"auto"` | Strategy when the primary model lacks image support: `auto` (call fallback vision model), `tool` (inject `image_understand` tool), `off` (skip images) |
-| `media_context_policy` | `str` | `"cache_aware"` | How media is retained in history: `cache_aware` (recent images as native blocks, old ones as descriptions), `native_recent` (only latest image is native), `description_only` (all images as text descriptions) |
-| `image_fallback_provider` | `str` | `""` | Provider ID for the fallback vision model |
-| `image_fallback_model` | `str` | `""` | Model name within the fallback provider |
-| `max_images_per_turn` | `int` | `4` | Maximum images processed per conversation turn |
-| `max_image_bytes` | `int` | `10485760` | Maximum bytes per individual image (10 MB) |
-| `media_cache_ttl_seconds` | `int` | `3600` | Media cache time-to-live in seconds |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `image_fallback_mode` | `str` | `"auto"` | 主模型不支持图片时的策略：`auto`（自动调用 fallback 视觉模型）、`tool`（注入 `image_understand` 工具）、`off`（跳过图片） |
+| `media_context_policy` | `str` | `"cache_aware"` | 历史中的媒体保留方式：`cache_aware`（近期图片保留原生块，旧的降级为描述）、`native_recent`（仅最新图片保留原生）、`description_only`（全部使用文本描述） |
+| `image_fallback_provider` | `str` | `""` | Fallback 视觉模型的 provider ID |
+| `image_fallback_model` | `str` | `""` | Fallback provider 中的模型名称 |
+| `max_images_per_turn` | `int` | `4` | 每轮对话处理的最大图片数 |
+| `max_image_bytes` | `int` | `10485760` | 单张图片最大字节数（10 MB） |
+| `media_cache_ttl_seconds` | `int` | `3600` | 媒体缓存过期时间（秒） |
 
-### Example
+### 示例
 
 ```yaml
 multimodal:
@@ -191,24 +195,91 @@ multimodal:
 
 ---
 
-## Channel Plugins
+## Agent Loop
 
-Channel configuration is injected via the `extra="allow"` mechanism: top-level keys that match a plugin ID are merged into that plugin's config.
+在 `agent` 键下配置。控制 LLM + 工具调用的迭代循环。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `max_steps` | `int` | `8` | 每轮对话最大工具调用迭代次数 |
+| `provider_timeout_seconds` | `float` | `30.0` | 单次 LLM API 调用超时时间（秒） |
+| `retry_attempts` | `int` | `2` | Provider 瞬态错误重试次数 |
+| `retry_backoff_seconds` | `float` | `0.2` | 重试退避间隔（秒） |
+| `tool_timeout_seconds` | `float` | `135.0` | 单次工具执行超时时间（秒） |
+| `tool_retry_attempts` | `int` | `1` | 工具执行失败重试次数 |
+| `tool_retry_backoff_seconds` | `float` | `0.1` | 工具重试退避间隔（秒） |
+| `max_tool_log_chars` | `int` | `400` | 工具结果日志截断长度 |
+| `tool_use_system_prompt` | `str` | （内置） | 注入的工具使用行为引导提示 |
+| `provider_error_template` | `str` | （内置） | Provider 错误时的用户提示模板（支持 `{code}` 占位符） |
+
+---
+
+## Context Budget
+
+在 `context` 键下配置。控制 prompt 上下文组装和 token 预算。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `max_tokens` | `int` | `8000` | prompt 上下文最大 token 预算 |
+| `reserved_tokens` | `int` | `1000` | 为模型响应保留的 token 数 |
+| `max_chars` | `int\|null` | `null` | 字符数预算覆盖（兼容旧逻辑，优先使用 `max_tokens`） |
+| `reserved_chars` | `int` | `0` | 使用 `max_chars` 时的字符保留数 |
+| `summary_max_chars` | `int` | `600` | 历史消息摘要的最大字符数 |
+| `reasoning_policy` | `str` | `"budget"` | reasoning chain 处理方式：`strip`（丢弃）、`append`（始终包含）、`budget`（预算内包含） |
+| `max_reasoning_tokens` | `int` | `2000` | reasoning chain 内容的 token 预算 |
+
+---
+
+## Scheduler
+
+在 `scheduler` 键下配置。控制基于 cron 的定时任务调度服务。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `poll_interval_seconds` | `float` | `1.0` | 调度器检查到期任务的间隔（秒） |
+| `max_concurrent_fires` | `int` | `5` | 最大并发执行任务数 |
+| `job_timeout_seconds` | `float` | `120.0` | 单个定时任务执行超时（秒） |
+| `min_interval_seconds` | `int` | `60` | 允许的最小 cron 间隔（防止过于频繁触发） |
+| `max_prompt_chars` | `int` | `4000` | 定时任务 prompt 最大字符数 |
+| `max_jobs_per_chat` | `int` | `20` | 每个聊天会话的最大定时任务数 |
+| `failure_retry_seconds` | `int` | `300` | 任务失败后重试等待时间（秒） |
+| `max_consecutive_failures` | `int` | `3` | 连续失败多少次后自动禁用任务 |
+
+---
+
+## Router
+
+在 `router` 键下配置。控制消息从频道到命令/Agent 的路由行为。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `system_prompt` | `str` | `"You are a helpful assistant."` | Agent 系统提示词（建议使用顶层 `system_prompt` 字段） |
+| `max_history_turns` | `int` | `50` | 每个会话加载的最大对话历史轮数 |
+| `agent_enabled` | `bool` | `true` | 是否启用 Agent 循环（设为 `false` 进入纯命令模式） |
+| `command_timeout_seconds` | `float` | `30.0` | 命令处理器执行超时（秒） |
+| `command_timeout_message` | `str` | `"Command timed out..."` | 命令超时时显示的消息 |
+
+---
+
+## 频道插件
+
+频道配置通过 `extra="allow"` 机制注入：顶层键名如果匹配某个插件 ID，对应的值会合并到该插件的配置中。
 
 ### Telegram
 
-Under the `telegram` key.
+在 `telegram` 键下配置。
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `bot_token` | `str` | `""` | Telegram Bot API token (required). Falls back to `TELEGRAM_BOT_TOKEN` env var |
-| `polling_timeout` | `int` | `30` | Long polling timeout in seconds |
-| `polling_max_backoff` | `float` | `30` | Max backoff delay on poll errors |
-| `allowed_chats` | `list[str]` | `[]` | Chat ID allowlist. Empty = accept all |
-| `send_retry_attempts` | `int` | `3` | Retry count for rate-limited sends |
-| `media_download_dir` | `str` | `"./data/temp/media"` | Download directory for media files |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `bot_token` | `str` | `""` | Telegram Bot API token（必填），可回退到 `TELEGRAM_BOT_TOKEN` 环境变量 |
+| `proxy` | `str` | `""` | SOCKS5/HTTP 代理地址，如 `socks5://127.0.0.1:1080` |
+| `polling_timeout` | `int` | `30` | Long polling 超时（秒） |
+| `polling_max_backoff` | `float` | `30` | 轮询错误时的最大退避延迟 |
+| `allowed_chats` | `list[str]` | `[]` | 聊天 ID 白名单，空 = 接受所有 |
+| `send_retry_attempts` | `int` | `3` | 发送限流时的重试次数 |
+| `media_download_dir` | `str` | `"./data/temp/media"` | 媒体文件下载目录 |
 
-### Example
+### 示例
 
 ```yaml
 telegram:
@@ -219,53 +290,53 @@ telegram:
 
 ### Milky (QQ)
 
-Under the `milky` key. Requires a running Lagrange.Milky instance.
+在 `milky` 键下配置。需要先启动 Lagrange.Milky 实例。
 
-#### Connection
+#### 连接
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `base_url` | `str` | `"http://127.0.0.1:3000"` | Milky HTTP base URL |
-| `access_token` | `str` | `""` | Milky API access token |
-| `api_prefix` | `str` | `"/api"` | HTTP API prefix |
-| `event_path` | `str` | `"/event"` | WebSocket event path |
-| `ws_url` | `str` | `""` | Full WebSocket URL override (e.g. `ws://host:3000/event`) |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `base_url` | `str` | `"http://127.0.0.1:3000"` | Milky HTTP 基础 URL |
+| `access_token` | `str` | `""` | Milky API 访问令牌 |
+| `api_prefix` | `str` | `"/api"` | HTTP API 前缀 |
+| `event_path` | `str` | `"/event"` | WebSocket 事件路径 |
+| `ws_url` | `str` | `""` | 完整的 WebSocket URL 覆盖（如 `ws://host:3000/event`） |
 
-#### Trigger / Access Control
+#### 触发 / 访问控制
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `command_prefix` | `str` | `"/"` | Command prefix |
-| `group_trigger_mode` | `str` | `"mention"` | How group messages trigger the bot: `mention`, `command`, `always` |
-| `allowed_friends` | `list[str]` | `[]` | QQ friend allowlist. Empty = no restriction |
-| `allowed_groups` | `list[str]` | `[]` | QQ group allowlist. Empty = no restriction |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `command_prefix` | `str` | `"/"` | 命令前缀 |
+| `group_trigger_mode` | `str` | `"mention"` | 群消息触发方式：`mention`（@机器人）、`command`（命令前缀）、`always`（全部消息） |
+| `allowed_friends` | `list[str]` | `[]` | QQ 好友白名单，空 = 不限制 |
+| `allowed_groups` | `list[str]` | `[]` | QQ 群白名单，空 = 不限制 |
 
-#### Timeouts / Reconnect
+#### 超时 / 重连
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `connect_timeout` | `float` | `10.0` | HTTP connection timeout (seconds) |
-| `heartbeat_timeout` | `float` | `30.0` | WebSocket heartbeat timeout (seconds) |
-| `reconnect_initial_delay` | `float` | `1.0` | Initial reconnect delay (seconds) |
-| `reconnect_max_delay` | `float` | `30.0` | Maximum reconnect delay (seconds) |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `connect_timeout` | `float` | `10.0` | HTTP 连接超时（秒） |
+| `heartbeat_timeout` | `float` | `30.0` | WebSocket 心跳超时（秒） |
+| `reconnect_initial_delay` | `float` | `1.0` | 初始重连延迟（秒） |
+| `reconnect_max_delay` | `float` | `30.0` | 最大重连延迟（秒） |
 
-#### Sending / Media / Forward
+#### 发送 / 媒体 / 转发
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `send_retry_attempts` | `int` | `3` | Retry count for sending messages |
-| `send_retry_backoff` | `float` | `1.0` | Backoff between retries (seconds) |
-| `max_text_length` | `int` | `4000` | Max outbound text length |
-| `media_download_dir` | `str` | `"./data/temp/media"` | Media download directory |
-| `enable_media_download_tool` | `bool` | `true` | Register the media download tool |
-| `resource_url_ttl_hint` | `int` | `300` | TTL hint for temp URLs (seconds) |
-| `cache_media_on_receive` | `bool` | `true` | Eagerly cache inbound media |
-| `max_forward_depth` | `int` | `3` | Max nested forward depth |
-| `max_forward_messages` | `int` | `80` | Max messages per resolved forward |
-| `forward_render_max_chars` | `int` | `12000` | Text budget for rendered forwards |
-| `scene_cache_size` | `int` | `4096` | Peer-to-scene cache entries |
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `send_retry_attempts` | `int` | `3` | 发送消息的重试次数 |
+| `send_retry_backoff` | `float` | `1.0` | 重试退避间隔（秒） |
+| `max_text_length` | `int` | `4000` | 出站文本最大长度 |
+| `media_download_dir` | `str` | `"./data/temp/media"` | 媒体文件下载目录 |
+| `enable_media_download_tool` | `bool` | `true` | 是否注册媒体下载工具 |
+| `resource_url_ttl_hint` | `int` | `300` | 临时 URL 的 TTL 提示（秒） |
+| `cache_media_on_receive` | `bool` | `true` | 收到消息时立即缓存媒体 |
+| `max_forward_depth` | `int` | `3` | 合并转发最大嵌套深度 |
+| `max_forward_messages` | `int` | `80` | 单次合并转发最大消息数 |
+| `forward_render_max_chars` | `int` | `12000` | 转发渲染的文本预算（字符） |
+| `scene_cache_size` | `int` | `4096` | Peer-to-scene 缓存条目数 |
 
-### Example
+### 示例
 
 ```yaml
 milky:
@@ -278,31 +349,31 @@ milky:
 
 ---
 
-## Environment Variables
+## 环境变量
 
-Any YAML value supports interpolation:
+所有 YAML 值均支持插值：
 
-- `${VAR_NAME}` — resolve from `.env` file or environment
-- `${VAR_NAME:fallback}` — resolve with fallback
+- `${VAR_NAME}` — 从 `.env` 文件或环境变量解析
+- `${VAR_NAME:fallback}` — 解析并带回退值
 
-Common environment variables referenced in config:
+配置中常用的环境变量：
 
-| Variable | Used By | Description |
-|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Telegram channel | Bot API token |
-| `DEEPSEEK_LLM_API_KEY` | DeepSeek provider | API key |
-| `DEEPSEEK_LLM_BASE_URL` | DeepSeek provider | API base URL |
-| `SILICONFLOW_LLM_API_KEY` | SiliconFlow provider | API key |
-| `SILICONFLOW_LLM_BASE_URL` | SiliconFlow provider | API base URL |
-| `MINIMAX_LLM_API_KEY` | Minimax provider | API key |
-| `OPENAI_API_KEY` | OpenAI Responses provider | API key |
-| `MILKY_ACCESS_TOKEN` | Milky channel | Access token |
-| `ENV_PATH` | Config loader | Override `.env` file path |
+| 变量 | 使用者 | 说明 |
+|------|--------|------|
+| `TELEGRAM_BOT_TOKEN` | Telegram 频道 | Bot API token |
+| `DEEPSEEK_LLM_API_KEY` | DeepSeek provider | API 密钥 |
+| `DEEPSEEK_LLM_BASE_URL` | DeepSeek provider | API 基础 URL |
+| `SILICONFLOW_LLM_API_KEY` | SiliconFlow provider | API 密钥 |
+| `SILICONFLOW_LLM_BASE_URL` | SiliconFlow provider | API 基础 URL |
+| `MINIMAX_LLM_API_KEY` | Minimax provider | API 密钥 |
+| `OPENAI_API_KEY` | OpenAI Responses provider | API 密钥 |
+| `MILKY_ACCESS_TOKEN` | Milky 频道 | 访问令牌 |
+| `ENV_PATH` | 配置加载器 | 覆盖 `.env` 文件路径 |
 
-Variables are typically stored in a `.env` file in the project root.
+变量通常存放在项目根目录的 `.env` 文件中。
 
 ---
 
-## Full Example
+## 完整示例
 
-A complete multi-provider configuration is available in [`config-multiproviders.yaml`](../config-multiproviders.yaml) in the project root.
+多 provider 的完整配置示例见项目根目录的 [`config-multiproviders.yaml`](../config-multiproviders.yaml)。

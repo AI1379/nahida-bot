@@ -48,6 +48,74 @@ class MultimodalConfig(BaseModel):
     media_cache_ttl_seconds: int = Field(default=3600, ge=0)
 
 
+class AgentConfig(BaseModel):
+    """Agent loop configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    max_steps: int = Field(default=8, ge=1)
+    provider_timeout_seconds: float = Field(default=30.0, ge=0)
+    retry_attempts: int = Field(default=2, ge=0)
+    retry_backoff_seconds: float = Field(default=0.2, ge=0)
+    tool_timeout_seconds: float = Field(default=135.0, ge=0)
+    tool_retry_attempts: int = Field(default=1, ge=0)
+    tool_retry_backoff_seconds: float = Field(default=0.1, ge=0)
+    max_tool_log_chars: int = Field(default=400, ge=0)
+    tool_use_system_prompt: str = (
+        "Tool use policy: When a tool is needed, call it through the structured "
+        "tool/function calling interface. Do not merely say that you will call a "
+        "tool. After tool results are provided, continue reasoning from the "
+        "results and produce the final user-facing answer."
+    )
+    provider_error_template: str = (
+        "Service temporarily unavailable ({code}). Please try again later."
+    )
+
+
+ReasoningPolicyValue = Literal["strip", "append", "budget"]
+
+
+class ContextConfig(BaseModel):
+    """Context window budget configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    max_tokens: int = Field(default=8000, ge=1)
+    reserved_tokens: int = Field(default=1000, ge=0)
+    max_chars: int | None = None
+    reserved_chars: int = Field(default=0, ge=0)
+    summary_max_chars: int = Field(default=600, ge=0)
+    reasoning_policy: ReasoningPolicyValue = "budget"
+    max_reasoning_tokens: int = Field(default=2000, ge=0)
+
+
+class SchedulerConfigModel(BaseModel):
+    """Scheduler service configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    poll_interval_seconds: float = Field(default=1.0, ge=0.1)
+    max_concurrent_fires: int = Field(default=5, ge=1)
+    job_timeout_seconds: float = Field(default=120.0, ge=1)
+    min_interval_seconds: int = Field(default=60, ge=1)
+    max_prompt_chars: int = Field(default=4000, ge=1)
+    max_jobs_per_chat: int = Field(default=20, ge=1)
+    failure_retry_seconds: int = Field(default=300, ge=1)
+    max_consecutive_failures: int = Field(default=3, ge=1)
+
+
+class RouterConfigModel(BaseModel):
+    """Message router configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    system_prompt: str = "You are a helpful assistant."
+    max_history_turns: int = Field(default=50, ge=1)
+    agent_enabled: bool = True
+    command_timeout_seconds: float = Field(default=30.0, ge=0)
+    command_timeout_message: str = "Command timed out. Please try again later."
+
+
 class Settings(BaseModel):
     """Main application settings."""
 
@@ -82,6 +150,12 @@ class Settings(BaseModel):
 
     # Multimodal context
     multimodal: MultimodalConfig = MultimodalConfig()
+
+    # Internal subsystem configs
+    agent: AgentConfig = AgentConfig()
+    context: ContextConfig = ContextConfig()
+    scheduler: SchedulerConfigModel = SchedulerConfigModel()
+    router: RouterConfigModel = RouterConfigModel()
 
 
 def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:

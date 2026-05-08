@@ -160,8 +160,9 @@ class Application:
 
     async def _init_agent_subsystem(self) -> None:
         """Create ProviderManager, AgentLoop, and MemoryStore."""
-        from nahida_bot.agent.context import ContextBuilder, ContextBudget
-        from nahida_bot.agent.loop import AgentLoop
+        from nahida_bot.agent.context import ContextBuilder
+        from nahida_bot.agent.context import build_context_budget
+        from nahida_bot.agent.loop import AgentLoop, AgentLoopConfig
         from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
         from nahida_bot.agent.providers import create_provider
         from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
@@ -215,7 +216,10 @@ class Application:
                 if value is not None:
                     provider_kwargs[extra_field] = value
             provider = create_provider(cfg.type, **provider_kwargs)
-            cb = ContextBuilder(budget=ContextBudget(), provider=provider)
+            cb = ContextBuilder(
+                budget=build_context_budget(self.settings.context),
+                provider=provider,
+            )
             slots.append(
                 ProviderSlot(
                     id=pid,
@@ -242,6 +246,18 @@ class Application:
             self.agent_loop = AgentLoop(
                 provider=default_slot.provider,
                 context_builder=default_slot.context_builder,
+                config=AgentLoopConfig(
+                    max_steps=self.settings.agent.max_steps,
+                    provider_timeout_seconds=self.settings.agent.provider_timeout_seconds,
+                    retry_attempts=self.settings.agent.retry_attempts,
+                    retry_backoff_seconds=self.settings.agent.retry_backoff_seconds,
+                    tool_timeout_seconds=self.settings.agent.tool_timeout_seconds,
+                    tool_retry_attempts=self.settings.agent.tool_retry_attempts,
+                    tool_retry_backoff_seconds=self.settings.agent.tool_retry_backoff_seconds,
+                    max_tool_log_chars=self.settings.agent.max_tool_log_chars,
+                    tool_use_system_prompt=self.settings.agent.tool_use_system_prompt,
+                    provider_error_template=self.settings.agent.provider_error_template,
+                ),
             )
         else:
             logger.warning(
@@ -347,11 +363,24 @@ class Application:
                 )
 
         repo = CronRepository(self._db_engine)
+        from nahida_bot.scheduler.models import SchedulerConfig
+
+        scheduler_cfg = self.settings.scheduler
         self.scheduler_service = SchedulerService(
             repo,
             runner=self.session_runner,
             channel_registry=self.channel_registry,
             system_prompt=self.settings.system_prompt,
+            config=SchedulerConfig(
+                poll_interval_seconds=scheduler_cfg.poll_interval_seconds,
+                max_concurrent_fires=scheduler_cfg.max_concurrent_fires,
+                job_timeout_seconds=scheduler_cfg.job_timeout_seconds,
+                min_interval_seconds=scheduler_cfg.min_interval_seconds,
+                max_prompt_chars=scheduler_cfg.max_prompt_chars,
+                max_jobs_per_chat=scheduler_cfg.max_jobs_per_chat,
+                failure_retry_seconds=scheduler_cfg.failure_retry_seconds,
+                max_consecutive_failures=scheduler_cfg.max_consecutive_failures,
+            ),
         )
         if self.plugin_manager is not None:
             self.plugin_manager.scheduler_service = self.scheduler_service
@@ -444,6 +473,10 @@ class Application:
                 workspace_manager=self.workspace_manager,
                 config=RouterConfig(
                     system_prompt=self.settings.system_prompt,
+                    max_history_turns=self.settings.router.max_history_turns,
+                    agent_enabled=self.settings.router.agent_enabled,
+                    command_timeout_seconds=self.settings.router.command_timeout_seconds,
+                    command_timeout_message=self.settings.router.command_timeout_message,
                 ),
             )
             await self.message_router.start()
