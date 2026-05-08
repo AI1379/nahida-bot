@@ -28,6 +28,8 @@ dependencies = [
     # Async utilities
     "anyio>=4.0.0",
     "jieba>=0.42.1",
+    # MCP (Model Context Protocol) client
+    "mcp>=1.27.0",
 ]
 
 [dependency-groups]

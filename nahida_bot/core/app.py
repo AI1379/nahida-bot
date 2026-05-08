@@ -428,6 +428,16 @@ class Application:
             except ImportError:
                 pass
 
+        # Discover builtin MCP integration plugin
+        try:
+            import nahida_bot.plugins.mcp as mcp_pkg
+
+            if mcp_pkg.__file__ is not None:
+                mcp_path = Path(mcp_pkg.__file__).parent
+                await self.plugin_manager.discover([mcp_path])
+        except ImportError:
+            pass
+
         plugin_paths = [Path(p).resolve() for p in self.settings.plugin_paths]
         await self.plugin_manager.discover(plugin_paths)
 

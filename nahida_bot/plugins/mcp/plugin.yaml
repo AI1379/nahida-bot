@@ -1,0 +1,12 @@
+id: mcp
+name: "MCP Integration"
+version: "0.1.0"
+description: "Connect to MCP (Model Context Protocol) servers and expose their tools"
+entrypoint: "nahida_bot.plugins.mcp.plugin:MCPPlugin"
+load_phase: "post-agent"
+permissions:
+  network:
+    outbound:
+      - "*"
+  system:
+    subprocess: true
