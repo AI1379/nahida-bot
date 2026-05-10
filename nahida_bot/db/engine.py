@@ -86,6 +86,30 @@ _SCHEMA_MIGRATIONS = [
         updated_at TEXT NOT NULL
     );
     """,
+    # Migration 006: agent orchestration background task ledger
+    """
+    CREATE TABLE IF NOT EXISTS background_tasks (
+        task_id TEXT PRIMARY KEY,
+        runtime TEXT NOT NULL,
+        status TEXT NOT NULL,
+        requester_session_id TEXT NOT NULL,
+        child_session_id TEXT,
+        parent_task_id TEXT,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        delivery_target_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ended_at TEXT,
+        error TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_background_tasks_requester
+        ON background_tasks(requester_session_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_background_tasks_status
+        ON background_tasks(status, updated_at);
+    """,
 ]
 
 
