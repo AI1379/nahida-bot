@@ -27,6 +27,7 @@ dependencies = [
     "markdownify>=0.14.0",
     # Async utilities
     "anyio>=4.0.0",
+    "aiofiles>=25.1.0",
     "jieba>=0.42.1",
     # MCP (Model Context Protocol) client
     "mcp>=1.27.0",
