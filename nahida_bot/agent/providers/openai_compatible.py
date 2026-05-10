@@ -189,9 +189,36 @@ class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
         # --- Extract tool calls ---
         tool_calls_payload = message.get("tool_calls")
         tool_calls = self._parse_tool_calls(tool_calls_payload)
+        raw_tool_call_count = (
+            len(tool_calls_payload) if isinstance(tool_calls_payload, list) else 0
+        )
 
         # --- Extract usage statistics ---
         usage = self._parse_usage(body)
+
+        if finish_reason == "tool_calls" and not tool_calls:
+            logger.warning(
+                "provider.openai_compatible.tool_finish_without_parsed_calls",
+                provider_name=self.name,
+                model=model or self.model,
+                message_keys=sorted(message.keys()),
+                has_tool_calls_payload=isinstance(tool_calls_payload, list),
+                raw_tool_call_count=raw_tool_call_count,
+                content_preview=(normalized_content or "")[:200],
+            )
+        else:
+            logger.debug(
+                "provider.openai_compatible.parsed_response",
+                provider_name=self.name,
+                model=model or self.model,
+                finish_reason=finish_reason or "",
+                content_chars=len(normalized_content or ""),
+                reasoning_chars=len(reasoning_content or ""),
+                has_tool_calls_payload=isinstance(tool_calls_payload, list),
+                raw_tool_call_count=raw_tool_call_count,
+                parsed_tool_call_count=len(tool_calls),
+                message_keys=sorted(message.keys()),
+            )
 
         return ProviderResponse(
             content=normalized_content,

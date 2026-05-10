@@ -160,6 +160,18 @@ class SessionRunner:
                 capabilities=capabilities,
             )
             tools = self._collect_tools(tool_filter, capabilities=capabilities)
+            logger.debug(
+                "session_runner.tools_collected",
+                session_id=session_id,
+                provider_id=provider_slot.id if provider_slot is not None else "",
+                effective_model=effective_model,
+                tool_count=len(tools),
+                tool_names=[tool.name for tool in tools[:50]],
+                tool_filter=sorted(tool_filter) if tool_filter is not None else [],
+                model_tool_calling=(
+                    capabilities.tool_calling if capabilities is not None else None
+                ),
+            )
             visible_user_message = render_message_with_context(
                 user_message,
                 message_context,
@@ -457,6 +469,9 @@ class SessionRunner:
                     "content_chars": len(r.turn.content),
                     "content_preview": r.turn.content[:200],
                     "has_metadata": bool(r.turn.metadata),
+                    "metadata_keys": sorted(r.turn.metadata.keys())
+                    if isinstance(r.turn.metadata, dict)
+                    else [],
                 }
                 for r in records
             ],
@@ -1349,6 +1364,40 @@ class SessionRunner:
         if result.final_response:
             assistant_metadata: dict[str, Any] | None = None
             assistant_messages = getattr(result, "assistant_messages", None)
+            tool_messages = getattr(result, "tool_messages", None)
+            logger.debug(
+                "session_runner.persist_agent_result",
+                session_id=session_id,
+                final_response_chars=len(result.final_response),
+                final_response_preview=result.final_response[:200],
+                assistant_message_count=(
+                    len(assistant_messages)
+                    if isinstance(assistant_messages, list)
+                    else 0
+                ),
+                tool_message_count=(
+                    len(tool_messages) if isinstance(tool_messages, list) else 0
+                ),
+                assistant_sources=[
+                    getattr(message, "source", "")
+                    for message in assistant_messages[:10]
+                ]
+                if isinstance(assistant_messages, list)
+                else [],
+                assistant_metadata_keys=[
+                    sorted(message.metadata.keys())
+                    if getattr(message, "metadata", None)
+                    else []
+                    for message in assistant_messages[:10]
+                ]
+                if isinstance(assistant_messages, list)
+                else [],
+                tool_sources=[
+                    getattr(message, "source", "") for message in tool_messages[:10]
+                ]
+                if isinstance(tool_messages, list)
+                else [],
+            )
             if isinstance(assistant_messages, list) and assistant_messages:
                 last = assistant_messages[-1]
                 parts: dict[str, Any] = {}

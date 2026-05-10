@@ -423,6 +423,33 @@ class AnthropicProvider(ChatProvider):
         # Usage
         usage = self._parse_usage(body)
 
+        block_types = [
+            block.get("type") if isinstance(block, dict) else type(block).__name__
+            for block in content_blocks
+        ]
+        if finish_reason == "tool_calls" and not tool_calls:
+            logger.warning(
+                "provider.anthropic.tool_finish_without_parsed_calls",
+                provider_name=self.name,
+                model=self.model,
+                stop_reason=stop_reason_raw if isinstance(stop_reason_raw, str) else "",
+                block_types=block_types[:20],
+                content_preview=(content or "")[:200],
+            )
+        else:
+            logger.debug(
+                "provider.anthropic.parsed_response",
+                provider_name=self.name,
+                model=self.model,
+                stop_reason=stop_reason_raw if isinstance(stop_reason_raw, str) else "",
+                finish_reason=finish_reason or "",
+                block_types=block_types[:20],
+                content_chars=len(content or ""),
+                reasoning_chars=len(reasoning_content or ""),
+                parsed_tool_call_count=len(tool_calls),
+                has_redacted_thinking=has_redacted_thinking,
+            )
+
         return ProviderResponse(
             content=content,
             tool_calls=tool_calls,

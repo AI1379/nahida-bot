@@ -334,6 +334,10 @@ class AgentLoop:
                     finish_reason=response.finish_reason or "",
                     tool_call_count=len(response.tool_calls),
                     content_chars=len(response.content or ""),
+                    response_extra_keys=sorted(response.extra.keys()),
+                    raw_response_summary=self._raw_response_summary(
+                        response.raw_response
+                    ),
                 )
                 if trace is not None and self.metrics is not None:
                     self.metrics.record_provider_call(
@@ -374,27 +378,55 @@ class AgentLoop:
         step: int,
         trace: Trace | None,
     ) -> None:
-        if not tools:
-            return
-
+        # TODO: This function is just used for debugging and should be removed
+        # once we have more confidence in the tool calling signals from providers.
         content = self._display_content(response)
-        tool_names = [tool.name for tool in tools]
+        tool_names = [tool.name for tool in tools or []]
         lowered = content.lower()
         looks_like_tool_promise = (
             "tool" in lowered
             or "工具" in content
+            or "调用" in content
+            or "我去" in content
+            or "我来" in content
+            or "让我" in content
+            or "看一下" in content
+            or "查一下" in content
+            or "搜索" in content
+            or "读取" in content
+            or "检查" in content
+            or "执行" in content
+            or "运行" in content
+            or "i will" in lowered
+            or "i'll" in lowered
+            or "let me" in lowered
+            or "going to" in lowered
+            or "check" in lowered
+            or "search" in lowered
+            or "look up" in lowered
+            or "read " in lowered
+            or "run " in lowered
             or any(name.lower() in lowered for name in tool_names)
         )
-        log = logger.warning if looks_like_tool_promise else logger.debug
+        finish_reason = response.finish_reason or ""
+        finish_implies_tools = finish_reason in {"tool_calls", "tool_use"}
+        log = (
+            logger.warning
+            if looks_like_tool_promise or finish_implies_tools
+            else logger.debug
+        )
         log(
             "agent_loop.terminal_without_tool_calls",
             trace_id=trace.trace_id if trace else "",
             step=step,
-            finish_reason=response.finish_reason or "",
+            finish_reason=finish_reason,
             content_preview=content[:200],
             available_tools=tool_names[:20],
             available_tool_count=len(tool_names),
             looks_like_tool_promise=looks_like_tool_promise,
+            finish_implies_tools=finish_implies_tools,
+            response_extra_keys=sorted(response.extra.keys()),
+            raw_response_summary=self._raw_response_summary(response.raw_response),
         )
 
     def _build_assistant_message(
@@ -471,6 +503,70 @@ class AgentLoop:
                 return "[empty response output received]"
 
         return ""
+
+    def _raw_response_summary(
+        self,
+        raw_response: dict[str, object] | None,
+    ) -> dict[str, object]:
+        """Return a compact provider-native shape for diagnosing stop decisions."""
+        if raw_response is None:
+            return {}
+
+        summary: dict[str, object] = {
+            "keys": sorted(raw_response.keys())[:20],
+        }
+
+        choices = raw_response.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                message = first.get("message")
+                summary["finish_reason"] = first.get("finish_reason")
+                if isinstance(message, dict):
+                    tool_calls = message.get("tool_calls")
+                    summary["message_keys"] = sorted(message.keys())[:20]
+                    summary["has_message_tool_calls"] = isinstance(tool_calls, list)
+                    summary["message_tool_call_count"] = (
+                        len(tool_calls) if isinstance(tool_calls, list) else 0
+                    )
+
+        output = raw_response.get("output")
+        if isinstance(output, list):
+            output_types: list[str] = []
+            function_call_count = 0
+            for item in output:
+                if not isinstance(item, dict):
+                    output_types.append(type(item).__name__)
+                    continue
+                item_type = item.get("type")
+                output_types.append(
+                    item_type if isinstance(item_type, str) else "<missing>"
+                )
+                if item_type == "function_call":
+                    function_call_count += 1
+            summary["status"] = raw_response.get("status")
+            summary["output_types"] = output_types[:20]
+            summary["function_call_count"] = function_call_count
+
+        content = raw_response.get("content")
+        if isinstance(content, list):
+            block_types: list[str] = []
+            tool_use_count = 0
+            for block in content:
+                if not isinstance(block, dict):
+                    block_types.append(type(block).__name__)
+                    continue
+                block_type = block.get("type")
+                block_types.append(
+                    block_type if isinstance(block_type, str) else "<missing>"
+                )
+                if block_type == "tool_use":
+                    tool_use_count += 1
+            summary["stop_reason"] = raw_response.get("stop_reason")
+            summary["content_block_types"] = block_types[:20]
+            summary["tool_use_count"] = tool_use_count
+
+        return summary
 
     async def _execute_tools(
         self,

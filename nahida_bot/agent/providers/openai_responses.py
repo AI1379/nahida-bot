@@ -576,6 +576,33 @@ class OpenAIResponsesProvider(ChatProvider):
                 usage=body.get("usage"),
             )
 
+        output_types = [
+            item.get("type") if isinstance(item, dict) else type(item).__name__
+            for item in output_items
+        ]
+        if finish_reason == "tool_calls" and not tool_calls:
+            logger.warning(
+                "provider.openai_responses.tool_finish_without_parsed_calls",
+                provider_name=self.name,
+                status=finish_reason or "",
+                output_types=output_types[:20],
+                content_preview=(content or "")[:200],
+                response_id=response_id if isinstance(response_id, str) else "",
+            )
+        else:
+            logger.debug(
+                "provider.openai_responses.parsed_response",
+                provider_name=self.name,
+                status=finish_reason or "",
+                output_types=output_types[:20],
+                content_chars=len(content or ""),
+                reasoning_chars=len(reasoning_content or ""),
+                parsed_tool_call_count=len(tool_calls),
+                generated_image_count=len(generated_images),
+                builtin_tool_call_count=len(web_search_calls),
+                response_id=response_id if isinstance(response_id, str) else "",
+            )
+
         return ProviderResponse(
             content=content,
             tool_calls=tool_calls,
