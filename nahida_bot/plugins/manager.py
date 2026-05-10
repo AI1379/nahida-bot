@@ -71,6 +71,7 @@ class PluginManager:
         channel_registry: Any | None = None,
         provider_manager: Any | None = None,
         scheduler_service: Any | None = None,
+        orchestration_service: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
@@ -78,6 +79,7 @@ class PluginManager:
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
         self._scheduler_service = scheduler_service
+        self._orchestration_service = orchestration_service
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -91,12 +93,14 @@ class PluginManager:
         memory_store: MemoryStore | None = None,
         provider_manager: Any | None = None,
         scheduler_service: Any | None = None,
+        orchestration_service: Any | None = None,
     ) -> None:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
         self._memory = memory_store
         self._provider_manager = provider_manager
         self._scheduler_service = scheduler_service
+        self._orchestration_service = orchestration_service
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
@@ -104,6 +108,7 @@ class PluginManager:
                     memory_store=memory_store,
                     provider_manager=provider_manager,
                     scheduler_service=scheduler_service,
+                    orchestration_service=orchestration_service,
                 )
 
     @property
@@ -193,6 +198,7 @@ class PluginManager:
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,
             scheduler_service=self._scheduler_service,
+            orchestration_service=self._orchestration_service,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)

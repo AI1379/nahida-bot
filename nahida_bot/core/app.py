@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from nahida_bot.plugins.manager import PluginManager
     from nahida_bot.scheduler.service import SchedulerService
     from nahida_bot.workspace.manager import WorkspaceManager
+    from nahida_bot.agent.orchestration import AgentOrchestrator
 
 logger = structlog.get_logger(__name__)
 
@@ -72,6 +73,7 @@ class Application:
         self._providers_to_close: list[object] = []  # ChatProvider instances
         self.session_runner: SessionRunner | None = None
         self.scheduler_service: SchedulerService | None = None
+        self.orchestration_service: AgentOrchestrator | None = None
 
         logger.debug(
             "application.instance_created",
@@ -135,6 +137,7 @@ class Application:
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
                 provider_manager=self._provider_manager,
+                orchestration_service=self.orchestration_service,
             )
             if self.agent_loop is not None:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
@@ -148,6 +151,7 @@ class Application:
                 memory_store=self.memory_store,
                 provider_manager=self._provider_manager,
                 scheduler_service=self.scheduler_service,
+                orchestration_service=self.orchestration_service,
             )
 
             self._initialized = True
@@ -324,6 +328,21 @@ class Application:
             channel_registry=self.channel_registry,
         )
 
+        from nahida_bot.agent.orchestration import (
+            AgentOrchestrator,
+            LocalAgentRunExecutor,
+            OrchestrationConfig,
+            SQLiteBackgroundTaskStore,
+        )
+
+        task_store = SQLiteBackgroundTaskStore(self._db_engine)
+        self.orchestration_service = AgentOrchestrator(
+            executor=LocalAgentRunExecutor(self.session_runner),
+            task_store=task_store,
+            memory_store=self.memory_store,
+            config=OrchestrationConfig(system_prompt=self.settings.system_prompt),
+        )
+
         # Register image_understand tool when fallback mode is "tool"
         if multimodal.image_fallback_mode == "tool" and tool_registry is not None:
             from nahida_bot.plugins.registry import ToolEntry
@@ -384,6 +403,13 @@ class Application:
         )
         if self.plugin_manager is not None:
             self.plugin_manager.scheduler_service = self.scheduler_service
+            self.plugin_manager.set_runtime_services(
+                workspace_manager=self.workspace_manager,
+                memory_store=self.memory_store,
+                provider_manager=self._provider_manager,
+                scheduler_service=self.scheduler_service,
+                orchestration_service=self.orchestration_service,
+            )
         logger.info("application.scheduler_initialized")
 
     def _get_plugin_configs(self) -> dict[str, dict[str, Any]]:

@@ -72,6 +72,7 @@ class RealBotAPI:
         channel_registry: Any | None = None,  # ChannelRegistry
         provider_manager: Any | None = None,  # ProviderManager
         scheduler_service: Any | None = None,  # SchedulerService
+        orchestration_service: Any | None = None,  # AgentOrchestrator
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -85,6 +86,7 @@ class RealBotAPI:
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
         self._scheduler_service = scheduler_service
+        self._orchestration_service = orchestration_service
         self._logger = _PluginLogger(plugin_id)
         self._subscriptions: list[Any] = []  # EventBus Subscription objects
         self._registered_channels: dict[str, ChannelService] = {}
@@ -409,6 +411,11 @@ class RealBotAPI:
         """Access the ProviderManager (if configured)."""
         return self._provider_manager
 
+    @property
+    def orchestration_service(self) -> Any | None:
+        """Access the AgentOrchestrator exposed to built-in tools."""
+        return self._orchestration_service
+
     # ── Cleanup ────────────────────────────────────────
 
     def clear_subscriptions(self) -> None:
@@ -424,12 +431,14 @@ class RealBotAPI:
         memory_store: MemoryStore | None = None,
         provider_manager: Any | None = None,
         scheduler_service: Any | None = None,
+        orchestration_service: Any | None = None,
     ) -> None:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
         self._memory = memory_store
         self._provider_manager = provider_manager
         self._scheduler_service = scheduler_service
+        self._orchestration_service = orchestration_service
 
     def deactivate_service_registrations(self) -> None:
         """Temporarily deactivate services registered by this plugin."""
