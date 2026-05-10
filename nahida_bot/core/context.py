@@ -18,9 +18,26 @@ class SessionContext:
     workspace_id: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class AgentRunContext:
+    """Carries orchestration run identity through tool execution."""
+
+    run_id: str
+    session_id: str
+    requester_session_id: str
+    depth: int = 0
+    task_id: str | None = None
+
+
 # Set by MessageRouter before each agent run; read by tool handlers.
 current_session: ContextVar[SessionContext | None] = ContextVar(
     "current_session", default=None
+)
+
+# Set by AgentOrchestrator for child runs. Main router-driven runs do not set
+# this yet and are treated as depth=0 by orchestration tools.
+current_agent_run: ContextVar[AgentRunContext | None] = ContextVar(
+    "current_agent_run", default=None
 )
 
 # Set by SessionRunner during an agent run so built-in tool handlers can resolve
