@@ -26,6 +26,7 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         mode=r["mode"],
         fire_at=r["fire_at"],
         interval_seconds=r["interval_seconds"],
+        cron_expression=r["cron_expression"] if "cron_expression" in r.keys() else None,
         max_runs=r["max_runs"],
         run_count=r["run_count"],
         is_active=bool(r["is_active"]),
@@ -51,10 +52,11 @@ class CronRepository:
                 """
                 INSERT INTO cron_jobs (
                     job_id, platform, chat_id, session_key, prompt, mode,
-                    fire_at, interval_seconds, max_runs, run_count, is_active,
-                    created_at, next_fire_at, last_fired_at, workspace_id,
-                    claimed_at, failure_count, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    fire_at, interval_seconds, cron_expression, max_runs,
+                    run_count, is_active, created_at, next_fire_at,
+                    last_fired_at, workspace_id, claimed_at, failure_count,
+                    last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -65,6 +67,7 @@ class CronRepository:
                     job.mode,
                     job.fire_at,
                     job.interval_seconds,
+                    job.cron_expression,
                     job.max_runs,
                     job.run_count,
                     int(job.is_active),
@@ -254,6 +257,7 @@ class CronRepository:
         mode: str,
         fire_at: str | None,
         interval_seconds: int | None,
+        cron_expression: str | None,
         max_runs: int | None,
         next_fire_at: str,
     ) -> bool:
@@ -266,6 +270,7 @@ class CronRepository:
                     mode = ?,
                     fire_at = ?,
                     interval_seconds = ?,
+                    cron_expression = ?,
                     max_runs = ?,
                     next_fire_at = ?,
                     failure_count = 0,
@@ -279,6 +284,7 @@ class CronRepository:
                     mode,
                     fire_at,
                     interval_seconds,
+                    cron_expression,
                     max_runs,
                     next_fire_at,
                     job_id,
@@ -342,10 +348,11 @@ class CronRepository:
                 """
                 INSERT INTO cron_jobs (
                     job_id, platform, chat_id, session_key, prompt, mode,
-                    fire_at, interval_seconds, max_runs, run_count, is_active,
-                    created_at, next_fire_at, last_fired_at, workspace_id,
-                    claimed_at, failure_count, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    fire_at, interval_seconds, cron_expression, max_runs,
+                    run_count, is_active, created_at, next_fire_at,
+                    last_fired_at, workspace_id, claimed_at, failure_count,
+                    last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -356,6 +363,7 @@ class CronRepository:
                     job.mode,
                     job.fire_at,
                     job.interval_seconds,
+                    job.cron_expression,
                     job.max_runs,
                     job.run_count,
                     int(job.is_active),

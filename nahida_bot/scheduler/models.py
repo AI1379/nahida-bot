@@ -15,9 +15,10 @@ class CronJob:
     chat_id: str
     session_key: str  # "{platform}:{chat_id}" for active session lookup
     prompt: str
-    mode: Literal["once", "interval"]
+    mode: Literal["once", "interval", "cron"]
     fire_at: str | None  # ISO8601 UTC for "once"
     interval_seconds: int | None  # for "interval"
+    cron_expression: str | None  # standard 5-field cron for "cron"
     max_runs: int | None  # None = infinite
     run_count: int
     is_active: bool

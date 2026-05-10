@@ -110,6 +110,10 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_background_tasks_status
         ON background_tasks(status, updated_at);
     """,
+    # Migration 007: cron expression support
+    """
+    ALTER TABLE cron_jobs ADD COLUMN cron_expression TEXT;
+    """,
 ]
 
 

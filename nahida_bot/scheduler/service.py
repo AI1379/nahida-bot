@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
+
+from croniter import croniter
 from uuid import uuid4
 
 import structlog
@@ -130,9 +132,10 @@ class SchedulerService:
         platform: str,
         chat_id: str,
         prompt: str,
-        mode: Literal["once", "interval"],
+        mode: Literal["once", "interval", "cron"],
         fire_at: str | None = None,
         interval_seconds: int | None = None,
+        cron_expression: str | None = None,
         max_runs: int | None = None,
         workspace_id: str | None = None,
     ) -> CronJob:
@@ -148,10 +151,15 @@ class SchedulerService:
             if fire_at is None:
                 raise ValueError("fire_at is required for mode='once'")
             next_fire_at = self._normalize_fire_at(fire_at, now=now)
+            stored_cron = None
         elif mode == "interval":
             self._validate_interval(interval_seconds)
             assert interval_seconds is not None
             next_fire_at = (now + timedelta(seconds=interval_seconds)).isoformat()
+            stored_cron = None
+        elif mode == "cron":
+            next_fire_at = self._validate_and_get_next_cron(cron_expression, now=now)
+            stored_cron = cron_expression
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -164,6 +172,7 @@ class SchedulerService:
             mode=mode,
             fire_at=next_fire_at if mode == "once" else None,
             interval_seconds=interval_seconds if mode == "interval" else None,
+            cron_expression=stored_cron,
             max_runs=max_runs,
             run_count=0,
             is_active=True,
@@ -189,9 +198,10 @@ class SchedulerService:
         job_id: str,
         *,
         prompt: str | None = None,
-        mode: Literal["once", "interval"] | None = None,
+        mode: Literal["once", "interval", "cron"] | None = None,
         fire_at: str | None = None,
         interval_seconds: int | None = None,
+        cron_expression: str | None = None,
         max_runs: int | None = None,
     ) -> CronJob:
         """Update an active scheduled job.
@@ -221,6 +231,7 @@ class SchedulerService:
                 raise ValueError("fire_at is required for mode='once'")
             next_fire_at = self._normalize_fire_at(new_fire_at, now=now)
             new_interval_seconds = None
+            new_cron_expression = None
             stored_fire_at = next_fire_at
             new_max_runs = None
         elif new_mode == "interval":
@@ -232,12 +243,24 @@ class SchedulerService:
             self._validate_interval(new_interval_seconds)
             assert new_interval_seconds is not None
             stored_fire_at = None
+            new_cron_expression = None
             if interval_seconds is not None or mode == "interval":
                 next_fire_at = (
                     now + timedelta(seconds=new_interval_seconds)
                 ).isoformat()
             else:
                 next_fire_at = existing.next_fire_at
+        elif new_mode == "cron":
+            new_cron_expression = (
+                cron_expression
+                if cron_expression is not None
+                else existing.cron_expression
+            )
+            next_fire_at = self._validate_and_get_next_cron(
+                new_cron_expression, now=now
+            )
+            stored_fire_at = None
+            new_interval_seconds = None
         else:
             raise ValueError(f"Invalid mode: {new_mode}")
 
@@ -247,6 +270,7 @@ class SchedulerService:
             mode=new_mode,
             fire_at=stored_fire_at,
             interval_seconds=new_interval_seconds,
+            cron_expression=new_cron_expression,
             max_runs=new_max_runs,
             next_fire_at=next_fire_at,
         )
@@ -350,16 +374,24 @@ class SchedulerService:
         if job.mode == "once":
             return None  # One-shot: done after first fire
 
-        # Interval mode
-        if job.interval_seconds is None:
-            return None
-
         new_run_count = job.run_count + 1
         if job.max_runs is not None and new_run_count >= job.max_runs:
             return None  # Reached max runs
 
-        now = datetime.fromisoformat(now_iso)
-        return (now + timedelta(seconds=job.interval_seconds)).isoformat()
+        if job.mode == "interval":
+            if job.interval_seconds is None:
+                return None
+            now = datetime.fromisoformat(now_iso)
+            return (now + timedelta(seconds=job.interval_seconds)).isoformat()
+
+        if job.mode == "cron":
+            if not job.cron_expression:
+                return None
+            now = datetime.fromisoformat(now_iso)
+            cron = croniter(job.cron_expression, now)
+            return cron.get_next(datetime).isoformat()
+
+        return None
 
     async def _mark_failed(self, job: CronJob, error: str) -> None:
         next_failure_count = job.failure_count + 1
@@ -466,6 +498,32 @@ class SchedulerService:
                 "interval_seconds must be >= "
                 f"{self._config.min_interval_seconds} for mode='interval'"
             )
+
+    def _validate_and_get_next_cron(
+        self, cron_expression: str | None, *, now: datetime
+    ) -> str:
+        """Validate a cron expression and return the next fire time as ISO."""
+        if not cron_expression:
+            raise ValueError("cron_expression is required for mode='cron'")
+        if len(cron_expression.split()) != 5:
+            raise ValueError(
+                "Invalid cron expression: must use standard 5-field syntax"
+            )
+        try:
+            cron = croniter(cron_expression, now)
+        except (ValueError, KeyError) as exc:
+            raise ValueError(f"Invalid cron expression: {exc}") from exc
+        next_dt = cron.get_next(datetime)
+        if next_dt <= now:
+            raise ValueError("cron expression must resolve to a future time")
+        following_dt = cron.get_next(datetime)
+        interval_seconds = (following_dt - next_dt).total_seconds()
+        if interval_seconds < self._config.min_interval_seconds:
+            raise ValueError(
+                "cron_expression interval must be >= "
+                f"{self._config.min_interval_seconds} seconds"
+            )
+        return next_dt.isoformat()
 
     @staticmethod
     def _validate_max_runs(max_runs: int | None) -> None:

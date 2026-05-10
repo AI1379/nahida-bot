@@ -489,7 +489,7 @@ class BuiltinCommandsPlugin(Plugin):
     def _register_cron_tools(self) -> None:
         self.api.register_tool(
             "cron_create",
-            "Create a scheduled task that runs a prompt at a specific time or repeatedly at a fixed interval.",
+            "Create a scheduled task that runs a prompt once, repeatedly at a fixed interval, or by a 5-field cron expression.",
             {
                 "type": "object",
                 "properties": {
@@ -499,8 +499,8 @@ class BuiltinCommandsPlugin(Plugin):
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["once", "interval"],
-                        "description": "'once' fires at a specific datetime; 'interval' fires repeatedly.",
+                        "enum": ["once", "interval", "cron"],
+                        "description": "'once' fires at a specific datetime; 'interval' fires repeatedly; 'cron' uses a 5-field cron expression.",
                     },
                     "fire_at": {
                         "type": "string",
@@ -513,9 +513,13 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "integer",
                         "description": "Seconds between fires for 'interval' mode. Minimum 60.",
                     },
+                    "cron_expression": {
+                        "type": "string",
+                        "description": "5-field cron expression for 'cron' mode, e.g. '0 9 * * 1-5'.",
+                    },
                     "max_runs": {
                         "type": "integer",
-                        "description": "Max number of fires (interval mode only). Omit for infinite.",
+                        "description": "Max number of fires for interval or cron mode. Omit for infinite.",
                     },
                 },
                 "required": ["prompt", "mode"],
@@ -566,8 +570,8 @@ class BuiltinCommandsPlugin(Plugin):
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["once", "interval"],
-                        "description": "Switch the task to one-shot or interval mode.",
+                        "enum": ["once", "interval", "cron"],
+                        "description": "Switch the task to one-shot, interval, or cron mode.",
                     },
                     "fire_at": {
                         "type": "string",
@@ -577,9 +581,13 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "integer",
                         "description": "Seconds between fires for interval mode. Minimum 60.",
                     },
+                    "cron_expression": {
+                        "type": "string",
+                        "description": "5-field cron expression for cron mode, e.g. '0 9 * * 1-5'.",
+                    },
                     "max_runs": {
                         "type": "integer",
-                        "description": "Max number of successful fires for interval mode.",
+                        "description": "Max number of successful fires for interval or cron mode.",
                     },
                 },
                 "required": ["job_id"],
@@ -820,6 +828,7 @@ class BuiltinCommandsPlugin(Plugin):
         mode: str,
         fire_at: str | None = None,
         interval_seconds: int | None = None,
+        cron_expression: str | None = None,
         max_runs: int | None = None,
     ) -> str:
         ctx = current_session.get()
@@ -847,8 +856,11 @@ class BuiltinCommandsPlugin(Plugin):
                 return "Error: 'interval_seconds' must be >= 60 for mode='interval'."
             if max_runs is not None and max_runs <= 0:
                 return "Error: 'max_runs' must be > 0 when provided."
+        elif mode == "cron":
+            if not cron_expression:
+                return "Error: 'cron_expression' is required for mode='cron'."
         else:
-            return f"Error: Invalid mode '{mode}'. Use 'once' or 'interval'."
+            return f"Error: Invalid mode '{mode}'. Use 'once', 'interval', or 'cron'."
 
         try:
             job = await scheduler.create_job(
@@ -858,6 +870,7 @@ class BuiltinCommandsPlugin(Plugin):
                 mode=mode,
                 fire_at=fire_at if mode == "once" else None,
                 interval_seconds=interval_seconds,
+                cron_expression=cron_expression,
                 max_runs=max_runs,
                 workspace_id=ctx.workspace_id,
             )
@@ -868,6 +881,12 @@ class BuiltinCommandsPlugin(Plugin):
         lines = [f"Scheduled task created (id: {job.job_id})"]
         if mode == "once":
             lines.append(f"  Mode: once at {job.next_fire_at}")
+        elif mode == "cron":
+            lines.append(f"  Mode: cron ({cron_expression})")
+            if max_runs:
+                lines.append(f"  Max runs: {max_runs}")
+            else:
+                lines.append("  Max runs: infinite")
         else:
             lines.append(f"  Mode: every {interval_seconds}s")
             if max_runs:
@@ -895,6 +914,8 @@ class BuiltinCommandsPlugin(Plugin):
         for j in jobs:
             if j.mode == "once":
                 schedule = f"once at {j.next_fire_at}"
+            elif j.mode == "cron":
+                schedule = f"cron ({j.cron_expression})"
             else:
                 schedule = f"every {j.interval_seconds}s"
             preview = j.prompt[:60] + ("..." if len(j.prompt) > 60 else "")
@@ -934,6 +955,7 @@ class BuiltinCommandsPlugin(Plugin):
         mode: str | None = None,
         fire_at: str | None = None,
         interval_seconds: int | None = None,
+        cron_expression: str | None = None,
         max_runs: int | None = None,
     ) -> str:
         ctx = current_session.get()
@@ -950,8 +972,8 @@ class BuiltinCommandsPlugin(Plugin):
         if job.platform != ctx.platform or job.chat_id != ctx.chat_id:
             return f"Error: Job '{job_id}' does not belong to this chat."
 
-        if mode is not None and mode not in {"once", "interval"}:
-            return f"Error: Invalid mode '{mode}'. Use 'once' or 'interval'."
+        if mode is not None and mode not in {"once", "interval", "cron"}:
+            return f"Error: Invalid mode '{mode}'. Use 'once', 'interval', or 'cron'."
         if interval_seconds is not None and interval_seconds < 60:
             return "Error: 'interval_seconds' must be >= 60 for mode='interval'."
         if max_runs is not None and max_runs <= 0:
@@ -964,6 +986,7 @@ class BuiltinCommandsPlugin(Plugin):
                 mode=mode,
                 fire_at=fire_at,
                 interval_seconds=interval_seconds,
+                cron_expression=cron_expression,
                 max_runs=max_runs,
             )
         except Exception as e:
@@ -972,6 +995,11 @@ class BuiltinCommandsPlugin(Plugin):
         lines = [f"Updated task {updated.job_id}."]
         if updated.mode == "once":
             lines.append(f"  Mode: once at {updated.next_fire_at}")
+        elif updated.mode == "cron":
+            lines.append(f"  Mode: cron ({updated.cron_expression})")
+            lines.append(
+                f"  Max runs: {updated.max_runs if updated.max_runs else 'infinite'}"
+            )
         else:
             lines.append(f"  Mode: every {updated.interval_seconds}s")
             lines.append(

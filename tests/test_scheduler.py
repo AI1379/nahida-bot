@@ -33,6 +33,7 @@ def _job(*, job_id: str = "job1", next_fire_at: str | None = None) -> CronJob:
         mode="once",
         fire_at=next_fire_at or now,
         interval_seconds=None,
+        cron_expression=None,
         max_runs=None,
         run_count=0,
         is_active=True,
@@ -227,6 +228,124 @@ async def test_stale_claims_recovered_on_start() -> None:
         assert stored is not None
         assert stored.claimed_at is None
         assert stored.is_active is True
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_cron_mode_creates_and_fires() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        # "every minute" expression — next fire is within a minute
+        job = await service.create_job(
+            platform="telegram",
+            chat_id="c1",
+            prompt="cron test",
+            mode="cron",
+            cron_expression="* * * * *",
+            max_runs=2,
+        )
+        assert job.mode == "cron"
+        assert job.cron_expression == "* * * * *"
+        assert job.max_runs == 2
+        assert job.is_active is True
+        # next_fire_at should be in the future
+        next_dt = datetime.fromisoformat(job.next_fire_at)
+        assert next_dt > datetime.now(UTC) - timedelta(seconds=1)
+
+        # Simulate a fire: claim, fire, complete — should schedule next
+        claimed = await repo.claim_due_jobs(
+            (datetime.now(UTC) + timedelta(minutes=1)).isoformat(), limit=1
+        )
+        assert len(claimed) == 1
+        channel = _Channel()
+        svc = _make_service(
+            engine,
+            repo,
+            agent=_Agent(),
+            channel=channel,
+            config=SchedulerConfig(job_timeout_seconds=5),
+        )
+        await svc._fire_job(claimed[0])
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.run_count == 1
+        assert stored.is_active is True  # still active (max_runs=2, only 1 done)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_cron_mode_update_and_invalid_expression() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        job = await service.create_job(
+            platform="telegram",
+            chat_id="c1",
+            prompt="cron test",
+            mode="cron",
+            cron_expression="0 9 * * *",
+        )
+
+        # Update to a different cron expression
+        updated = await service.update_job(
+            job.job_id,
+            cron_expression="0 12 * * 1-5",
+        )
+        assert updated.cron_expression == "0 12 * * 1-5"
+        assert updated.mode == "cron"
+
+        # Invalid cron expression should raise
+        with pytest.raises(ValueError, match="Invalid cron expression"):
+            await service.create_job(
+                platform="telegram",
+                chat_id="c1",
+                prompt="bad cron",
+                mode="cron",
+                cron_expression="not-a-cron",
+            )
+
+        # Missing cron_expression should raise
+        with pytest.raises(ValueError, match="cron_expression is required"):
+            await service.create_job(
+                platform="telegram",
+                chat_id="c1",
+                prompt="no expr",
+                mode="cron",
+            )
+
+        with pytest.raises(ValueError, match="standard 5-field syntax"):
+            await service.create_job(
+                platform="telegram",
+                chat_id="c1",
+                prompt="six fields",
+                mode="cron",
+                cron_expression="* * * * * *",
+            )
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_cron_mode_respects_min_interval_config() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(
+            engine,
+            repo,
+            config=SchedulerConfig(min_interval_seconds=120),
+        )
+
+        with pytest.raises(ValueError, match="interval must be >= 120 seconds"):
+            await service.create_job(
+                platform="telegram",
+                chat_id="c1",
+                prompt="too often",
+                mode="cron",
+                cron_expression="* * * * *",
+            )
     finally:
         await engine.close()
 

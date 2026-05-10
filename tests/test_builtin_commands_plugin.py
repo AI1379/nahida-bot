@@ -167,6 +167,12 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "path",
         "content",
     ]
+    create_params = api.tools["cron_create"]["parameters"]
+    update_params = api.tools["cron_update"]["parameters"]
+    assert create_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
+    assert "cron_expression" in create_params["properties"]
+    assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
+    assert "cron_expression" in update_params["properties"]
 
 
 @pytest.mark.asyncio
@@ -262,6 +268,7 @@ def _cron_job(job_id: str = "job1", *, prompt: str = "old") -> CronJob:
         mode="interval",
         fire_at=None,
         interval_seconds=120,
+        cron_expression=None,
         max_runs=None,
         run_count=0,
         is_active=True,
@@ -325,6 +332,7 @@ async def test_cron_update_and_delete_tools_use_scheduler_api() -> None:
         "mode": None,
         "fire_at": None,
         "interval_seconds": 180,
+        "cron_expression": None,
         "max_runs": 3,
     }
     assert deleted == "Deleted task job1."
