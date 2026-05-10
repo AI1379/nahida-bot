@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.plugins.base import OutboundMessage
@@ -52,7 +52,7 @@ class _Agent:
         self.calls += 1
         if self.fail:
             raise RuntimeError("boom")
-        return SimpleNamespace(final_response="done")
+        return AgentRunResult(final_response="done")
 
 
 class _Channel:
