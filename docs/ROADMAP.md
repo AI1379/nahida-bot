@@ -540,38 +540,69 @@ If something needs attention, do NOT include "HEARTBEAT_OK"; reply with the aler
 >
 > 远程执行场景（如 GPU 节点上跑重模型）才需要 Phase 5 的 Gateway-Node。本地编排先落地，远程扩展作为 Phase 5 的增强。
 
-**Subagent 编排（本地实现）：**
+**架构文档**：见 [docs/architecture/agent-orchestration.md](architecture/agent-orchestration.md)。
 
-| 工具 ID | 功能 | 实现要点 |
+本阶段将 `AgentLoop` 上层补齐为可运维的本地编排系统，但设计上保持轻量：
+
+- `SubagentSpec`：一次性子任务说明，由主 Agent 临时提供 `task`、`instructions`、上下文模式、模型覆盖和工具过滤。
+- `AgentRun`：描述一次运行，统一主聊天、子 Agent、cron、CLI 和未来远程执行。
+- `BackgroundTask`：持久化后台工作账本，记录 `queued -> running -> terminal` 状态。
+- `AgentRegistry`：进程内运行时注册表，跟踪父子关系、取消令牌、结果和异常。
+- `AgentRunQueue`：per-session lane 串行 + main/subagent/cron global lane 并发控制。
+- `AgentRunExecutor`：很薄的执行器接口；首版只有 `LocalAgentRunExecutor`，Phase 5 再增加 `RemoteNodeRunExecutor`。
+- `AgentOrchestrator`：统一创建 run、排队、调用 executor、更新任务状态、投递完成事件。
+
+设计收敛：
+
+- 子 Agent 不是长期 profile，不要求为 `research` / `coder` / `reviewer` 等角色预先写配置；主 Agent 每次 spawn 时临时写任务提示词。
+- 可以后续扩展 `AgentProfile`，但它只用于长期 persona、channel routing 或默认模型/工具配置，不是 Phase 3.8 MVP 的核心对象。
+- 基于现有 `session_id` 系统创建 child session，不另起一套 agent session 管理。
+- 固定只支持一层子 Agent：主 Agent 可以 spawn，子 Agent 默认不能再 spawn。
+- Gateway-Node 对 Agent 侧透明，只通过 `AgentRunExecutor` 接口预留。
+- 权限首版只做粗粒度 hook、配额和工具过滤，不做复杂 policy DSL。
+- Agent-as-tool 是 MVP：编排能力通过内置工具暴露给主 Agent。
+- A2A / `sessions_send` 只做最小 `record_only|enqueue` 事件接口，不做多轮 ping-pong。
+
+**内置工具：**
+
+| 工具 ID | 功能 | 首版约束 |
 | ------- | ---- | -------- |
-| `agent_spawn` | 派生子 Agent | 创建新 `AgentLoop` 实例 + 独立 context，用 `asyncio.create_task` 并行运行 |
-| `agent_yield` | 等待并获取子 Agent 结果 | 通过 `asyncio.Queue` / `asyncio.Future` 在父子间传递结果 |
-| `agent_list` | 列出所有活跃 Agent | 维护 `dict[agent_id, Task]` 本地注册表 |
-| `agent_stop` | 终止子 Agent | 取消对应 `asyncio.Task`，清理资源 |
-
-**跨会话管理（本地实现）：**
-
-| 工具 ID | 功能 | 实现要点 |
-| ------- | ---- | -------- |
-| `sessions_list` | 列出所有会话 | 查询本地 `MemoryStore` / SQLite |
-| `sessions_history` | 读取任意会话历史 | 查询 `MemoryStore.get_turns()` |
-| `sessions_send` | 向指定会话注入消息 | 在目标会话上下文中追加消息，触发其 AgentLoop |
-| `session_status` | 查询会话运行状态 | 查本地注册表（AgentLoop 是否活跃、当前步骤等） |
+| `agent_spawn` | 派生后台子 Agent | 默认 `context_mode=isolated`，返回 `task_id/run_id`，不阻塞父 Agent |
+| `agent_yield` | 结束当前父 run，等待子任务完成事件后续跑 | 超时不取消子 Agent，只投递当前状态 |
+| `agent_wait` | 当前工具调用内等待子 Agent 结果 | 可选；超时只返回当前状态 |
+| `agent_list` | 列出当前 session 可见子任务 | 不泄漏其它 session / 用户任务 |
+| `agent_stop` | 取消子 Agent | 默认只能取消当前 session 创建的子任务 |
+| `sessions_list` | 列出可见会话 | 受权限和会话范围限制 |
+| `sessions_history` | 读取安全过滤后的历史 | 不返回 base64、临时 URL、raw_event、reasoning 原文 |
+| `sessions_send` | 向目标会话注入消息 | 标记为 agent/system 事件，不伪装成用户消息 |
+| `session_status` | 查询会话和 run 状态 | 返回 active run、队列、最近任务摘要 |
 
 任务清单：
 
-- [ ] 实现 `AgentRegistry`（`dict[agent_id, AgentTask]` 注册表，跟踪父子关系、状态、结果）。
-- [ ] 实现 `agent_spawn` 工具（创建子 AgentLoop + 独立 context + system prompt，返回 agent_id）。
-- [ ] 实现 `agent_yield` 工具（等待指定子 Agent 完成，返回其最终回复）。
-- [ ] 实现 `agent_list` 工具（列出所有活跃子 Agent 及其状态）。
-- [ ] 实现 `agent_stop` 工具（取消指定子 Agent 的 asyncio.Task）。
-- [ ] 实现 `sessions_list` 工具（列出所有会话及其元数据）。
-- [ ] 实现 `sessions_history` 工具（读取指定会话的对话历史）。
-- [ ] 实现 `sessions_send` 工具（向指定会话注入消息并触发响应）。
-- [ ] 实现 `session_status` 工具（查询会话是否活跃、当前进度等）。
-- [ ] 实现子 Agent 资源限制（最大并发数、单 Agent 超时、总 token 预算）。
-- [ ] 验证父子 Agent 并行运行、结果正确传递。
+- [x] 新增 `nahida_bot/agent/orchestration/` 模块，定义 `SubagentSpec`、`AgentRun`、`BackgroundTask`、状态枚举和 store 协议。
+- [x] 实现 SQLite `BackgroundTaskStore`，支持创建、状态迁移、查询、取消标记和终态清理。
+- [x] 实现 `AgentRegistry`（父子关系、状态、结果、取消令牌、run/task/session 索引）。
+- [ ] 实现 `AgentRunQueue`（同一 session 串行，main/subagent/cron lane 并发上限）。
+- [x] 实现 `AgentRunExecutor` 协议和 `LocalAgentRunExecutor`，把 Gateway-Node 远程执行保持为 Phase 5 可替换实现。
+- [x] 实现 `AgentOrchestrator`，封装 run 创建、调用 executor、状态更新和完成事件。（完整 queue 迁移仍在后续。）
+- [x] 实现基于现有 `session_id` 的 child session 创建与父子 session 索引。
+- [x] 实现 `agent_spawn` 工具（创建独立 child session + `BackgroundTask`，后台运行并立即返回 task id；不要求 `agent_id/profile`）。
+- [ ] 实现 `agent_yield` 工具（结束当前父 run，等待指定或任一子任务完成事件后续跑）。（当前初版作为 `agent_wait` 别名。）
+- [x] 可选实现 `agent_wait` 工具（读取/等待指定 task 终态；超时不取消）。
+- [x] 实现 `agent_list` / `agent_stop` 工具（只暴露当前 requester session 可见范围）。
+- [ ] 实现 `sessions_list` / `session_status` 工具（会话与 active run 状态查询）。
+- [ ] 实现安全过滤版 `sessions_history`（截断、脱敏、去除 raw media / raw_event / reasoning 原文）。
+- [ ] 实现 `sessions_send(record_only|enqueue)`，作为 A2A 最小接口；暂不实现多轮 ping-pong。
+- [x] 实现子 Agent 资源限制（最大并发数、每个父 run 最大子任务数、固定最大深度 1、单 run 超时、工具 allow/deny）。
+- [x] 子 Agent 默认禁用 `agent_spawn`，避免嵌套 subagent。
+- [x] 实现粗粒度 `OrchestrationPolicy` hook：`can_spawn`、`can_read_session`、`can_send_session`、`filter_tools_for_child`。
+- [ ] 将 Scheduler cron run 接入 `BackgroundTask` 账本（可在子 Agent MVP 后做）。
+- [ ] 增加结构化事件与指标：run queued/started/completed/cancelled、queue wait、task delivery failure。
+- [x] 验证父子 Agent 并行运行、结果正确传递。
 - [ ] 验证子 Agent 异常不影响父 Agent 和其他子 Agent（异常隔离）。
+- [ ] 验证同一 session 的并发 run 不会产生历史写竞争。
+- [x] 验证子 Agent 不能继续派生子 Agent。
+- [x] 验证子 Agent 默认不继承父 Agent 的全部高风险工具。
 
 **ChannelService 接口设计（关键产出物）**：
 

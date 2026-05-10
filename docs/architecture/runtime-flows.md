@@ -81,7 +81,37 @@ Node connect
   → health update
 ```
 
-## 5. 模块契约（建议先固定）
+Gateway-Node 是 Phase 5 的远程执行传输层，不应进入 AgentLoop 或 Subagent 任务描述。Agent 编排层只预留很薄的 `AgentRunExecutor` 接口：
+
+```text
+AgentOrchestrator
+  → AgentRunExecutor
+    ├─ LocalAgentRunExecutor → SessionRunner.run()
+    └─ RemoteNodeRunExecutor → Gateway-Node protocol (Phase 5)
+```
+
+Phase 3.8 只实现本地执行器；远程节点扩展必须复用同一套 run / task / session 状态机。
+
+## 5. Subagent 编排流程（Phase 3.8）
+
+```text
+父 Agent 通过工具调用 agent_spawn(task, instructions?, context_mode?)
+  → AgentOrchestrator 运行粗粒度策略与配额检查
+  → 校验调用者是 depth=0 的主 Agent（子 Agent 不能继续 spawn）
+  → 基于现有 session_id 创建 child_session_id
+  → 创建 BackgroundTask(runtime=subagent)
+  → AgentRegistry 注册 child AgentRun(kind=subagent, depth=1)
+  → AgentRunQueue 放入 child session lane + subagent global lane
+  → 立即返回 task_id / run_id
+  → LocalAgentRunExecutor 调用 SessionRunner.run(child_session_id, synthesized task message)
+  → 完成后写入任务终态与摘要
+  → 向 requester session 投递 subagent_completed 事件
+  → agent_yield 可结束父 run 并等待完成事件后续跑
+```
+
+Subagent 是一次临时任务，不要求预先定义独立 `AgentProfile`。同一 session 的 run 必须串行，不同 session 可按 lane 并行。详细设计见 [agent-orchestration.md](agent-orchestration.md)。
+
+## 6. 模块契约（建议先固定）
 
 优先稳定以下契约，后续模块都基于这些契约展开：
 
@@ -93,6 +123,9 @@ Node connect
   - 支持的通信方式声明（HTTP Server/Client、WebSocket、SSE）
   - 权限和生命周期钩子
 - **Agent Contract**：`AgentLoop.run()` 输入输出与中断语义
+- **Agent Orchestration Contract**：`SubagentSpec` / `AgentRun` / `BackgroundTask` / `AgentRegistry` / `AgentRunQueue` / `AgentRunExecutor`
+  - 子 Agent 必须有独立 session、父子关系、终态记录、取消语义和可审计来源
+  - 首版固定只支持一层子 Agent，Gateway-Node 只通过 executor 接口预留
 - **Reply Signal Contract**：sentinel token 检测函数（`is_silent_reply`、`is_heartbeat_ack`、`strip_trailing_token`）、检测后对 `OutboundMessage` 的抑制策略、assistant turn 持久化决策。参考 Phase 2.10 回复信号协议。
 - **Tool Contract**：tool definition、参数校验、执行结果结构
   - 由 Plugin 通过权限系统注册

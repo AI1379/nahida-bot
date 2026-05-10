@@ -46,6 +46,7 @@ Nahida Bot 的核心目标：
 | [data-and-state.md](data-and-state.md) | 数据状态边界、Workspace/Agent/Memory 联合设计 |
 | [sandbox-security.md](sandbox-security.md) | Workspace 沙盒安全增强方案 |
 | [provider-architecture.md](provider-architecture.md) | Provider 多后端架构、格式调研与实现细节 |
+| [agent-orchestration.md](agent-orchestration.md) | Agent/Subagent 编排、后台任务、跨会话管理与本地队列设计 |
 | [plugin-system.md](plugin-system.md) | Plugin 系统完整设计（SDK、Manifest、生命周期、权限、事件集成） |
 | [channel-plugin.md](channel-plugin.md) | ChannelService 设计与通信协议 |
 | [security-observability.md](security-observability.md) | 安全基线与可观测性要求 |
