@@ -1001,6 +1001,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiogram" },
+    { name = "aiohttp-socks" },
     { name = "pre-commit" },
     { name = "pyright" },
     { name = "pytest" },
@@ -1036,6 +1038,8 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiogram", specifier = ">=3.15.0" },
+    { name = "aiohttp-socks", specifier = ">=0.8.0" },
     { name = "pre-commit", specifier = ">=4.0.0" },
     { name = "pyright", specifier = ">=1.1.0" },
     { name = "pytest", specifier = ">=8.4.1" },

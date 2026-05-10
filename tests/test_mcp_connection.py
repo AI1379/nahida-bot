@@ -13,21 +13,28 @@ from nahida_bot.plugins.mcp.connection import MCPServerConnection
 
 
 def _stdio_config(**overrides: Any) -> MCPServerConfig:
-    defaults = {"transport": "stdio", "command": "echo", "args": []}
-    defaults.update(overrides)
-    return MCPServerConfig(**defaults)
+    return MCPServerConfig(
+        transport=overrides.pop("transport", "stdio"),
+        command=overrides.pop("command", "echo"),
+        args=overrides.pop("args", []),
+        **overrides,
+    )
 
 
 def _sse_config(**overrides: Any) -> MCPServerConfig:
-    defaults = {"transport": "sse", "url": "http://localhost:3001/sse"}
-    defaults.update(overrides)
-    return MCPServerConfig(**defaults)
+    return MCPServerConfig(
+        transport=overrides.pop("transport", "sse"),
+        url=overrides.pop("url", "http://localhost:3001/sse"),
+        **overrides,
+    )
 
 
 def _http_config(**overrides: Any) -> MCPServerConfig:
-    defaults = {"transport": "streamable-http", "url": "http://localhost:8080/mcp"}
-    defaults.update(overrides)
-    return MCPServerConfig(**defaults)
+    return MCPServerConfig(
+        transport=overrides.pop("transport", "streamable-http"),
+        url=overrides.pop("url", "http://localhost:8080/mcp"),
+        **overrides,
+    )
 
 
 class TestMCPServerConnectionInit:

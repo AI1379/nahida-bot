@@ -538,6 +538,7 @@ class TestTelegramDownloadMedia:
 
         # Create a small file to simulate download
         mock_bot = plugin._bot
+        assert mock_bot is not None
         mock_file = MagicMock()
         mock_file.file_path = "photos/test.jpg"
 

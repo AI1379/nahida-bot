@@ -79,8 +79,9 @@ class TelegramPlugin(Plugin):
             bot_kwargs["session"] = AiohttpSession(proxy=proxy)
             logger.info("telegram.proxy_configured", proxy=proxy)
 
-        self._bot = Bot(**bot_kwargs)
-        me = await self._bot.get_me()
+        bot = Bot(**bot_kwargs)
+        self._bot = bot
+        me = await bot.get_me()
         self._converter = TelegramMessageConverter(bot_username=me.username)
         logger.info(
             "telegram.connected",
