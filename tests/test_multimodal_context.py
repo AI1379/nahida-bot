@@ -291,8 +291,10 @@ class TestHistoryMediaResolve:
             "s1", capabilities=ModelCapabilities(image_input=True)
         )
 
-        assert messages[0].parts[0].type == "image_base64"
-        assert messages[0].parts[0].media_id == "img"
+        assert messages[0].parts[0].type == "text"
+        assert messages[0].parts[0].text == "look"
+        assert messages[0].parts[1].type == "image_base64"
+        assert messages[0].parts[1].media_id == "img"
 
 
 # -- _persist_turns metadata tests -----------------------------------------

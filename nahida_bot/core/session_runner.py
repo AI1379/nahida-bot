@@ -13,6 +13,12 @@ from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.config import MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.logging import log_trace
+from nahida_bot.core.message_context import (
+    assistant_context,
+    message_context_from_metadata,
+    message_context_to_metadata,
+    render_message_with_context,
+)
 
 if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop, AgentRunResult
@@ -22,7 +28,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.core.channel_registry import ChannelRegistry
     from nahida_bot.core.config import MultimodalConfig
-    from nahida_bot.plugins.base import InboundAttachment
+    from nahida_bot.plugins.base import InboundAttachment, MessageContext
     from nahida_bot.plugins.registry import ToolRegistry
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -105,6 +111,7 @@ class SessionRunner:
         workspace_id: str | None = None,
         workspace_root: Any = None,
         attachments: list[InboundAttachment] | None = None,
+        message_context: MessageContext | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
     ) -> AgentRunResult:
@@ -153,8 +160,13 @@ class SessionRunner:
                 capabilities=capabilities,
             )
             tools = self._collect_tools(tool_filter, capabilities=capabilities)
-            user_parts = await self._build_user_parts(
+            visible_user_message = render_message_with_context(
                 user_message,
+                message_context,
+                role="user",
+            )
+            user_parts = await self._build_user_parts(
+                visible_user_message,
                 list(attachments_for_turn),
                 capabilities=capabilities,
             )
@@ -172,7 +184,7 @@ class SessionRunner:
                 workspace_root = self._resolve_workspace_root(workspace_id)
 
             run_kwargs: dict[str, Any] = {
-                "user_message": user_message,
+                "user_message": visible_user_message,
                 "system_prompt": system_prompt,
                 "history_messages": history,
             }
@@ -214,6 +226,7 @@ class SessionRunner:
                 user_message,
                 result,
                 attachments=list(attachments_for_turn),
+                message_context=message_context,
                 source_tag=source_tag,
             )
             return result
@@ -457,6 +470,14 @@ class SessionRunner:
                 if r.turn.role == "user"
                 else []
             )
+            turn_context = message_context_from_metadata(metadata)
+            visible_content = render_message_with_context(
+                r.turn.content,
+                turn_context,
+                role=r.turn.role,
+            )
+            if r.turn.role == "user" and parts:
+                parts = self._prepend_text_part(visible_content, parts)
             reasoning = None
             reasoning_signature = None
             has_redacted = False
@@ -468,7 +489,7 @@ class SessionRunner:
             messages.append(
                 ContextMessage(
                     role=r.turn.role,  # type: ignore[arg-type]
-                    content=r.turn.content,
+                    content=visible_content,
                     source=r.turn.source,
                     parts=parts,
                     reasoning=reasoning,
@@ -495,6 +516,17 @@ class SessionRunner:
             )
 
         return messages
+
+    @staticmethod
+    def _prepend_text_part(
+        content: str,
+        parts: list[ContextPart],
+    ) -> list[ContextPart]:
+        if not content:
+            return parts
+        if parts and parts[0].type == "text":
+            return parts
+        return [ContextPart(type="text", text=content), *parts]
 
     @staticmethod
     def _reconstruct_parts(
@@ -1268,11 +1300,15 @@ class SessionRunner:
         result: Any,
         *,
         attachments: list[InboundAttachment],
+        message_context: MessageContext | None = None,
         source_tag: str,
     ) -> None:
         if self._memory is None:
             return
-        metadata = None
+        metadata: dict[str, Any] | None = None
+        message_context_metadata = message_context_to_metadata(message_context)
+        if message_context_metadata is not None:
+            metadata = {"message_context": message_context_metadata}
         if attachments:
             persisted_attachments: list[dict[str, Any]] = []
             for att in attachments:
@@ -1301,7 +1337,9 @@ class SessionRunner:
                         }
                     )
                 persisted_attachments.append(persisted)
-            metadata = {"attachments": persisted_attachments}
+            if metadata is None:
+                metadata = {}
+            metadata["attachments"] = persisted_attachments
         user_turn = ConversationTurn(
             role="user", content=user_message, source=source_tag, metadata=metadata
         )
@@ -1310,8 +1348,9 @@ class SessionRunner:
         # Persist assistant turn with reasoning metadata
         if result.final_response:
             assistant_metadata: dict[str, Any] | None = None
-            if hasattr(result, "assistant_messages") and result.assistant_messages:
-                last = result.assistant_messages[-1]
+            assistant_messages = getattr(result, "assistant_messages", None)
+            if isinstance(assistant_messages, list) and assistant_messages:
+                last = assistant_messages[-1]
                 parts: dict[str, Any] = {}
                 if last.reasoning:
                     parts["reasoning"] = last.reasoning
@@ -1321,6 +1360,13 @@ class SessionRunner:
                     parts["has_redacted_thinking"] = True
                 if parts:
                     assistant_metadata = parts
+            assistant_context_metadata = message_context_to_metadata(
+                assistant_context() if message_context is not None else None
+            )
+            if assistant_context_metadata is not None:
+                if assistant_metadata is None:
+                    assistant_metadata = {}
+                assistant_metadata["message_context"] = assistant_context_metadata
 
             assistant_turn = ConversationTurn(
                 role="assistant",

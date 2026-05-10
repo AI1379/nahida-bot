@@ -39,12 +39,18 @@ class TestTelegramMessageConverter:
         assert result.message_id == "789"
         assert result.is_group is False
         assert result.command_prefix == "/"
+        assert result.message_context is not None
+        assert result.message_context.channel == "telegram"
+        assert result.message_context.chat_type == "private"
+        assert result.message_context.sender_display_name == "Test"
 
     def test_group_message(self) -> None:
         conv = TelegramMessageConverter()
         msg = _make_message(text="hi", chat_type="supergroup")
         result = conv.to_inbound(msg)
         assert result.is_group is True
+        assert result.message_context is not None
+        assert result.message_context.chat_type == "group"
 
     def test_group_message_strips_mention(self) -> None:
         conv = TelegramMessageConverter(bot_username="mybot")

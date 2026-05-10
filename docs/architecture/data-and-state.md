@@ -73,6 +73,9 @@ class WorkspaceSandbox(Protocol):
 
 - 短期记忆放在会话上下文层，长期记忆通过 repository 检索。
 - SQLite 只作为首个实现，不直接暴露给 `agent.loop`。
+- 对话 turn 的 `content` 保存原始文本；消息来源、时间、发送方等给 LLM 使用的 envelope facts 放入 `metadata.message_context`，读取历史时再稳定渲染到 provider context。
+- `metadata.message_context` 是 per-turn 状态，不是 session 状态。它应包含消息时间、channel、chat 类型、发送方显示名/ID、短角色标签等可重建字段。
+- 普通上下文重建不得动态改写旧 turn 的 envelope。只有 compact/summary 发生时，才允许把多条 turn 重写为一条稳定摘要，并保留时间范围、channel 和关键参与者信息。
 - 建议契约：
 
 ```python

@@ -39,6 +39,42 @@ class InboundAttachment:
 
 
 @dataclass(slots=True, frozen=True)
+class SenderContext:
+    """Short, provider-safe facts about the sender of one inbound message."""
+
+    display_name: str = ""
+    platform_user_id: str = ""
+    role_tags: tuple[str, ...] = ()
+    is_bot: bool = False
+    is_self: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class ChatContext:
+    """Short, provider-safe facts about the chat that produced one message."""
+
+    platform: str = ""
+    chat_type: str = "unknown"  # private, group, channel, thread, unknown
+    platform_chat_id: str = ""
+    display_name: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class MessageContext:
+    """Per-turn facts rendered as a compact LLM-visible message envelope."""
+
+    timestamp: float = 0.0
+    channel: str = ""
+    chat_type: str = "unknown"
+    chat_id: str = ""
+    chat_display_name: str = ""
+    sender_id: str = ""
+    sender_display_name: str = ""
+    sender_role_tags: tuple[str, ...] = ()
+    extra_tags: tuple[str, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
 class InboundMessage:
     """Normalized message received from an external platform."""
 
@@ -53,6 +89,9 @@ class InboundMessage:
     timestamp: float = 0.0
     command_prefix: str = "/"  # Prefix used for command matching on this platform
     attachments: list[InboundAttachment] = field(default_factory=list)
+    sender_context: SenderContext | None = None
+    chat_context: ChatContext | None = None
+    message_context: MessageContext | None = None
 
 
 @dataclass(slots=True, frozen=True)

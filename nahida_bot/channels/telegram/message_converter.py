@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any
 
+from nahida_bot.core.message_context import (
+    chat_context_from_values,
+    context_from_inbound,
+    sender_context_from_values,
+)
 from nahida_bot.plugins.base import InboundAttachment, InboundMessage
 
 
@@ -46,8 +52,19 @@ class TelegramMessageConverter:
         timestamp = msg_date if isinstance(msg_date, (int, float)) else time.time()
 
         attachments = self._extract_attachments(msg_data)
+        sender_context = sender_context_from_values(
+            display_name=self._sender_display_name(from_user),
+            platform_user_id=str(from_user.get("id", "0")),
+            is_bot=bool(from_user.get("is_bot", False)),
+        )
+        chat_context = chat_context_from_values(
+            platform="telegram",
+            chat_type="group" if is_group else "private",
+            platform_chat_id=str(chat.get("id", "")),
+            display_name=self._chat_display_name(chat),
+        )
 
-        return InboundMessage(
+        inbound = InboundMessage(
             message_id=str(msg_data.get("message_id", "0")),
             platform="telegram",
             chat_id=str(chat.get("id", "")),
@@ -59,7 +76,31 @@ class TelegramMessageConverter:
             timestamp=float(timestamp),
             command_prefix="/",
             attachments=attachments,
+            sender_context=sender_context,
+            chat_context=chat_context,
         )
+        return replace(inbound, message_context=context_from_inbound(inbound))
+
+    @staticmethod
+    def _sender_display_name(from_user: dict[str, Any]) -> str:
+        username = str(from_user.get("username") or "").strip()
+        if username:
+            return f"@{username}"
+        names = [
+            str(from_user.get("first_name") or "").strip(),
+            str(from_user.get("last_name") or "").strip(),
+        ]
+        return " ".join(name for name in names if name)
+
+    @staticmethod
+    def _chat_display_name(chat: dict[str, Any]) -> str:
+        title = str(chat.get("title") or "").strip()
+        if title:
+            return title
+        username = str(chat.get("username") or "").strip()
+        if username:
+            return f"@{username}"
+        return str(chat.get("first_name") or "").strip()
 
     @staticmethod
     def _extract_attachments(msg_data: dict[str, Any]) -> list[InboundAttachment]:

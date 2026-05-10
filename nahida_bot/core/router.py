@@ -18,6 +18,7 @@ from nahida_bot.core.events import (
     MessageSending,
     MessageSent,
 )
+from nahida_bot.core.message_context import context_from_inbound
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import (
     CommandEntry,
@@ -274,6 +275,7 @@ class MessageRouter:
             system_prompt=self._config.system_prompt,
             workspace_id=workspace_id,
             attachments=inbound.attachments,
+            message_context=context_from_inbound(inbound),
             source_tag="user_input",
         )
 

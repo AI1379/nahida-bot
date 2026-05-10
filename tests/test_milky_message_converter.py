@@ -40,6 +40,10 @@ async def test_friend_message_to_inbound() -> None:
     assert inbound.text == "hello"
     assert inbound.is_group is False
     assert inbound.command_prefix == "/"
+    assert inbound.message_context is not None
+    assert inbound.message_context.channel == "milky"
+    assert inbound.message_context.chat_type == "private"
+    assert inbound.message_context.sender_id == "10001"
 
 
 async def test_group_mention_strips_self_mention() -> None:
@@ -64,6 +68,8 @@ async def test_group_mention_strips_self_mention() -> None:
     assert inbound.is_group is True
     assert inbound.chat_id == "20001"
     assert inbound.text == "help"
+    assert inbound.message_context is not None
+    assert inbound.message_context.chat_type == "group"
 
 
 async def test_group_message_without_trigger_is_ignored() -> None:

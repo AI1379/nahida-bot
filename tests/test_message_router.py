@@ -337,7 +337,8 @@ class TestMessageRouterAgentDispatch:
         await router.stop()
 
         assert len(agent.calls) == 1
-        assert agent.calls[0]["user_message"] == "what is 2+2?"
+        assert agent.calls[0]["user_message"].endswith("\nwhat is 2+2?")
+        assert "[test/private | u1]" in agent.calls[0]["user_message"]
 
     async def test_no_agent_no_crash(self) -> None:
         router, event_bus, _, _ = _make_router(agent=None)
@@ -510,6 +511,9 @@ class TestMessageRouterMemory:
         assert len(turns) == 2
         assert turns[0].role == "user"
         assert turns[0].content == "question"
+        assert turns[0].metadata is not None
+        assert turns[0].metadata["message_context"]["channel"] == "test"
+        assert turns[0].metadata["message_context"]["sender_id"] == "u1"
         assert turns[1].role == "assistant"
         assert turns[1].content == "answer"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Protocol
 
 from nahida_bot.channels.milky._parsing import coerce_int, coerce_str
@@ -18,6 +19,11 @@ from nahida_bot.channels.milky.segments import (
     IncomingVideoSegment,
     parse_incoming_segments,
     render_segments_plain_text,
+)
+from nahida_bot.core.message_context import (
+    chat_context_from_values,
+    context_from_inbound,
+    sender_context_from_values,
 )
 from nahida_bot.plugins.base import InboundAttachment, InboundMessage
 
@@ -85,8 +91,24 @@ class MilkyMessageConverter:
             return None
 
         attachments = self._extract_attachments(segments)
+        sender_context = sender_context_from_values(
+            display_name=self._sender_display_name(message_data),
+            platform_user_id=sender_id or "0",
+            role_tags=self._sender_role_tags(message_data),
+            is_self=self._self_id > 0 and sender_id == str(self._self_id),
+        )
+        chat_context = chat_context_from_values(
+            platform="milky",
+            chat_type="group" if is_group else "private",
+            platform_chat_id=peer_id,
+            display_name=coerce_str(
+                message_data.get("group_name")
+                or message_data.get("peer_name")
+                or message_data.get("friend_name")
+            ),
+        )
 
-        return InboundMessage(
+        inbound = InboundMessage(
             message_id=coerce_str(message_data.get("message_seq"), "0"),
             platform="milky",
             chat_id=peer_id,
@@ -98,7 +120,10 @@ class MilkyMessageConverter:
             timestamp=float(coerce_int(message_data.get("time"))),
             command_prefix=self._config.command_prefix,
             attachments=attachments,
+            sender_context=sender_context,
+            chat_context=chat_context,
         )
+        return replace(inbound, message_context=context_from_inbound(inbound))
 
     async def _resolve_forward_segments(
         self, segments: list[IncomingSegment], *, depth: int
@@ -183,6 +208,51 @@ class MilkyMessageConverter:
                 and segment.user_id == self._self_id
             )
         ]
+
+    @staticmethod
+    def _sender_display_name(message_data: dict[str, Any]) -> str:
+        for key in (
+            "sender_name",
+            "sender_nickname",
+            "nickname",
+            "member_name",
+            "card",
+        ):
+            value = coerce_str(message_data.get(key))
+            if value:
+                return value
+
+        sender = message_data.get("sender")
+        if isinstance(sender, dict):
+            for key in ("name", "nickname", "card"):
+                value = coerce_str(sender.get(key))
+                if value:
+                    return value
+        return ""
+
+    @staticmethod
+    def _sender_role_tags(message_data: dict[str, Any]) -> tuple[str, ...]:
+        tags: list[str] = []
+        role = coerce_str(
+            message_data.get("sender_role")
+            or message_data.get("member_role")
+            or message_data.get("role")
+        ).lower()
+        if role in {"owner", "admin", "administrator"}:
+            tags.append("owner" if role == "owner" else "admin")
+        if message_data.get("is_owner") is True:
+            tags.append("owner")
+        if message_data.get("is_admin") is True:
+            tags.append("admin")
+
+        sender = message_data.get("sender")
+        if isinstance(sender, dict):
+            nested_role = coerce_str(
+                sender.get("role") or sender.get("member_role")
+            ).lower()
+            if nested_role in {"owner", "admin", "administrator"}:
+                tags.append("owner" if nested_role == "owner" else "admin")
+        return tuple(dict.fromkeys(tags))
 
     @staticmethod
     def _reply_to(segments: list[IncomingSegment]) -> str:
