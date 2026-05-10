@@ -45,6 +45,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_web_fetch_tool()
         self._register_plan_tool()
         self._register_cron_tools()
+        self._register_agent_tools()
 
     # ── Command Registration ────────────────────────────────
 
@@ -606,6 +607,212 @@ class BuiltinCommandsPlugin(Plugin):
     def _get_scheduler(self) -> Any:
         """Access the SchedulerService exposed by the plugin API."""
         return self.api.scheduler_service
+
+    # ── Agent Orchestration Tools ────────────────────────
+
+    def _register_agent_tools(self) -> None:
+        self.api.register_tool(
+            "agent_spawn",
+            "Start a one-off background subagent task in an isolated child session.",
+            {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Concrete delegated task for the subagent.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Short display label for the task.",
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": "Temporary task-specific instructions.",
+                    },
+                    "context_mode": {
+                        "type": "string",
+                        "enum": ["isolated", "summary", "fork"],
+                        "description": "How much parent context to pass.",
+                    },
+                    "handoff_summary": {
+                        "type": "string",
+                        "description": "Brief parent context summary for summary mode.",
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Maximum subagent runtime in seconds.",
+                    },
+                    "notify": {
+                        "type": "string",
+                        "enum": ["done_only", "silent"],
+                        "description": "Whether to write a completion event to the parent session.",
+                    },
+                    "tool_denylist": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Extra tool names to hide from the child.",
+                    },
+                },
+                "required": ["task"],
+                "additionalProperties": False,
+            },
+            self._tool_agent_spawn,
+        )
+        self.api.register_tool(
+            "agent_wait",
+            "Wait for a subagent task result. Timeout does not cancel the task.",
+            {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "timeout_seconds": {"type": "integer"},
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            self._tool_agent_wait,
+        )
+        self.api.register_tool(
+            "agent_yield",
+            "Wait for a subagent task result. Initial implementation aliases agent_wait.",
+            {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "timeout_seconds": {"type": "integer"},
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            self._tool_agent_wait,
+        )
+        self.api.register_tool(
+            "agent_list",
+            "List subagent tasks created by the current session.",
+            {
+                "type": "object",
+                "properties": {"limit": {"type": "integer"}},
+                "required": [],
+                "additionalProperties": False,
+            },
+            self._tool_agent_list,
+        )
+        self.api.register_tool(
+            "agent_stop",
+            "Cancel a subagent task created by the current session.",
+            {
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            self._tool_agent_stop,
+        )
+
+    def _get_orchestrator(self) -> Any:
+        return getattr(self.api, "orchestration_service", None)
+
+    async def _tool_agent_spawn(
+        self,
+        task: str,
+        label: str = "",
+        instructions: str = "",
+        context_mode: str = "isolated",
+        handoff_summary: str = "",
+        timeout_seconds: int | None = None,
+        notify: str = "done_only",
+        tool_denylist: list[str] | None = None,
+    ) -> str:
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            return "Error: Agent orchestration service is not available."
+        try:
+            from nahida_bot.agent.orchestration import SubagentSpec
+
+            spec = SubagentSpec(
+                task=task,
+                label=label or None,
+                instructions=instructions or None,
+                context_mode=context_mode,  # type: ignore[arg-type]
+                handoff_summary=handoff_summary or None,
+                timeout_seconds=timeout_seconds,
+                tool_denylist=tuple(tool_denylist or ()),
+                notify_policy=notify,  # type: ignore[arg-type]
+            )
+            bg_task = await orchestrator.spawn_subagent(spec)
+        except Exception as e:
+            return f"Error spawning subagent: {e}"
+
+        return json.dumps(
+            {
+                "task_id": bg_task.task_id,
+                "child_session_id": bg_task.child_session_id,
+                "status": bg_task.status.value,
+                "title": bg_task.title,
+            },
+            ensure_ascii=False,
+        )
+
+    async def _tool_agent_wait(self, task_id: str, timeout_seconds: int = 30) -> str:
+        requester_session_id = self._current_requester_session_id()
+        if requester_session_id is None:
+            return "Error: No active session context."
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            return "Error: Agent orchestration service is not available."
+        task = await orchestrator.wait_for_task(
+            task_id,
+            timeout_seconds=max(timeout_seconds, 0),
+        )
+        if task is None or task.requester_session_id != requester_session_id:
+            return f"Task {task_id} not found."
+        return self._format_background_task(task)
+
+    async def _tool_agent_list(self, limit: int = 20) -> str:
+        requester_session_id = self._current_requester_session_id()
+        if requester_session_id is None:
+            return "Error: No active session context."
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            return "Error: Agent orchestration service is not available."
+        tasks = await orchestrator.list_tasks(requester_session_id, limit=max(limit, 1))
+        if not tasks:
+            return "No subagent tasks for this session."
+        return "\n".join(self._format_background_task(task) for task in tasks)
+
+    async def _tool_agent_stop(self, task_id: str) -> str:
+        requester_session_id = self._current_requester_session_id()
+        if requester_session_id is None:
+            return "Error: No active session context."
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            return "Error: Agent orchestration service is not available."
+        task = await orchestrator.stop_task(requester_session_id, task_id)
+        if task is None:
+            return f"Task {task_id} not found or not owned by this session."
+        return self._format_background_task(task)
+
+    @staticmethod
+    def _current_requester_session_id() -> str | None:
+        from nahida_bot.core.context import current_agent_run
+
+        run_ctx = current_agent_run.get()
+        if run_ctx is not None:
+            return run_ctx.requester_session_id
+        ctx = current_session.get()
+        return ctx.session_id if ctx is not None else None
+
+    @staticmethod
+    def _format_background_task(task: Any) -> str:
+        lines = [
+            f"{task.task_id}: {task.status.value} — {task.title}",
+            f"  child_session: {task.child_session_id or '(none)'}",
+        ]
+        if task.summary:
+            lines.append(f"  summary: {task.summary[:1000]}")
+        if task.error:
+            lines.append(f"  error: {task.error[:1000]}")
+        return "\n".join(lines)
 
     async def _tool_cron_create(
         self,

@@ -1,7 +1,7 @@
 id: builtin-commands
 name: "Builtin Commands"
 version: "0.1.0"
-description: "Core commands, workspace tools, exec, web fetch, and plan management"
+description: "Core commands, workspace tools, exec, web fetch, plan, cron, and agent orchestration"
 entrypoint: "nahida_bot.plugins.builtin.commands:BuiltinCommandsPlugin"
 permissions:
   filesystem:
@@ -26,3 +26,13 @@ capabilities:
       description: Fetch a web page and return its content as Markdown
     - name: plan
       description: Create and manage task plans for structured work
+    - name: agent_spawn
+      description: Start a local background subagent task
+    - name: agent_wait
+      description: Wait for a subagent task result
+    - name: agent_yield
+      description: Yield to a subagent task result
+    - name: agent_list
+      description: List subagent tasks for the current session
+    - name: agent_stop
+      description: Cancel a subagent task
