@@ -178,6 +178,13 @@ telegram:
 #   max_jobs_per_chat: 20               # 每个会话最大任务数
 #   failure_retry_seconds: 300          # 失败重试等待（秒）
 #   max_consecutive_failures: 3         # 连续失败上限
+#   memory_dreaming_enabled: true       # 是否启用内部记忆 dreaming
+#   memory_dreaming_interval_seconds: 3600       # dreaming 周期（秒）
+#   memory_dreaming_initial_delay_seconds: 300   # 启动后首次 dreaming 延迟（秒）
+#   memory_dreaming_session_limit: 20            # 单次最多扫描会话数
+#   memory_dreaming_recent_turn_limit: 40        # 单会话最多读取 turns 数
+#   memory_dreaming_provider_id: ""     # 专用 provider；空则使用会话当前 provider
+#   memory_dreaming_model: ""           # 专用模型；空则使用会话当前模型
 
 # ── Router ─────────────────────────────────────────────
 # 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。

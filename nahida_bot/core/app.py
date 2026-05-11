@@ -390,6 +390,7 @@ class Application:
             runner=self.session_runner,
             channel_registry=self.channel_registry,
             system_prompt=self.settings.system_prompt,
+            app_name=self.settings.app_name,
             config=SchedulerConfig(
                 poll_interval_seconds=scheduler_cfg.poll_interval_seconds,
                 max_concurrent_fires=scheduler_cfg.max_concurrent_fires,
@@ -412,6 +413,8 @@ class Application:
                 memory_dreaming_recent_turn_limit=(
                     scheduler_cfg.memory_dreaming_recent_turn_limit
                 ),
+                memory_dreaming_provider_id=(scheduler_cfg.memory_dreaming_provider_id),
+                memory_dreaming_model=scheduler_cfg.memory_dreaming_model,
             ),
         )
         if self.plugin_manager is not None:

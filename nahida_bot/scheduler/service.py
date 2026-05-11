@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from croniter import croniter
 from uuid import uuid4
@@ -44,6 +44,7 @@ class SchedulerService:
         channel_registry: ChannelRegistry | None = None,
         message_router: MessageRouter | None = None,
         system_prompt: str = "You are a helpful assistant.",
+        app_name: str = "the assistant",
         config: SchedulerConfig | None = None,
     ) -> None:
         self._repo = repo
@@ -51,6 +52,7 @@ class SchedulerService:
         self._channels = channel_registry
         self._router = message_router
         self._system_prompt = system_prompt
+        self._app_name = app_name
         self._config = config or SchedulerConfig()
 
         self._poll_task: asyncio.Task[None] | None = None
@@ -93,6 +95,13 @@ class SchedulerService:
         if self._config.memory_dreaming_enabled:
             self._memory_dream_next_at = datetime.now(UTC) + timedelta(
                 seconds=self._config.memory_dreaming_initial_delay_seconds
+            )
+            logger.info(
+                "scheduler.memory_dreaming_scheduled",
+                next_at=self._memory_dream_next_at.isoformat(),
+                interval_seconds=self._config.memory_dreaming_interval_seconds,
+                provider_id=self._config.memory_dreaming_provider_id,
+                model=self._config.memory_dreaming_model,
             )
         self._poll_task = asyncio.create_task(self._poll_loop())
         logger.info("scheduler.started")
@@ -365,6 +374,10 @@ class SchedulerService:
         self._memory_dream_next_at = now + timedelta(
             seconds=self._config.memory_dreaming_interval_seconds
         )
+        logger.debug(
+            "scheduler.memory_dreaming_dispatch",
+            next_at=self._memory_dream_next_at.isoformat(),
+        )
         task = asyncio.create_task(self._run_memory_dreaming_safe())
         self._memory_dream_task = task
         self._active_tasks.add(task)
@@ -392,21 +405,34 @@ class SchedulerService:
         sessions = await memory.list_sessions(
             limit=self._config.memory_dreaming_session_limit
         )
+        logger.debug(
+            "scheduler.memory_dreaming_run_start",
+            session_count=len(sessions),
+            session_limit=self._config.memory_dreaming_session_limit,
+        )
         applied_total = 0
+        processed_sessions = 0
         for session in sessions:
             try:
-                applied_total += await self._dream_session(
+                applied = await self._dream_session(
                     session.session_id,
                     workspace_id=session.workspace_id,
                 )
+                if applied:
+                    processed_sessions += 1
+                applied_total += applied
             except Exception as exc:
                 logger.warning(
                     "scheduler.memory_dreaming_session_failed",
                     session_id=session.session_id,
                     error=str(exc),
                 )
-        if applied_total:
-            logger.info("scheduler.memory_dreaming_completed", applied=applied_total)
+        logger.info(
+            "scheduler.memory_dreaming_completed",
+            applied=applied_total,
+            processed_sessions=processed_sessions,
+            scanned_sessions=len(sessions),
+        )
         return applied_total
 
     async def _dream_session(
@@ -424,13 +450,34 @@ class SchedulerService:
         )
         new_records = [record for record in records if record.turn_id > last_turn_id]
         if len(new_records) < 2:
+            logger.debug(
+                "scheduler.memory_dreaming_session_skipped",
+                session_id=session_id,
+                reason="not_enough_new_turns",
+                new_turns=len(new_records),
+                last_turn_id=last_turn_id,
+            )
             return 0
 
-        provider_slot, selected_model = await self._runner.resolve_provider_for_session(
-            session_id
-        )
-        if provider_slot is None:
+        resolved = await self._resolve_memory_dream_provider(session_id)
+        if resolved is None:
+            logger.debug(
+                "scheduler.memory_dreaming_session_skipped",
+                session_id=session_id,
+                reason="no_dream_provider",
+            )
             return 0
+        provider_slot, selected_model, provider_reason = resolved
+
+        logger.debug(
+            "scheduler.memory_dreaming_session_start",
+            session_id=session_id,
+            new_turns=len(new_records),
+            last_turn_id=last_turn_id,
+            provider_id=provider_slot.id,
+            model=selected_model or provider_slot.default_model,
+            provider_reason=provider_reason,
+        )
 
         workspace_id = workspace_id or str(meta.get("workspace_id") or "") or None
         workspace_root = self._runner.workspace_root_for(workspace_id)
@@ -440,9 +487,14 @@ class SchedulerService:
             if record.turn.content.strip()
         )
         if not conversation.strip():
+            logger.debug(
+                "scheduler.memory_dreaming_session_skipped",
+                session_id=session_id,
+                reason="empty_conversation",
+            )
             return 0
 
-        consolidator = MemoryConsolidator(memory)
+        consolidator = MemoryConsolidator(memory, app_name=self._app_name)
         applied = await consolidator.consolidate_turn(
             session_id=session_id,
             user_message=conversation,
@@ -453,16 +505,73 @@ class SchedulerService:
             dream_model=selected_model,
             run_rules=False,
         )
+        max_turn_id = max(record.turn_id for record in new_records)
         await memory.update_session_meta(
             session_id,
             {
-                "memory_dream_last_turn_id": max(
-                    record.turn_id for record in new_records
-                ),
+                "memory_dream_last_turn_id": max_turn_id,
                 "memory_dream_last_at": datetime.now(UTC).isoformat(),
             },
         )
+        logger.debug(
+            "scheduler.memory_dreaming_session_done",
+            session_id=session_id,
+            applied=applied,
+            max_turn_id=max_turn_id,
+        )
         return applied
+
+    async def _resolve_memory_dream_provider(
+        self, session_id: str
+    ) -> tuple[Any, str | None, str] | None:
+        """Resolve provider/model for memory dreaming."""
+        if self._runner is None or self._runner.provider_manager is None:
+            return None
+        provider_manager = self._runner.provider_manager
+        configured_provider_id = self._config.memory_dreaming_provider_id.strip()
+        configured_model = self._config.memory_dreaming_model.strip()
+
+        if configured_provider_id:
+            slot = provider_manager.get(configured_provider_id)
+            if slot is None:
+                logger.warning(
+                    "scheduler.memory_dreaming_provider_not_found",
+                    provider_id=configured_provider_id,
+                )
+                return None
+            if configured_model:
+                model = configured_model
+                if "/" in model:
+                    prefix, _, suffix = model.partition("/")
+                    if prefix == configured_provider_id:
+                        model = suffix
+                if not slot.supports_model(model):
+                    logger.warning(
+                        "scheduler.memory_dreaming_model_not_supported",
+                        provider_id=configured_provider_id,
+                        model=model,
+                    )
+                    return None
+                return slot, model, "configured_provider_model"
+            return slot, None, "configured_provider"
+
+        if configured_model:
+            resolved = provider_manager.resolve_model_selection(configured_model)
+            if resolved is None:
+                logger.warning(
+                    "scheduler.memory_dreaming_model_not_found",
+                    model=configured_model,
+                )
+                return None
+            slot, model = resolved
+            return slot, model, "configured_model"
+
+        provider_slot, selected_model = await self._runner.resolve_provider_for_session(
+            session_id
+        )
+        if provider_slot is None:
+            return None
+        return provider_slot, selected_model, "session_provider"
 
     async def _fire_job(self, job: CronJob) -> None:
         """Execute a scheduled job: run agent and send response."""

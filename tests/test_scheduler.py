@@ -72,6 +72,7 @@ class _DreamProvider(ChatProvider):
 
     def __init__(self) -> None:
         self.calls = 0
+        self.model: str | None = None
 
     @property
     def tokenizer(self) -> Tokenizer | None:
@@ -86,6 +87,7 @@ class _DreamProvider(ChatProvider):
         model: str | None = None,
     ) -> ProviderResponse:
         self.calls += 1
+        self.model = model
         return ProviderResponse(
             content="""{
               "add": [
@@ -266,6 +268,7 @@ async def test_scheduler_runs_memory_dreaming_as_internal_periodic_job() -> None
             config=SchedulerConfig(
                 memory_dreaming_enabled=True,
                 memory_dreaming_recent_turn_limit=10,
+                memory_dreaming_model="dream-model",
             ),
         )
 
@@ -277,6 +280,7 @@ async def test_scheduler_runs_memory_dreaming_as_internal_periodic_job() -> None
         assert applied == 1
         assert repeated == 0
         assert provider.calls == 1
+        assert provider.model == "dream-model"
         assert results
         assert int(meta["memory_dream_last_turn_id"]) >= 2
     finally:

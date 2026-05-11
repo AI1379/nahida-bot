@@ -20,14 +20,15 @@ from nahida_bot.agent.memory import (
     parse_memory_dream,
 )
 from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.memory.consolidation import build_dream_system_prompt
 from nahida_bot.agent.memory.markdown import MEMORY_SUMMARY_FILE
-from nahida_bot.agent.providers.base import ProviderResponse
 from nahida_bot.agent.memory.sqlite import build_fts_query, tokenize_for_fts
 from nahida_bot.agent.memory.vector import (
     VectorHit,
     VectorRecord,
     reciprocal_rank_fusion,
 )
+from nahida_bot.agent.providers.base import ProviderResponse
 from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.db.engine import DatabaseEngine
 
@@ -594,6 +595,15 @@ def test_parse_memory_dream_accepts_fenced_json() -> None:
     assert dream.additions[0].kind == "preference"
     assert dream.additions[0].content == "用户偏好用中文讨论技术实现。"
     assert dream.archives[0].item_id == "mem_old"
+
+
+def test_dream_system_prompt_uses_app_name_without_language_hardcoding() -> None:
+    prompt = build_dream_system_prompt("Custom Assistant")
+
+    assert "Custom Assistant" in prompt
+    assert "Nahida Bot" not in prompt
+    assert "Prefer concise Chinese" not in prompt
+    assert "language and terminology the user normally uses" in prompt
 
 
 @pytest.mark.asyncio

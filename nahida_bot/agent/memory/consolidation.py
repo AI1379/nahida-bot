@@ -50,7 +50,7 @@ _VALID_KINDS = {
     "warning",
     "summary",
 }
-_DREAM_SYSTEM_PROMPT = """You are Nahida Bot's memory dreaming worker.
+_DREAM_SYSTEM_PROMPT_BODY = """
 
 Your job is to convert recent conversation into durable memory changes.
 Return ONLY valid JSON. Do not include markdown.
@@ -59,7 +59,7 @@ Rules:
 - Add only stable user preferences, project facts, decisions, procedures, warnings, or follow-up tasks.
 - Do not store secrets, credentials, tokens, cookies, private keys, signed URLs, base64, or raw event dumps.
 - Do not invent facts. Use the conversation as evidence.
-- Prefer concise Chinese if the conversation is Chinese.
+- Prefer the language and terminology the user normally uses in the conversation.
 - Archive an existing memory only when the new conversation clearly makes it obsolete or contradictory.
 
 Schema:
@@ -82,6 +82,14 @@ Schema:
   ]
 }
 """
+
+
+def build_dream_system_prompt(app_name: str) -> str:
+    """Build the LLM dreaming system prompt."""
+    name = app_name.strip() or "the assistant"
+    return (
+        f"You are the memory dreaming worker for {name}.\n{_DREAM_SYSTEM_PROMPT_BODY}"
+    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -220,10 +228,12 @@ class LlmMemoryDreamer:
         provider: Any,
         *,
         model: str | None = None,
+        app_name: str = "the assistant",
         max_existing: int = 20,
     ) -> None:
         self._provider = provider
         self._model = model
+        self._app_name = app_name
         self._max_existing = max_existing
 
     async def dream(
@@ -237,6 +247,14 @@ class LlmMemoryDreamer:
         """Ask the LLM for structured add/archive memory changes."""
         from nahida_bot.agent.context import ContextMessage
 
+        logger.debug(
+            "memory_dreaming.llm_start",
+            session_id=session_id,
+            model=self._model or "",
+            existing_count=len(existing_items),
+            user_chars=len(user_message),
+            assistant_chars=len(assistant_message),
+        )
         prompt = self._build_prompt(
             session_id=session_id,
             user_message=user_message,
@@ -248,7 +266,7 @@ class LlmMemoryDreamer:
                 ContextMessage(
                     role="system",
                     source="memory_dreaming_system",
-                    content=_DREAM_SYSTEM_PROMPT,
+                    content=build_dream_system_prompt(self._app_name),
                 ),
                 ContextMessage(
                     role="user",
@@ -259,7 +277,14 @@ class LlmMemoryDreamer:
             tools=[],
             model=self._model,
         )
-        return parse_memory_dream(str(response.content or ""))
+        dream = parse_memory_dream(str(response.content or ""))
+        logger.debug(
+            "memory_dreaming.llm_done",
+            session_id=session_id,
+            additions=len(dream.additions),
+            archives=len(dream.archives),
+        )
+        return dream
 
     @staticmethod
     def _build_prompt(
@@ -303,10 +328,12 @@ class MemoryConsolidator:
         *,
         extractor: RuleBasedMemoryExtractor | None = None,
         projection_limit: int = 40,
+        app_name: str = "the assistant",
     ) -> None:
         self._memory = memory_store
         self._extractor = extractor or RuleBasedMemoryExtractor()
         self._projection_limit = projection_limit
+        self._app_name = app_name
 
     async def consolidate_turn(
         self,
@@ -335,12 +362,19 @@ class MemoryConsolidator:
             if run_rules
             else []
         )
+        if extracted:
+            logger.debug(
+                "memory_consolidation.rule_extracted",
+                session_id=session_id,
+                count=len(extracted),
+            )
         archives: list[DreamArchive] = []
         if dream_provider is not None:
             try:
                 dream = await LlmMemoryDreamer(
                     dream_provider,
                     model=dream_model,
+                    app_name=self._app_name,
                 ).dream(
                     session_id=session_id,
                     user_message=user_message,
@@ -349,14 +383,25 @@ class MemoryConsolidator:
                 )
                 extracted = _dedupe_extractions([*extracted, *dream.additions])
                 archives = dream.archives
+                logger.debug(
+                    "memory_consolidation.dream_extracted",
+                    session_id=session_id,
+                    additions=len(dream.additions),
+                    archives=len(dream.archives),
+                    merged_additions=len(extracted),
+                )
             except Exception as exc:
                 logger.warning("memory_consolidation.dream_failed", error=str(exc))
 
         applied = 0
+        skipped_duplicates = 0
+        skipped_unsafe = 0
         for memory in extracted:
             if validate_memory_content(memory.content) is not None:
+                skipped_unsafe += 1
                 continue
             if await self._has_duplicate(memory.content):
+                skipped_duplicates += 1
                 continue
             candidate_id = await self._append_candidate(
                 memory, workspace_id=workspace_id
@@ -388,6 +433,14 @@ class MemoryConsolidator:
             archives,
             existing_items=existing_items,
             workspace_id=workspace_id,
+        )
+        logger.debug(
+            "memory_consolidation.applied",
+            session_id=session_id,
+            applied=applied,
+            skipped_duplicates=skipped_duplicates,
+            skipped_unsafe=skipped_unsafe,
+            archive_requests=len(archives),
         )
 
         if applied and workspace_root is not None:

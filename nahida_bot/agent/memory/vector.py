@@ -29,7 +29,11 @@ class VectorHit:
 
 
 class VectorIndex(Protocol):
-    """Protocol for pluggable memory vector indexes."""
+    """Protocol for pluggable memory vector indexes.
+
+    Keep this structural so plugins and optional backends can provide a
+    compatible object without importing or subclassing a nahida-bot base class.
+    """
 
     async def upsert(self, records: list[VectorRecord]) -> None:
         """Insert or replace vector records."""

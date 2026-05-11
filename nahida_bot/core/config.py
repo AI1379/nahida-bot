@@ -107,6 +107,8 @@ class SchedulerConfigModel(BaseModel):
     memory_dreaming_initial_delay_seconds: int = Field(default=300, ge=0)
     memory_dreaming_session_limit: int = Field(default=20, ge=1)
     memory_dreaming_recent_turn_limit: int = Field(default=40, ge=2)
+    memory_dreaming_provider_id: str = ""
+    memory_dreaming_model: str = ""
 
 
 class RouterConfigModel(BaseModel):

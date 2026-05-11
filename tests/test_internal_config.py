@@ -185,6 +185,8 @@ class TestSettingsSubConfigs:
         assert s.scheduler.max_concurrent_fires == 5
         assert s.scheduler.memory_dreaming_enabled is True
         assert s.scheduler.memory_dreaming_interval_seconds == 3600
+        assert s.scheduler.memory_dreaming_provider_id == ""
+        assert s.scheduler.memory_dreaming_model == ""
 
     def test_default_router(self) -> None:
         s = Settings()
@@ -209,11 +211,15 @@ class TestSettingsSubConfigs:
                 "scheduler": {
                     "max_jobs_per_chat": 50,
                     "memory_dreaming_interval_seconds": 7200,
+                    "memory_dreaming_provider_id": "cheap",
+                    "memory_dreaming_model": "cheap-model",
                 }
             }
         )
         assert s.scheduler.max_jobs_per_chat == 50
         assert s.scheduler.memory_dreaming_interval_seconds == 7200
+        assert s.scheduler.memory_dreaming_provider_id == "cheap"
+        assert s.scheduler.memory_dreaming_model == "cheap-model"
 
     def test_router_from_dict(self) -> None:
         s = Settings.model_validate(

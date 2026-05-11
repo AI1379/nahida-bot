@@ -48,3 +48,5 @@ class SchedulerConfig:
     memory_dreaming_initial_delay_seconds: int = 300
     memory_dreaming_session_limit: int = 20
     memory_dreaming_recent_turn_limit: int = 40
+    memory_dreaming_provider_id: str = ""
+    memory_dreaming_model: str = ""

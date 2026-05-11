@@ -164,6 +164,8 @@ class VectorIndex(Protocol):
 2. `SQLiteVecIndex`
 3. 可选 `LanceDBIndex`
 
+`VectorIndex` 当前保留 `Protocol` 而不是改成 ABC：后续插件或外部索引实现只要结构兼容即可接入，不要求继承 nahida-bot 的基类；这对 sqlite-vec、LanceDB、Chroma 或测试内存索引都更轻。若后续需要运行时注册、默认实现或共享初始化生命周期，再考虑增加 ABC/base class。
+
 ### 4.3 Anthropic / OpenAI 的 agent memory 和 "dreaming" 是否有参考价值
 
 结论：**非常有参考价值，但应复刻设计原则，不依赖托管 API。**
@@ -513,6 +515,8 @@ memory:
     enabled: true
     schedule: "0 4 * * *"
     dreaming_interval_seconds: 3600
+    dreaming_provider_id: ""
+    dreaming_model: ""
     mode: auto_safe
     max_sessions_per_run: 50
     max_input_tokens: 64000
@@ -588,7 +592,10 @@ memory:
 - [x] 接入 LLM dreaming：有 provider 时读取近期 turn 和现有长期记忆，要求模型输出严格 JSON 的 `add/archive` 变更。
 - [x] dreaming 输出经过 JSON 解析、安全过滤、去重、candidate 审计和 item id 校验后再自动应用；失败时回退到规则抽取。
 - [x] 将 LLM dreaming 从每轮 session 后同步调用迁移到现有 scheduler/cron 后台循环，按 `memory_dream_last_turn_id` 增量处理 session。
+- [x] 支持单独配置 dreaming provider/model；未配置时回退到 session 当前 provider/model。
 - [ ] 后续增加 dream run 历史表和更细的手动触发/暂停命令。
+- [ ] 评估在规则抽取和 LLM dreaming 中间加入 spaCy/NLTK 层：用 matcher/entity ruler/noun phrase extraction 识别偏好、项目实体和关系，降低 token 成本，并为 Phase 5 轻量图谱提供候选实体/边。
+- [ ] 将 dreaming / embedding / reranker 的模型选择迁移到统一 model routing 设计，见 `docs/todos/model-routing.md`。
 
 ### Phase 4：Agent Run/Event 集成
 
@@ -612,3 +619,5 @@ memory:
 - Anthropic Managed Agents memory/dreaming：文件化 memory store、审计、权限、异步 dream 输出新 store。参考：<https://claude.com/blog/claude-managed-agents-memory>、<https://platform.claude.com/docs/en/managed-agents/dreams>、<https://claude.com/blog/new-in-claude-managed-agents>
 - OpenAI Agents SDK memory：progressive disclosure、conversation extraction、layout consolidation、`MEMORY.md` 和 `memory_summary.md`。参考：<https://openai.github.io/openai-agents-python/sandbox/memory/>、<https://openai.github.io/openai-agents-js/guides/sandbox-agents/memory/>
 - OpenClaw memory：Markdown-first、`MEMORY.md`、每日 notes、`DREAMS.md`、memory tools。参考：<https://github.com/openclaw/openclaw/blob/main/docs/concepts/memory.md>
+- FastGraphRAG / NLP extraction：用 NLTK/spaCy 等传统 NLP 抽取 noun phrases/entities，以降低图谱构建 token 成本。参考：<https://graphrag.openml.io/index/methods/>
+- spaCy rule-based matching / EntityRuler：可作为正则和 LLM extraction 之间的中间层，支持 token pattern、phrase pattern 和规则实体。参考：<https://spacy.io/usage/rule-based-matching/>、<https://spacy.io/api/entityruler>
