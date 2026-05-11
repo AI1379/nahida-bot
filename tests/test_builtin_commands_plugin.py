@@ -156,6 +156,8 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert {
         "workspace_read",
         "workspace_write",
+        "memory_read",
+        "memory_write",
         "cron_create",
         "cron_update",
         "cron_list",
@@ -167,6 +169,8 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "path",
         "content",
     ]
+    assert api.tools["memory_read"]["parameters"]["required"] == []
+    assert api.tools["memory_write"]["parameters"]["required"] == ["content"]
     create_params = api.tools["cron_create"]["parameters"]
     update_params = api.tools["cron_update"]["parameters"]
     assert create_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
@@ -183,6 +187,39 @@ async def test_workspace_tools_delegate_to_bot_api() -> None:
     result = await plugin._tool_workspace_write("notes/a.txt", "hello")
     assert result == "Written workspace file: notes/a.txt"
     assert await plugin._tool_workspace_read("notes/a.txt") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_memory_tools_read_and_write_markdown_memory() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_memory_write(
+        "User prefers Chinese architecture discussions.",
+        target="both",
+        section="Preferences",
+    )
+
+    assert "MEMORY.md" in result
+    daily_paths = [path for path in api.files if path.startswith("memory/")]
+    assert len(daily_paths) == 1
+    assert "User prefers Chinese" in api.files["MEMORY.md"]
+    assert "User prefers Chinese" in api.files[daily_paths[0]]
+
+    read_result = await plugin._tool_memory_read(query="Chinese", days=1)
+    assert "MEMORY.md" in read_result
+    assert "User prefers Chinese" in read_result
+
+
+@pytest.mark.asyncio
+async def test_memory_write_rejects_secret_like_content() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_memory_write("api_key=secret-value")
+
+    assert "secret" in result.lower()
+    assert api.files == {}
 
 
 @pytest.mark.asyncio

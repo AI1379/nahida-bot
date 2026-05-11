@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Literal
 import structlog
 import yaml
 
+from nahida_bot.agent.memory.markdown import (
+    MAX_CONTEXT_MEMORY_CHARS,
+    build_memory_context,
+    load_workspace_markdown_memory,
+)
 from nahida_bot.agent.tokenization import Tokenizer, resolve_tokenizer
 from nahida_bot.core.logging import log_trace
 
@@ -180,6 +185,25 @@ class ContextBuilder:
                     skills[parsed.source.removeprefix("workspace_skill:")] = parsed
         return [skills[name] for name in sorted(skills)]
 
+    def load_workspace_memory(self, workspace_root: Path) -> ContextMessage | None:
+        """Load bounded Markdown memory from the active workspace."""
+        entries = load_workspace_markdown_memory(
+            workspace_root,
+            max_chars=MAX_CONTEXT_MEMORY_CHARS,
+        )
+        content = build_memory_context(entries, max_chars=MAX_CONTEXT_MEMORY_CHARS)
+        if not content:
+            return None
+        return ContextMessage(
+            role="system",
+            source="workspace_memory:markdown",
+            content=content,
+            metadata={
+                "memory_paths": [entry.path for entry in entries],
+                "memory_backend": "markdown",
+            },
+        )
+
     def build_context(
         self,
         *,
@@ -207,6 +231,9 @@ class ContextBuilder:
         if workspace_root is not None:
             prefix_messages.extend(self.load_workspace_instructions(workspace_root))
             prefix_messages.extend(self.load_workspace_skills(workspace_root))
+            memory_message = self.load_workspace_memory(workspace_root)
+            if memory_message is not None:
+                prefix_messages.append(memory_message)
 
         dynamic_messages = [*(history_messages or []), *(tool_messages or [])]
         merged = [*prefix_messages, *dynamic_messages]

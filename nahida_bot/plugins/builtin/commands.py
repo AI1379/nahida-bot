@@ -13,6 +13,15 @@ import structlog
 from markdownify import markdownify as md
 from readability import Document
 
+from nahida_bot.agent.memory.markdown import (
+    MAX_TOOL_READ_CHARS,
+    append_daily_memory,
+    append_long_term_memory,
+    daily_memory_path,
+    filter_memory_text,
+    recent_daily_memory_paths,
+    validate_memory_content,
+)
 from nahida_bot.plugins.base import InboundMessage, Plugin
 
 from nahida_bot.core.context import current_session
@@ -33,6 +42,7 @@ _PRIVATE_NETWORKS = [
     ipaddress.ip_network("fc00::/7"),
 ]
 _PLAN_PATH = ".agent/plan.json"
+_MEMORY_FILE = "MEMORY.md"
 
 
 class BuiltinCommandsPlugin(Plugin):
@@ -41,6 +51,7 @@ class BuiltinCommandsPlugin(Plugin):
     async def on_load(self) -> None:
         self._register_commands()
         self._register_workspace_tools()
+        self._register_memory_tools()
         self._register_exec_tool()
         self._register_web_fetch_tool()
         self._register_plan_tool()
@@ -108,6 +119,59 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_workspace_write,
+        )
+
+    def _register_memory_tools(self) -> None:
+        self.api.register_tool(
+            "memory_read",
+            "Read workspace Markdown memory from MEMORY.md and recent daily notes. "
+            "Use this before relying on remembered facts that are not already in context.",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional text to search for in memory lines.",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of recent daily memory files to include. Default 3.",
+                    },
+                    "max_length": {
+                        "type": "integer",
+                        "description": "Maximum characters to return. Default 10000.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+            self._tool_memory_read,
+        )
+        self.api.register_tool(
+            "memory_write",
+            "Append a concise note to workspace Markdown memory. Use only for durable "
+            "preferences, decisions, project facts, or explicit user requests to remember.",
+            {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Concise memory text to append.",
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["daily", "long_term", "both"],
+                        "description": "Where to write the memory. Default daily.",
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Section title for long_term writes. Default Notes.",
+                    },
+                },
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+            self._tool_memory_write,
         )
 
     # ── exec Tool ──────────────────────────────────────────
@@ -360,6 +424,74 @@ class BuiltinCommandsPlugin(Plugin):
         await self.api.workspace_write(
             _PLAN_PATH, json.dumps(data, ensure_ascii=False, indent=2)
         )
+
+    async def _read_workspace_text_or_empty(self, path: str) -> str:
+        try:
+            return await self.api.workspace_read(path)
+        except FileNotFoundError:
+            return ""
+        except Exception as exc:
+            if exc.__class__.__name__ in {
+                "WorkspacePathError",
+                "WorkspaceNotFoundError",
+            }:
+                raise
+            return ""
+
+    async def _tool_memory_read(
+        self,
+        query: str = "",
+        days: int = 3,
+        max_length: int = 10000,
+    ) -> str:
+        _logger.debug("tool.memory_read", query=query, days=days)
+        paths = [_MEMORY_FILE, *recent_daily_memory_paths(days=max(days, 0))]
+        max_chars = min(max(max_length, 1), MAX_TOOL_READ_CHARS)
+        blocks: list[str] = []
+        for path in paths:
+            raw = await self._read_workspace_text_or_empty(path)
+            filtered = filter_memory_text(raw, query).strip()
+            if not filtered:
+                continue
+            blocks.append(f"## {path}\n{filtered}")
+
+        if not blocks:
+            return "No matching workspace memory found."
+
+        result = "\n\n".join(blocks)
+        if len(result) > max_chars:
+            result = result[:max_chars].rstrip() + "\n... (memory truncated)"
+        return result
+
+    async def _tool_memory_write(
+        self,
+        content: str,
+        target: str = "daily",
+        section: str = "Notes",
+    ) -> str:
+        _logger.debug("tool.memory_write", target=target, section=section)
+        error = validate_memory_content(content)
+        if error is not None:
+            return error
+        if target not in {"daily", "long_term", "both"}:
+            return "Error: target must be one of: daily, long_term, both."
+
+        written: list[str] = []
+        if target in {"daily", "both"}:
+            path = daily_memory_path()
+            existing = await self._read_workspace_text_or_empty(path)
+            await self.api.workspace_write(path, append_daily_memory(existing, content))
+            written.append(path)
+
+        if target in {"long_term", "both"}:
+            existing = await self._read_workspace_text_or_empty(_MEMORY_FILE)
+            await self.api.workspace_write(
+                _MEMORY_FILE,
+                append_long_term_memory(existing, content, section=section),
+            )
+            written.append(_MEMORY_FILE)
+
+        return "Memory written: " + ", ".join(written)
 
     @staticmethod
     def _format_plan(data: dict[str, Any]) -> str:

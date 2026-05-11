@@ -318,6 +318,49 @@ Use workspace_read before workspace_write.
         assert result[0].content == "baseline"
         assert result[1].content == "agents"
 
+    def test_build_context_injects_markdown_memory(self, temp_dir: Path) -> None:
+        """Context should include bounded workspace Markdown memory when present."""
+        workspace_dir = temp_dir / "ws"
+        daily_dir = workspace_dir / "memory"
+        daily_dir.mkdir(parents=True)
+        (workspace_dir / "MEMORY.md").write_text(
+            "# Memory\n\n- User prefers Chinese architecture discussion.",
+            encoding="utf-8",
+        )
+        builder = ContextBuilder()
+
+        result = builder.build_context(
+            system_prompt="baseline",
+            workspace_root=workspace_dir,
+        )
+
+        memory_messages = [
+            item for item in result if item.source == "workspace_memory:markdown"
+        ]
+        assert len(memory_messages) == 1
+        assert "User prefers Chinese" in memory_messages[0].content
+        assert memory_messages[0].metadata == {
+            "memory_paths": ["MEMORY.md"],
+            "memory_backend": "markdown",
+        }
+
+    def test_build_context_skips_empty_markdown_memory(self, temp_dir: Path) -> None:
+        """Default empty memory skeletons should not consume context."""
+        workspace_dir = temp_dir / "ws"
+        workspace_dir.mkdir(parents=True)
+        (workspace_dir / "MEMORY.md").write_text(
+            "# Memory\n\n<!-- editable -->\n\n## Preferences\n",
+            encoding="utf-8",
+        )
+        builder = ContextBuilder()
+
+        result = builder.build_context(
+            system_prompt="baseline",
+            workspace_root=workspace_dir,
+        )
+
+        assert "workspace_memory:markdown" not in [item.source for item in result]
+
     def test_provider_tokenizer_is_used_when_available(self) -> None:
         """Context builder should use provider tokenizer when provider exposes one."""
         # Arrange

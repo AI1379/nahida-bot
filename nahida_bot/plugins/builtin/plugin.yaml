@@ -20,6 +20,10 @@ capabilities:
       description: Read a text file from the active workspace
     - name: workspace_write
       description: Write a text file to the active workspace
+    - name: memory_read
+      description: Read workspace Markdown memory
+    - name: memory_write
+      description: Append workspace Markdown memory
     - name: exec
       description: Execute a shell command and return stdout/stderr
     - name: web_fetch

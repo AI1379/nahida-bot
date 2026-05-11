@@ -32,12 +32,15 @@ state and use workspace tools before assuming missing context.
 2. Read `SOUL.md` for persona and boundaries.
 3. Read `USER.md` for user preferences and long-running context.
 4. Use skills from `skills/*/SKILL.md` when a task matches their description.
-5. Keep replies concise and actionable unless the user asks for more detail.
+5. Use `memory_read` / `memory_write` for durable workspace memory.
+6. Keep replies concise and actionable unless the user asks for more detail.
 
 ## Workspace Rules
 
 - Prefer `workspace_read` before editing a file you have not inspected.
 - Prefer `workspace_write` for durable notes or generated artifacts.
+- Use `memory_write` only for stable preferences, decisions, project facts, or
+  explicit requests to remember something.
 - Do not store secrets unless the user explicitly asks.
 """,
         "SOUL.md": """# Nahida Bot Soul
@@ -93,7 +96,42 @@ workspace files.
 - Read an existing file before changing it.
 - Keep generated notes small and easy to scan.
 - Do not write secrets unless the user explicitly asks.
-"""
+""",
+        "skills/memory/SKILL.md": """---
+name: memory
+description: Read and write durable workspace memory.
+---
+# Memory
+
+Use this skill when the user asks you to remember something, when durable
+workspace context would help, or when you need to check remembered preferences.
+
+## Available Tools
+
+- `memory_read(query?, days?, max_length?)` reads `MEMORY.md` and recent daily notes.
+- `memory_write(content, target?, section?)` appends a concise memory note.
+
+## Rules
+
+- Treat memory as helpful context, not unquestionable truth.
+- Current user instructions and current files take precedence.
+- Only write stable preferences, decisions, project facts, task outcomes, or
+  explicit user requests to remember something.
+- Do not write secrets, tokens, cookies, private keys, temporary URLs, base64,
+  or raw event dumps.
+""",
+    }
+    default_memory_files: dict[str, str] = {
+        "MEMORY.md": """# Memory
+
+<!-- User-editable long-term workspace memory. Keep entries concise. -->
+
+## Preferences
+
+## Project Context
+
+## Decisions
+""",
     }
 
     def __init__(
@@ -127,6 +165,7 @@ workspace files.
         default_workspace_path.mkdir(parents=True, exist_ok=True)
         self._ensure_default_instruction_files(default_workspace_path)
         self._ensure_default_skill_files(default_workspace_path)
+        self._ensure_default_memory_files(default_workspace_path)
 
         default_metadata = records[self.default_workspace_id]
         default_metadata.is_default = True
@@ -289,6 +328,14 @@ workspace files.
     def _ensure_default_skill_files(self, workspace_path: Path) -> None:
         """Create default workspace skills without overwriting user content."""
         for relative_path, content in self.default_skill_files.items():
+            path = workspace_path / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists() or not path.read_text(encoding="utf-8").strip():
+                path.write_text(content, encoding="utf-8")
+
+    def _ensure_default_memory_files(self, workspace_path: Path) -> None:
+        """Create editable memory files without overwriting user content."""
+        for relative_path, content in self.default_memory_files.items():
             path = workspace_path / relative_path
             path.parent.mkdir(parents=True, exist_ok=True)
             if not path.exists() or not path.read_text(encoding="utf-8").strip():

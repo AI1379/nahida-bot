@@ -44,6 +44,10 @@ class TestWorkspaceManager:
             / "workspace-files"
             / "SKILL.md"
         ).exists()
+        assert (
+            temp_dir / "workspaces" / "default" / "skills" / "memory" / "SKILL.md"
+        ).exists()
+        assert (temp_dir / "workspaces" / "default" / "MEMORY.md").exists()
         assert "Nahida Bot Workspace" in (
             temp_dir / "workspaces" / "default" / "AGENTS.md"
         ).read_text(encoding="utf-8")
