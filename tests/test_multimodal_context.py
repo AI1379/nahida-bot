@@ -241,6 +241,58 @@ class TestApplyMediaContextPolicy:
 
 
 class TestHistoryMediaResolve:
+    async def test_load_history_preserves_tool_metadata(self) -> None:
+        from nahida_bot.agent.memory.models import ConversationTurn
+
+        class _FakeMemory:
+            async def ensure_session(self, *a: Any, **kw: Any) -> None:
+                pass
+
+            async def get_recent(self, *a: Any, **kw: Any) -> list:
+                return [
+                    _FakeMemoryRecord(
+                        ConversationTurn(
+                            role="assistant",
+                            content="",
+                            source="provider_response",
+                            metadata={
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "name": "search",
+                                        "arguments": {"q": "nahida"},
+                                    }
+                                ]
+                            },
+                        )
+                    ),
+                    _FakeMemoryRecord(
+                        ConversationTurn(
+                            role="tool",
+                            content='{"status":"ok"}',
+                            source="tool_result:search",
+                            metadata={
+                                "tool_call_id": "call_1",
+                                "tool_name": "search",
+                            },
+                        )
+                    ),
+                ]
+
+        runner = SessionRunner(memory_store=cast(MemoryStore, _FakeMemory()))
+
+        messages = await runner._load_history("s1")
+
+        assert messages[0].metadata == {
+            "tool_calls": [
+                {"id": "call_1", "name": "search", "arguments": {"q": "nahida"}}
+            ]
+        }
+        assert messages[1].metadata == {
+            "tool_call_id": "call_1",
+            "tool_name": "search",
+        }
+
     async def test_load_history_rebuilds_cached_path_as_base64(
         self, tmp_path: Path
     ) -> None:

@@ -314,6 +314,20 @@ async def test_openai_provider_serializes_tool_message_tool_call_id(
         messages=[
             ContextMessage(role="user", source="u", content="hi"),
             ContextMessage(
+                role="assistant",
+                source="provider_response",
+                content="",
+                metadata={
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "name": "search",
+                            "arguments": {"q": "nahida"},
+                        }
+                    ]
+                },
+            ),
+            ContextMessage(
                 role="tool",
                 source="tool_result:search",
                 content='{"status":"ok"}',
@@ -322,9 +336,67 @@ async def test_openai_provider_serializes_tool_message_tool_call_id(
         ]
     )
 
-    tool_message = captured_payload["messages"][1]
+    tool_message = captured_payload["messages"][2]
     assert tool_message["role"] == "tool"
     assert tool_message["tool_call_id"] == "call_1"
+
+
+def test_openai_provider_drops_orphan_tool_messages() -> None:
+    """Provider should not send tool messages without preceding tool_calls."""
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+    )
+
+    payload = provider.serialize_messages(
+        [
+            ContextMessage(role="user", source="u", content="hi"),
+            ContextMessage(
+                role="tool",
+                source="tool_result:search",
+                content='{"status":"ok"}',
+                metadata={"tool_call_id": "call_1", "tool_name": "search"},
+            ),
+        ]
+    )
+
+    assert [message["role"] for message in payload] == ["user"]
+
+
+def test_openai_provider_drops_incomplete_tool_call_groups() -> None:
+    """Provider should drop assistant tool_calls when not all tool results remain."""
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+    )
+
+    payload = provider.serialize_messages(
+        [
+            ContextMessage(role="user", source="u", content="hi"),
+            ContextMessage(
+                role="assistant",
+                source="provider_response",
+                content="checking",
+                metadata={
+                    "tool_calls": [
+                        {"id": "call_1", "name": "search", "arguments": {}},
+                        {"id": "call_2", "name": "read_file", "arguments": {}},
+                    ]
+                },
+            ),
+            ContextMessage(
+                role="tool",
+                source="tool_result:search",
+                content='{"status":"ok"}',
+                metadata={"tool_call_id": "call_1", "tool_name": "search"},
+            ),
+            ContextMessage(role="user", source="u", content="next"),
+        ]
+    )
+
+    assert [message["role"] for message in payload] == ["user", "user"]
 
 
 @pytest.mark.asyncio
@@ -378,6 +450,12 @@ async def test_openai_provider_serializes_assistant_tool_calls_from_metadata(
                         }
                     ]
                 },
+            ),
+            ContextMessage(
+                role="tool",
+                source="tool_result:search",
+                content='{"status":"ok"}',
+                metadata={"tool_call_id": "call_1", "tool_name": "search"},
             ),
         ]
     )

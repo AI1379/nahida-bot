@@ -506,6 +506,7 @@ class SessionRunner:
                     role=r.turn.role,  # type: ignore[arg-type]
                     content=visible_content,
                     source=r.turn.source,
+                    metadata=metadata,
                     parts=parts,
                     reasoning=reasoning,
                     reasoning_signature=reasoning_signature,
@@ -529,6 +530,13 @@ class SessionRunner:
                 message_count=len(messages),
                 part_count=sum(len(m.parts) for m in messages),
             )
+
+        logger.debug(
+            "session_runner.history_context_built",
+            session_id=session_id,
+            message_count=len(messages),
+            protocol_summary=self._context_protocol_summary(messages),
+        )
 
         return messages
 
@@ -707,6 +715,7 @@ class SessionRunner:
                             role=msg.role,
                             content=msg.content,
                             source=msg.source,
+                            metadata=msg.metadata,
                             parts=SessionRunner._degrade_image_parts(msg.parts),
                             reasoning=msg.reasoning,
                             reasoning_signature=msg.reasoning_signature,
@@ -724,6 +733,7 @@ class SessionRunner:
                         role=m.role,
                         content=m.content,
                         source=m.source,
+                        metadata=m.metadata,
                         parts=SessionRunner._degrade_image_parts(m.parts),
                         reasoning=m.reasoning,
                         reasoning_signature=m.reasoning_signature,
@@ -747,6 +757,7 @@ class SessionRunner:
                             role=msg.role,
                             content=msg.content,
                             source=msg.source,
+                            metadata=msg.metadata,
                             parts=SessionRunner._degrade_image_parts(msg.parts),
                             reasoning=msg.reasoning,
                             reasoning_signature=msg.reasoning_signature,
@@ -758,6 +769,46 @@ class SessionRunner:
             return result
 
         return messages
+
+    @staticmethod
+    def _context_protocol_summary(
+        messages: list[ContextMessage],
+    ) -> dict[str, Any]:
+        assistant_tool_call_ids: list[list[str]] = []
+        tool_call_ids: list[str] = []
+        tool_messages_missing_ids = 0
+
+        for message in messages:
+            if message.role == "assistant" and isinstance(message.metadata, dict):
+                raw_tool_calls = message.metadata.get("tool_calls")
+                if isinstance(raw_tool_calls, list):
+                    ids: list[str] = []
+                    for item in raw_tool_calls:
+                        if not isinstance(item, dict):
+                            continue
+                        call_id = item.get("id")
+                        if isinstance(call_id, str):
+                            ids.append(call_id)
+                    if ids:
+                        assistant_tool_call_ids.append(ids)
+            elif message.role == "tool":
+                call_id = (
+                    message.metadata.get("tool_call_id")
+                    if isinstance(message.metadata, dict)
+                    else None
+                )
+                if isinstance(call_id, str) and call_id:
+                    tool_call_ids.append(call_id)
+                else:
+                    tool_messages_missing_ids += 1
+
+        return {
+            "roles": [message.role for message in messages],
+            "sources": [message.source for message in messages],
+            "assistant_tool_call_ids": assistant_tool_call_ids,
+            "tool_call_ids": tool_call_ids,
+            "tool_messages_missing_ids": tool_messages_missing_ids,
+        }
 
     @staticmethod
     def _degrade_image_parts(parts: list[ContextPart]) -> list[ContextPart]:

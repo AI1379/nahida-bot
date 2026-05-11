@@ -119,6 +119,70 @@ class TestContextBuilder:
         assert any("new-2" in item for item in contents)
         assert not any("old-1" in item for item in retained_history_contents)
 
+    def test_budget_keeps_tool_call_transcript_atomic(self) -> None:
+        """Sliding window should not split assistant tool_calls from tool results."""
+        builder = ContextBuilder(
+            budget=ContextBudget(max_tokens=3, reserved_tokens=0),
+            tokenizer=_AlwaysOneTokenizer(),
+        )
+        history = [
+            ContextMessage(role="user", source="history", content="older"),
+            ContextMessage(
+                role="assistant",
+                source="provider_response",
+                content="",
+                metadata={
+                    "tool_calls": [{"id": "call_1", "name": "search", "arguments": {}}]
+                },
+            ),
+            ContextMessage(
+                role="tool",
+                source="tool_result:search",
+                content='{"status":"ok"}',
+                metadata={"tool_call_id": "call_1", "tool_name": "search"},
+            ),
+        ]
+
+        result = builder.build_context(
+            system_prompt="baseline", history_messages=history
+        )
+
+        assert [item.role for item in result] == ["system", "assistant", "tool"]
+
+    def test_budget_drops_tool_call_transcript_atomic_when_group_does_not_fit(
+        self,
+    ) -> None:
+        """A tool result should not be kept after its assistant tool_call is dropped."""
+        builder = ContextBuilder(
+            budget=ContextBudget(max_tokens=2, reserved_tokens=0),
+            tokenizer=_AlwaysOneTokenizer(),
+        )
+        history = [
+            ContextMessage(role="user", source="history", content="older"),
+            ContextMessage(
+                role="assistant",
+                source="provider_response",
+                content="",
+                metadata={
+                    "tool_calls": [{"id": "call_1", "name": "search", "arguments": {}}]
+                },
+            ),
+            ContextMessage(
+                role="tool",
+                source="tool_result:search",
+                content='{"status":"ok"}',
+                metadata={"tool_call_id": "call_1", "tool_name": "search"},
+            ),
+        ]
+
+        result = builder.build_context(
+            system_prompt="baseline", history_messages=history
+        )
+
+        assert [item.role for item in result] == ["system", "system"]
+        assert result[1].source == "history_summary"
+        assert "tool" not in [item.role for item in result]
+
     def test_budget_adds_summary_when_messages_are_dropped(self) -> None:
         """Dropped context should be represented by a summary message when possible."""
         # Arrange

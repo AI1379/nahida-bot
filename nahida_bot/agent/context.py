@@ -325,21 +325,54 @@ class ContextBuilder:
         prefix_messages: list[ContextMessage],
     ) -> tuple[list[ContextMessage], list[ContextMessage]]:
         """Apply newest-first retention to dynamic messages."""
-        kept_reversed: list[ContextMessage] = []
-        dropped: list[ContextMessage] = []
+        message_groups = self._tool_transcript_groups(dynamic_messages)
+        kept_groups_reversed: list[list[ContextMessage]] = []
+        dropped_groups_reversed: list[list[ContextMessage]] = []
 
         current_size = self._estimate_tokens(prefix_messages)
-        for message in reversed(dynamic_messages):
-            message_size = self._estimate_tokens([message])
-            if current_size + message_size <= self.budget.usable_tokens:
-                kept_reversed.append(message)
-                current_size += message_size
+        for group in reversed(message_groups):
+            group_size = self._estimate_tokens(group)
+            if current_size + group_size <= self.budget.usable_tokens:
+                kept_groups_reversed.append(group)
+                current_size += group_size
             else:
-                dropped.append(message)
+                dropped_groups_reversed.append(group)
 
-        kept = list(reversed(kept_reversed))
-        dropped = list(reversed(dropped))
+        kept = [
+            message for group in reversed(kept_groups_reversed) for message in group
+        ]
+        dropped = [
+            message for group in reversed(dropped_groups_reversed) for message in group
+        ]
         return kept, dropped
+
+    def _tool_transcript_groups(
+        self,
+        messages: list[ContextMessage],
+    ) -> list[list[ContextMessage]]:
+        groups: list[list[ContextMessage]] = []
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            if not self._has_assistant_tool_calls(message):
+                groups.append([message])
+                index += 1
+                continue
+
+            group = [message]
+            index += 1
+            while index < len(messages) and messages[index].role == "tool":
+                group.append(messages[index])
+                index += 1
+            groups.append(group)
+
+        return groups
+
+    def _has_assistant_tool_calls(self, message: ContextMessage) -> bool:
+        if message.role != "assistant" or message.metadata is None:
+            return False
+        raw_tool_calls = message.metadata.get("tool_calls")
+        return isinstance(raw_tool_calls, list) and bool(raw_tool_calls)
 
     def _build_summary_message(
         self, dropped_messages: list[ContextMessage]
@@ -411,14 +444,24 @@ class ContextBuilder:
         summary_message: ContextMessage,
     ) -> list[ContextMessage] | None:
         """Try to include summary by dropping oldest retained dynamic messages."""
-        candidate_dynamic = list(windowed_dynamic)
+        candidate_groups = self._tool_transcript_groups(windowed_dynamic)
         while True:
+            candidate_dynamic = [
+                message for group in candidate_groups for message in group
+            ]
             candidate = [*prefix_messages, summary_message, *candidate_dynamic]
             if self._estimate_tokens(candidate) <= self.budget.usable_tokens:
                 return candidate
-            if not candidate_dynamic:
+            if not candidate_groups:
                 return None
-            candidate_dynamic = candidate_dynamic[1:]
+            if self._is_tool_transcript_group(candidate_groups[0]):
+                return None
+            candidate_groups = candidate_groups[1:]
+
+    def _is_tool_transcript_group(self, group: list[ContextMessage]) -> bool:
+        return any(message.role == "tool" for message in group) or any(
+            self._has_assistant_tool_calls(message) for message in group
+        )
 
     def _estimate_tokens(self, messages: list[ContextMessage]) -> int:
         """Estimate context size using configured tokenizer strategy.
