@@ -14,6 +14,9 @@ permissions:
       - "*"
   system:
     subprocess: true
+  memory:
+    read: true
+    write: true
 capabilities:
   tools:
     - name: workspace_read

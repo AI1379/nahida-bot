@@ -8,11 +8,14 @@ from pathlib import Path
 from uuid import uuid4
 
 MEMORY_FILE = "MEMORY.md"
+MEMORY_SUMMARY_FILE = "memory_summary.md"
 DAILY_MEMORY_DIR = "memory"
 DAILY_MEMORY_GLOB = "%Y-%m-%d.md"
 DEFAULT_DAILY_DAYS = 3
 MAX_CONTEXT_MEMORY_CHARS = 6000
 MAX_TOOL_READ_CHARS = 20000
+GENERATED_MEMORY_START = "<!-- nahida-memory-generated:start -->"
+GENERATED_MEMORY_END = "<!-- nahida-memory-generated:end -->"
 
 _SECRET_MARKERS = (
     "api_key",
@@ -109,6 +112,91 @@ def append_long_term_memory(
     return f"{body}\n\n- [{memory_id}] {content.strip()}\n"
 
 
+def build_memory_summary(items: list[object], *, max_items: int = 20) -> str:
+    """Build a compact generated memory summary from durable memory items."""
+    lines = [
+        "# Memory Summary",
+        "",
+        "<!-- Auto-generated from structured durable memory. -->",
+        "",
+    ]
+    for item in items[: max(max_items, 0)]:
+        kind = str(getattr(item, "kind", "memory") or "memory")
+        title = str(getattr(item, "title", "") or "").strip()
+        content = str(getattr(item, "content", "") or "").strip()
+        if not content:
+            continue
+        label = f"{kind}"
+        if title:
+            label += f": {title}"
+        lines.append(f"- **{label}** - {content}")
+    if len(lines) == 4:
+        lines.append("- No structured memory yet.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_memory_projection(items: list[object], *, max_items: int = 30) -> str:
+    """Build the generated MEMORY.md section from durable memory items."""
+    groups: dict[str, list[str]] = {
+        "Preferences": [],
+        "Project Context": [],
+        "Decisions": [],
+        "Tasks": [],
+        "Notes": [],
+    }
+    for item in items[: max(max_items, 0)]:
+        kind = str(getattr(item, "kind", "fact") or "fact")
+        title = str(getattr(item, "title", "") or "").strip()
+        content = str(getattr(item, "content", "") or "").strip()
+        item_id = str(getattr(item, "item_id", "") or "")
+        if not content:
+            continue
+        if kind == "preference":
+            section = "Preferences"
+        elif kind == "decision":
+            section = "Decisions"
+        elif kind == "task":
+            section = "Tasks"
+        elif kind in {"fact", "procedure", "warning"}:
+            section = "Project Context"
+        else:
+            section = "Notes"
+        prefix = f"- [{item_id}] " if item_id else "- "
+        if title:
+            groups[section].append(f"{prefix}{title}: {content}")
+        else:
+            groups[section].append(f"{prefix}{content}")
+
+    lines = [
+        GENERATED_MEMORY_START,
+        "## Structured Memory",
+        "",
+        "This section is auto-generated from durable memory items.",
+    ]
+    for section, entries in groups.items():
+        if not entries:
+            continue
+        lines.extend(["", f"### {section}", "", *entries])
+    lines.append(GENERATED_MEMORY_END)
+    return "\n".join(lines).rstrip()
+
+
+def replace_generated_memory_section(existing: str, generated: str) -> str:
+    """Replace or append the generated section in MEMORY.md."""
+    body = existing.rstrip()
+    if not body:
+        body = "# Memory\n\n<!-- User-editable long-term workspace memory. -->"
+    start = body.find(GENERATED_MEMORY_START)
+    end = body.find(GENERATED_MEMORY_END)
+    if start >= 0 and end >= start:
+        end += len(GENERATED_MEMORY_END)
+        return (
+            f"{body[:start].rstrip()}\n\n{generated}\n\n{body[end:].lstrip()}".rstrip()
+            + "\n"
+        )
+    return f"{body}\n\n{generated}\n"
+
+
 def filter_memory_text(content: str, query: str) -> str:
     """Return query-matching lines with nearby headings; empty query returns full text."""
     needle = query.strip().casefold()
@@ -181,6 +269,7 @@ def load_workspace_markdown_memory(
     """Load bounded markdown memory entries from a workspace."""
     candidates = [
         MEMORY_FILE,
+        MEMORY_SUMMARY_FILE,
         *recent_daily_memory_paths(days=daily_days),
     ]
     entries: list[MarkdownMemoryEntry] = []

@@ -48,6 +48,7 @@ class _FakeAPI:
         ]
         self.command_registry = CommandRegistry()
         self.scheduler_service: Any | None = None
+        self.stored_memories: list[tuple[str, str, dict[str, Any] | None]] = []
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -95,12 +96,20 @@ class _FakeAPI:
         return None
 
     async def memory_search(self, query: str, *, limit: int = 5) -> list[MemoryRef]:
+        if query == "" or query == "nahida":
+            return [
+                MemoryRef(
+                    key="mem_1",
+                    content="Nahida prefers durable markdown memory.",
+                    metadata={"title": "Preference"},
+                )
+            ][:limit]
         return []
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
     ) -> None:
-        pass
+        self.stored_memories.append((key, content, metadata))
 
     async def publish_event(self, event: Any) -> None:
         pass
@@ -152,7 +161,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
 
     await plugin.on_load()
 
-    assert {"reset", "new", "status", "model", "help"} <= set(api.commands)
+    assert {"reset", "new", "status", "model", "help", "memory"} <= set(api.commands)
     assert {
         "workspace_read",
         "workspace_write",
@@ -264,6 +273,30 @@ async def test_reset_status_model_and_help_commands() -> None:
     help_text = await plugin._cmd_help(args="", inbound=_inbound(), session_id="s1")
     assert "/help (h)" in help_text
     assert "Show help" in help_text
+
+
+@pytest.mark.asyncio
+async def test_memory_command_search_list_and_remember() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    search_result = await plugin._cmd_memory(
+        args="search nahida", inbound=_inbound(), session_id="s1"
+    )
+    assert "Nahida prefers durable" in search_result
+
+    list_result = await plugin._cmd_memory(
+        args="list", inbound=_inbound(), session_id="s1"
+    )
+    assert "mem_1" in list_result
+
+    remember_result = await plugin._cmd_memory(
+        args="remember User prefers Chinese search.",
+        inbound=_inbound(),
+        session_id="s1",
+    )
+    assert remember_result == "Memory stored."
+    assert api.stored_memories[0][1] == "User prefers Chinese search."
 
 
 @pytest.mark.asyncio

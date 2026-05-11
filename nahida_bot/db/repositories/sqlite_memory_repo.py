@@ -286,6 +286,299 @@ class SQLiteMemoryRepository:
         )
         return {str(row["chat_key"]): str(row["session_id"]) for row in rows}
 
+    # -- Durable memory items --
+
+    async def append_memory_item(
+        self,
+        *,
+        item_id: str,
+        scope_type: str,
+        scope_id: str,
+        kind: str,
+        title: str,
+        content: str,
+        status: str,
+        confidence: float,
+        importance: float,
+        sensitivity: str,
+        source: str,
+        evidence: dict[str, Any] | None,
+        metadata: dict[str, Any] | None,
+        title_index: str,
+        content_index: str,
+    ) -> str:
+        """Store a durable memory item and its FTS index row."""
+        now_iso = _utc_now_iso()
+        evidence_json = json.dumps(evidence, ensure_ascii=False) if evidence else None
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "INSERT INTO memory_items "
+                "(item_id, scope_type, scope_id, kind, title, content, status, "
+                "confidence, importance, sensitivity, source, evidence_json, "
+                "metadata_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item_id,
+                    scope_type,
+                    scope_id,
+                    kind,
+                    title,
+                    content,
+                    status,
+                    confidence,
+                    importance,
+                    sensitivity,
+                    source,
+                    evidence_json,
+                    metadata_json,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            await self._engine.execute(
+                "INSERT INTO memory_item_fts "
+                "(item_id, scope_type, scope_id, title_index, content_index) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (item_id, scope_type, scope_id, title_index, content_index),
+            )
+            await self._engine.db.commit()
+        return item_id
+
+    async def search_memory_items(
+        self,
+        fts_query: str,
+        *,
+        scope_type: str,
+        scope_id: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Search durable memory items via FTS5 BM25 ranking."""
+        rows = await self._engine.fetch_all(
+            "SELECT mi.item_id, mi.scope_type, mi.scope_id, mi.kind, mi.title, "
+            "mi.content, mi.status, mi.confidence, mi.importance, mi.sensitivity, "
+            "mi.source, mi.evidence_json, mi.metadata_json, mi.created_at, "
+            "mi.updated_at, bm25(memory_item_fts) AS score "
+            "FROM memory_item_fts "
+            "JOIN memory_items mi ON mi.item_id = memory_item_fts.item_id "
+            "WHERE memory_item_fts MATCH ? "
+            "AND mi.status = 'active' "
+            "AND mi.scope_type = ? "
+            "AND mi.scope_id = ? "
+            "ORDER BY score ASC, mi.importance DESC, mi.updated_at DESC "
+            "LIMIT ?",
+            (fts_query, scope_type, scope_id, limit),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
+    async def list_memory_items(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """List recent active durable memory items for a scope."""
+        rows = await self._engine.fetch_all(
+            "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
+            "confidence, importance, sensitivity, source, evidence_json, "
+            "metadata_json, created_at, updated_at, 0.0 AS score "
+            "FROM memory_items "
+            "WHERE status = 'active' AND scope_type = ? AND scope_id = ? "
+            "ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            (scope_type, scope_id, limit),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
+    async def archive_memory_item(self, item_id: str) -> bool:
+        """Mark a durable memory item as archived."""
+        now_iso = _utc_now_iso()
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                "UPDATE memory_items SET status = 'archived', updated_at = ? "
+                "WHERE item_id = ? AND status != 'archived'",
+                (now_iso, item_id),
+            )
+            await self._engine.db.commit()
+        return cursor.rowcount > 0
+
+    async def get_memory_items_by_ids(
+        self,
+        item_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Return active durable memory items by id."""
+        if not item_ids:
+            return []
+        placeholders = ",".join("?" for _ in item_ids)
+        rows = await self._engine.fetch_all(
+            "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
+            "confidence, importance, sensitivity, source, evidence_json, "
+            "metadata_json, created_at, updated_at, 0.0 AS score "
+            f"FROM memory_items WHERE status = 'active' AND item_id IN ({placeholders})",
+            tuple(item_ids),
+        )
+        by_id = {row["item_id"]: self._memory_item_row_to_dict(row) for row in rows}
+        return [by_id[item_id] for item_id in item_ids if item_id in by_id]
+
+    async def upsert_memory_embedding(
+        self,
+        *,
+        embedding_id: str,
+        item_id: str,
+        provider_id: str,
+        model: str,
+        dimensions: int,
+        content_hash: str,
+        embedding: list[float],
+    ) -> str:
+        """Insert or update a persisted memory embedding."""
+        now_iso = _utc_now_iso()
+        embedding_json = json.dumps(embedding, ensure_ascii=False)
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "INSERT INTO memory_embeddings "
+                "(embedding_id, item_id, provider_id, model, dimensions, "
+                "content_hash, embedding_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(item_id, provider_id, model, content_hash) "
+                "DO UPDATE SET embedding_id = excluded.embedding_id, "
+                "embedding_json = excluded.embedding_json, "
+                "dimensions = excluded.dimensions, "
+                "created_at = excluded.created_at",
+                (
+                    embedding_id,
+                    item_id,
+                    provider_id,
+                    model,
+                    dimensions,
+                    content_hash,
+                    embedding_json,
+                    now_iso,
+                ),
+            )
+            await self._engine.db.commit()
+        return embedding_id
+
+    async def list_memory_embeddings(
+        self,
+        *,
+        provider_id: str,
+        model: str,
+        dimensions: int,
+        scope_type: str,
+        scope_id: str,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """List embeddings for active memory items in a scope."""
+        rows = await self._engine.fetch_all(
+            "SELECT me.embedding_id, me.item_id, me.provider_id, me.model, "
+            "me.dimensions, me.content_hash, me.embedding_json, me.created_at "
+            "FROM memory_embeddings me "
+            "JOIN memory_items mi ON mi.item_id = me.item_id "
+            "WHERE mi.status = 'active' "
+            "AND mi.scope_type = ? AND mi.scope_id = ? "
+            "AND me.provider_id = ? AND me.model = ? AND me.dimensions = ? "
+            "ORDER BY me.created_at DESC LIMIT ?",
+            (scope_type, scope_id, provider_id, model, dimensions, limit),
+        )
+        return [self._memory_embedding_row_to_dict(row) for row in rows]
+
+    async def delete_memory_embeddings_for_item(self, item_id: str) -> int:
+        """Delete persisted embeddings for one memory item."""
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                "DELETE FROM memory_embeddings WHERE item_id = ?",
+                (item_id,),
+            )
+            await self._engine.db.commit()
+        return cursor.rowcount
+
+    # -- Memory consolidation candidates --
+
+    async def append_memory_candidate(
+        self,
+        *,
+        candidate_id: str,
+        scope_type: str,
+        scope_id: str,
+        kind: str,
+        title: str,
+        content: str,
+        status: str,
+        confidence: float,
+        evidence: dict[str, Any] | None,
+        metadata: dict[str, Any] | None,
+    ) -> str:
+        """Store a consolidation candidate for audit/review."""
+        now_iso = _utc_now_iso()
+        evidence_json = json.dumps(evidence, ensure_ascii=False) if evidence else None
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "INSERT INTO memory_candidates "
+                "(candidate_id, scope_type, scope_id, kind, title, content, status, "
+                "confidence, evidence_json, metadata_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    candidate_id,
+                    scope_type,
+                    scope_id,
+                    kind,
+                    title,
+                    content,
+                    status,
+                    confidence,
+                    evidence_json,
+                    metadata_json,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            await self._engine.db.commit()
+        return candidate_id
+
+    async def list_memory_candidates(
+        self,
+        *,
+        status: str | None = None,
+        scope_type: str = "global",
+        scope_id: str = "__global__",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """List consolidation candidates."""
+        params: list[Any] = [scope_type, scope_id]
+        status_filter = ""
+        if status:
+            status_filter = "AND status = ? "
+            params.append(status)
+        params.append(limit)
+        rows = await self._engine.fetch_all(
+            "SELECT candidate_id, scope_type, scope_id, kind, title, content, "
+            "status, confidence, evidence_json, metadata_json, created_at, "
+            "updated_at FROM memory_candidates "
+            "WHERE scope_type = ? AND scope_id = ? "
+            f"{status_filter}"
+            "ORDER BY updated_at DESC LIMIT ?",
+            tuple(params),
+        )
+        return [self._memory_candidate_row_to_dict(row) for row in rows]
+
+    async def update_memory_candidate_status(
+        self,
+        candidate_id: str,
+        status: str,
+    ) -> bool:
+        """Update a consolidation candidate status."""
+        now_iso = _utc_now_iso()
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                "UPDATE memory_candidates SET status = ?, updated_at = ? "
+                "WHERE candidate_id = ?",
+                (status, now_iso, candidate_id),
+            )
+            await self._engine.db.commit()
+        return cursor.rowcount > 0
+
     async def _insert_keywords(self, turn_id: int, keywords: list[str]) -> None:
         """Insert keyword associations for a turn.
 
@@ -313,4 +606,65 @@ class SQLiteMemoryRepository:
             data["metadata"] = None
         data.pop("metadata_json", None)
         data.pop("match_count", None)
+        return data
+
+    @staticmethod
+    def _memory_item_row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
+        """Convert a memory item row into a plain dict with parsed JSON fields."""
+        data: dict[str, Any] = dict(row)
+        evidence_raw = data.pop("evidence_json", None)
+        metadata_raw = data.pop("metadata_json", None)
+        if isinstance(evidence_raw, str):
+            try:
+                data["evidence"] = json.loads(evidence_raw)
+            except (json.JSONDecodeError, ValueError):
+                data["evidence"] = {}
+        else:
+            data["evidence"] = {}
+        if isinstance(metadata_raw, str):
+            try:
+                data["metadata"] = json.loads(metadata_raw)
+            except (json.JSONDecodeError, ValueError):
+                data["metadata"] = {}
+        else:
+            data["metadata"] = {}
+        return data
+
+    @staticmethod
+    def _memory_embedding_row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
+        """Convert a memory embedding row into a dict with parsed vector JSON."""
+        data: dict[str, Any] = dict(row)
+        embedding_raw = data.pop("embedding_json", None)
+        if isinstance(embedding_raw, str):
+            try:
+                parsed = json.loads(embedding_raw)
+            except (json.JSONDecodeError, ValueError):
+                parsed = []
+        else:
+            parsed = []
+        data["embedding"] = [
+            float(value) for value in parsed if isinstance(value, int | float)
+        ]
+        return data
+
+    @staticmethod
+    def _memory_candidate_row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
+        """Convert a memory candidate row into a plain dict."""
+        data: dict[str, Any] = dict(row)
+        evidence_raw = data.pop("evidence_json", None)
+        metadata_raw = data.pop("metadata_json", None)
+        if isinstance(evidence_raw, str):
+            try:
+                data["evidence"] = json.loads(evidence_raw)
+            except (json.JSONDecodeError, ValueError):
+                data["evidence"] = {}
+        else:
+            data["evidence"] = {}
+        if isinstance(metadata_raw, str):
+            try:
+                data["metadata"] = json.loads(metadata_raw)
+            except (json.JSONDecodeError, ValueError):
+                data["metadata"] = {}
+        else:
+            data["metadata"] = {}
         return data

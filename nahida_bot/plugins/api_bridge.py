@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import structlog
 
@@ -263,6 +263,24 @@ class RealBotAPI:
         self._permissions.check_memory_read()
         if self._memory is None:
             return []
+        search_items = getattr(self._memory, "search_items", None)
+        if callable(search_items):
+            items = await cast(Any, search_items)(query, limit=limit)
+            return [
+                MemoryRef(
+                    key=item.item_id,
+                    content=item.content,
+                    score=item.score,
+                    metadata={
+                        "scope_type": item.scope_type,
+                        "scope_id": item.scope_id,
+                        "kind": item.kind,
+                        "title": item.title,
+                        "source": item.source,
+                    },
+                )
+                for item in items
+            ]
         results = await self._memory.search("__global__", query, limit=limit)
         return [
             MemoryRef(
@@ -279,8 +297,42 @@ class RealBotAPI:
         self._permissions.check_memory_write()
         if self._memory is None:
             return
-        # Memory store integration deferred — for now this is a no-op
-        self._logger.debug("memory_store_called", key=key)
+        metadata = dict(metadata or {})
+        append_item = getattr(self._memory, "append_item", None)
+        if callable(append_item):
+            await cast(Any, append_item)(
+                title=key,
+                content=content,
+                scope_type=str(metadata.pop("scope_type", "global")),
+                scope_id=str(metadata.pop("scope_id", "__global__")),
+                kind=str(metadata.pop("kind", "fact")),
+                source=str(metadata.pop("source", "plugin")),
+                confidence=float(metadata.pop("confidence", 1.0)),
+                importance=float(metadata.pop("importance", 0.5)),
+                sensitivity=str(metadata.pop("sensitivity", "private")),
+                evidence=metadata.pop("evidence", None),
+                metadata=metadata,
+            )
+            self._logger.debug("memory_store_called", key=key, backend="items")
+            return
+
+        append_turn = getattr(self._memory, "append_turn", None)
+        ensure_session = getattr(self._memory, "ensure_session", None)
+        if callable(append_turn):
+            if callable(ensure_session):
+                await cast(Any, ensure_session)("__global__")
+            from nahida_bot.agent.memory.models import ConversationTurn
+
+            await cast(Any, append_turn)(
+                "__global__",
+                ConversationTurn(
+                    role="system",
+                    content=content,
+                    source="plugin_memory",
+                    metadata={"key": key, **metadata},
+                ),
+            )
+        self._logger.debug("memory_store_called", key=key, backend="turns")
 
     # ── Workspace ──────────────────────────────────────
 

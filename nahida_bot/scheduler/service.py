@@ -12,6 +12,7 @@ from uuid import uuid4
 import structlog
 
 from nahida_bot.core.context import SessionContext, current_session
+from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
@@ -53,6 +54,8 @@ class SchedulerService:
         self._config = config or SchedulerConfig()
 
         self._poll_task: asyncio.Task[None] | None = None
+        self._memory_dream_task: asyncio.Task[None] | None = None
+        self._memory_dream_next_at: datetime | None = None
         self._active_tasks: set[asyncio.Task[None]] = set()
         self._running = False
 
@@ -87,6 +90,10 @@ class SchedulerService:
             )
 
         self._running = True
+        if self._config.memory_dreaming_enabled:
+            self._memory_dream_next_at = datetime.now(UTC) + timedelta(
+                seconds=self._config.memory_dreaming_initial_delay_seconds
+            )
         self._poll_task = asyncio.create_task(self._poll_loop())
         logger.info("scheduler.started")
 
@@ -320,6 +327,8 @@ class SchedulerService:
                         await asyncio.sleep(self._config.poll_interval_seconds)
                         continue
 
+                    self._dispatch_memory_dreaming_if_due()
+
                     now_iso = datetime.now(UTC).isoformat()
                     due_jobs = await self._repo.claim_due_jobs(now_iso, limit=available)
 
@@ -338,6 +347,122 @@ class SchedulerService:
         task = asyncio.create_task(self._fire_job(job))
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
+
+    def _dispatch_memory_dreaming_if_due(self) -> None:
+        """Dispatch the internal memory dreaming job when its interval elapses."""
+        if not self._config.memory_dreaming_enabled:
+            return
+        if self._memory_dream_task is not None and not self._memory_dream_task.done():
+            return
+        now = datetime.now(UTC)
+        if self._memory_dream_next_at is None:
+            self._memory_dream_next_at = now + timedelta(
+                seconds=self._config.memory_dreaming_interval_seconds
+            )
+            return
+        if now < self._memory_dream_next_at:
+            return
+        self._memory_dream_next_at = now + timedelta(
+            seconds=self._config.memory_dreaming_interval_seconds
+        )
+        task = asyncio.create_task(self._run_memory_dreaming_safe())
+        self._memory_dream_task = task
+        self._active_tasks.add(task)
+        task.add_done_callback(self._active_tasks.discard)
+
+    async def _run_memory_dreaming_safe(self) -> None:
+        try:
+            await self._run_memory_dreaming_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("scheduler.memory_dreaming_failed")
+
+    async def _run_memory_dreaming_once(self) -> int:
+        """Run one internal memory dreaming pass across recently active sessions."""
+        if self._runner is None:
+            return 0
+        memory = self._runner.memory
+        if memory is None:
+            return 0
+        provider_manager = self._runner.provider_manager
+        if provider_manager is None:
+            return 0
+
+        sessions = await memory.list_sessions(
+            limit=self._config.memory_dreaming_session_limit
+        )
+        applied_total = 0
+        for session in sessions:
+            try:
+                applied_total += await self._dream_session(
+                    session.session_id,
+                    workspace_id=session.workspace_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "scheduler.memory_dreaming_session_failed",
+                    session_id=session.session_id,
+                    error=str(exc),
+                )
+        if applied_total:
+            logger.info("scheduler.memory_dreaming_completed", applied=applied_total)
+        return applied_total
+
+    async def _dream_session(
+        self, session_id: str, *, workspace_id: str | None = None
+    ) -> int:
+        assert self._runner is not None
+        memory = self._runner.memory
+        if memory is None:
+            return 0
+
+        meta = await memory.get_session_meta(session_id)
+        last_turn_id = _safe_int(meta.get("memory_dream_last_turn_id"), default=0)
+        records = await memory.get_recent(
+            session_id, limit=self._config.memory_dreaming_recent_turn_limit
+        )
+        new_records = [record for record in records if record.turn_id > last_turn_id]
+        if len(new_records) < 2:
+            return 0
+
+        provider_slot, selected_model = await self._runner.resolve_provider_for_session(
+            session_id
+        )
+        if provider_slot is None:
+            return 0
+
+        workspace_id = workspace_id or str(meta.get("workspace_id") or "") or None
+        workspace_root = self._runner.workspace_root_for(workspace_id)
+        conversation = "\n".join(
+            f"{record.turn.role}: {record.turn.content}"
+            for record in new_records
+            if record.turn.content.strip()
+        )
+        if not conversation.strip():
+            return 0
+
+        consolidator = MemoryConsolidator(memory)
+        applied = await consolidator.consolidate_turn(
+            session_id=session_id,
+            user_message=conversation,
+            assistant_message="",
+            workspace_id=workspace_id,
+            workspace_root=workspace_root,
+            dream_provider=provider_slot.provider,
+            dream_model=selected_model,
+            run_rules=False,
+        )
+        await memory.update_session_meta(
+            session_id,
+            {
+                "memory_dream_last_turn_id": max(
+                    record.turn_id for record in new_records
+                ),
+                "memory_dream_last_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        return applied
 
     async def _fire_job(self, job: CronJob) -> None:
         """Execute a scheduled job: run agent and send response."""
@@ -539,3 +664,10 @@ class SchedulerService:
         if dt <= now:
             raise ValueError("fire_at must be in the future")
         return dt.isoformat()
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default

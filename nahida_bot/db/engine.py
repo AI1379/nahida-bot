@@ -114,6 +114,76 @@ _SCHEMA_MIGRATIONS = [
     """
     ALTER TABLE cron_jobs ADD COLUMN cron_expression TEXT;
     """,
+    # Migration 008: structured memory items with FTS5/BM25 index
+    """
+    CREATE TABLE IF NOT EXISTS memory_items (
+        item_id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        confidence REAL NOT NULL DEFAULT 1.0,
+        importance REAL NOT NULL DEFAULT 0.5,
+        sensitivity TEXT NOT NULL DEFAULT 'private',
+        source TEXT NOT NULL DEFAULT 'plugin',
+        evidence_json TEXT,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_items_scope
+        ON memory_items(scope_type, scope_id, status, updated_at);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_item_fts USING fts5(
+        item_id UNINDEXED,
+        scope_type UNINDEXED,
+        scope_id UNINDEXED,
+        title_index,
+        content_index
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_candidates (
+        candidate_id TEXT PRIMARY KEY,
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        confidence REAL NOT NULL DEFAULT 0.5,
+        evidence_json TEXT,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_candidates_scope
+        ON memory_candidates(scope_type, scope_id, status, updated_at);
+    """,
+    # Migration 009: memory embeddings for vector and hybrid retrieval
+    """
+    CREATE TABLE IF NOT EXISTS memory_embeddings (
+        embedding_id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        embedding_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (item_id) REFERENCES memory_items(item_id),
+        UNIQUE(item_id, provider_id, model, content_hash)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model
+        ON memory_embeddings(provider_id, model, dimensions);
+
+    CREATE INDEX IF NOT EXISTS idx_memory_embeddings_item
+        ON memory_embeddings(item_id);
+    """,
 ]
 
 

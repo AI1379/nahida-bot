@@ -14,7 +14,7 @@ from nahida_bot.agent.providers.registry import (
     create_provider,
     unregister_runtime_provider,
 )
-from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+from nahida_bot.agent.memory.models import ConversationTurn, MemoryItem, MemoryRecord
 from nahida_bot.core.events import Event, EventBus, EventContext
 from nahida_bot.plugins.api_bridge import RealBotAPI
 from nahida_bot.plugins.base import OutboundMessage
@@ -44,6 +44,7 @@ class _Logger:
 class _Memory:
     def __init__(self) -> None:
         self.meta: dict[str, Any] = {}
+        self.items: list[MemoryItem] = []
 
     async def search(
         self, session_id: str, query: str, *, limit: int = 10
@@ -58,6 +59,54 @@ class _Memory:
                     source="memory",
                     created_at=datetime.now(UTC),
                 ),
+            )
+        ][:limit]
+
+    async def append_item(
+        self,
+        *,
+        title: str = "",
+        content: str,
+        scope_type: str = "global",
+        scope_id: str = "__global__",
+        kind: str = "fact",
+        source: str = "plugin",
+        confidence: float = 1.0,
+        importance: float = 0.5,
+        sensitivity: str = "private",
+        evidence: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        item = MemoryItem(
+            item_id=f"mem_{len(self.items) + 1}",
+            scope_type=scope_type,
+            scope_id=scope_id,
+            kind=kind,
+            title=title,
+            content=content,
+            source=source,
+            confidence=confidence,
+            importance=importance,
+            sensitivity=sensitivity,
+            evidence=evidence or {},
+            metadata=metadata or {},
+        )
+        self.items.append(item)
+        return item.item_id
+
+    async def search_items(
+        self, query: str = "", *, limit: int = 10
+    ) -> list[MemoryItem]:
+        if self.items:
+            return self.items[:limit]
+        return [
+            MemoryItem(
+                item_id="mem_1",
+                scope_type="global",
+                scope_id="__global__",
+                kind="fact",
+                title="",
+                content=f"found {query}",
             )
         ][:limit]
 
@@ -196,7 +245,11 @@ async def test_workspace_and_memory_methods_delegate_to_runtime(
 
     results = await api.memory_search("nahida")
     assert results[0].content == "found nahida"
-    await api.memory_store("k", "v")
+    await api.memory_store("k", "v", metadata={"kind": "preference"})
+    stored = await api.memory_search("v")
+    assert stored[0].key == "mem_1"
+    assert stored[0].content == "v"
+    assert stored[0].metadata["kind"] == "preference"
     assert await api.clear_session("s1") == 3
 
 

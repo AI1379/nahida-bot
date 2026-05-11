@@ -173,7 +173,7 @@ Anthropic Managed Agents memory/dreaming 的关键点：
 - memory store 是文件化、可导出、可 API 管理的。
 - 有 scoped permissions、audit logs、rollback/redaction。
 - dreaming 是异步任务，读取 memory store 和历史 session transcripts。
-- dreaming 输出新的 memory store，不直接修改输入；可审查后再采用。
+- dreaming 通常输出新的 memory store 或结构化变更；Nahida Bot 当前先输出候选审计记录，再按自动模式应用到长期记忆。
 - 目标是合并重复、替换过时/矛盾内容、发现新模式。
 
 OpenAI Agents SDK memory 的关键点：
@@ -187,14 +187,14 @@ OpenAI Agents SDK memory 的关键点：
 
 对 Nahida Bot 的落地建议：
 
-- 新增 `MemoryConsolidator` 后台任务，而不是让主对话同步整理记忆。
-- 输入为最近 agent runs、conversation turns、raw memory candidates、现有 durable memories。
-- 输出为 `memory_consolidation_runs` 和一批候选变更，不直接覆盖长期记忆。
-- 支持三种提交模式：
-  - `manual_review`：默认，写入候选，等待命令或 UI 审核。
-  - `auto_safe`：仅自动合并低风险重复项、摘要项和过期项标记。
-  - `auto_full`：管理员明确开启后自动更新长期记忆。
-- 每条 LLM 写入的记忆都必须带 provenance、confidence、last_verified_at。
+- 当前实现中，session 持久化后只跑低成本规则抽取；LLM dreaming 交给现有 scheduler/cron 后台循环周期性执行，避免每轮对话增加延迟和模型成本。
+- 输入为最近完成的 user/assistant turn，后续扩展为 agent runs、raw memory candidates、现有 durable memories。
+- 输出写入 `memory_candidates` 作为审计记录，并默认自动提升为 `memory_items`；人工 review 是可选能力，不作为默认必经路径。
+- 支持三种提交模式作为后续配置方向：
+  - `auto_safe`：默认，仅抽取显式记忆、偏好、决策和待办等低风险内容。
+  - `manual_review`：写入候选，等待命令或 UI 审核。
+  - `auto_full`：管理员明确开启后允许 LLM extractor 更主动地更新长期记忆。
+- 每条自动写入的记忆都必须带 provenance、confidence 和 candidate id。
 - 对安全敏感内容、token、临时 URL、base64、私钥、认证头默认禁止进入长期记忆。
 
 建议称呼：
@@ -373,6 +373,17 @@ memory_summaries
 6. **Rerank**：可选，用 LLM 或 reranker 模型对 top-k 做重排。
 7. **Context packing**：按 token 预算注入摘要、关键事实和必要证据。
 
+### 6.1.1 中文 BM25 处理
+
+BM25 不需要在应用层手写。Phase 1 使用 SQLite FTS5 内置 `bm25()` 排序，但中文必须在入库和查询前做分词处理：
+
+- 原始 `title/content` 保存在 `memory_items`。
+- FTS 表只保存 `title_index/content_index`，内容为 jieba search-mode token 组成的空格分隔文本。
+- 查询时使用同一套 tokenizer，把中文 query 转成安全的 FTS OR query。
+- 返回结果展示原始 `memory_items.content`，不展示 index text。
+
+这样可以避免 SQLite 默认 tokenizer 对无空格中文文本召回差的问题，同时保留 FTS5/BM25 的成熟排序实现。
+
 ### 6.2 为什么不能只用向量
 
 - 文件名、群号、用户 ID、错误码、tool call id 需要精确匹配。
@@ -499,9 +510,10 @@ memory:
     batch_size: 16
 
   consolidation:
-    enabled: false
+    enabled: true
     schedule: "0 4 * * *"
-    mode: manual_review
+    dreaming_interval_seconds: 3600
+    mode: auto_safe
     max_sessions_per_run: 50
     max_input_tokens: 64000
 
@@ -550,27 +562,33 @@ memory:
 
 ### Phase 1：FTS 和 MemoryItem
 
-- [ ] 新增 `memory_items`、`memory_item_fts`、`memory_candidates`。
-- [ ] 实现 SQLite FTS5/BM25 检索。
-- [ ] `memory_store()` 从 no-op 改为写入 candidate/item。
-- [ ] 新增 `/memory search`、`/memory list`、`/memory forget` 基础命令。
-- [ ] context builder 增加长期记忆注入预算。
+- [x] 新增 `memory_items`、`memory_item_fts`、`memory_candidates`。
+- [x] 实现 SQLite FTS5/BM25 检索。
+- [x] 中文入库和查询前使用 jieba search-mode 预分词。
+- [x] `memory_store()` 从 no-op 改为写入 structured memory item。
+- [x] 新增 `/memory search`、`/memory list`、`/memory remember` 基础命令。
+- [ ] 新增 `/memory forget` 或等价删除/归档 API。
+- [x] SessionRunner 按当前用户消息检索少量长期记忆并注入预算内 context。
 
 ### Phase 2：Embedding 和 sqlite-vec
 
-- [ ] 增加 `EmbeddingProvider` 抽象。
-- [ ] 增加 `memory_embeddings` 表和 content hash。
-- [ ] 增加 `SQLiteVecIndex` 可选实现。
-- [ ] 实现 FTS + vector hybrid fusion。
-- [ ] 增加召回质量测试集。
+- [x] 增加 `EmbeddingProvider` 抽象。
+- [x] 增加 `memory_embeddings` 表和 content hash。
+- [x] 增加 `SQLiteVecIndex` 可选实现，默认仍可回退到 SQLite JSON embedding 扫描，避免把 sqlite-vec 变成强依赖。
+- [x] 实现 FTS + vector hybrid fusion；`search_items_hybrid()` 默认 FTS，传入 embedding provider 后用 RRF 融合向量召回。
+- [x] embedding id 使用 item/provider/model/content hash 派生的稳定 ID，方便重复 upsert 和可选向量索引同步。
+- [ ] 增加召回质量测试集。（暂缓，先用真实交互观察效果）
 
 ### Phase 3：异步 Consolidation
 
-- [ ] 新增 conversation extraction job。
-- [ ] 新增 memory consolidation job。
-- [ ] 输出候选变更，不直接覆盖长期记忆。
-- [ ] 支持 `/memory review`。
-- [ ] 生成 `memory_summary.md` / `MEMORY.md` 投影。
+- [x] 新增 conversation extraction：每轮 session 持久化后自动抽取显式记忆、偏好、决策和待办信号。
+- [x] 新增 memory consolidation：抽取结果写入 `memory_candidates` 审计记录，并默认自动提升为 `memory_items`。
+- [x] 人工 review 不作为必选路径；后续可在候选记录基础上补 `/memory review`。
+- [x] 生成 `memory_summary.md`，并在 `MEMORY.md` 中维护带 marker 的自动投影区块，保留人工编辑内容。
+- [x] 接入 LLM dreaming：有 provider 时读取近期 turn 和现有长期记忆，要求模型输出严格 JSON 的 `add/archive` 变更。
+- [x] dreaming 输出经过 JSON 解析、安全过滤、去重、candidate 审计和 item id 校验后再自动应用；失败时回退到规则抽取。
+- [x] 将 LLM dreaming 从每轮 session 后同步调用迁移到现有 scheduler/cron 后台循环，按 `memory_dream_last_turn_id` 增量处理 session。
+- [ ] 后续增加 dream run 历史表和更细的手动触发/暂停命令。
 
 ### Phase 4：Agent Run/Event 集成
 

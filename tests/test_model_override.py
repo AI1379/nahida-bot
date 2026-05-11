@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage
+from nahida_bot.agent.memory.models import MemoryItem
 from nahida_bot.agent.loop import AgentLoop
 from nahida_bot.agent.providers.base import (
     ChatProvider,
@@ -664,6 +665,33 @@ class _RecordingMemoryStore:
     async def append_turn(self, session_id: str, turn: Any, **kw: Any) -> int:
         self.turns.append(turn)
         return len(self.turns)
+
+
+class _SearchableMemoryStore(_RecordingMemoryStore):
+    async def search_items(
+        self, query: str = "", *, limit: int = 10
+    ) -> list[MemoryItem]:
+        return [
+            MemoryItem(
+                item_id="mem_1",
+                scope_type="global",
+                scope_id="__global__",
+                kind="preference",
+                title="Language",
+                content="User prefers Chinese technical discussion.",
+            )
+        ][:limit]
+
+
+@pytest.mark.asyncio
+async def test_session_runner_loads_relevant_durable_memory() -> None:
+    runner = SessionRunner(memory_store=cast(Any, _SearchableMemoryStore()))
+
+    message = await runner._load_relevant_memory("Chinese technical discussion")
+
+    assert message is not None
+    assert message.source == "long_term_memory"
+    assert "User prefers Chinese" in message.content
 
 
 # -- ProviderManager resolve_model still works --

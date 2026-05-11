@@ -29,6 +29,60 @@ class MemoryRecord:
 
 
 @dataclass(slots=True, frozen=True)
+class MemoryItem:
+    """A durable structured memory item."""
+
+    item_id: str
+    scope_type: str
+    scope_id: str
+    kind: str
+    title: str
+    content: str
+    status: str = "active"
+    confidence: float = 1.0
+    importance: float = 0.5
+    sensitivity: str = "private"
+    source: str = "plugin"
+    evidence: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    score: float = 0.0
+
+
+@dataclass(slots=True, frozen=True)
+class MemoryEmbedding:
+    """Persisted embedding for one durable memory item."""
+
+    embedding_id: str
+    item_id: str
+    provider_id: str
+    model: str
+    dimensions: int
+    content_hash: str
+    embedding: list[float]
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(slots=True, frozen=True)
+class MemoryCandidate:
+    """Candidate memory extracted during consolidation."""
+
+    candidate_id: str
+    scope_type: str
+    scope_id: str
+    kind: str
+    title: str
+    content: str
+    status: str = "pending"
+    confidence: float = 0.5
+    evidence: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(slots=True, frozen=True)
 class SessionSummary:
     """Summary of a session for listing purposes."""
 

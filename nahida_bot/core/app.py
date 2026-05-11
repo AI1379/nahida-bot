@@ -399,6 +399,19 @@ class Application:
                 max_jobs_per_chat=scheduler_cfg.max_jobs_per_chat,
                 failure_retry_seconds=scheduler_cfg.failure_retry_seconds,
                 max_consecutive_failures=scheduler_cfg.max_consecutive_failures,
+                memory_dreaming_enabled=scheduler_cfg.memory_dreaming_enabled,
+                memory_dreaming_interval_seconds=(
+                    scheduler_cfg.memory_dreaming_interval_seconds
+                ),
+                memory_dreaming_initial_delay_seconds=(
+                    scheduler_cfg.memory_dreaming_initial_delay_seconds
+                ),
+                memory_dreaming_session_limit=(
+                    scheduler_cfg.memory_dreaming_session_limit
+                ),
+                memory_dreaming_recent_turn_limit=(
+                    scheduler_cfg.memory_dreaming_recent_turn_limit
+                ),
             ),
         )
         if self.plugin_manager is not None:

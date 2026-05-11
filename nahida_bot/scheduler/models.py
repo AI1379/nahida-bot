@@ -43,3 +43,8 @@ class SchedulerConfig:
     max_jobs_per_chat: int = 20
     failure_retry_seconds: int = 300
     max_consecutive_failures: int = 3
+    memory_dreaming_enabled: bool = True
+    memory_dreaming_interval_seconds: int = 3600
+    memory_dreaming_initial_delay_seconds: int = 300
+    memory_dreaming_session_limit: int = 20
+    memory_dreaming_recent_turn_limit: int = 40

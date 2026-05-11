@@ -7,7 +7,17 @@ from typing import Any, cast
 
 import pytest
 
+from nahida_bot.agent.context import ContextBuilder, ContextMessage
 from nahida_bot.agent.loop import AgentRunResult
+from nahida_bot.agent.memory.models import ConversationTurn
+from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+from nahida_bot.agent.providers.base import (
+    ChatProvider,
+    ProviderResponse,
+    ToolDefinition,
+)
+from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
+from nahida_bot.agent.tokenization import Tokenizer
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.plugins.base import OutboundMessage
@@ -54,6 +64,43 @@ class _Agent:
         if self.fail:
             raise RuntimeError("boom")
         return AgentRunResult(final_response="done")
+
+
+class _DreamProvider(ChatProvider):
+    name = "dream"
+    api_family = "openai-completions"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def tokenizer(self) -> Tokenizer | None:
+        return None
+
+    async def chat(
+        self,
+        *,
+        messages: list[ContextMessage],
+        tools: list[ToolDefinition] | None = None,
+        timeout_seconds: float | None = None,
+        model: str | None = None,
+    ) -> ProviderResponse:
+        self.calls += 1
+        return ProviderResponse(
+            content="""{
+              "add": [
+                {
+                  "kind": "preference",
+                  "title": "语言偏好",
+                  "content": "用户偏好用中文讨论项目实现。",
+                  "confidence": 0.9,
+                  "importance": 0.8,
+                  "evidence": "用户要求用中文继续讨论。"
+                }
+              ],
+              "archive": []
+            }"""
+        )
 
 
 class _Channel:
@@ -170,6 +217,68 @@ async def test_fire_job_failure_releases_claim_for_retry_without_counting_run() 
         assert "RuntimeError" in stored.last_error
         assert "boom" in stored.last_error
         assert "[Scheduler] Scheduled task failed." == channel.sent[0][1].text
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_runs_memory_dreaming_as_internal_periodic_job() -> None:
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    try:
+        memory = SQLiteMemoryStore(engine)
+        await memory.ensure_session("s1", workspace_id="default")
+        await memory.append_turn(
+            "s1",
+            ConversationTurn(
+                role="user",
+                content="我们之后继续用中文讨论这个项目的实现。",
+                source="user_input",
+            ),
+        )
+        await memory.append_turn(
+            "s1",
+            ConversationTurn(
+                role="assistant",
+                content="好的，之后默认用中文讨论。",
+                source="agent_response",
+            ),
+        )
+        provider = _DreamProvider()
+        runner = SessionRunner(
+            memory_store=memory,
+            provider_manager=ProviderManager(
+                [
+                    ProviderSlot(
+                        id="dream",
+                        provider=provider,
+                        context_builder=ContextBuilder(),
+                        default_model="dream-model",
+                        available_models=["dream-model"],
+                    )
+                ],
+                default_id="dream",
+            ),
+        )
+        service = SchedulerService(
+            CronRepository(engine),
+            runner=runner,
+            config=SchedulerConfig(
+                memory_dreaming_enabled=True,
+                memory_dreaming_recent_turn_limit=10,
+            ),
+        )
+
+        applied = await service._run_memory_dreaming_once()
+        repeated = await service._run_memory_dreaming_once()
+        results = await memory.search_items("中文讨论")
+        meta = await memory.get_session_meta("s1")
+
+        assert applied == 1
+        assert repeated == 0
+        assert provider.calls == 1
+        assert results
+        assert int(meta["memory_dream_last_turn_id"]) >= 2
     finally:
         await engine.close()
 

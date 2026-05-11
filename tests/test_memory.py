@@ -4,14 +4,29 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from nahida_bot.agent.memory import (
     ConversationTurn,
+    HashEmbeddingProvider,
+    MemoryConsolidator,
+    MemoryItem,
     MemoryRecord,
+    RuleBasedMemoryExtractor,
     SQLiteMemoryStore,
     extract_keywords,
+    parse_memory_dream,
+)
+from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.memory.markdown import MEMORY_SUMMARY_FILE
+from nahida_bot.agent.providers.base import ProviderResponse
+from nahida_bot.agent.memory.sqlite import build_fts_query, tokenize_for_fts
+from nahida_bot.agent.memory.vector import (
+    VectorHit,
+    VectorRecord,
+    reciprocal_rank_fusion,
 )
 from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.db.engine import DatabaseEngine
@@ -104,6 +119,19 @@ class TestExtractKeywordsCJK:
         assert "你" not in keywords
 
 
+class TestFtsTokenization:
+    def test_chinese_text_is_tokenized_for_sqlite_fts(self) -> None:
+        index_text = tokenize_for_fts("记忆系统需要支持向量检索")
+        assert " " in index_text
+        assert "记忆" in index_text
+        assert "检索" in index_text
+
+    def test_fts_query_quotes_tokens(self) -> None:
+        query = build_fts_query("向量检索")
+        assert '"' in query
+        assert "向量" in query or "检索" in query
+
+
 # ---------------------------------------------------------------------------
 # ConversationTurn
 # ---------------------------------------------------------------------------
@@ -152,6 +180,50 @@ class TestMemoryStoreABC:
     def test_memory_store_requires_ensure_session(self) -> None:
         """Contract should require ensure_session for all memory backends."""
         assert "ensure_session" in MemoryStore.__abstractmethods__
+
+
+class FakeVectorIndex:
+    """In-memory vector index for exercising the optional VectorIndex path."""
+
+    def __init__(self) -> None:
+        self.records: dict[str, VectorRecord] = {}
+
+    async def upsert(self, records: list[VectorRecord]) -> None:
+        for record in records:
+            self.records[record.embedding_id] = record
+
+    async def delete(self, ids: list[str]) -> None:
+        for embedding_id in ids:
+            self.records.pop(embedding_id, None)
+
+    async def search(
+        self, query_embedding: list[float], *, limit: int
+    ) -> list[VectorHit]:
+        return [
+            VectorHit(item_id=record.item_id, score=1.0)
+            for record in list(self.records.values())[:limit]
+        ]
+
+
+class FakeDreamProvider:
+    """Provider stub for LLM memory dreaming tests."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.messages: list[ContextMessage] = []
+        self.model: str | None = None
+
+    async def chat(
+        self,
+        *,
+        messages: list[ContextMessage],
+        tools: list[object] | None = None,
+        timeout_seconds: float | None = None,
+        model: str | None = None,
+    ) -> ProviderResponse:
+        self.messages = messages
+        self.model = model
+        return ProviderResponse(content=self.content)
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +432,247 @@ async def test_keywords_are_backfilled_on_search(
     results = await memory_store.search("test-session", "python")
     assert len(results) >= 1
     assert "python" in results[0].keywords
+
+
+@pytest.mark.asyncio
+async def test_append_and_search_memory_item_bm25(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    item_id = await memory_store.append_item(
+        title="memory design",
+        content="Use SQLite FTS5 BM25 for durable memory search.",
+        kind="decision",
+    )
+
+    results = await memory_store.search_items("BM25 memory")
+
+    assert len(results) == 1
+    assert isinstance(results[0], MemoryItem)
+    assert results[0].item_id == item_id
+    assert results[0].kind == "decision"
+    assert "SQLite FTS5" in results[0].content
+
+
+@pytest.mark.asyncio
+async def test_chinese_memory_item_search_uses_pre_tokenized_fts(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    await memory_store.append_item(
+        title="中文检索",
+        content="记忆系统需要支持中文向量检索和关键词召回。",
+        kind="decision",
+    )
+    await memory_store.append_item(
+        title="unrelated",
+        content="Weather forecast and unrelated English text.",
+    )
+
+    results = await memory_store.search_items("中文检索")
+
+    assert results
+    assert "中文向量检索" in results[0].content
+
+
+@pytest.mark.asyncio
+async def test_memory_item_list_and_archive(memory_store: SQLiteMemoryStore) -> None:
+    item_id = await memory_store.append_item(content="Remember this durable fact.")
+
+    listed = await memory_store.search_items("")
+    assert any(item.item_id == item_id for item in listed)
+
+    archived = await memory_store.archive_item(item_id)
+    assert archived is True
+    listed_after = await memory_store.search_items("")
+    assert all(item.item_id != item_id for item in listed_after)
+
+
+@pytest.mark.asyncio
+async def test_memory_item_embeddings_support_vector_search(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    await memory_store.append_item(
+        title="memory retrieval",
+        content="Hybrid retrieval combines BM25 and embeddings.",
+    )
+    await memory_store.append_item(
+        title="weather",
+        content="Rain forecast for tomorrow.",
+    )
+    provider = HashEmbeddingProvider(dimensions=32)
+
+    embedded_count = await memory_store.embed_items(provider)
+    results = await memory_store.search_items_vector("BM25 embeddings", provider)
+
+    assert embedded_count == 2
+    assert results
+    assert isinstance(results[0], MemoryItem)
+
+
+@pytest.mark.asyncio
+async def test_memory_item_embeddings_can_use_optional_vector_index(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    item_id = await memory_store.append_item(
+        title="sqlite vec",
+        content="Optional sqlite-vec index can serve vector hits.",
+    )
+    provider = HashEmbeddingProvider(dimensions=32)
+    vector_index = FakeVectorIndex()
+
+    first_count = await memory_store.embed_items(provider, vector_index=vector_index)
+    first_embedding_ids = set(vector_index.records)
+    second_count = await memory_store.embed_items(provider, vector_index=vector_index)
+    results = await memory_store.search_items_vector(
+        "vector hits",
+        provider,
+        vector_index=vector_index,
+    )
+
+    assert first_count == 1
+    assert second_count == 1
+    assert set(vector_index.records) == first_embedding_ids
+    assert results
+    assert results[0].item_id == item_id
+
+
+@pytest.mark.asyncio
+async def test_memory_item_hybrid_search_fuses_fts_and_vector(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    await memory_store.append_item(
+        title="Chinese memory retrieval",
+        content="中文记忆检索需要 BM25 和 embedding 混合召回。",
+    )
+    provider = HashEmbeddingProvider(dimensions=32)
+    await memory_store.embed_items(provider)
+
+    results = await memory_store.search_items_hybrid("中文 BM25", provider)
+
+    assert results
+    assert "中文记忆检索" in results[0].content
+
+
+def test_reciprocal_rank_fusion_orders_shared_hits_first() -> None:
+    fused = reciprocal_rank_fusion([["a", "b"], ["b", "a"]], limit=2)
+    assert [item_id for item_id, _score in fused] == ["a", "b"]
+
+
+def test_rule_based_memory_extractor_handles_chinese_explicit_memory() -> None:
+    extractor = RuleBasedMemoryExtractor()
+
+    results = extractor.extract(
+        session_id="s1",
+        user_message="请记住：我喜欢你默认用中文回答，并且说明关键取舍。",
+        assistant_message="好的。",
+    )
+
+    assert len(results) == 1
+    assert results[0].content == "我喜欢你默认用中文回答，并且说明关键取舍。"
+
+
+def test_parse_memory_dream_accepts_fenced_json() -> None:
+    dream = parse_memory_dream(
+        """```json
+        {
+          "add": [
+            {
+              "kind": "preference",
+              "title": "语言偏好",
+              "content": "用户偏好用中文讨论技术实现。",
+              "confidence": 0.9,
+              "importance": 0.8,
+              "evidence": "用户要求中文交互。"
+            }
+          ],
+          "archive": [
+            {"item_id": "mem_old", "reason": "被新的偏好替代。"}
+          ]
+        }
+        ```"""
+    )
+
+    assert dream.additions[0].kind == "preference"
+    assert dream.additions[0].content == "用户偏好用中文讨论技术实现。"
+    assert dream.archives[0].item_id == "mem_old"
+
+
+@pytest.mark.asyncio
+async def test_memory_consolidator_auto_applies_and_projects_workspace(
+    memory_store: SQLiteMemoryStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "MEMORY.md").write_text(
+        "# Memory\n\n## Manual\n", encoding="utf-8"
+    )
+    consolidator = MemoryConsolidator(memory_store)
+
+    applied = await consolidator.consolidate_turn(
+        session_id="test-session",
+        user_message="请记住：我喜欢你默认用中文回答，并且说明关键取舍。",
+        assistant_message="好的，我会记住。",
+        workspace_id="default",
+        workspace_root=workspace_root,
+    )
+
+    items = await memory_store.search_items("中文回答")
+    candidates = await memory_store.list_candidates(status="auto_applied")
+    summary = (workspace_root / MEMORY_SUMMARY_FILE).read_text(encoding="utf-8")
+    memory_md = (workspace_root / "MEMORY.md").read_text(encoding="utf-8")
+
+    assert applied == 1
+    assert items
+    assert candidates
+    assert "中文回答" in summary
+    assert "nahida-memory-generated:start" in memory_md
+    assert "## Manual" in memory_md
+
+
+@pytest.mark.asyncio
+async def test_memory_consolidator_applies_llm_dream_add_and_archive(
+    memory_store: SQLiteMemoryStore,
+    tmp_path: Path,
+) -> None:
+    old_id = await memory_store.append_item(
+        title="旧语言偏好",
+        content="用户偏好英文回答。",
+        kind="preference",
+    )
+    provider = FakeDreamProvider(
+        f"""{{
+          "add": [
+            {{
+              "kind": "preference",
+              "title": "语言偏好",
+              "content": "用户偏好用中文讨论技术实现。",
+              "confidence": 0.92,
+              "importance": 0.8,
+              "evidence": "用户要求用中文讨论记忆系统。"
+            }}
+          ],
+          "archive": [
+            {{"item_id": "{old_id}", "reason": "新的对话明确改为中文偏好。"}}
+          ]
+        }}"""
+    )
+    consolidator = MemoryConsolidator(memory_store)
+
+    applied = await consolidator.consolidate_turn(
+        session_id="test-session",
+        user_message="我们之后都用中文讨论这个项目。",
+        assistant_message="好的，之后默认用中文讨论。",
+        workspace_root=tmp_path,
+        dream_provider=provider,
+        dream_model="memory-model",
+    )
+
+    new_items = await memory_store.search_items("中文讨论")
+    old_items = await memory_store.search_items("英文回答")
+    candidates = await memory_store.list_candidates(status="auto_applied")
+
+    assert provider.model == "memory-model"
+    assert applied >= 2
+    assert any(item.content == "用户偏好用中文讨论技术实现。" for item in new_items)
+    assert all(item.item_id != old_id for item in old_items)
+    assert any(candidate.kind == "archive" for candidate in candidates)

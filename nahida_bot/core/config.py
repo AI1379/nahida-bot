@@ -102,6 +102,11 @@ class SchedulerConfigModel(BaseModel):
     max_jobs_per_chat: int = Field(default=20, ge=1)
     failure_retry_seconds: int = Field(default=300, ge=1)
     max_consecutive_failures: int = Field(default=3, ge=1)
+    memory_dreaming_enabled: bool = True
+    memory_dreaming_interval_seconds: int = Field(default=3600, ge=60)
+    memory_dreaming_initial_delay_seconds: int = Field(default=300, ge=0)
+    memory_dreaming_session_limit: int = Field(default=20, ge=1)
+    memory_dreaming_recent_turn_limit: int = Field(default=40, ge=2)
 
 
 class RouterConfigModel(BaseModel):

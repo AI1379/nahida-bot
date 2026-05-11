@@ -14,6 +14,8 @@ from markdownify import markdownify as md
 from readability import Document
 
 from nahida_bot.agent.memory.markdown import (
+    MEMORY_FILE,
+    MEMORY_SUMMARY_FILE,
     MAX_TOOL_READ_CHARS,
     append_daily_memory,
     append_long_term_memory,
@@ -42,7 +44,6 @@ _PRIVATE_NETWORKS = [
     ipaddress.ip_network("fc00::/7"),
 ]
 _PLAN_PATH = ".agent/plan.json"
-_MEMORY_FILE = "MEMORY.md"
 
 
 class BuiltinCommandsPlugin(Plugin):
@@ -81,6 +82,11 @@ class BuiltinCommandsPlugin(Plugin):
         )
         self.api.register_command(
             "help", self._cmd_help, description="List available commands"
+        )
+        self.api.register_command(
+            "memory",
+            self._cmd_memory,
+            description="Search or store durable memory",
         )
 
     def _register_workspace_tools(self) -> None:
@@ -445,7 +451,11 @@ class BuiltinCommandsPlugin(Plugin):
         max_length: int = 10000,
     ) -> str:
         _logger.debug("tool.memory_read", query=query, days=days)
-        paths = [_MEMORY_FILE, *recent_daily_memory_paths(days=max(days, 0))]
+        paths = [
+            MEMORY_FILE,
+            MEMORY_SUMMARY_FILE,
+            *recent_daily_memory_paths(days=max(days, 0)),
+        ]
         max_chars = min(max(max_length, 1), MAX_TOOL_READ_CHARS)
         blocks: list[str] = []
         for path in paths:
@@ -484,12 +494,12 @@ class BuiltinCommandsPlugin(Plugin):
             written.append(path)
 
         if target in {"long_term", "both"}:
-            existing = await self._read_workspace_text_or_empty(_MEMORY_FILE)
+            existing = await self._read_workspace_text_or_empty(MEMORY_FILE)
             await self.api.workspace_write(
-                _MEMORY_FILE,
+                MEMORY_FILE,
                 append_long_term_memory(existing, content, section=section),
             )
-            written.append(_MEMORY_FILE)
+            written.append(MEMORY_FILE)
 
         return "Memory written: " + ", ".join(written)
 
@@ -1270,6 +1280,68 @@ class BuiltinCommandsPlugin(Plugin):
             aliases = f" ({', '.join(cmd.aliases)})" if cmd.aliases else ""
             desc = f" — {cmd.description}" if cmd.description else ""
             lines.append(f"  /{cmd.name}{aliases}{desc}")
+        return "\n".join(lines)
+
+    async def _cmd_memory(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        raw = args.strip()
+        if not raw:
+            lines = [
+                "Usage:",
+                "  /memory search <query>",
+                "  /memory list",
+                "  /memory remember <text>",
+            ]
+            return "\n".join(lines)
+
+        action, _, rest = raw.partition(" ")
+        action = action.lower()
+        if action == "search":
+            query = rest.strip()
+            if not query:
+                return "Usage: /memory search <query>"
+            results = await self.api.memory_search(query, limit=10)
+            return self._format_memory_refs(results)
+
+        if action == "list":
+            results = await self.api.memory_search("", limit=10)
+            return self._format_memory_refs(results)
+
+        if action in {"remember", "store"}:
+            content = rest.strip()
+            if not content:
+                return "Usage: /memory remember <text>"
+            await self.api.memory_store(
+                "",
+                content,
+                metadata={
+                    "source": "command",
+                    "session_id": session_id,
+                    "platform": inbound.platform,
+                    "chat_id": inbound.chat_id,
+                    "user_id": inbound.user_id,
+                },
+            )
+            return "Memory stored."
+
+        return "Unknown memory action. Use search, list, or remember."
+
+    @staticmethod
+    def _format_memory_refs(results: list[Any]) -> str:
+        if not results:
+            return "No memory found."
+        lines = ["Memory results:"]
+        for idx, item in enumerate(results, start=1):
+            title = ""
+            metadata = getattr(item, "metadata", None)
+            if isinstance(metadata, dict):
+                title_value = metadata.get("title")
+                if isinstance(title_value, str) and title_value:
+                    title = f"{title_value}: "
+            key = getattr(item, "key", "")
+            content = getattr(item, "content", "")
+            lines.append(f"{idx}. [{key}] {title}{str(content)[:500]}")
         return "\n".join(lines)
 
     async def _tool_workspace_read(self, path: str) -> str:

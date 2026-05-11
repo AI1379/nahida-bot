@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, AbstractSet, Any
+from typing import TYPE_CHECKING, AbstractSet, Any, cast
 
 import structlog
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
+from nahida_bot.agent.memory.consolidation import MemoryConsolidator
+from nahida_bot.agent.memory.sqlite import build_fts_query
 from nahida_bot.agent.memory.models import ConversationTurn
 from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.config import MediaContextPolicy
@@ -58,6 +60,9 @@ class SessionRunner:
     ) -> None:
         self._agent = agent_loop
         self._memory = memory_store
+        self._memory_consolidator = (
+            MemoryConsolidator(memory_store) if memory_store is not None else None
+        )
         self._providers = provider_manager
         self._workspace = workspace_manager
         self._tools = tool_registry
@@ -85,6 +90,9 @@ class SessionRunner:
     @memory.setter
     def memory(self, value: MemoryStore | None) -> None:
         self._memory = value
+        self._memory_consolidator = (
+            MemoryConsolidator(value) if value is not None else None
+        )
 
     @property
     def provider_manager(self) -> ProviderManager | None:
@@ -93,6 +101,16 @@ class SessionRunner:
     @provider_manager.setter
     def provider_manager(self, value: ProviderManager | None) -> None:
         self._providers = value
+
+    async def resolve_provider_for_session(
+        self, session_id: str
+    ) -> tuple[Any, str | None]:
+        """Resolve the provider/model that should serve a session."""
+        return await self._resolve_provider(session_id)
+
+    def workspace_root_for(self, workspace_id: str | None) -> Any:
+        """Resolve a workspace root path for background services."""
+        return self._resolve_workspace_root(workspace_id)
 
     @property
     def tool_registry(self) -> ToolRegistry | None:
@@ -159,6 +177,9 @@ class SessionRunner:
                 workspace_id=workspace_id,
                 capabilities=capabilities,
             )
+            relevant_memory = await self._load_relevant_memory(user_message)
+            if relevant_memory:
+                history = [relevant_memory, *history]
             tools = self._collect_tools(tool_filter, capabilities=capabilities)
             logger.debug(
                 "session_runner.tools_collected",
@@ -240,6 +261,8 @@ class SessionRunner:
                 attachments=list(attachments_for_turn),
                 message_context=message_context,
                 source_tag=source_tag,
+                workspace_id=workspace_id,
+                workspace_root=workspace_root,
             )
             return result
         finally:
@@ -539,6 +562,59 @@ class SessionRunner:
         )
 
         return messages
+
+    async def _load_relevant_memory(self, query: str) -> ContextMessage | None:
+        """Load a small relevant durable-memory context block for the current turn."""
+        if self._memory is None or not query.strip() or not build_fts_query(query):
+            return None
+        search_items = getattr(self._memory, "search_items", None)
+        if not callable(search_items):
+            return None
+        try:
+            items = await cast(Any, search_items)(query, limit=5)
+        except Exception as exc:
+            logger.warning("session_runner.memory_search_failed", error=str(exc))
+            return None
+        if not items:
+            return None
+
+        lines = [
+            "Relevant durable memory:",
+            "Treat memory as helpful context, not unquestionable truth. Current user instructions and current files take precedence.",
+        ]
+        remaining = 1200
+        for item in items:
+            kind = getattr(item, "kind", "memory")
+            title = getattr(item, "title", "")
+            content = str(getattr(item, "content", "")).strip()
+            item_id = getattr(item, "item_id", "")
+            if not content:
+                continue
+            prefix = f"- [{kind}"
+            if item_id:
+                prefix += f" {item_id}"
+            prefix += "] "
+            if title:
+                prefix += f"{title}: "
+            allowance = max(remaining - len(prefix), 0)
+            if allowance <= 0:
+                break
+            if len(content) > allowance:
+                content = content[:allowance].rstrip() + "..."
+            line = prefix + content
+            lines.append(line)
+            remaining -= len(line)
+            if remaining <= 0:
+                break
+
+        if len(lines) <= 2:
+            return None
+        return ContextMessage(
+            role="system",
+            source="long_term_memory",
+            content="\n".join(lines),
+            metadata={"memory_backend": "items", "memory_count": len(lines) - 2},
+        )
 
     @staticmethod
     def _prepend_text_part(
@@ -1368,6 +1444,8 @@ class SessionRunner:
         attachments: list[InboundAttachment],
         message_context: MessageContext | None = None,
         source_tag: str,
+        workspace_id: str | None = None,
+        workspace_root: Any = None,
     ) -> None:
         if self._memory is None:
             return
@@ -1475,6 +1553,51 @@ class SessionRunner:
                 metadata=assistant_metadata,
             )
             await self._memory.append_turn(session_id, assistant_turn)
+
+        await self._consolidate_memory_after_turn(
+            session_id=session_id,
+            user_message=user_message,
+            assistant_message=str(getattr(result, "final_response", "") or ""),
+            workspace_id=workspace_id,
+            workspace_root=workspace_root,
+        )
+
+    async def _consolidate_memory_after_turn(
+        self,
+        *,
+        session_id: str,
+        user_message: str,
+        assistant_message: str,
+        workspace_id: str | None,
+        workspace_root: Any,
+    ) -> None:
+        """Run non-blocking-looking memory consolidation on the completed turn."""
+        if self._memory_consolidator is None:
+            return
+        resolved_root = workspace_root
+        if resolved_root is None and workspace_id is not None:
+            resolved_root = self._resolve_workspace_root(workspace_id)
+        try:
+            applied = await self._memory_consolidator.consolidate_turn(
+                session_id=session_id,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                workspace_id=workspace_id,
+                workspace_root=resolved_root,
+            )
+            if applied:
+                logger.debug(
+                    "session_runner.memory_consolidated",
+                    session_id=session_id,
+                    workspace_id=workspace_id or "",
+                    applied=applied,
+                )
+        except Exception as exc:
+            logger.warning(
+                "session_runner.memory_consolidation_failed",
+                session_id=session_id,
+                error=str(exc),
+            )
 
 
 def _safe_int(value: object, default: int = 0) -> int:

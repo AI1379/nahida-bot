@@ -183,6 +183,8 @@ class TestSettingsSubConfigs:
         s = Settings()
         assert isinstance(s.scheduler, SchedulerConfigModel)
         assert s.scheduler.max_concurrent_fires == 5
+        assert s.scheduler.memory_dreaming_enabled is True
+        assert s.scheduler.memory_dreaming_interval_seconds == 3600
 
     def test_default_router(self) -> None:
         s = Settings()
@@ -202,8 +204,16 @@ class TestSettingsSubConfigs:
         assert s.context.reasoning_policy == "strip"
 
     def test_scheduler_from_dict(self) -> None:
-        s = Settings.model_validate({"scheduler": {"max_jobs_per_chat": 50}})
+        s = Settings.model_validate(
+            {
+                "scheduler": {
+                    "max_jobs_per_chat": 50,
+                    "memory_dreaming_interval_seconds": 7200,
+                }
+            }
+        )
         assert s.scheduler.max_jobs_per_chat == 50
+        assert s.scheduler.memory_dreaming_interval_seconds == 7200
 
     def test_router_from_dict(self) -> None:
         s = Settings.model_validate(
