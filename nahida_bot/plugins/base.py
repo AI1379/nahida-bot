@@ -121,6 +121,7 @@ class OutboundMessage:
 
     text: str
     reply_to: str = ""
+    reasoning: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
     attachments: list[Attachment] = field(default_factory=list)
 

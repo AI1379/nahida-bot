@@ -529,6 +529,8 @@ class Application:
                     agent_enabled=self.settings.router.agent_enabled,
                     command_timeout_seconds=self.settings.router.command_timeout_seconds,
                     command_timeout_message=self.settings.router.command_timeout_message,
+                    show_reasoning=self.settings.router.show_reasoning,
+                    reasoning_max_chars=self.settings.router.reasoning_max_chars,
                 ),
             )
             await self.message_router.start()

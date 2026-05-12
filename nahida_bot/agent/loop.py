@@ -117,6 +117,7 @@ class LoopEvent:
 
     type: Literal["text", "tool_start", "tool_end", "done"]
     text: str | None = None
+    reasoning: str | None = None
     tool_names: list[str] | None = None
     tool_summary: str | None = None
     final_response: str | None = None
@@ -272,8 +273,11 @@ class AgentLoop:
                     conversation.append(assistant_message)
 
                 display = self._display_content(response)
-                if display:
-                    yield LoopEvent(type="text", text=display)
+                reasoning = response.reasoning_content or None
+                if display or reasoning:
+                    yield LoopEvent(
+                        type="text", text=display or None, reasoning=reasoning
+                    )
 
                 if not response.tool_calls:
                     self._log_terminal_without_tool_calls(
@@ -593,7 +597,7 @@ class AgentLoop:
             return "[built-in tool output available]"
 
         if response.reasoning_content:
-            return "[reasoning output available]"
+            return ""
 
         if response.refusal:
             return response.refusal

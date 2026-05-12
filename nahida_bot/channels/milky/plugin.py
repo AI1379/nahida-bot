@@ -146,9 +146,25 @@ class MilkyPlugin(Plugin):
         )
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
-        """Send one normalized outbound message to Milky."""
+        """Send one normalized outbound message to Milky.
+
+        If ``message.reasoning`` is set, it is prepended as a plain-text
+        thinking block before the main content.
+        """
         client = self._ensure_client()
         converter = self._ensure_outbound_converter()
+
+        # Prepend reasoning as a plain-text thinking block
+        if message.reasoning:
+            thinking = f"[💭 思考过程]\n{message.reasoning}"
+            combined = f"{thinking}\n\n{message.text}" if message.text else thinking
+            message = OutboundMessage(
+                text=combined,
+                reply_to=message.reply_to,
+                extra=message.extra,
+                attachments=message.attachments,
+            )
+
         try:
             scene, peer_id = resolve_target(
                 target, message, scene_by_peer=self._scene_by_peer

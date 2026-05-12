@@ -121,6 +121,8 @@ class RouterConfigModel(BaseModel):
     agent_enabled: bool = True
     command_timeout_seconds: float = Field(default=30.0, ge=0)
     command_timeout_message: str = "Command timed out. Please try again later."
+    show_reasoning: bool = False
+    reasoning_max_chars: int = Field(default=2000, ge=0)
 
 
 class Settings(BaseModel):

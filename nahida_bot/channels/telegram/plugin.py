@@ -141,10 +141,24 @@ class TelegramPlugin(Plugin):
         """Send a message via the Telegram Bot API.
 
         Converts Markdown to Telegram HTML, splits long messages, and
-        handles photo/document attachments.
+        handles photo/document attachments.  Reasoning content (if any)
+        is sent as a blockquote before the main text.
         """
         assert self._bot is not None
         last_msg_id = ""
+
+        # 0. Send reasoning as a blockquote before the main text
+        if message.reasoning:
+            reasoning_html = convert_markdown_to_telegram_html(
+                f"> {self._quote_escape(message.reasoning)}"
+            )
+            chunks = split_html_message(reasoning_html)
+            for chunk in chunks:
+                sent = await self._send_with_retry(
+                    self._bot.send_message,
+                    {"chat_id": int(target), "text": chunk},
+                )
+                last_msg_id = str(sent.message_id)
 
         # 1. Send text (converted from Markdown to Telegram HTML)
         if message.text:
@@ -494,6 +508,11 @@ class TelegramPlugin(Plugin):
         )
 
     # ── Utility ──────────────────────────────────────────
+
+    @staticmethod
+    def _quote_escape(text: str) -> str:
+        """Escape newlines so the text forms a single blockquote paragraph."""
+        return text.replace("\n\n", "\n> \n> ").replace("\n", "\n> ")
 
     @staticmethod
     def _retry_after_seconds(exc: Exception) -> float | None:

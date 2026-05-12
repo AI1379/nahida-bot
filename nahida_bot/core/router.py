@@ -48,6 +48,8 @@ class RouterConfig:
     agent_enabled: bool = True
     command_timeout_seconds: float = 30.0
     command_timeout_message: str = "Command timed out. Please try again later."
+    show_reasoning: bool = False
+    reasoning_max_chars: int = 2000
 
 
 class MessageRouter:
@@ -279,25 +281,52 @@ class MessageRouter:
             message_context=context_from_inbound(inbound),
             source_tag="user_input",
         ):
-            if event.type == "text" and event.text and event.text != last_sent:
-                await self._send_response(inbound, session_id, event.text)
-                last_sent = event.text
+            if event.type == "text":
+                reasoning = self._prepare_reasoning(event.reasoning)
+                if event.text and event.text != last_sent:
+                    await self._send_response(
+                        inbound, session_id, event.text, reasoning=reasoning
+                    )
+                    last_sent = event.text
+                elif reasoning and not event.text:
+                    await self._send_response(
+                        inbound, session_id, "", reasoning=reasoning
+                    )
             elif event.type == "done":
                 final = event.final_response or ""
+                reasoning = self._prepare_reasoning(event.reasoning)
                 if final and final != last_sent:
-                    await self._send_response(inbound, session_id, final)
+                    await self._send_response(
+                        inbound, session_id, final, reasoning=reasoning
+                    )
+
+    def _prepare_reasoning(self, reasoning: str | None) -> str:
+        """Truncate reasoning if display is enabled."""
+        if not self._config.show_reasoning or not reasoning:
+            return ""
+        limit = self._config.reasoning_max_chars
+        if limit and len(reasoning) > limit:
+            return reasoning[:limit] + "..."
+        return reasoning
 
     async def _send_response(
-        self, inbound: InboundMessage, session_id: str, text: str
+        self,
+        inbound: InboundMessage,
+        session_id: str,
+        text: str,
+        *,
+        reasoning: str = "",
     ) -> None:
         """Send response through the originating channel."""
-        if not text:
+        if not text and not reasoning:
             return
 
         await self._send_outbound(
             inbound,
             session_id,
-            OutboundMessage(text=text, reply_to=inbound.message_id),
+            OutboundMessage(
+                text=text, reply_to=inbound.message_id, reasoning=reasoning
+            ),
         )
 
     async def _send_outbound(
