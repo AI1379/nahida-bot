@@ -80,6 +80,8 @@ class MessageRouter:
         self._subscription: Subscription | None = None
         # Maps deterministic session key → active session id (for /new)
         self._active_sessions: dict[str, str] = {}
+        # Per-session queues for messages arriving while agent is busy
+        self._pending: dict[str, list[tuple[InboundMessage, str, str | None]]] = {}
 
     @property
     def agent(self) -> AgentLoop | None:
@@ -123,10 +125,18 @@ class MessageRouter:
         logger.info("message_router.started")
 
     async def stop(self) -> None:
-        """Unsubscribe from events."""
+        """Unsubscribe from events and wait for active agent runs to finish."""
         if self._subscription is not None:
             self._subscription.unsubscribe()
             self._subscription = None
+
+        # Wait for active agent runs to finish, then cancel stragglers
+        if self._runner is not None:
+            tracker = self._runner.run_tracker
+            tasks = [run.task for run in tracker.all_runs if not run.task.done()]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
         logger.info("message_router.stopped")
 
     def _persist_override(self, key: str, session_id: str) -> None:
@@ -271,34 +281,102 @@ class MessageRouter:
         if not self._config.agent_enabled:
             return
 
-        last_sent = ""
-        async for event in self._runner.run_stream(
-            user_message=inbound.text,
+        tracker = self._runner.run_tracker
+        if tracker.is_active(session_id):
+            self._pending.setdefault(session_id, []).append(
+                (inbound, session_id, workspace_id)
+            )
+            logger.debug(
+                "router.message_queued",
+                session_id=session_id,
+                queue_depth=len(self._pending.get(session_id, [])),
+            )
+            return
+
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            self._run_agent_in_background(inbound, session_id, workspace_id, stop_event)
+        )
+        tracker.start(session_id, task, stop_event)
+        logger.debug(
+            "router.agent_dispatched",
             session_id=session_id,
-            system_prompt=self._config.system_prompt,
-            workspace_id=workspace_id,
-            attachments=inbound.attachments,
-            message_context=context_from_inbound(inbound),
-            source_tag="user_input",
-        ):
-            if event.type == "text":
-                reasoning = self._prepare_reasoning(event.reasoning)
-                if event.text and event.text != last_sent:
-                    await self._send_response(
-                        inbound, session_id, event.text, reasoning=reasoning
-                    )
-                    last_sent = event.text
-                elif reasoning and not event.text:
-                    await self._send_response(
-                        inbound, session_id, "", reasoning=reasoning
-                    )
-            elif event.type == "done":
-                final = event.final_response or ""
-                reasoning = self._prepare_reasoning(event.reasoning)
-                if final and final != last_sent:
-                    await self._send_response(
-                        inbound, session_id, final, reasoning=reasoning
-                    )
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+        )
+
+    async def _run_agent_in_background(
+        self,
+        inbound: InboundMessage,
+        session_id: str,
+        workspace_id: str | None,
+        stop_event: asyncio.Event,
+    ) -> None:
+        """Run agent loop in background, streaming responses as they arrive."""
+        tracker = self._runner.run_tracker
+        last_sent = ""
+        try:
+            async for event in self._runner.run_stream(
+                user_message=inbound.text,
+                session_id=session_id,
+                system_prompt=self._config.system_prompt,
+                workspace_id=workspace_id,
+                attachments=inbound.attachments,
+                message_context=context_from_inbound(inbound),
+                source_tag="user_input",
+                stop_event=stop_event,
+            ):
+                if event.type == "text":
+                    reasoning = self._prepare_reasoning(event.reasoning)
+                    if event.text and event.text != last_sent:
+                        await self._send_response(
+                            inbound, session_id, event.text, reasoning=reasoning
+                        )
+                        last_sent = event.text
+                    elif reasoning and not event.text:
+                        await self._send_response(
+                            inbound, session_id, "", reasoning=reasoning
+                        )
+                elif event.type == "done":
+                    if event.error == "cancelled":
+                        await self._send_response(
+                            inbound, session_id, "[Agent stopped.]"
+                        )
+                    else:
+                        final = event.final_response or ""
+                        reasoning = self._prepare_reasoning(event.reasoning)
+                        if final and final != last_sent:
+                            await self._send_response(
+                                inbound, session_id, final, reasoning=reasoning
+                            )
+        except asyncio.CancelledError:
+            try:
+                await self._send_response(inbound, session_id, "[Agent stopped.]")
+            except Exception:
+                logger.debug("router.cancelled_send_failed", session_id=session_id)
+            raise
+        except Exception:
+            logger.exception("router.agent_run_failed", session_id=session_id)
+            try:
+                await self._send_response(
+                    inbound, session_id, "An error occurred during agent execution."
+                )
+            except Exception:
+                logger.debug("router.error_send_failed", session_id=session_id)
+        finally:
+            tracker.finish(session_id)
+            logger.debug("router.agent_run_finished", session_id=session_id)
+            await self._drain_pending(session_id)
+
+    async def _drain_pending(self, session_id: str) -> None:
+        """Process the next queued message for a session, if any."""
+        queue = self._pending.get(session_id)
+        if not queue:
+            return
+        next_inbound, next_sid, next_wid = queue.pop(0)
+        if not queue:
+            del self._pending[session_id]
+        await self._dispatch_message(next_inbound, next_sid, next_wid)
 
     def _prepare_reasoning(self, reasoning: str | None) -> str:
         """Truncate reasoning if display is enabled."""

@@ -158,6 +158,7 @@ class AgentLoop:
         provider: ChatProvider | None = None,
         context_builder: ContextBuilder | None = None,
         model: str | None = None,
+        stop_event: asyncio.Event | None = None,
     ) -> AgentRunResult:
         """Run the agent loop until terminal assistant response is produced.
 
@@ -176,6 +177,7 @@ class AgentLoop:
             provider=provider,
             context_builder=context_builder,
             model=model,
+            stop_event=stop_event,
         ):
             if event.type == "done":
                 return AgentRunResult(
@@ -200,6 +202,7 @@ class AgentLoop:
         provider: ChatProvider | None = None,
         context_builder: ContextBuilder | None = None,
         model: str | None = None,
+        stop_event: asyncio.Event | None = None,
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -243,6 +246,19 @@ class AgentLoop:
         step = 0
         try:
             for step in range(1, self.config.max_steps + 1):
+                if stop_event is not None and stop_event.is_set():
+                    yield LoopEvent(
+                        type="done",
+                        final_response=(
+                            assistant_messages[-1].content if assistant_messages else ""
+                        ),
+                        assistant_messages=list(assistant_messages),
+                        tool_messages=list(tool_messages),
+                        steps=step - 1,
+                        error="cancelled",
+                    )
+                    return
+
                 prompt_messages = active_builder.build_context(
                     system_prompt=effective_system_prompt,
                     workspace_root=workspace_root,
@@ -301,6 +317,17 @@ class AgentLoop:
                         tool_messages=list(tool_messages),
                         steps=step,
                         trace_id=trace.trace_id if trace else None,
+                    )
+                    return
+
+                if stop_event is not None and stop_event.is_set():
+                    yield LoopEvent(
+                        type="done",
+                        final_response=display or "",
+                        assistant_messages=list(assistant_messages),
+                        tool_messages=list(tool_messages),
+                        steps=step,
+                        error="cancelled",
                     )
                     return
 

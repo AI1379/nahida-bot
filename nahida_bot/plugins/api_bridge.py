@@ -468,6 +468,11 @@ class RealBotAPI:
         """Access the AgentOrchestrator exposed to built-in tools."""
         return self._orchestration_service
 
+    @property
+    def message_router(self) -> Any | None:
+        """Access the MessageRouter for /stop command support."""
+        return self._event_bus.context.app.message_router
+
     # ── Cleanup ────────────────────────────────────────
 
     def clear_subscriptions(self) -> None:

@@ -104,6 +104,12 @@ class BuiltinCommandsPlugin(Plugin):
             self._cmd_agent_wait,
             description="Wait for a subagent task to finish (/agent_wait <task_id> [timeout])",
         )
+        self.api.register_command(
+            "stop",
+            self._cmd_stop,
+            description="Stop the currently running agent",
+            aliases=["s"],
+        )
 
     def _register_workspace_tools(self) -> None:
         self.api.register_tool(
@@ -1402,6 +1408,38 @@ class BuiltinCommandsPlugin(Plugin):
         if task is None or task.requester_session_id != session_id:
             return f"Task {task_id} not found."
         return self._format_background_task(task)
+
+    async def _cmd_stop(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        router = self._get_router()
+        if router is None:
+            return "Router not available."
+        runner = router._runner
+        if runner is None:
+            return "No active session runner."
+
+        tracker = runner.run_tracker
+        run = tracker.get(session_id)
+        if run is None:
+            return "No active agent run for this session."
+        if run.task.done():
+            tracker.finish(session_id)
+            return "Agent already finished."
+
+        stopped = tracker.request_stop(session_id)
+        if stopped:
+            _logger.info(
+                "cmd.stop",
+                session_id=session_id,
+                platform=inbound.platform,
+                chat_id=inbound.chat_id,
+            )
+            return "Agent stopped."
+        return "No active agent run for this session."
+
+    def _get_router(self) -> Any:
+        return getattr(self.api, "message_router", None)
 
     async def _tool_workspace_read(self, path: str) -> str:
         """Read a text file from the active workspace."""

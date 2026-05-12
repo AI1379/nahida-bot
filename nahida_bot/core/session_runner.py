@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+import asyncio
+import time
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, AbstractSet, Any, cast
 
 import structlog
@@ -45,6 +47,53 @@ _FALLBACK_VISION_PROMPT = (
 )
 
 
+@dataclass(slots=True)
+class ActiveRun:
+    """Tracks one in-flight agent run for a session."""
+
+    task: asyncio.Task[None]
+    stop_event: asyncio.Event
+    session_id: str
+    started_at: float = field(default_factory=time.monotonic)
+
+
+class ActiveRunTracker:
+    """Per-session active agent run tracking with cancellation support."""
+
+    def __init__(self) -> None:
+        self._runs: dict[str, ActiveRun] = {}
+
+    def start(
+        self, session_id: str, task: asyncio.Task[None], stop_event: asyncio.Event
+    ) -> None:
+        if session_id in self._runs:
+            raise RuntimeError(f"Agent run already active for session {session_id}")
+        self._runs[session_id] = ActiveRun(
+            task=task, stop_event=stop_event, session_id=session_id
+        )
+
+    def finish(self, session_id: str) -> None:
+        self._runs.pop(session_id, None)
+
+    def is_active(self, session_id: str) -> bool:
+        return session_id in self._runs
+
+    def get(self, session_id: str) -> ActiveRun | None:
+        return self._runs.get(session_id)
+
+    def request_stop(self, session_id: str) -> bool:
+        run = self._runs.get(session_id)
+        if run is None:
+            return False
+        run.stop_event.set()
+        run.task.cancel()
+        return True
+
+    @property
+    def all_runs(self) -> list[ActiveRun]:
+        return list(self._runs.values())
+
+
 class SessionRunner:
     """Resolve deps, run agent, persist turns — shared by router and scheduler."""
 
@@ -73,6 +122,7 @@ class SessionRunner:
         self._multimodal_config = multimodal_config
         self._media_resolver = media_resolver
         self._channel_registry = channel_registry
+        self._run_tracker = ActiveRunTracker()
 
     @property
     def has_agent(self) -> bool:
@@ -123,6 +173,10 @@ class SessionRunner:
     def tool_registry(self, value: ToolRegistry | None) -> None:
         self._tools = value
 
+    @property
+    def run_tracker(self) -> ActiveRunTracker:
+        return self._run_tracker
+
     async def run(
         self,
         *,
@@ -135,6 +189,7 @@ class SessionRunner:
         message_context: MessageContext | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
+        stop_event: asyncio.Event | None = None,
     ) -> AgentRunResult:
         """Run the agent loop and return the final result (backward-compat)."""
         done: LoopEvent | None = None
@@ -148,6 +203,7 @@ class SessionRunner:
             message_context=message_context,
             tool_filter=tool_filter,
             source_tag=source_tag,
+            stop_event=stop_event,
         ):
             if event.type == "done":
                 done = event
@@ -174,6 +230,7 @@ class SessionRunner:
         message_context: MessageContext | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
+        stop_event: asyncio.Event | None = None,
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -292,6 +349,9 @@ class SessionRunner:
                 tool_count=len(tools),
                 user_part_count=len(user_parts),
             )
+            if stop_event is not None:
+                run_kwargs["stop_event"] = stop_event
+
             async for event in self._agent.run_stream(**run_kwargs):
                 if event.type == "done":
                     done_data = {
