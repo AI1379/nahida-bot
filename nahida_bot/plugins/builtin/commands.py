@@ -88,6 +88,22 @@ class BuiltinCommandsPlugin(Plugin):
             self._cmd_memory,
             description="Search or store durable memory",
         )
+        self.api.register_command(
+            "agents",
+            self._cmd_agents,
+            description="List subagent tasks for this session",
+            aliases=["agent"],
+        )
+        self.api.register_command(
+            "agent_stop",
+            self._cmd_agent_stop,
+            description="Stop a running subagent task (/agent_stop <task_id>)",
+        )
+        self.api.register_command(
+            "agent_wait",
+            self._cmd_agent_wait,
+            description="Wait for a subagent task to finish (/agent_wait <task_id> [timeout])",
+        )
 
     def _register_workspace_tools(self) -> None:
         self.api.register_tool(
@@ -1343,6 +1359,49 @@ class BuiltinCommandsPlugin(Plugin):
             content = getattr(item, "content", "")
             lines.append(f"{idx}. [{key}] {title}{str(content)[:500]}")
         return "\n".join(lines)
+
+    async def _cmd_agents(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            return "Subagent service is not available."
+        tasks = await orchestrator.list_tasks(session_id)
+        if not tasks:
+            return "No subagent tasks for this session."
+        return "\n".join(self._format_background_task(t) for t in tasks)
+
+    async def _cmd_agent_stop(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        task_id = args.strip()
+        if not task_id:
+            return "Usage: /agent_stop <task_id>"
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            return "Subagent service is not available."
+        task = await orchestrator.stop_task(session_id, task_id)
+        if task is None:
+            return f"Task {task_id} not found or not owned by this session."
+        return f"Stopped: {task.task_id} ({task.status.value})"
+
+    async def _cmd_agent_wait(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        parts = args.strip().split(None, 1)
+        if not parts:
+            return "Usage: /agent_wait <task_id> [timeout_seconds]"
+        task_id = parts[0]
+        timeout = int(parts[1]) if len(parts) > 1 else 60
+        orchestrator = self._get_orchestrator()
+        if orchestrator is None:
+            return "Subagent service is not available."
+        task = await orchestrator.wait_for_task(
+            task_id, timeout_seconds=max(timeout, 1)
+        )
+        if task is None or task.requester_session_id != session_id:
+            return f"Task {task_id} not found."
+        return self._format_background_task(task)
 
     async def _tool_workspace_read(self, path: str) -> str:
         """Read a text file from the active workspace."""
