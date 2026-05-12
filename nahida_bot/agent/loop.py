@@ -282,6 +282,14 @@ class AgentLoop:
                         step=step,
                         trace=trace,
                     )
+                    logger.info(
+                        "agent_loop.run_completed",
+                        trace_id=trace.trace_id if trace else "",
+                        reason="no_tool_calls",
+                        step=step,
+                        max_steps=self.config.max_steps,
+                        finish_reason=response.finish_reason or "",
+                    )
                     yield LoopEvent(
                         type="done",
                         final_response=display,
@@ -326,6 +334,15 @@ class AgentLoop:
             final_fallback = (
                 assistant_messages[-1].content if assistant_messages else ""
             )
+            logger.warning(
+                "agent_loop.run_completed",
+                trace_id=trace.trace_id if trace else "",
+                reason="max_steps_reached",
+                step=self.config.max_steps,
+                max_steps=self.config.max_steps,
+                assistant_message_count=len(assistant_messages),
+                tool_message_count=len(tool_messages),
+            )
             yield LoopEvent(
                 type="done",
                 final_response=final_fallback,
@@ -339,6 +356,14 @@ class AgentLoop:
                 "agent_loop.provider_error_abort",
                 error=str(exc),
                 exc_info=True,
+            )
+            logger.warning(
+                "agent_loop.run_completed",
+                trace_id=trace.trace_id if trace else "",
+                reason="provider_error",
+                step=step,
+                max_steps=self.config.max_steps,
+                error_code=exc.code,
             )
             fallback = assistant_messages[-1].content if assistant_messages else ""
             if not fallback:
