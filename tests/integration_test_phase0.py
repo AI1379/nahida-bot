@@ -12,16 +12,16 @@ class TestPhase0Foundation:
     def test_project_structure(self) -> None:
         """Test that all required modules can be imported."""
         # Core module
-        from nahida_bot.core import exceptions  # noqa: F401
+        from nahida_bot.core import exceptions  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
         # Submodules
-        from nahida_bot import workspace  # noqa: F401
-        from nahida_bot import agent  # noqa: F401
-        from nahida_bot import plugins  # noqa: F401
-        from nahida_bot import gateway  # noqa: F401
-        from nahida_bot import node  # noqa: F401
-        from nahida_bot import db  # noqa: F401
-        from nahida_bot import cli  # noqa: F401
+        from nahida_bot import workspace  # noqa: F401  # pyright: ignore[reportUnusedImport]
+        from nahida_bot import agent  # noqa: F401  # pyright: ignore[reportUnusedImport]
+        from nahida_bot import plugins  # noqa: F401  # pyright: ignore[reportUnusedImport]
+        from nahida_bot import gateway  # noqa: F401  # pyright: ignore[reportUnusedImport]
+        from nahida_bot import node  # noqa: F401  # pyright: ignore[reportUnusedImport]
+        from nahida_bot import db  # noqa: F401  # pyright: ignore[reportUnusedImport]
+        from nahida_bot import cli  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
         # All imports should succeed
         assert True

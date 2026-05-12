@@ -38,7 +38,7 @@ def extract_think_tags(content: str) -> tuple[str, str | None]:
     return cleaned, reasoning or None
 
 
-class _ReasoningMixin:
+class ReasoningMixin:
     """Shared reasoning extraction for the OpenAI-compatible provider family.
 
     Subclasses can override ``reasoning_key`` to match their specific
@@ -79,6 +79,6 @@ class _ReasoningMixin:
 
 __all__ = [
     "ReasoningPolicy",
-    "_ReasoningMixin",
+    "ReasoningMixin",
     "extract_think_tags",
 ]

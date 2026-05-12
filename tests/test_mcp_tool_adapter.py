@@ -200,7 +200,7 @@ class TestMcpToolToEntry:
         conn = AsyncMock()
         mcp_tool = SimpleNamespace(name="ping", description="", inputSchema=None)
 
-        name, desc, params, handler = mcp_tool_to_entry(
+        name, desc, params, _handler = mcp_tool_to_entry(
             conn, "svc", mcp_tool, timeout=10.0
         )
 

@@ -552,7 +552,7 @@ class TestMessageRouterMemory:
         memory.persisted_overrides["test:c1"] = "test:c1:xyz"
 
         agent = _MockAgentLoop()
-        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+        router, _event_bus, _, _ = _make_router(agent=agent, memory=memory)
 
         # Override was NOT set via set_active_session — only in persisted storage
         assert router.get_active_session_id("test", "c1") == "test:c1"

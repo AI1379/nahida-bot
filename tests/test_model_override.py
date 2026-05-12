@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -260,7 +261,7 @@ class _SpyAgentLoop:
                 return result
         return MagicMock(final_response="")
 
-    async def run_stream(self, **kwargs: Any) -> Any:
+    async def run_stream(self, **kwargs: Any) -> AsyncIterator[LoopEvent]:
         self.captured_model = kwargs.get("model")
         self.captured_provider = kwargs.get("provider")
         self.captured_user_parts = kwargs.get("user_parts")

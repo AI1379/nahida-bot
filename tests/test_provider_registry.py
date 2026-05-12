@@ -22,7 +22,7 @@ class TestProviderRegistry:
     def test_builtin_providers_registered(self) -> None:
         """All built-in providers should be auto-registered on import."""
         # Importing the providers package triggers registration
-        import nahida_bot.agent.providers  # noqa: F401
+        import nahida_bot.agent.providers  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
         registered_types = {d.provider_type for d in list_providers()}
         assert "openai-compatible" in registered_types

@@ -23,7 +23,7 @@ from nahida_bot.agent.providers.errors import (
     ProviderTimeoutError,
     ProviderTransportError,
 )
-from nahida_bot.agent.providers.reasoning import _ReasoningMixin
+from nahida_bot.agent.providers.reasoning import ReasoningMixin
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
 
@@ -32,7 +32,7 @@ logger = structlog.get_logger(__name__)
 
 @register_provider("openai-compatible", "OpenAI-compatible Provider")
 @dataclass(slots=True)
-class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
+class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
     """Provider for OpenAI-compatible ``/chat/completions`` endpoints.
 
     Subclasses for specific backends (DeepSeek, GLM, Groq, Minimax) only need

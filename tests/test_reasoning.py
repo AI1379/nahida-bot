@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from nahida_bot.agent.providers.reasoning import (
+    ReasoningMixin,
     ReasoningPolicy,
-    _ReasoningMixin,
     extract_think_tags,
 )
 
@@ -57,12 +57,12 @@ class TestExtractThinkTags:
         assert "Line 2" in reasoning  # type: ignore[operator]
 
 
-# ── _ReasoningMixin ──
+# ── ReasoningMixin ──
 
 
 class TestReasoningMixin:
-    def _make_mixin(self, reasoning_key: str = "reasoning_content") -> _ReasoningMixin:
-        mixin = _ReasoningMixin()
+    def _make_mixin(self, reasoning_key: str = "reasoning_content") -> ReasoningMixin:
+        mixin = ReasoningMixin()
         mixin.reasoning_key = reasoning_key
         return mixin
 

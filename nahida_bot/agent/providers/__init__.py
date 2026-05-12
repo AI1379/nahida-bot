@@ -36,12 +36,12 @@ from nahida_bot.agent.providers.registry import (
 
 # Import provider subclasses to trigger @register_provider decorators.
 # These are intentionally imported for their side effects.
-import nahida_bot.agent.providers.deepseek as _deepseek  # noqa: F401
-import nahida_bot.agent.providers.glm as _glm  # noqa: F401
-import nahida_bot.agent.providers.groq as _groq  # noqa: F401
-import nahida_bot.agent.providers.minimax as _minimax  # noqa: F401
-import nahida_bot.agent.providers.anthropic as _anthropic  # noqa: F401
-import nahida_bot.agent.providers.openai_responses as _openai_responses  # noqa: F401
+import nahida_bot.agent.providers.deepseek as _deepseek  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import nahida_bot.agent.providers.glm as _glm  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import nahida_bot.agent.providers.groq as _groq  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import nahida_bot.agent.providers.minimax as _minimax  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import nahida_bot.agent.providers.anthropic as _anthropic  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import nahida_bot.agent.providers.openai_responses as _openai_responses  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 __all__ = [
     "AnthropicProvider",
