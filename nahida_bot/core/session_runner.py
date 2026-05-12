@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, AbstractSet, Any, cast
 import structlog
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
+from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.agent.memory.sqlite import build_fts_query
 from nahida_bot.agent.memory.models import ConversationTurn
@@ -23,7 +24,9 @@ from nahida_bot.core.message_context import (
 )
 
 if TYPE_CHECKING:
-    from nahida_bot.agent.loop import AgentLoop, AgentRunResult
+    from collections.abc import AsyncIterator
+
+    from nahida_bot.agent.loop import AgentLoop, LoopEvent
     from nahida_bot.agent.media.resolver import MediaResolver
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.providers.base import ModelCapabilities
@@ -133,11 +136,57 @@ class SessionRunner:
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
     ) -> AgentRunResult:
+        """Run the agent loop and return the final result (backward-compat)."""
+        done: LoopEvent | None = None
+        async for event in self.run_stream(
+            user_message=user_message,
+            session_id=session_id,
+            system_prompt=system_prompt,
+            workspace_id=workspace_id,
+            workspace_root=workspace_root,
+            attachments=attachments,
+            message_context=message_context,
+            tool_filter=tool_filter,
+            source_tag=source_tag,
+        ):
+            if event.type == "done":
+                done = event
+        if done is None:
+            return AgentRunResult(final_response="")
+        return AgentRunResult(
+            final_response=done.final_response or "",
+            assistant_messages=list(done.assistant_messages or []),
+            tool_messages=list(done.tool_messages or []),
+            steps=done.steps,
+            trace_id=done.trace_id,
+            error=done.error,
+        )
+
+    async def run_stream(
+        self,
+        *,
+        user_message: str,
+        session_id: str,
+        system_prompt: str,
+        workspace_id: str | None = None,
+        workspace_root: Any = None,
+        attachments: list[InboundAttachment] | None = None,
+        message_context: MessageContext | None = None,
+        tool_filter: AbstractSet[str] | None = None,
+        source_tag: str = "user_input",
+    ) -> AsyncIterator[LoopEvent]:
+        """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
+
+        Text events are yielded immediately when the provider produces
+        user-visible content, so callers can send them to the user without
+        waiting for tool calls to complete.
+        """
         if self._agent is None:
             raise RuntimeError("SessionRunner has no agent loop configured")
 
         attachments_for_turn = tuple(attachments or [])
         attachments_token = current_attachments.set(attachments_for_turn)
+        done_data: dict[str, Any] = {}
         try:
             provider_slot, selected_model = await self._resolve_provider(session_id)
             effective_model = (
@@ -243,28 +292,39 @@ class SessionRunner:
                 tool_count=len(tools),
                 user_part_count=len(user_parts),
             )
-            result = await self._agent.run(**run_kwargs)
+            async for event in self._agent.run_stream(**run_kwargs):
+                if event.type == "done":
+                    done_data = {
+                        "final_response": event.final_response or "",
+                        "assistant_messages": list(event.assistant_messages or []),
+                        "tool_messages": list(event.tool_messages or []),
+                        "steps": event.steps,
+                        "trace_id": event.trace_id,
+                        "error": event.error,
+                    }
+                yield event
             logger.debug(
                 "session_runner.agent_run_done",
                 session_id=session_id,
-                trace_id=result.trace_id,
-                steps=result.steps,
-                error=result.error,
-                response_chars=len(result.final_response or ""),
-                assistant_message_count=len(result.assistant_messages),
-                tool_message_count=len(result.tool_messages),
+                trace_id=done_data.get("trace_id"),
+                steps=done_data.get("steps"),
+                error=done_data.get("error"),
+                response_chars=len(str(done_data.get("final_response", ""))),
+                assistant_message_count=len(done_data.get("assistant_messages", [])),
+                tool_message_count=len(done_data.get("tool_messages", [])),
             )
             await self._persist_turns(
                 session_id,
                 user_message,
-                result,
+                AgentRunResult(**done_data)
+                if done_data
+                else AgentRunResult(final_response=""),
                 attachments=list(attachments_for_turn),
                 message_context=message_context,
                 source_tag=source_tag,
                 workspace_id=workspace_id,
                 workspace_root=workspace_root,
             )
-            return result
         finally:
             current_attachments.reset(attachments_token)
 

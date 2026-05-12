@@ -6,9 +6,10 @@ import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -110,6 +111,22 @@ class AgentRunResult:
     error: str | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class LoopEvent:
+    """Streaming event emitted during agent loop execution."""
+
+    type: Literal["text", "tool_start", "tool_end", "done"]
+    text: str | None = None
+    tool_names: list[str] | None = None
+    tool_summary: str | None = None
+    final_response: str | None = None
+    assistant_messages: list[ContextMessage] | None = None
+    tool_messages: list[ContextMessage] | None = None
+    steps: int = 0
+    trace_id: str | None = None
+    error: str | None = None
+
+
 class AgentLoop:
     """Minimal agent loop with provider calls, tools, and stop conditions."""
 
@@ -147,6 +164,48 @@ class AgentLoop:
             provider: Override provider for this call only.
             context_builder: Override context builder for this call only.
             model: Override model name for this call only.
+        """
+        async for event in self.run_stream(
+            user_message=user_message,
+            system_prompt=system_prompt,
+            user_parts=user_parts,
+            history_messages=history_messages,
+            workspace_root=workspace_root,
+            tools=tools,
+            provider=provider,
+            context_builder=context_builder,
+            model=model,
+        ):
+            if event.type == "done":
+                return AgentRunResult(
+                    final_response=event.final_response or "",
+                    assistant_messages=list(event.assistant_messages or []),
+                    tool_messages=list(event.tool_messages or []),
+                    steps=event.steps,
+                    trace_id=event.trace_id,
+                    error=event.error,
+                )
+        return AgentRunResult(final_response="")
+
+    async def run_stream(
+        self,
+        *,
+        user_message: str,
+        system_prompt: str,
+        user_parts: list[ContextPart] | None = None,
+        history_messages: list[ContextMessage] | None = None,
+        workspace_root: Path | None = None,
+        tools: list[ToolDefinition] | None = None,
+        provider: ChatProvider | None = None,
+        context_builder: ContextBuilder | None = None,
+        model: str | None = None,
+    ) -> AsyncIterator[LoopEvent]:
+        """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
+
+        Text events are yielded immediately when the provider produces
+        user-visible content — even when tool calls follow in the same turn.
+        This lets callers stream progress without waiting for the full loop
+        to complete.
         """
         active_provider = provider or self.provider
         active_builder = context_builder or self.context_builder
@@ -212,6 +271,10 @@ class AgentLoop:
                     assistant_messages.append(assistant_message)
                     conversation.append(assistant_message)
 
+                display = self._display_content(response)
+                if display:
+                    yield LoopEvent(type="text", text=display)
+
                 if not response.tool_calls:
                     self._log_terminal_without_tool_calls(
                         response=response,
@@ -219,18 +282,25 @@ class AgentLoop:
                         step=step,
                         trace=trace,
                     )
-                    return AgentRunResult(
-                        final_response=self._display_content(response),
-                        assistant_messages=assistant_messages,
-                        tool_messages=tool_messages,
+                    yield LoopEvent(
+                        type="done",
+                        final_response=display,
+                        assistant_messages=list(assistant_messages),
+                        tool_messages=list(tool_messages),
                         steps=step,
                         trace_id=trace.trace_id if trace else None,
                     )
+                    return
 
                 if self.tool_executor is None:
                     raise RuntimeError(
                         "Provider requested tools but no tool executor is set"
                     )
+
+                yield LoopEvent(
+                    type="tool_start",
+                    tool_names=[tc.name for tc in response.tool_calls],
+                )
 
                 executed_messages = await self._execute_tools(
                     response=response,
@@ -248,13 +318,19 @@ class AgentLoop:
                     tool_message_count=len(executed_messages),
                 )
 
+                yield LoopEvent(
+                    type="tool_end",
+                    tool_summary=f"{len(executed_messages)} tool(s) completed",
+                )
+
             final_fallback = (
                 assistant_messages[-1].content if assistant_messages else ""
             )
-            return AgentRunResult(
+            yield LoopEvent(
+                type="done",
                 final_response=final_fallback,
-                assistant_messages=assistant_messages,
-                tool_messages=tool_messages,
+                assistant_messages=list(assistant_messages),
+                tool_messages=list(tool_messages),
                 steps=self.config.max_steps,
                 trace_id=trace.trace_id if trace else None,
             )
@@ -267,10 +343,11 @@ class AgentLoop:
             fallback = assistant_messages[-1].content if assistant_messages else ""
             if not fallback:
                 fallback = self.config.provider_error_template.format(code=exc.code)
-            return AgentRunResult(
+            yield LoopEvent(
+                type="done",
                 final_response=fallback,
-                assistant_messages=assistant_messages,
-                tool_messages=tool_messages,
+                assistant_messages=list(assistant_messages),
+                tool_messages=list(tool_messages),
                 steps=step,
                 trace_id=trace.trace_id if trace else None,
                 error=exc.code,

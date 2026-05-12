@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage
-from nahida_bot.agent.loop import AgentRunResult
+from nahida_bot.agent.loop import AgentRunResult, LoopEvent
 from nahida_bot.agent.memory.models import ConversationTurn
 from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
 from nahida_bot.agent.providers.base import (
@@ -58,12 +58,31 @@ class _Agent:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.calls = 0
+        self.last_kwargs: dict[str, object] = {}
 
     async def run(self, **kwargs: object) -> object:
+        return await self._collect(self.run_stream(**kwargs))
+
+    async def run_stream(self, **kwargs: object) -> Any:
         self.calls += 1
+        self.last_kwargs = kwargs
         if self.fail:
             raise RuntimeError("boom")
-        return AgentRunResult(final_response="done")
+        yield LoopEvent(type="done", final_response="done")
+
+    @staticmethod
+    async def _collect(stream: Any) -> AgentRunResult:
+        async for event in stream:
+            if event.type == "done":
+                return AgentRunResult(
+                    final_response=event.final_response or "",
+                    assistant_messages=list(event.assistant_messages or []),
+                    tool_messages=list(event.tool_messages or []),
+                    steps=event.steps,
+                    trace_id=event.trace_id,
+                    error=event.error,
+                )
+        return AgentRunResult(final_response="")
 
 
 class _DreamProvider(ChatProvider):

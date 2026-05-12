@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from nahida_bot.agent.loop import LoopEvent
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.events import (
@@ -114,10 +115,29 @@ class _MockAgentLoop:
         self.calls: list[dict[str, Any]] = []
 
     async def run(self, **kwargs: Any) -> Any:
+        return await _collect_run_result(self.run_stream(**kwargs))
+
+    async def run_stream(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
-        result = MagicMock()
-        result.final_response = self.response
-        return result
+        yield LoopEvent(type="text", text=self.response)
+        yield LoopEvent(type="done", final_response=self.response)
+
+
+async def _collect_run_result(stream: Any) -> Any:
+    """Consume an async generator of LoopEvents and return a mock AgentRunResult."""
+    async for event in stream:
+        if event.type == "done":
+            result = MagicMock()
+            result.final_response = event.final_response or ""
+            result.assistant_messages = event.assistant_messages or []
+            result.tool_messages = event.tool_messages or []
+            result.steps = event.steps
+            result.trace_id = event.trace_id
+            result.error = event.error
+            return result
+    result = MagicMock()
+    result.final_response = ""
+    return result
 
 
 def _make_router(

@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nahida_bot.agent.loop import LoopEvent
+
 from nahida_bot.agent.context import ContextBuilder, ContextMessage
 from nahida_bot.agent.memory.models import MemoryItem
 from nahida_bot.agent.loop import AgentLoop
@@ -246,12 +248,24 @@ class _SpyAgentLoop:
         self.captured_user_parts: Any = None
 
     async def run(self, **kwargs: Any) -> Any:
+        async for event in self.run_stream(**kwargs):
+            if event.type == "done":
+                result = MagicMock()
+                result.final_response = event.final_response or "ok"
+                result.assistant_messages = event.assistant_messages or []
+                result.tool_messages = event.tool_messages or []
+                result.steps = event.steps
+                result.trace_id = event.trace_id
+                result.error = event.error
+                return result
+        return MagicMock(final_response="")
+
+    async def run_stream(self, **kwargs: Any) -> Any:
         self.captured_model = kwargs.get("model")
         self.captured_provider = kwargs.get("provider")
         self.captured_user_parts = kwargs.get("user_parts")
-        result = MagicMock()
-        result.final_response = "ok"
-        return result
+        yield LoopEvent(type="text", text="ok")
+        yield LoopEvent(type="done", final_response="ok")
 
 
 class TestSessionRunnerEndToEnd:

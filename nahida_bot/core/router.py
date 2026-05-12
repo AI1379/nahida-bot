@@ -269,7 +269,8 @@ class MessageRouter:
         if not self._config.agent_enabled:
             return
 
-        result = await self._runner.run(
+        last_sent = ""
+        async for event in self._runner.run_stream(
             user_message=inbound.text,
             session_id=session_id,
             system_prompt=self._config.system_prompt,
@@ -277,9 +278,14 @@ class MessageRouter:
             attachments=inbound.attachments,
             message_context=context_from_inbound(inbound),
             source_tag="user_input",
-        )
-
-        await self._send_response(inbound, session_id, result.final_response)
+        ):
+            if event.type == "text" and event.text and event.text != last_sent:
+                await self._send_response(inbound, session_id, event.text)
+                last_sent = event.text
+            elif event.type == "done":
+                final = event.final_response or ""
+                if final and final != last_sent:
+                    await self._send_response(inbound, session_id, final)
 
     async def _send_response(
         self, inbound: InboundMessage, session_id: str, text: str
