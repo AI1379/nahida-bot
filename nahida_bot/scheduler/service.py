@@ -524,48 +524,30 @@ class SchedulerService:
     async def _resolve_memory_dream_provider(
         self, session_id: str
     ) -> tuple[Any, str | None, str] | None:
-        """Resolve provider/model for memory dreaming."""
-        if self._runner is None or self._runner.provider_manager is None:
+        """Resolve provider/model for memory dreaming via ModelRouter."""
+        if self._runner is None:
             return None
-        provider_manager = self._runner.provider_manager
-        configured_provider_id = self._config.memory_dreaming_provider_id.strip()
-        configured_model = self._config.memory_dreaming_model.strip()
 
-        if configured_provider_id:
-            slot = provider_manager.get(configured_provider_id)
-            if slot is None:
-                logger.warning(
-                    "scheduler.memory_dreaming_provider_not_found",
-                    provider_id=configured_provider_id,
-                )
-                return None
-            if configured_model:
-                model = configured_model
-                if "/" in model:
-                    prefix, _, suffix = model.partition("/")
-                    if prefix == configured_provider_id:
-                        model = suffix
-                if not slot.supports_model(model):
-                    logger.warning(
-                        "scheduler.memory_dreaming_model_not_supported",
-                        provider_id=configured_provider_id,
-                        model=model,
-                    )
-                    return None
-                return slot, model, "configured_provider_model"
-            return slot, None, "configured_provider"
+        router = self._runner.model_router
+        if router is not None:
+            # Build explicit override from legacy config fields
+            explicit = ""
+            pid = self._config.memory_dreaming_provider_id.strip()
+            model = self._config.memory_dreaming_model.strip()
+            if pid and model:
+                explicit = f"{pid}/{model}"
+            elif pid:
+                explicit = pid
+            elif model:
+                explicit = model
 
-        if configured_model:
-            resolved = provider_manager.resolve_model_selection(configured_model)
-            if resolved is None:
-                logger.warning(
-                    "scheduler.memory_dreaming_model_not_found",
-                    model=configured_model,
-                )
-                return None
-            slot, model = resolved
-            return slot, model, "configured_model"
+            result = router.resolve_for_task("memory_dreaming", explicit=explicit)
+            if result is not None:
+                return (result.slot, result.model, result.reason)
 
+        # Fallback to session provider
+        if self._runner.provider_manager is None:
+            return None
         provider_slot, selected_model = await self._runner.resolve_provider_for_session(
             session_id
         )

@@ -45,6 +45,6 @@ def test_provider_model_entries_normalizes_strings_and_objects() -> None:
     )
 
     assert entries == [
-        ("text-model", {}),
-        ("vision-model", {"image_input": True}),
+        ("text-model", {}, []),
+        ("vision-model", {"image_input": True}, []),
     ]

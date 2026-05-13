@@ -18,6 +18,7 @@ class ProviderSlot:
     default_model: str
     available_models: list[str] = field(default_factory=list)
     capabilities_by_model: dict[str, ModelCapabilities] = field(default_factory=dict)
+    tags_by_model: dict[str, list[str]] = field(default_factory=dict)
 
     def supports_model(self, model: str) -> bool:
         """Return whether this provider slot can serve ``model``."""

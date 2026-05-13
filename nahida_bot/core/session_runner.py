@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.providers.base import ModelCapabilities
     from nahida_bot.agent.providers.manager import ProviderManager
+    from nahida_bot.agent.providers.router import ModelRouter
     from nahida_bot.core.channel_registry import ChannelRegistry
     from nahida_bot.core.config import MultimodalConfig
     from nahida_bot.plugins.base import InboundAttachment, MessageContext
@@ -103,6 +104,7 @@ class SessionRunner:
         agent_loop: AgentLoop | None = None,
         memory_store: MemoryStore | None = None,
         provider_manager: ProviderManager | None = None,
+        model_router: ModelRouter | None = None,
         workspace_manager: WorkspaceManager | None = None,
         tool_registry: ToolRegistry | None = None,
         max_history_turns: int = 50,
@@ -116,6 +118,7 @@ class SessionRunner:
             MemoryConsolidator(memory_store) if memory_store is not None else None
         )
         self._providers = provider_manager
+        self._model_router = model_router
         self._workspace = workspace_manager
         self._tools = tool_registry
         self._max_history_turns = max_history_turns
@@ -154,6 +157,14 @@ class SessionRunner:
     @provider_manager.setter
     def provider_manager(self, value: ProviderManager | None) -> None:
         self._providers = value
+
+    @property
+    def model_router(self) -> ModelRouter | None:
+        return self._model_router
+
+    @model_router.setter
+    def model_router(self, value: ModelRouter | None) -> None:
+        self._model_router = value
 
     async def resolve_provider_for_session(
         self, session_id: str

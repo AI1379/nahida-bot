@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.providers import ModelCapabilities
     from nahida_bot.agent.providers.manager import ProviderManager
+    from nahida_bot.agent.providers.router import ModelRouter
     from nahida_bot.core.session_runner import SessionRunner
     from nahida_bot.db.engine import DatabaseEngine
     from nahida_bot.plugins.manager import PluginManager
@@ -70,6 +71,7 @@ class Application:
         self.workspace_manager: WorkspaceManager | None = None
         self._db_engine: DatabaseEngine | None = None
         self._provider_manager: ProviderManager | None = None
+        self._model_router: ModelRouter | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
         self.session_runner: SessionRunner | None = None
         self.scheduler_service: SchedulerService | None = None
@@ -195,11 +197,12 @@ class Application:
                 continue
 
             default_model = model_entries[0][0]
-            available_models = [name for name, _ in model_entries]
+            available_models = [name for name, _, _ in model_entries]
             capabilities_by_model = {
                 name: _model_capabilities_from_config(raw)
-                for name, raw in model_entries
+                for name, raw, _ in model_entries
             }
+            tags_by_model = {name: tags for name, _, tags in model_entries if tags}
             provider_kwargs: dict[str, object] = {
                 "base_url": cfg.base_url,
                 "api_key": cfg.api_key,
@@ -232,6 +235,7 @@ class Application:
                     default_model=default_model,
                     available_models=available_models,
                     capabilities_by_model=capabilities_by_model,
+                    tags_by_model=tags_by_model,
                 )
             )
             self._providers_to_close.append(provider)
@@ -245,6 +249,13 @@ class Application:
         if slots:
             default_id = self.settings.default_provider or ""
             self._provider_manager = ProviderManager(slots, default_id=default_id)
+
+            from nahida_bot.agent.providers.router import ModelRouter
+
+            self._model_router = ModelRouter(
+                self._provider_manager, self.settings.model_routing
+            )
+
             # Create a single AgentLoop with the default provider as fallback
             default_slot = self._provider_manager.default or slots[0]
             self.agent_loop = AgentLoop(
@@ -321,6 +332,7 @@ class Application:
             agent_loop=self.agent_loop,
             memory_store=self.memory_store,
             provider_manager=self._provider_manager,
+            model_router=self._model_router,
             workspace_manager=self.workspace_manager,
             tool_registry=tool_registry,
             multimodal_config=multimodal,
@@ -717,19 +729,19 @@ def _model_capabilities_from_config(raw: dict[str, Any]) -> "ModelCapabilities":
 
 def _provider_model_entries(
     raw_models: list[Any],
-) -> list[tuple[str, dict[str, Any]]]:
-    """Normalize provider model config into ``(model_name, capabilities)`` pairs."""
+) -> list[tuple[str, dict[str, Any], list[str]]]:
+    """Normalize provider model config into ``(model_name, capabilities, tags)`` triples."""
     from nahida_bot.core.config import ProviderModelConfig
 
-    entries: list[tuple[str, dict[str, Any]]] = []
+    entries: list[tuple[str, dict[str, Any], list[str]]] = []
     for raw in raw_models:
         if isinstance(raw, str):
             name = raw.strip()
             if name:
-                entries.append((name, {}))
+                entries.append((name, {}, []))
             continue
         if isinstance(raw, ProviderModelConfig):
             name = raw.name.strip()
             if name:
-                entries.append((name, raw.capabilities))
+                entries.append((name, raw.capabilities, raw.tags))
     return entries

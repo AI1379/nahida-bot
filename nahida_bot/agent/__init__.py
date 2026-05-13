@@ -24,6 +24,7 @@ from nahida_bot.agent.metrics import (
 )
 from nahida_bot.agent.providers import (
     ChatProvider,
+    ModelRouter,
     OpenAICompatibleProvider,
     ProviderAuthError,
     ProviderBadResponseError,
@@ -34,6 +35,7 @@ from nahida_bot.agent.providers import (
     ProviderTimeoutError,
     ProviderTransportError,
     ReasoningPolicy,
+    RoutedModel,
     TokenUsage,
     ToolCall,
     ToolDefinition,
@@ -66,6 +68,7 @@ __all__ = [
     "MemoryRecord",
     "MemoryStore",
     "MetricsCollector",
+    "ModelRouter",
     "OpenAICompatibleProvider",
     "ProviderAuthError",
     "ProviderBadResponseError",
@@ -77,6 +80,7 @@ __all__ = [
     "ProviderTimeoutError",
     "ProviderTransportError",
     "ReasoningPolicy",
+    "RoutedModel",
     "SQLiteMemoryStore",
     "TokenUsage",
     "ToolCall",

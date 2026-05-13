@@ -166,7 +166,36 @@ telegram:
 #   memory_dreaming_session_limit: 20            # 单次最多扫描会话数
 #   memory_dreaming_recent_turn_limit: 40        # 单会话最多读取 turns 数
 #   memory_dreaming_provider_id: ""     # 专用 provider；空则使用会话当前 provider
-#   memory_dreaming_model: ""           # 专用模型；空则使用会话当前模型
+#   memory_dreaming_model: ""           # 专用模型；空则走 model_routing 或会话当前模型
+
+# ── Model Routing ──────────────────────────────────────
+# 按任务类型自动路由到打了 tag 的模型。
+# providers 的 models 中可以用 tags 字段标记模型角色：
+#   models:
+#     - name: deepseek-chat
+#       tags: [primary]          # 主对话模型（隐式：每个 provider 的第一个模型）
+#     - name: deepseek-chat-lite
+#       tags: [cheap, memory]    # 低成本后台任务 / 记忆 dreaming
+#
+# 可用 tags: primary / cheap / memory / embedding / reranker / vision
+#
+# model_routing 中的每个任务条目：
+#   prefer_tags: 按顺序匹配，找到第一个有此 tag 的模型
+#   fallback:    没有匹配时如何处理
+#               - session: 使用当前会话的 provider（默认）
+#               - default: 使用默认 provider
+#               - disabled / none: 不使用任何模型
+#
+# model_routing:
+#   memory_dreaming:
+#     prefer_tags: [memory, cheap]
+#     fallback: session
+#   embedding:
+#     prefer_tags: [embedding]
+#     fallback: none
+#   reranker:
+#     prefer_tags: [reranker, cheap]
+#     fallback: disabled
 
 # ── Router ─────────────────────────────────────────────
 # 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。

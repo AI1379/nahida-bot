@@ -33,6 +33,7 @@ from nahida_bot.agent.providers.registry import (
     register_runtime_provider,
     unregister_runtime_provider,
 )
+from nahida_bot.agent.providers.router import ModelRouter, RoutedModel
 
 # Import provider subclasses to trigger @register_provider decorators.
 # These are intentionally imported for their side effects.
@@ -47,6 +48,7 @@ __all__ = [
     "AnthropicProvider",
     "ChatProvider",
     "ModelCapabilities",
+    "ModelRouter",
     "OpenAICompatibleProvider",
     "OpenAIResponsesProvider",
     "ProviderAuthError",
@@ -55,6 +57,7 @@ __all__ = [
     "ProviderError",
     "ProviderRateLimitError",
     "ProviderResponse",
+    "RoutedModel",
     "ProviderTimeoutError",
     "ProviderTransportError",
     "ReasoningPolicy",
