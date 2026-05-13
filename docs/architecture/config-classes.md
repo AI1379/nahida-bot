@@ -59,7 +59,7 @@ class ProviderEntryConfig(BaseModel):
     models: list[ProviderModelEntry] = []  # 模型列表
 ```
 
-`extra="allow"` 使得 provider 特有的字段（如 `merge_system_messages`, `store_responses`, `reasoning_effort` 等）可以透传，在 `app.py` 中通过 `getattr()` 读取后传入 `create_provider()`。
+`extra="allow"` 使得 provider 特有的字段（如 `merge_system_messages`, `stream_responses`, `store_responses`, `reasoning_effort` 等）可以透传，在 `app.py` 中通过 `getattr()` 读取后传入 `create_provider()`。
 
 ---
 
@@ -199,11 +199,11 @@ class ProviderSlot:
 
 | Provider 类 | 定义位置 | 特有配置字段 |
 |-------------|---------|------------|
-| `OpenAICompatibleProvider` | [openai_compatible.py:34](../../nahida_bot/agent/providers/openai_compatible.py#L34) | `base_url`, `api_key`, `model`, `merge_system_messages`, `reasoning_key` |
+| `OpenAICompatibleProvider` | [openai_compatible.py:34](../../nahida_bot/agent/providers/openai_compatible.py#L34) | `base_url`, `api_key`, `model`, `merge_system_messages`, `stream_responses`, `reasoning_key` |
 | `DeepSeekProvider` | [deepseek.py:13](../../nahida_bot/agent/providers/deepseek.py#L13) | 继承 OpenAI + `thinking_enabled`, `reasoning_effort` |
 | `GLMProvider` | [glm.py:12](../../nahida_bot/agent/providers/glm.py#L12) | 继承 OpenAI，无额外字段 |
 | `GroqProvider` | [groq.py:13](../../nahida_bot/agent/providers/groq.py#L13) | 继承 OpenAI + `reasoning_key="reasoning"` |
-| `AnthropicProvider` | [anthropic.py:49](../../nahida_bot/agent/providers/anthropic.py#L49) | `base_url`, `api_key`, `model`, `max_tokens` |
+| `AnthropicProvider` | [anthropic.py:49](../../nahida_bot/agent/providers/anthropic.py#L49) | `base_url`, `api_key`, `model`, `max_tokens`, `stream_responses` |
 | `MinimaxProvider` | [minimax.py:17](../../nahida_bot/agent/providers/minimax.py#L17) | 继承 Anthropic，无额外字段 |
 | `OpenAIResponsesProvider` | [openai_responses.py:54](../../nahida_bot/agent/providers/openai_responses.py#L54) | `store_responses`, `use_previous_response_id`, `stream_responses`, `reasoning_effort`, `max_output_tokens`, `built_in_tools` |
 

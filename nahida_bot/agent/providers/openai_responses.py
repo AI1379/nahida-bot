@@ -400,9 +400,27 @@ class OpenAIResponsesProvider(ChatProvider):
                 timeout_seconds=timeout,
             )
             client = self._ensure_client()
-            response = await client.post(
-                endpoint, json=payload, headers=headers, timeout=timeout
-            )
+            if self.stream_responses:
+                body = await self._stream_responses(
+                    client=client,
+                    endpoint=endpoint,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                status_code = 200
+            else:
+                response = await client.post(
+                    endpoint, json=payload, headers=headers, timeout=timeout
+                )
+                self._raise_for_status(response)
+                status_code = response.status_code
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise ProviderBadResponseError(
+                        "Provider returned non-JSON body"
+                    ) from exc
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError() from exc
         except httpx.HTTPError as exc:
@@ -410,6 +428,17 @@ class OpenAIResponsesProvider(ChatProvider):
                 f"HTTP transport error communicating with {self.name}"
             ) from exc
 
+        logger.debug(
+            "provider.openai_responses.response",
+            provider_name=self.name,
+            model=payload["model"],
+            status_code=status_code,
+            stream=self.stream_responses,
+        )
+
+        return self._parse_response(body)
+
+    def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code in (401, 403):
             body_hint = response.text[:200] if response.text else ""
             raise ProviderAuthError(
@@ -427,29 +456,50 @@ class OpenAIResponsesProvider(ChatProvider):
             raise ProviderBadResponseError(
                 f"Provider rejected request: status {response.status_code} — {body_hint}"
             )
-        logger.debug(
-            "provider.openai_responses.response",
-            provider_name=self.name,
-            model=payload["model"],
-            status_code=response.status_code,
+
+    async def _raise_for_stream_status(self, response: httpx.Response) -> None:
+        if response.status_code < 400:
+            return
+        raw = await response.aread()
+        body_hint = raw.decode("utf-8", errors="replace")
+        if response.status_code in (401, 403):
+            raise ProviderAuthError(
+                f"Provider auth rejected request with status {response.status_code} — {body_hint[:200]}"
+            )
+        if response.status_code == 429:
+            raise ProviderRateLimitError()
+        if response.status_code >= 500:
+            raise ProviderTransportError(
+                f"Provider server error: status {response.status_code} — {body_hint[:200]}"
+            )
+        raise ProviderBadResponseError(
+            f"Provider rejected request: status {response.status_code} — {body_hint[:300]}"
         )
 
-        if self.stream_responses:
-            return self._parse_stream_response(response.text)
+    async def _stream_responses(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> dict[str, object]:
+        async with client.stream(
+            "POST", endpoint, json=payload, headers=headers, timeout=timeout
+        ) as response:
+            await self._raise_for_stream_status(response)
+            return await self._parse_stream_response(response)
 
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise ProviderBadResponseError("Provider returned non-JSON body") from exc
-        return self._parse_response(body)
-
-    def _parse_stream_response(self, text: str) -> ProviderResponse:
+    async def _parse_stream_response(
+        self, response: httpx.Response
+    ) -> dict[str, object]:
         text_parts: list[str] = []
         done_text: str | None = None
         final_body: dict[str, object] | None = None
         output_items: list[object] = []
 
-        for raw_line in text.splitlines():
+        async for raw_line in response.aiter_lines():
             line = raw_line.strip()
             if not line.startswith("data:"):
                 continue
@@ -477,9 +527,9 @@ class OpenAIResponsesProvider(ChatProvider):
                 if isinstance(item, dict):
                     output_items.append(item)
             elif event_type == "response.completed":
-                response = event.get("response")
-                if isinstance(response, dict):
-                    final_body = response
+                event_response = event.get("response")
+                if isinstance(event_response, dict):
+                    final_body = event_response
 
         if final_body is None:
             raise ProviderBadResponseError(
@@ -494,7 +544,7 @@ class OpenAIResponsesProvider(ChatProvider):
             final_body = dict(final_body)
             final_body["output"] = output_items
 
-        return self._parse_response(final_body)
+        return final_body
 
     # ------------------------------------------------------------------
     # Response parsing — flat output array

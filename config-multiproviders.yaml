@@ -34,12 +34,15 @@ providers:
     type: deepseek
     api_key: "${DEEPSEEK_LLM_API_KEY}"
     base_url: "${DEEPSEEK_LLM_BASE_URL}"
+    # 内部使用 SSE 接收并聚合返回，可避免长推理期间普通读超时误判。
+    stream_responses: true
     models: ["deepseek-v4-pro", "deepseek-v4-flash"]
   siliconflow:
     type: "openai-compatible"
     api_key: "${SILICONFLOW_LLM_API_KEY}"
     base_url: "${SILICONFLOW_LLM_BASE_URL}"
     merge_system_messages: true
+    stream_responses: true
     models:
       - "Pro/zai-org/GLM-5"
       - name: "Qwen/Qwen3.6-35B-A3B"
@@ -51,12 +54,14 @@ providers:
     type: minimax
     api_key: "${MINIMAX_LLM_API_KEY}"
     base_url: "https://api.minimaxi.com/anthropic"
+    stream_responses: true
     models: ["MiniMax-M2.5", "MiniMax-M2.7"]
 
   # OpenAI Responses API（可选）
   # 使用 /responses 端点，支持内置工具（web_search、image_generation 等）
   # 和有状态对话链（previous_response_id）。Reasoning 摘要可通过
   # reasoning_effort 参数控制深度。
+  # stream_responses=true 时同样在 provider 内部流式接收并聚合返回。
   #
   openai:
     type: "openai-responses"

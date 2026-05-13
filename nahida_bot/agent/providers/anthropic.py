@@ -61,6 +61,7 @@ class AnthropicProvider(ChatProvider):
     name: str = "anthropic"
     api_family: str = "anthropic-messages"
     max_tokens: int = 4096
+    stream_responses: bool = False
     tokenizer_impl: Tokenizer | None = None
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
@@ -295,6 +296,8 @@ class AnthropicProvider(ChatProvider):
             payload["system"] = system_prompt
         if tools:
             payload["tools"] = self.format_tools(tools)
+        if self.stream_responses:
+            payload["stream"] = True
 
         timeout = timeout_seconds or 60
         endpoint = f"{self.base_url.rstrip('/')}/v1/messages"
@@ -303,6 +306,8 @@ class AnthropicProvider(ChatProvider):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
+        if self.stream_responses:
+            headers["Accept"] = "text/event-stream"
 
         try:
             logger.debug(
@@ -315,12 +320,31 @@ class AnthropicProvider(ChatProvider):
                 serialized_message_count=len(serialized_messages),
                 has_system=system_prompt is not None,
                 tool_count=len(tools or []),
+                stream=self.stream_responses,
                 timeout_seconds=timeout,
             )
             client = self._ensure_client()
-            response = await client.post(
-                endpoint, json=payload, headers=headers, timeout=timeout
-            )
+            if self.stream_responses:
+                body = await self._stream_messages(
+                    client=client,
+                    endpoint=endpoint,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                status_code = 200
+            else:
+                response = await client.post(
+                    endpoint, json=payload, headers=headers, timeout=timeout
+                )
+                self._raise_for_status(response)
+                status_code = response.status_code
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise ProviderBadResponseError(
+                        "Provider returned non-JSON body"
+                    ) from exc
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError() from exc
         except httpx.HTTPError as exc:
@@ -328,6 +352,17 @@ class AnthropicProvider(ChatProvider):
                 f"HTTP transport error communicating with {self.name}"
             ) from exc
 
+        logger.debug(
+            "provider.anthropic.response",
+            provider_name=self.name,
+            model=payload["model"],
+            status_code=status_code,
+            stream=self.stream_responses,
+        )
+
+        return self._parse_response(body)
+
+    def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code in (401, 403):
             raise ProviderAuthError(
                 f"Provider auth rejected request with status {response.status_code}"
@@ -344,19 +379,162 @@ class AnthropicProvider(ChatProvider):
             raise ProviderBadResponseError(
                 f"Provider rejected request: status {response.status_code} — {body_hint}"
             )
-        logger.debug(
-            "provider.anthropic.response",
-            provider_name=self.name,
-            model=payload["model"],
-            status_code=response.status_code,
+
+    async def _raise_for_stream_status(self, response: httpx.Response) -> None:
+        if response.status_code < 400:
+            return
+        raw = await response.aread()
+        body_hint = raw.decode("utf-8", errors="replace")
+        if response.status_code in (401, 403):
+            raise ProviderAuthError(
+                f"Provider auth rejected request with status {response.status_code} — {body_hint[:200]}"
+            )
+        if response.status_code == 429:
+            raise ProviderRateLimitError()
+        if response.status_code >= 500:
+            raise ProviderTransportError(
+                f"Provider server error: status {response.status_code} — {body_hint[:200]}"
+            )
+        raise ProviderBadResponseError(
+            f"Provider rejected request: status {response.status_code} — {body_hint[:300]}"
         )
 
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise ProviderBadResponseError("Provider returned non-JSON body") from exc
+    async def _stream_messages(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> dict[str, object]:
+        async with client.stream(
+            "POST", endpoint, json=payload, headers=headers, timeout=timeout
+        ) as response:
+            await self._raise_for_stream_status(response)
+            return await self._parse_stream_response(response)
 
-        return self._parse_response(body)
+    async def _parse_stream_response(
+        self, response: httpx.Response
+    ) -> dict[str, object]:
+        message: dict[str, object] = {
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+        }
+        content_by_index: dict[int, dict[str, object]] = {}
+        tool_input_json: dict[int, str] = {}
+        usage: dict[str, object] = {}
+        stop_reason: str | None = None
+
+        async for raw_line in response.aiter_lines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line.removeprefix("data:").strip()
+            if not data:
+                continue
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+
+            event_type = event.get("type")
+            if event_type == "message_start":
+                raw_message = event.get("message")
+                if isinstance(raw_message, dict):
+                    message.update(
+                        {
+                            key: value
+                            for key, value in raw_message.items()
+                            if key != "content"
+                        }
+                    )
+                    raw_usage = raw_message.get("usage")
+                    if isinstance(raw_usage, dict):
+                        usage.update(raw_usage)
+            elif event_type == "content_block_start":
+                index = self._stream_event_index(event)
+                block = event.get("content_block")
+                if index is not None and isinstance(block, dict):
+                    content_by_index[index] = dict(block)
+            elif event_type == "content_block_delta":
+                index = self._stream_event_index(event)
+                delta = event.get("delta")
+                if index is not None and isinstance(delta, dict):
+                    self._apply_content_block_delta(
+                        index=index,
+                        block=content_by_index.setdefault(index, {}),
+                        delta=delta,
+                        tool_input_json=tool_input_json,
+                    )
+            elif event_type == "message_delta":
+                delta = event.get("delta")
+                if isinstance(delta, dict):
+                    raw_stop = delta.get("stop_reason")
+                    if isinstance(raw_stop, str):
+                        stop_reason = raw_stop
+                raw_usage = event.get("usage")
+                if isinstance(raw_usage, dict):
+                    usage.update(raw_usage)
+
+        for index, raw_json in tool_input_json.items():
+            block = content_by_index.setdefault(index, {"type": "tool_use"})
+            try:
+                parsed = json.loads(raw_json) if raw_json.strip() else {}
+            except json.JSONDecodeError:
+                parsed = {}
+            block["input"] = parsed if isinstance(parsed, dict) else {}
+
+        content = [content_by_index[i] for i in sorted(content_by_index)]
+        if not content:
+            raise ProviderBadResponseError("Streaming response missing content blocks")
+
+        message["content"] = content
+        if stop_reason is not None:
+            message["stop_reason"] = stop_reason
+        elif isinstance(message.get("stop_reason"), str):
+            pass
+        else:
+            message["stop_reason"] = "end_turn"
+        if usage:
+            message["usage"] = usage
+        return message
+
+    def _stream_event_index(self, event: dict[str, object]) -> int | None:
+        index = event.get("index")
+        return index if isinstance(index, int) else None
+
+    def _apply_content_block_delta(
+        self,
+        *,
+        index: int,
+        block: dict[str, object],
+        delta: dict[str, object],
+        tool_input_json: dict[int, str],
+    ) -> None:
+        delta_type = delta.get("type")
+        if delta_type == "text_delta":
+            text = delta.get("text")
+            if isinstance(text, str):
+                block["type"] = block.get("type") or "text"
+                block["text"] = str(block.get("text", "")) + text
+        elif delta_type == "thinking_delta":
+            thinking = delta.get("thinking")
+            if isinstance(thinking, str):
+                block["type"] = block.get("type") or "thinking"
+                block["thinking"] = str(block.get("thinking", "")) + thinking
+        elif delta_type == "signature_delta":
+            signature = delta.get("signature")
+            if isinstance(signature, str):
+                block["signature"] = signature
+        elif delta_type == "input_json_delta":
+            partial = delta.get("partial_json")
+            if isinstance(partial, str):
+                block["type"] = block.get("type") or "tool_use"
+                tool_input_json[index] = tool_input_json.get(index, "") + partial
 
     # ------------------------------------------------------------------
     # Response parsing — content block iteration

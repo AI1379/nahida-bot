@@ -20,6 +20,24 @@ class _FakeResponse:
     def json(self) -> dict[str, object]:
         return self._body
 
+    async def aread(self) -> bytes:
+        return self.text.encode("utf-8")
+
+    async def aiter_lines(self):
+        for line in self.text.splitlines():
+            yield line
+
+
+class _FakeStream:
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+
+    async def __aenter__(self) -> _FakeResponse:
+        return self.response
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+        return None
+
 
 class _FakeClient:
     is_closed = False
@@ -45,6 +63,21 @@ class _FakeClient:
         self.headers = headers
         self.timeout = timeout
         return _FakeResponse(self.body, self.text)
+
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> _FakeStream:
+        self.url = url
+        self.payload = json
+        self.headers = headers
+        self.timeout = timeout
+        return _FakeStream(_FakeResponse(self.body, self.text))
 
 
 def _provider(**kwargs: Any) -> OpenAIResponsesProvider:

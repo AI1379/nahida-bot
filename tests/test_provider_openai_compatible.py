@@ -187,6 +187,73 @@ async def test_openai_provider_parses_tool_calls(
 
 
 @pytest.mark.asyncio
+async def test_openai_provider_streaming_collects_content_and_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming mode should aggregate SSE deltas into the normal response shape."""
+    captured_payload: dict[str, Any] = {}
+    captured_accept = ""
+
+    stream_body = "\n".join(
+        [
+            'data: {"choices":[{"delta":{"content":"Let me "},"finish_reason":null}]}',
+            (
+                'data: {"choices":[{"delta":{"reasoning_content":"thinking"},'
+                '"finish_reason":null}]}'
+            ),
+            (
+                'data: {"choices":[{"delta":{"content":"check.",'
+                '"tool_calls":[{"index":0,"id":"call_1","type":"function",'
+                '"function":{"name":"search","arguments":"{\\"q\\":"}}]},'
+                '"finish_reason":null}]}'
+            ),
+            (
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+                '"function":{"arguments":"\\"nahida\\"}"}}]},'
+                '"finish_reason":"tool_calls"}]}'
+            ),
+            "data: [DONE]",
+        ]
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload, captured_accept
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        captured_accept = request.headers["Accept"]
+        return httpx.Response(200, text=stream_body)
+
+    transport = _build_transport(handler)
+
+    class _MockClient(httpx.AsyncClient):
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(
+        "nahida_bot.agent.providers.openai_compatible.httpx.AsyncClient", _MockClient
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+        stream_responses=True,
+    )
+    result = await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert captured_payload["stream"] is True
+    assert captured_accept == "text/event-stream"
+    assert result.content == "Let me check."
+    assert result.reasoning_content == "thinking"
+    assert result.finish_reason == "tool_calls"
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].call_id == "call_1"
+    assert result.tool_calls[0].name == "search"
+    assert result.tool_calls[0].arguments == {"q": "nahida"}
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_maps_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Provider should map 401/403 to normalized auth error."""
 

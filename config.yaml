@@ -33,6 +33,9 @@ system_prompt: "You are a helpful assistant."
 #   deepseek-main:
 #     type: deepseek
 #     api_key: "${DEEPSEEK_API_KEY}"
+#     # 内部使用 SSE 接收并聚合，降低长推理被误判为读超时的概率。
+#     # 不会改变 channel 的发送方式；仍由 AgentLoop 聚合后返回。
+#     stream_responses: true
 #     models: ["deepseek-chat", "deepseek-reasoner"]
 #   glm:
 #     type: glm
@@ -55,6 +58,9 @@ providers:
     type: "openai-compatible"
     api_key: "${LLM_API_KEY}"
     base_url: "${LLM_BASE_URL}"
+    # 建议开启：provider 内部流式接收并聚合返回，适合长推理/重任务。
+    # 支持 openai-compatible/deepseek/glm/groq/anthropic/minimax/openai-responses。
+    stream_responses: true
     models:
       - "${LLM_MODEL}"
 

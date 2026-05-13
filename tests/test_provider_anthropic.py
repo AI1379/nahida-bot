@@ -245,6 +245,85 @@ async def test_anthropic_extracts_tool_use_blocks(
     assert result.tool_calls[0].arguments == {"location": "San Francisco, CA"}
 
 
+@pytest.mark.asyncio
+async def test_anthropic_streaming_collects_content_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming mode should aggregate Anthropic events into content blocks."""
+    captured_payload: dict[str, Any] = {}
+    captured_accept = ""
+    stream_body = "\n".join(
+        [
+            (
+                'data: {"type":"message_start","message":{"id":"msg_stream",'
+                '"type":"message","role":"assistant","model":"claude-test",'
+                '"content":[],"usage":{"input_tokens":10}}}'
+            ),
+            (
+                'data: {"type":"content_block_start","index":0,'
+                '"content_block":{"type":"thinking","thinking":""}}'
+            ),
+            (
+                'data: {"type":"content_block_delta","index":0,'
+                '"delta":{"type":"thinking_delta","thinking":"Thinking..."}}'
+            ),
+            (
+                'data: {"type":"content_block_delta","index":0,'
+                '"delta":{"type":"signature_delta","signature":"sig_stream"}}'
+            ),
+            (
+                'data: {"type":"content_block_start","index":1,'
+                '"content_block":{"type":"text","text":""}}'
+            ),
+            (
+                'data: {"type":"content_block_delta","index":1,'
+                '"delta":{"type":"text_delta","text":"Let me check."}}'
+            ),
+            (
+                'data: {"type":"content_block_start","index":2,'
+                '"content_block":{"type":"tool_use","id":"toolu_1",'
+                '"name":"search","input":{}}}'
+            ),
+            (
+                'data: {"type":"content_block_delta","index":2,'
+                '"delta":{"type":"input_json_delta",'
+                '"partial_json":"{\\"q\\":\\"nahida\\"}"}}'
+            ),
+            (
+                'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},'
+                '"usage":{"output_tokens":25}}'
+            ),
+            'data: {"type":"message_stop"}',
+        ]
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload, captured_accept
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        captured_accept = request.headers["Accept"]
+        return httpx.Response(200, text=stream_body)
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.stream_responses = True
+    result = await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="weather?")]
+    )
+
+    assert captured_payload["stream"] is True
+    assert captured_accept == "text/event-stream"
+    assert result.content == "Let me check."
+    assert result.reasoning_content == "Thinking..."
+    assert result.reasoning_signature == "sig_stream"
+    assert result.finish_reason == "tool_calls"
+    assert result.usage is not None
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 25
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].call_id == "toolu_1"
+    assert result.tool_calls[0].name == "search"
+    assert result.tool_calls[0].arguments == {"q": "nahida"}
+
+
 # ── Interleaved Thinking ──
 
 

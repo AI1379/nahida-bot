@@ -47,6 +47,7 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
     tokenizer_impl: Tokenizer | None = None
     reasoning_key: str = "reasoning_content"
     merge_system_messages: bool = False
+    stream_responses: bool = False
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
     @property
@@ -109,6 +110,8 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
         }
         if tools:
             payload["tools"] = self.format_tools(tools)
+        if self.stream_responses:
+            payload["stream"] = True
 
         timeout = timeout_seconds or 30
         endpoint = f"{self.base_url.rstrip('/')}/chat/completions"
@@ -116,6 +119,8 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if self.stream_responses:
+            headers["Accept"] = "text/event-stream"
 
         try:
             logger.debug(
@@ -127,12 +132,31 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
                 message_count=len(messages),
                 serialized_message_count=len(payload["messages"]),  # type: ignore[arg-type]
                 tool_count=len(tools or []),
+                stream=self.stream_responses,
                 timeout_seconds=timeout,
             )
             client = self._ensure_client()
-            response = await client.post(
-                endpoint, json=payload, headers=headers, timeout=timeout
-            )
+            if self.stream_responses:
+                body = await self._stream_chat_completions(
+                    client=client,
+                    endpoint=endpoint,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                status_code = 200
+            else:
+                response = await client.post(
+                    endpoint, json=payload, headers=headers, timeout=timeout
+                )
+                self._raise_for_status(response)
+                status_code = response.status_code
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise ProviderBadResponseError(
+                        "Provider returned non-JSON body"
+                    ) from exc
         except httpx.TimeoutException as exc:
             raise ProviderTimeoutError() from exc
         except httpx.HTTPError as exc:
@@ -140,34 +164,13 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
                 f"HTTP transport error communicating with {self.name}"
             ) from exc
 
-        if response.status_code in (401, 403):
-            body_hint = response.text[:200] if response.text else ""
-            raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code} — {body_hint}"
-            )
-        if response.status_code == 429:
-            raise ProviderRateLimitError()
-        if response.status_code >= 500:
-            body_hint = response.text[:200] if response.text else ""
-            raise ProviderTransportError(
-                f"Provider server error: status {response.status_code} — {body_hint}"
-            )
-        if response.status_code >= 400:
-            body_hint = response.text[:300] if response.text else ""
-            raise ProviderBadResponseError(
-                f"Provider rejected request: status {response.status_code} — {body_hint}"
-            )
         logger.debug(
             "provider.openai_compatible.response",
             provider_name=self.name,
             model=payload["model"],
-            status_code=response.status_code,
+            status_code=status_code,
+            stream=self.stream_responses,
         )
-
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise ProviderBadResponseError("Provider returned non-JSON body") from exc
 
         choice = self._extract_first_choice(body)
         message = choice.get("message")
@@ -241,6 +244,194 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
             refusal=refusal,
             usage=usage,
         )
+
+    def _raise_for_status(self, response: httpx.Response) -> None:
+        if response.status_code in (401, 403):
+            body_hint = response.text[:200] if response.text else ""
+            raise ProviderAuthError(
+                f"Provider auth rejected request with status {response.status_code} — {body_hint}"
+            )
+        if response.status_code == 429:
+            raise ProviderRateLimitError()
+        if response.status_code >= 500:
+            body_hint = response.text[:200] if response.text else ""
+            raise ProviderTransportError(
+                f"Provider server error: status {response.status_code} — {body_hint}"
+            )
+        if response.status_code >= 400:
+            body_hint = response.text[:300] if response.text else ""
+            raise ProviderBadResponseError(
+                f"Provider rejected request: status {response.status_code} — {body_hint}"
+            )
+
+    async def _raise_for_stream_status(self, response: httpx.Response) -> None:
+        if response.status_code < 400:
+            return
+        raw = await response.aread()
+        body_hint = raw.decode("utf-8", errors="replace")
+        if response.status_code in (401, 403):
+            raise ProviderAuthError(
+                f"Provider auth rejected request with status {response.status_code} — {body_hint[:200]}"
+            )
+        if response.status_code == 429:
+            raise ProviderRateLimitError()
+        if response.status_code >= 500:
+            raise ProviderTransportError(
+                f"Provider server error: status {response.status_code} — {body_hint[:200]}"
+            )
+        raise ProviderBadResponseError(
+            f"Provider rejected request: status {response.status_code} — {body_hint[:300]}"
+        )
+
+    async def _stream_chat_completions(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        payload: dict[str, object],
+        headers: dict[str, str],
+        timeout: float,
+    ) -> dict[str, object]:
+        async with client.stream(
+            "POST", endpoint, json=payload, headers=headers, timeout=timeout
+        ) as response:
+            await self._raise_for_stream_status(response)
+            return await self._parse_stream_response(response)
+
+    async def _parse_stream_response(
+        self, response: httpx.Response
+    ) -> dict[str, object]:
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        refusal_parts: list[str] = []
+        tool_call_parts: dict[int, dict[str, object]] = {}
+        finish_reason: str | None = None
+        usage: dict[str, object] | None = None
+
+        async for raw_line in response.aiter_lines():
+            line = raw_line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line.removeprefix("data:").strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(chunk, dict):
+                continue
+
+            raw_usage = chunk.get("usage")
+            if isinstance(raw_usage, dict):
+                usage = raw_usage
+
+            choices = chunk.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                continue
+
+            finish_raw = choice.get("finish_reason")
+            if isinstance(finish_raw, str):
+                finish_reason = finish_raw
+
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+
+            content = delta.get("content")
+            if isinstance(content, str):
+                content_parts.append(content)
+
+            reasoning = delta.get(self.reasoning_key)
+            if isinstance(reasoning, str):
+                reasoning_parts.append(reasoning)
+
+            refusal = delta.get("refusal")
+            if isinstance(refusal, str):
+                refusal_parts.append(refusal)
+
+            self._collect_stream_tool_calls(delta.get("tool_calls"), tool_call_parts)
+
+        message: dict[str, object] = {
+            "role": "assistant",
+            "content": "".join(content_parts) if content_parts else None,
+        }
+        if reasoning_parts:
+            message[self.reasoning_key] = "".join(reasoning_parts)
+        if refusal_parts:
+            message["refusal"] = "".join(refusal_parts)
+
+        tool_calls = self._build_stream_tool_calls(tool_call_parts)
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+
+        body: dict[str, object] = {
+            "choices": [
+                {
+                    "message": message,
+                    "finish_reason": finish_reason,
+                }
+            ]
+        }
+        if usage is not None:
+            body["usage"] = usage
+        return body
+
+    def _collect_stream_tool_calls(
+        self,
+        payload: object,
+        tool_call_parts: dict[int, dict[str, object]],
+    ) -> None:
+        if not isinstance(payload, list):
+            return
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            index_raw = item.get("index", len(tool_call_parts))
+            index = index_raw if isinstance(index_raw, int) else len(tool_call_parts)
+            current = tool_call_parts.setdefault(
+                index,
+                {"id": "", "type": "function", "name": "", "arguments": ""},
+            )
+            call_id = item.get("id")
+            if isinstance(call_id, str):
+                current["id"] = call_id
+            function = item.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if isinstance(name, str):
+                current["name"] = str(current.get("name", "")) + name
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                current["arguments"] = str(current.get("arguments", "")) + arguments
+
+    def _build_stream_tool_calls(
+        self, tool_call_parts: dict[int, dict[str, object]]
+    ) -> list[dict[str, object]]:
+        tool_calls: list[dict[str, object]] = []
+        for index in sorted(tool_call_parts):
+            item = tool_call_parts[index]
+            call_id = item.get("id")
+            name = item.get("name")
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            if not isinstance(name, str) or not name:
+                continue
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": str(item.get("arguments", "")),
+                    },
+                }
+            )
+        return tool_calls
 
     # -- Serialization --
 

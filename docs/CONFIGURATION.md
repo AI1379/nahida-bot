@@ -60,6 +60,9 @@ default_provider: deepseek-main
 | `base_url` | `str` | `""` | API 端点基础 URL |
 | `models` | `list` | `[]` | 模型列表，第一个元素为默认模型 |
 | `merge_system_messages` | `bool` | `false` | 发送前合并所有 system 消息为一条（用于需要单一 system 的后端） |
+| `stream_responses` | `bool` | `false` | provider 内部使用上游流式接口接收并聚合返回；不改变 channel 发送方式 |
+
+`stream_responses` 当前支持 `openai-compatible` 族（含 `deepseek`、`glm`、`groq`）、`anthropic` 族（含 `minimax`）和 `openai-responses`。开启后 provider 会持续读取上游 SSE 事件，最后仍返回一个完整 `ProviderResponse`；这主要用于长推理/重任务时区分“服务端仍在生成”与“服务端完全无响应”。当前不会把 token 级增量直接发送到聊天频道。
 
 ### 模型条目
 
@@ -103,6 +106,7 @@ models:
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `store_responses` | `bool` | `false` | 启用响应持久化，用于 `previous_response_id` 链式调用 |
+| `use_previous_response_id` | `bool` | `false` | 开启后从历史 assistant metadata 中查找上一轮 response id，并只发送新增输入 |
 | `reasoning_effort` | `str` | `null` | 推理深度：`"low"`、`"medium"`、`"high"` |
 | `max_output_tokens` | `int` | `null` | 最大输出 token（替代 `max_tokens`） |
 | `built_in_tools` | `list[str]` | `null` | 启用的内置工具：`"web_search"`、`"file_search"`、`"image_generation"`、`"code_interpreter"` |
@@ -127,6 +131,7 @@ providers:
     type: deepseek
     api_key: "${DEEPSEEK_LLM_API_KEY}"
     base_url: "${DEEPSEEK_LLM_BASE_URL}"
+    stream_responses: true
     models: ["deepseek-v4-pro", "deepseek-v4-flash"]
 
   siliconflow:
@@ -134,6 +139,7 @@ providers:
     api_key: "${SILICONFLOW_LLM_API_KEY}"
     base_url: "${SILICONFLOW_LLM_BASE_URL}"
     merge_system_messages: true
+    stream_responses: true
     models:
       - "Pro/zai-org/GLM-5"
       - name: "Qwen/Qwen3.6-35B-A3B"
@@ -146,6 +152,7 @@ providers:
     type: minimax
     api_key: "${MINIMAX_LLM_API_KEY}"
     base_url: "https://api.minimaxi.com/anthropic"
+    stream_responses: true
     models: ["MiniMax-M2.5"]
 
   openai:
@@ -153,6 +160,8 @@ providers:
     api_key: "${OPENAI_API_KEY}"
     base_url: "https://api.openai.com"
     store_responses: true
+    use_previous_response_id: false
+    stream_responses: true
     reasoning_effort: "medium"
     built_in_tools: ["web_search", "image_generation"]
     models:
