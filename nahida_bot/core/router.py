@@ -82,6 +82,7 @@ class MessageRouter:
         self._active_sessions: dict[str, str] = {}
         # Per-session queues for messages arriving while agent is busy
         self._pending: dict[str, list[tuple[InboundMessage, str, str | None]]] = {}
+        self._stopping = False
 
     @property
     def agent(self) -> AgentLoop | None:
@@ -115,6 +116,7 @@ class MessageRouter:
 
     async def start(self) -> None:
         """Subscribe to MessageReceived events and restore session overrides."""
+        self._stopping = False
         self._subscription = self._event_bus.subscribe(
             MessageReceived,
             self._handle_message_received,
@@ -126,6 +128,7 @@ class MessageRouter:
 
     async def stop(self) -> None:
         """Unsubscribe from events and wait for active agent runs to finish."""
+        self._stopping = True
         if self._subscription is not None:
             self._subscription.unsubscribe()
             self._subscription = None
@@ -137,6 +140,7 @@ class MessageRouter:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
+        self._pending.clear()
         logger.info("message_router.stopped")
 
     def _persist_override(self, key: str, session_id: str) -> None:
@@ -276,12 +280,15 @@ class MessageRouter:
                 return
 
         # Step 2: Agent loop (if configured)
-        if self._runner is None or not self._runner.has_agent:
+        if self._stopping:
+            return
+        runner = self._runner
+        if runner is None or not runner.has_agent:
             return
         if not self._config.agent_enabled:
             return
 
-        tracker = self._runner.run_tracker
+        tracker = runner.run_tracker
         if tracker.is_active(session_id):
             self._pending.setdefault(session_id, []).append(
                 (inbound, session_id, workspace_id)
@@ -295,7 +302,9 @@ class MessageRouter:
 
         stop_event = asyncio.Event()
         task = asyncio.create_task(
-            self._run_agent_in_background(inbound, session_id, workspace_id, stop_event)
+            self._run_agent_in_background(
+                runner, inbound, session_id, workspace_id, stop_event
+            )
         )
         tracker.start(session_id, task, stop_event)
         logger.debug(
@@ -307,16 +316,17 @@ class MessageRouter:
 
     async def _run_agent_in_background(
         self,
+        runner: SessionRunner,
         inbound: InboundMessage,
         session_id: str,
         workspace_id: str | None,
         stop_event: asyncio.Event,
     ) -> None:
         """Run agent loop in background, streaming responses as they arrive."""
-        tracker = self._runner.run_tracker
+        tracker = runner.run_tracker
         last_sent = ""
         try:
-            async for event in self._runner.run_stream(
+            async for event in runner.run_stream(
                 user_message=inbound.text,
                 session_id=session_id,
                 system_prompt=self._config.system_prompt,
@@ -366,7 +376,10 @@ class MessageRouter:
         finally:
             tracker.finish(session_id)
             logger.debug("router.agent_run_finished", session_id=session_id)
-            await self._drain_pending(session_id)
+            if self._stopping:
+                self._pending.pop(session_id, None)
+            else:
+                await self._drain_pending(session_id)
 
     async def _drain_pending(self, session_id: str) -> None:
         """Process the next queued message for a session, if any."""
