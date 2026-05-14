@@ -263,6 +263,28 @@ multimodal:
 
 ---
 
+## Memory
+
+在 `memory` 键下配置长期记忆检索和 embedding。默认保持 FTS-only，不会调用 embedding API。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `true` | 是否启用 memory 子系统配置 |
+| `retrieval.fts_enabled` | `bool` | `true` | 是否允许使用 SQLite FTS/BM25 检索长期记忆 |
+| `retrieval.vector_enabled` | `bool` | `false` | 是否启用向量召回；需要 `embedding.enabled=true` |
+| `retrieval.hybrid_enabled` | `bool` | `true` | FTS 和 vector 同时可用时是否使用 RRF hybrid fusion |
+| `retrieval.vector_backend` | `str` | `"json"` | 向量后端：`json`、`sqlite-vec`、`none` |
+| `retrieval.max_injected_items` | `int` | `5` | 单轮最多注入的长期记忆条数 |
+| `retrieval.max_injected_chars` | `int` | `1200` | 单轮长期记忆注入字符预算 |
+| `embedding.enabled` | `bool` | `false` | 是否启用长期记忆 embedding |
+| `embedding.provider_id` | `str` | `""` | embedding provider；为空则走 `model_routing.embedding` |
+| `embedding.model` | `str` | `""` | embedding 模型；为空则使用解析到的 provider 默认模型 |
+| `embedding.dimensions` | `int` | `0` | embedding 维度；`sqlite-vec` 后端必须填写 |
+| `embedding.batch_size` | `int` | `16` | embedding 批量大小 |
+| `embedding.embed_after_consolidation` | `bool` | `true` | consolidation/dreaming 写入长期记忆后是否刷新 embedding |
+
+---
+
 ## Router
 
 在 `router` 键下配置。控制消息从频道到命令/Agent 的路由行为。

@@ -21,6 +21,7 @@ from nahida_bot.agent.memory.embedding import (
     EmbeddingProvider,
     EmbeddingResult,
     HashEmbeddingProvider,
+    RoutedEmbeddingProvider,
 )
 from nahida_bot.agent.memory.vector import (
     NoopVectorIndex,
@@ -45,6 +46,7 @@ __all__ = [
     "EmbeddingProvider",
     "EmbeddingResult",
     "HashEmbeddingProvider",
+    "RoutedEmbeddingProvider",
     "NoopVectorIndex",
     "RuleBasedMemoryExtractor",
     "SQLiteVecIndex",

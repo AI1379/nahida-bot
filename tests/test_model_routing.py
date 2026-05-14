@@ -282,3 +282,12 @@ class TestConfigModels:
         )
         extra = cfg.model_extra or {}
         assert "custom_task" in extra
+
+    def test_memory_config_defaults_keep_vector_disabled(self) -> None:
+        from nahida_bot.core.config import MemoryConfig
+
+        cfg = MemoryConfig()
+
+        assert cfg.enabled is True
+        assert cfg.retrieval.vector_enabled is False
+        assert cfg.embedding.enabled is False

@@ -142,6 +142,42 @@ class ModelRoutingConfig(BaseModel):
     )
 
 
+class MemoryRetrievalConfig(BaseModel):
+    """Durable memory retrieval configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    fts_enabled: bool = True
+    vector_enabled: bool = False
+    hybrid_enabled: bool = True
+    max_injected_items: int = Field(default=5, ge=0)
+    max_injected_chars: int = Field(default=1200, ge=0)
+    vector_backend: Literal["json", "sqlite-vec", "none"] = "json"
+
+
+class MemoryEmbeddingConfig(BaseModel):
+    """Durable memory embedding configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = False
+    provider_id: str = ""
+    model: str = ""
+    dimensions: int = Field(default=0, ge=0)
+    batch_size: int = Field(default=16, ge=1)
+    embed_after_consolidation: bool = True
+
+
+class MemoryConfig(BaseModel):
+    """Memory subsystem configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = True
+    retrieval: MemoryRetrievalConfig = MemoryRetrievalConfig()
+    embedding: MemoryEmbeddingConfig = MemoryEmbeddingConfig()
+
+
 class RouterConfigModel(BaseModel):
     """Message router configuration."""
 
@@ -197,6 +233,7 @@ class Settings(BaseModel):
     scheduler: SchedulerConfigModel = SchedulerConfigModel()
     router: RouterConfigModel = RouterConfigModel()
     model_routing: ModelRoutingConfig = ModelRoutingConfig()
+    memory: MemoryConfig = MemoryConfig()
 
 
 def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:

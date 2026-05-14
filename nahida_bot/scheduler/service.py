@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from croniter import croniter
 from uuid import uuid4
@@ -505,6 +505,8 @@ class SchedulerService:
             dream_model=selected_model,
             run_rules=False,
         )
+        if applied:
+            await self._refresh_memory_embeddings()
         max_turn_id = max(record.turn_id for record in new_records)
         await memory.update_session_meta(
             session_id,
@@ -520,6 +522,26 @@ class SchedulerService:
             max_turn_id=max_turn_id,
         )
         return applied
+
+    async def _refresh_memory_embeddings(self) -> None:
+        """Refresh durable memory embeddings after background dreaming changes."""
+        if self._runner is None:
+            return
+        memory = self._runner.memory
+        provider = self._runner.memory_embedding_provider
+        if memory is None or provider is None:
+            return
+        embed_items = getattr(memory, "embed_items", None)
+        if not callable(embed_items):
+            return
+        try:
+            count = await cast(Any, embed_items)(
+                provider,
+                vector_index=self._runner.memory_vector_index,
+            )
+            logger.debug("scheduler.memory_embeddings_refreshed", count=count)
+        except Exception as exc:
+            logger.warning("scheduler.memory_embedding_failed", error=str(exc))
 
     async def _resolve_memory_dream_provider(
         self, session_id: str

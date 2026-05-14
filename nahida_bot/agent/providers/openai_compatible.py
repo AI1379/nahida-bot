@@ -9,6 +9,7 @@ import httpx
 import structlog
 
 from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.memory.embedding import EmbeddingResult
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ProviderResponse,
@@ -76,6 +77,83 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
     def _extra_payload(self) -> dict[str, object]:
         """Hook for subclasses to inject provider-specific parameters."""
         return {}
+
+    async def embed_texts(
+        self,
+        texts: list[str],
+        *,
+        model: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> list[EmbeddingResult]:
+        """Call an OpenAI-compatible ``/embeddings`` endpoint."""
+        payload: dict[str, object] = {
+            "model": model or self.model,
+            "input": texts,
+        }
+        endpoint = f"{self.base_url.rstrip('/')}/embeddings"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        timeout = timeout_seconds or 30
+        try:
+            logger.debug(
+                "provider.openai_compatible.embeddings_request",
+                provider_name=self.name,
+                model=payload["model"],
+                input_count=len(texts),
+                timeout_seconds=timeout,
+            )
+            response = await self._ensure_client().post(
+                endpoint, json=payload, headers=headers, timeout=timeout
+            )
+            self._raise_for_status(response)
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise ProviderBadResponseError(
+                    "Provider returned non-JSON embedding body"
+                ) from exc
+        except httpx.TimeoutException as exc:
+            raise ProviderTimeoutError() from exc
+        except httpx.HTTPError as exc:
+            raise ProviderTransportError(
+                f"HTTP transport error communicating with {self.name}"
+            ) from exc
+
+        return self._parse_embeddings_response(body, str(payload["model"]))
+
+    def _parse_embeddings_response(
+        self, body: dict[str, object], model: str
+    ) -> list[EmbeddingResult]:
+        data = body.get("data")
+        if not isinstance(data, list):
+            raise ProviderBadResponseError("Embedding response missing data array")
+        parsed: list[tuple[int, EmbeddingResult]] = []
+        for index, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise ProviderBadResponseError("Embedding data item is invalid")
+            raw_embedding = item.get("embedding")
+            if not isinstance(raw_embedding, list):
+                raise ProviderBadResponseError("Embedding data item missing vector")
+            embedding = [
+                float(value)
+                for value in raw_embedding
+                if isinstance(value, int | float)
+            ]
+            raw_index = item.get("index", index)
+            item_index = raw_index if isinstance(raw_index, int) else index
+            parsed.append(
+                (
+                    item_index,
+                    EmbeddingResult(
+                        embedding=embedding,
+                        provider_id=self.name,
+                        model=model,
+                    ),
+                )
+            )
+        return [result for _index, result in sorted(parsed, key=lambda item: item[0])]
 
     async def chat(
         self,

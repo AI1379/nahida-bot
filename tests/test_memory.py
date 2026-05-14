@@ -10,11 +10,13 @@ import pytest
 
 from nahida_bot.agent.memory import (
     ConversationTurn,
+    EmbeddingResult,
     HashEmbeddingProvider,
     MemoryConsolidator,
     MemoryItem,
     MemoryRecord,
     RuleBasedMemoryExtractor,
+    RoutedEmbeddingProvider,
     SQLiteMemoryStore,
     extract_keywords,
     parse_memory_dream,
@@ -556,6 +558,37 @@ async def test_memory_item_hybrid_search_fuses_fts_and_vector(
 def test_reciprocal_rank_fusion_orders_shared_hits_first() -> None:
     fused = reciprocal_rank_fusion([["a", "b"], ["b", "a"]], limit=2)
     assert [item_id for item_id, _score in fused] == ["a", "b"]
+
+
+class FakeRoutedProvider:
+    async def embed_texts(
+        self, texts: list[str], *, model: str | None = None
+    ) -> list[EmbeddingResult]:
+        assert model == "embed-model"
+        return [
+            EmbeddingResult(
+                embedding=[float(index), 1.0],
+                provider_id="raw-provider",
+                model=model or "",
+            )
+            for index, _text in enumerate(texts)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_routed_embedding_provider_overrides_identity_and_batches() -> None:
+    provider = RoutedEmbeddingProvider(
+        FakeRoutedProvider(),
+        provider_id="p1",
+        model="embed-model",
+        batch_size=1,
+    )
+
+    results = await provider.embed_texts(["a", "b"])
+
+    assert [result.provider_id for result in results] == ["p1", "p1"]
+    assert [result.model for result in results] == ["embed-model", "embed-model"]
+    assert provider.dimensions == 2
 
 
 def test_rule_based_memory_extractor_handles_chinese_explicit_memory() -> None:

@@ -226,3 +226,24 @@ telegram:
 #   reranker:
 #     prefer_tags: [reranker, cheap]
 #     fallback: disabled
+
+# ── Memory ─────────────────────────────────────────────
+# 长期记忆检索和 embedding 配置。默认只启用 SQLite FTS；vector/hybrid
+# 需要显式开启，并在 providers.models 中配置带 embedding tag 的模型。
+#
+# memory:
+#   enabled: true
+#   retrieval:
+#     fts_enabled: true
+#     vector_enabled: false
+#     hybrid_enabled: true
+#     vector_backend: json        # json / sqlite-vec / none
+#     max_injected_items: 5
+#     max_injected_chars: 1200
+#   embedding:
+#     enabled: false
+#     provider_id: ""
+#     model: ""
+#     dimensions: 0
+#     batch_size: 16
+#     embed_after_consolidation: true

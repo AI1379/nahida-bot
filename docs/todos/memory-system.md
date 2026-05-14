@@ -488,6 +488,34 @@ Needs review:
 
 ## 9. 配置建议
 
+### 9.0 当前实现审计（2026-05-13）
+
+已确认完成：
+
+- SQLite 会话记忆、关键词检索和最近上下文恢复已经可用。
+- `memory_items`、`memory_item_fts`、`memory_candidates`、`memory_embeddings` schema 已落地。
+- `memory_store()` 已从 no-op 改为写入 structured memory item。
+- FTS/BM25 长期记忆注入已接入 `SessionRunner`。
+- Markdown memory、`memory_read` / `memory_write`、workspace `MEMORY.md` 投影已可用。
+- 规则 consolidation 和 scheduler 后台 LLM dreaming 已可用。
+
+本轮补齐：
+
+- 新增正式 `memory.retrieval` / `memory.embedding` 配置模型。
+- OpenAI-compatible / OpenAI Responses provider 支持 `/embeddings`。
+- embedding provider 通过 `model_routing.embedding` 或显式 `memory.embedding.provider_id/model` 解析。
+- `SessionRunner` 在 `memory.retrieval.vector_enabled=true` 时使用 `search_items_hybrid()`。
+- consolidation 或 dreaming 写入长期记忆后可自动刷新 `memory_embeddings`。
+- `sqlite-vec` 仍为可选后端；未安装或未配置维度时回退到 SQLite JSON embedding 扫描。
+
+仍未完成：
+
+- 没有独立 embedding 维护任务表；当前是按 consolidation/dreaming 后批量刷新。
+- `/memory forget`、`/memory review`、手动触发 embedding rebuild 还没实现。
+- scope 仍主要默认写入 `global/__global__`，未按 workspace/chat/user 自动隔离。
+- consolidation 输入还不是完整 agent run/event，只包含主要 user/assistant 文本。
+- reranker 和 image fallback 还未统一迁移到 model routing。
+
 新增配置段：
 
 ```yaml
@@ -581,7 +609,13 @@ memory:
 - [x] 增加 `SQLiteVecIndex` 可选实现，默认仍可回退到 SQLite JSON embedding 扫描，避免把 sqlite-vec 变成强依赖。
 - [x] 实现 FTS + vector hybrid fusion；`search_items_hybrid()` 默认 FTS，传入 embedding provider 后用 RRF 融合向量召回。
 - [x] embedding id 使用 item/provider/model/content hash 派生的稳定 ID，方便重复 upsert 和可选向量索引同步。
+- [x] 新增 `memory.retrieval` / `memory.embedding` 配置。
+- [x] 将 embedding provider 选择接入 `model_routing.embedding`。
+- [x] OpenAI-compatible provider 支持真实 `/embeddings`。
+- [x] 对话长期记忆注入可配置为 FTS + vector hybrid。
+- [x] consolidation/dreaming 写入记忆后自动刷新 embedding。
 - [ ] 增加召回质量测试集。（暂缓，先用真实交互观察效果）
+- [ ] 增加手动 `/memory embed rebuild` 或后台 embedding 维护任务。
 
 ### Phase 3：异步 Consolidation
 
@@ -595,7 +629,7 @@ memory:
 - [x] 支持单独配置 dreaming provider/model；未配置时回退到 session 当前 provider/model。
 - [ ] 后续增加 dream run 历史表和更细的手动触发/暂停命令。
 - [ ] 评估在规则抽取和 LLM dreaming 中间加入 spaCy/NLTK 层：用 matcher/entity ruler/noun phrase extraction 识别偏好、项目实体和关系，降低 token 成本，并为 Phase 5 轻量图谱提供候选实体/边。
-- [ ] 将 dreaming / embedding / reranker 的模型选择迁移到统一 model routing 设计，见 `docs/todos/model-routing.md`。
+- [ ] 将 reranker 的模型选择迁移到统一 model routing 设计，见 `docs/todos/model-routing.md`。
 
 ### Phase 4：Agent Run/Event 集成
 

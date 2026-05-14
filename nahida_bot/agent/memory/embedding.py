@@ -6,7 +6,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 _TOKEN_SPLIT = re.compile(r"[^\w]+", re.UNICODE)
 
@@ -77,3 +77,53 @@ class HashEmbeddingProvider:
 def memory_text_hash(text: str) -> str:
     """Return a stable content hash for embedded memory text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class RoutedEmbeddingProvider:
+    """EmbeddingProvider adapter around a routed chat provider.
+
+    The underlying provider must expose an ``embed_texts`` coroutine. This keeps
+    embedding routing decoupled from the main ChatProvider abstract contract.
+    """
+
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        provider_id: str,
+        model: str,
+        dimensions: int = 0,
+        batch_size: int = 16,
+    ) -> None:
+        if not model:
+            raise ValueError("embedding model must not be empty")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        self._provider = provider
+        self.provider_id = provider_id
+        self.model = model
+        self.dimensions = dimensions
+        self.batch_size = batch_size
+
+    async def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+        embed = getattr(self._provider, "embed_texts", None)
+        if not callable(embed):
+            raise RuntimeError(
+                f"Provider '{self.provider_id}' does not support embeddings"
+            )
+        results: list[EmbeddingResult] = []
+        for offset in range(0, len(texts), self.batch_size):
+            batch = texts[offset : offset + self.batch_size]
+            raw_results = await cast(Any, embed)(batch, model=self.model)
+            for result in raw_results:
+                embedding = list(getattr(result, "embedding", []) or [])
+                if self.dimensions <= 0 and embedding:
+                    self.dimensions = len(embedding)
+                results.append(
+                    EmbeddingResult(
+                        embedding=embedding,
+                        provider_id=self.provider_id,
+                        model=self.model,
+                    )
+                )
+        return results

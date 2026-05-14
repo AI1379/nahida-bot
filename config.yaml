@@ -197,6 +197,27 @@ telegram:
 #     prefer_tags: [reranker, cheap]
 #     fallback: disabled
 
+# ── Memory ─────────────────────────────────────────────
+# 长期记忆检索和 embedding 配置。默认只启用 SQLite FTS；vector/hybrid
+# 需要显式开启，并在 providers.models 中配置带 embedding tag 的模型。
+#
+# memory:
+#   enabled: true
+#   retrieval:
+#     fts_enabled: true
+#     vector_enabled: false       # 开启后对长期记忆使用 hybrid 检索
+#     hybrid_enabled: true
+#     vector_backend: json        # json / sqlite-vec / none
+#     max_injected_items: 5
+#     max_injected_chars: 1200
+#   embedding:
+#     enabled: false
+#     provider_id: ""             # 可选；为空则走 model_routing.embedding
+#     model: ""                   # 可选；通常使用 tagged embedding 模型
+#     dimensions: 0               # sqlite-vec 后端必须显式填写维度
+#     batch_size: 16
+#     embed_after_consolidation: true
+
 # ── Router ─────────────────────────────────────────────
 # 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。
 # 以下均为默认值，不写则使用默认值。

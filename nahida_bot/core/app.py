@@ -72,6 +72,8 @@ class Application:
         self._db_engine: DatabaseEngine | None = None
         self._provider_manager: ProviderManager | None = None
         self._model_router: ModelRouter | None = None
+        self._memory_embedding_provider: Any | None = None
+        self._memory_vector_index: Any | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
         self.session_runner: SessionRunner | None = None
         self.scheduler_service: SchedulerService | None = None
@@ -255,6 +257,7 @@ class Application:
             self._model_router = ModelRouter(
                 self._provider_manager, self.settings.model_routing
             )
+            await self._init_memory_embedding()
 
             # Create a single AgentLoop with the default provider as fallback
             default_slot = self._provider_manager.default or slots[0]
@@ -280,6 +283,104 @@ class Application:
                 msg="Provider not configured — agent loop disabled. "
                 "Set providers.<id>.api_key and providers.<id>.models in config.",
             )
+
+    async def _init_memory_embedding(self) -> None:
+        """Resolve optional memory embedding provider and vector index."""
+        if (
+            self._provider_manager is None
+            or self._model_router is None
+            or self._db_engine is None
+            or not self.settings.memory.enabled
+            or not self.settings.memory.embedding.enabled
+        ):
+            return
+
+        from nahida_bot.agent.memory.embedding import RoutedEmbeddingProvider
+        from nahida_bot.agent.memory.vector import SQLiteVecIndex
+
+        emb_cfg = self.settings.memory.embedding
+        explicit = ""
+        provider_id = emb_cfg.provider_id.strip()
+        model = emb_cfg.model.strip()
+        if provider_id and model:
+            explicit = f"{provider_id}/{model}"
+        elif provider_id:
+            explicit = provider_id
+        elif model:
+            explicit = model
+
+        routed = None
+        if provider_id and not model:
+            slot = self._provider_manager.get(provider_id)
+            if slot is not None:
+                from nahida_bot.agent.providers.router import RoutedModel
+
+                routed = RoutedModel(
+                    slot=slot,
+                    model=None,
+                    reason="explicit_provider",
+                )
+        if routed is None:
+            routed = self._model_router.resolve_for_task("embedding", explicit=explicit)
+        if routed is None:
+            logger.warning(
+                "application.memory_embedding_disabled",
+                reason="no_embedding_model",
+            )
+            return
+
+        selected_model = routed.model or routed.slot.default_model
+        embed = getattr(routed.slot.provider, "embed_texts", None)
+        if not callable(embed):
+            logger.warning(
+                "application.memory_embedding_disabled",
+                reason="provider_without_embeddings",
+                provider_id=routed.slot.id,
+                model=selected_model,
+            )
+            return
+
+        self._memory_embedding_provider = RoutedEmbeddingProvider(
+            routed.slot.provider,
+            provider_id=routed.slot.id,
+            model=selected_model,
+            dimensions=emb_cfg.dimensions,
+            batch_size=emb_cfg.batch_size,
+        )
+
+        retrieval_cfg = self.settings.memory.retrieval
+        if (
+            retrieval_cfg.vector_enabled
+            and retrieval_cfg.vector_backend == "sqlite-vec"
+        ):
+            if emb_cfg.dimensions <= 0:
+                logger.warning(
+                    "application.memory_vector_index_disabled",
+                    reason="sqlite_vec_requires_dimensions",
+                )
+            else:
+                index = SQLiteVecIndex(self._db_engine, dimensions=emb_cfg.dimensions)
+                try:
+                    await index.setup()
+                except Exception as exc:
+                    logger.warning(
+                        "application.memory_vector_index_disabled",
+                        reason="setup_failed",
+                        error=str(exc),
+                    )
+                else:
+                    self._memory_vector_index = index
+
+        logger.info(
+            "application.memory_embedding_initialized",
+            provider_id=routed.slot.id,
+            model=selected_model,
+            vector_backend=(
+                retrieval_cfg.vector_backend if retrieval_cfg.vector_enabled else "none"
+            ),
+            has_vector_index=self._memory_vector_index is not None,
+            reason=routed.reason,
+        )
 
     def _init_workspace_subsystem(self) -> None:
         """Create and initialize the active workspace manager."""
@@ -336,6 +437,13 @@ class Application:
             workspace_manager=self.workspace_manager,
             tool_registry=tool_registry,
             multimodal_config=multimodal,
+            memory_retrieval_config=self.settings.memory.retrieval,
+            memory_embedding_provider=self._memory_embedding_provider,
+            memory_vector_index=self._memory_vector_index,
+            memory_embed_after_consolidation=(
+                self.settings.memory.embedding.enabled
+                and self.settings.memory.embedding.embed_after_consolidation
+            ),
             media_resolver=media_resolver,
             channel_registry=self.channel_registry,
         )

@@ -64,7 +64,7 @@ scheduler:
 - [x] 扩展 provider model config，支持 `tags` / `roles`。
 - [x] 新增统一 model routing 服务，避免各子系统重复解析 provider/model。
 - [x] 将 memory dreaming 接入 `memory` -> `cheap` -> `session` fallback。
-- [ ] 将 embedding provider 选择改为 `embedding` role。
+- [x] 将 embedding provider 选择改为 `embedding` role。
 - [x] 为 reranker 预留 `reranker` role。
 - [ ] 将 image fallback 的 provider/model 配置迁移到同一解析器。
 - [x] 增加模型选择日志：任务类型、候选、命中、fallback 原因。
