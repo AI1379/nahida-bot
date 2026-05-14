@@ -244,3 +244,5 @@ telegram:
 #     dimensions: 0
 #     batch_size: 16
 #     embed_after_consolidation: true
+#   consolidation:
+#     rule_based_enabled: true     # 是否启用每轮对话后的规则抽取；false 时只保留 dreaming/显式写入

@@ -32,6 +32,7 @@ from nahida_bot.agent.memory.vector import (
 )
 from nahida_bot.agent.providers.base import ProviderResponse
 from nahida_bot.agent.memory.store import MemoryStore
+from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 
 
@@ -670,6 +671,28 @@ async def test_memory_consolidator_auto_applies_and_projects_workspace(
     assert "中文回答" in summary
     assert "nahida-memory-generated:start" in memory_md
     assert "## Manual" in memory_md
+
+
+@pytest.mark.asyncio
+async def test_session_runner_can_disable_rule_based_consolidation(
+    memory_store: SQLiteMemoryStore,
+    tmp_path: Path,
+) -> None:
+    runner = SessionRunner(
+        memory_store=memory_store,
+        memory_consolidation_rule_based_enabled=False,
+    )
+
+    await runner._consolidate_memory_after_turn(
+        session_id="test-session",
+        user_message="请记住：我喜欢你默认用中文回答，并且说明关键取舍。",
+        assistant_message="好的，我会记住。",
+        workspace_id="default",
+        workspace_root=tmp_path,
+    )
+
+    assert await memory_store.search_items("中文回答") == []
+    assert not (tmp_path / MEMORY_SUMMARY_FILE).exists()
 
 
 @pytest.mark.asyncio

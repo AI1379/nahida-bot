@@ -197,6 +197,8 @@ default_provider: deepseek-main
 
 ```yaml
 memory:
+  consolidation:
+    rule_based_enabled: false
   embedding:
     model: embedding
 
@@ -309,6 +311,7 @@ multimodal:
 | `embedding.dimensions` | `int` | `0` | embedding 维度；`sqlite-vec` 后端必须填写 |
 | `embedding.batch_size` | `int` | `16` | embedding 批量大小 |
 | `embedding.embed_after_consolidation` | `bool` | `true` | consolidation/dreaming 写入长期记忆后是否刷新 embedding |
+| `consolidation.rule_based_enabled` | `bool` | `true` | 是否启用每轮对话结束后的规则抽取；设为 `false` 后只保留后台 dreaming 和显式 `memory_write`/`/memory remember` 写入 |
 
 ---
 

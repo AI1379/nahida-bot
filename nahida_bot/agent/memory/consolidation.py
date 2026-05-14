@@ -351,6 +351,8 @@ class MemoryConsolidator:
         append_item = getattr(self._memory, "append_item", None)
         if not callable(append_item):
             return 0
+        if not run_rules and dream_provider is None:
+            return 0
 
         existing_items = await self._load_existing_items()
         extracted = (

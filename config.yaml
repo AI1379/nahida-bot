@@ -202,6 +202,8 @@ telegram:
 #     dimensions: 0               # sqlite-vec 后端必须显式填写维度
 #     batch_size: 16
 #     embed_after_consolidation: true
+#   consolidation:
+#     rule_based_enabled: true     # 是否启用每轮对话后的规则抽取；false 时只保留 dreaming/显式写入
 
 # ── Router ─────────────────────────────────────────────
 # 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。

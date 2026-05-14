@@ -429,6 +429,9 @@ class Application:
                 self.settings.memory.embedding.enabled
                 and self.settings.memory.embedding.embed_after_consolidation
             ),
+            memory_consolidation_rule_based_enabled=(
+                self.settings.memory.consolidation.rule_based_enabled
+            ),
             group_context_max_messages=(
                 self.settings.router.group_context.max_messages
                 if self.settings.router.group_context.enabled

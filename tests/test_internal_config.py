@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from nahida_bot.core.config import (
     AgentConfig,
     ContextConfig,
+    MemoryConfig,
+    MemoryConsolidationConfig,
     RouterConfigModel,
     SchedulerConfigModel,
     Settings,
@@ -193,6 +195,12 @@ class TestSettingsSubConfigs:
         assert isinstance(s.router, RouterConfigModel)
         assert s.router.max_history_turns == 50
 
+    def test_default_memory(self) -> None:
+        s = Settings()
+        assert isinstance(s.memory, MemoryConfig)
+        assert isinstance(s.memory.consolidation, MemoryConsolidationConfig)
+        assert s.memory.consolidation.rule_based_enabled is True
+
     def test_agent_from_dict(self) -> None:
         s = Settings.model_validate({"agent": {"max_steps": 16}})
         assert s.agent.max_steps == 16
@@ -227,3 +235,9 @@ class TestSettingsSubConfigs:
         )
         assert s.router.max_history_turns == 100
         assert s.router.agent_enabled is False
+
+    def test_memory_consolidation_from_dict(self) -> None:
+        s = Settings.model_validate(
+            {"memory": {"consolidation": {"rule_based_enabled": False}}}
+        )
+        assert s.memory.consolidation.rule_based_enabled is False

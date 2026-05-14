@@ -138,6 +138,14 @@ class MemoryEmbeddingConfig(BaseModel):
     embed_after_consolidation: bool = True
 
 
+class MemoryConsolidationConfig(BaseModel):
+    """Durable memory consolidation configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    rule_based_enabled: bool = True
+
+
 class MemoryConfig(BaseModel):
     """Memory subsystem configuration."""
 
@@ -146,6 +154,7 @@ class MemoryConfig(BaseModel):
     enabled: bool = True
     retrieval: MemoryRetrievalConfig = MemoryRetrievalConfig()
     embedding: MemoryEmbeddingConfig = MemoryEmbeddingConfig()
+    consolidation: MemoryConsolidationConfig = MemoryConsolidationConfig()
 
 
 class GroupContextConfig(BaseModel):

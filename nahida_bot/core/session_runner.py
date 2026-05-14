@@ -128,6 +128,7 @@ class SessionRunner:
         memory_embedding_provider: EmbeddingProvider | None = None,
         memory_vector_index: VectorIndex | None = None,
         memory_embed_after_consolidation: bool = False,
+        memory_consolidation_rule_based_enabled: bool = True,
         group_context_max_messages: int = 20,
         group_context_ttl_seconds: int = 900,
         group_context_max_chars: int = 4000,
@@ -149,6 +150,9 @@ class SessionRunner:
         self._memory_embedding_provider = memory_embedding_provider
         self._memory_vector_index = memory_vector_index
         self._memory_embed_after_consolidation = memory_embed_after_consolidation
+        self._memory_consolidation_rule_based_enabled = (
+            memory_consolidation_rule_based_enabled
+        )
         self._group_context_max_messages = group_context_max_messages
         self._group_context_ttl_seconds = group_context_ttl_seconds
         self._group_context_max_chars = group_context_max_chars
@@ -2073,6 +2077,7 @@ class SessionRunner:
                 assistant_message=assistant_message,
                 workspace_id=workspace_id,
                 workspace_root=resolved_root,
+                run_rules=self._memory_consolidation_rule_based_enabled,
             )
             if applied:
                 logger.debug(
