@@ -112,36 +112,6 @@ class SchedulerConfigModel(BaseModel):
     memory_dreaming_model: str = ""
 
 
-class ModelRoutingEntry(BaseModel):
-    """Routing rule for one task — prefer_tags order defines priority."""
-
-    model_config = ConfigDict(frozen=True, extra="allow")
-
-    prefer_tags: list[str] = Field(default_factory=list)
-    fallback: Literal["session", "default", "disabled", "none"] = "session"
-
-
-class ModelRoutingConfig(BaseModel):
-    """Model routing configuration — maps task names to routing rules.
-
-    Extra keys are accepted via ``extra="allow"`` so that custom tasks
-    (e.g. ``summarization``, ``tool_planning``) can be configured without
-    code changes.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="allow")
-
-    memory_dreaming: ModelRoutingEntry = ModelRoutingEntry(
-        prefer_tags=["memory", "cheap"], fallback="session"
-    )
-    embedding: ModelRoutingEntry = ModelRoutingEntry(
-        prefer_tags=["embedding"], fallback="none"
-    )
-    reranker: ModelRoutingEntry = ModelRoutingEntry(
-        prefer_tags=["reranker", "cheap"], fallback="disabled"
-    )
-
-
 class MemoryRetrievalConfig(BaseModel):
     """Durable memory retrieval configuration."""
 
@@ -161,8 +131,8 @@ class MemoryEmbeddingConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
     enabled: bool = False
-    provider_id: str = ""
     model: str = ""
+    provider_id: str = ""  # Legacy: prefer ``model: provider/model``.
     dimensions: int = Field(default=0, ge=0)
     batch_size: int = Field(default=16, ge=1)
     embed_after_consolidation: bool = True
@@ -232,7 +202,7 @@ class Settings(BaseModel):
     context: ContextConfig = ContextConfig()
     scheduler: SchedulerConfigModel = SchedulerConfigModel()
     router: RouterConfigModel = RouterConfigModel()
-    model_routing: ModelRoutingConfig = ModelRoutingConfig()
+    model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
     memory: MemoryConfig = MemoryConfig()
 
 

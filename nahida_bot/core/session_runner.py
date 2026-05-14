@@ -176,6 +176,42 @@ class SessionRunner:
     def model_router(self, value: ModelRouter | None) -> None:
         self._model_router = value
 
+    def _resolve_task_model(
+        self,
+        task: str,
+        *,
+        explicit: str = "",
+        default_spec: str = "",
+        fallback: str = "disabled",
+        legacy_provider_id: str = "",
+    ) -> tuple[Any, str | None, str] | None:
+        """Resolve an internal task model from one model spec string."""
+        legacy_provider_id = legacy_provider_id.strip()
+        if not explicit and legacy_provider_id and self._providers is not None:
+            slot = self._providers.get(legacy_provider_id)
+            if slot is not None:
+                return slot, None, "legacy_provider"
+
+        if self._model_router is not None:
+            result = self._model_router.resolve_for_task(
+                task,
+                explicit=explicit,
+                default_spec=default_spec,
+                fallback=fallback,  # type: ignore[arg-type]
+            )
+            if result is not None:
+                return result.slot, result.model, result.reason
+            return None
+
+        if self._providers is None:
+            return None
+        if explicit:
+            resolved = self._providers.resolve_model_selection(explicit)
+            if resolved is not None:
+                slot, model = resolved
+                return slot, model, "explicit"
+        return None
+
     @property
     def memory_embedding_provider(self) -> Any | None:
         return self._memory_embedding_provider
@@ -440,14 +476,19 @@ class SessionRunner:
         if self._multimodal_config is None:
             return "Error: multimodal not configured"
 
-        fallback_provider_id = self._multimodal_config.image_fallback_provider
-        fallback_model = self._multimodal_config.image_fallback_model
-        if not fallback_provider_id:
-            return "Error: no fallback vision provider configured"
-
-        slot = self._providers.get(fallback_provider_id)
-        if slot is None:
-            return f"Error: fallback provider '{fallback_provider_id}' not found"
+        routed = self._resolve_task_model(
+            "image_fallback",
+            explicit=_legacy_model_spec(
+                provider_id=self._multimodal_config.image_fallback_provider,
+                model=self._multimodal_config.image_fallback_model,
+            ),
+            default_spec="vision",
+            fallback="disabled",
+            legacy_provider_id=self._multimodal_config.image_fallback_provider,
+        )
+        if routed is None:
+            return "Error: no fallback vision model configured"
+        slot, fallback_model, _reason = routed
 
         # Load recent turns to find the attachment
 
@@ -1403,25 +1444,24 @@ class SessionRunner:
         if self._providers is None or self._multimodal_config is None:
             return attachment.alt_text or f"[Image: {attachment.platform_id}]"
 
-        provider_id = self._multimodal_config.image_fallback_provider
-        fallback_model = self._multimodal_config.image_fallback_model
-        if not provider_id:
+        routed = self._resolve_task_model(
+            "image_fallback",
+            explicit=_legacy_model_spec(
+                provider_id=self._multimodal_config.image_fallback_provider,
+                model=self._multimodal_config.image_fallback_model,
+            ),
+            default_spec="vision",
+            fallback="disabled",
+            legacy_provider_id=self._multimodal_config.image_fallback_provider,
+        )
+        if routed is None:
             logger.debug(
                 "session_runner.fallback_vision_skipped",
-                reason="missing_fallback_provider",
+                reason="missing_fallback_model",
                 media_id=attachment.platform_id,
             )
             return attachment.alt_text or f"[Image: {attachment.platform_id}]"
-
-        slot = self._providers.get(provider_id)
-        if slot is None:
-            logger.debug(
-                "session_runner.fallback_vision_skipped",
-                reason="fallback_provider_not_found",
-                media_id=attachment.platform_id,
-                fallback_provider=provider_id,
-            )
-            return attachment.alt_text or f"[Image: {attachment.platform_id}]"
+        slot, fallback_model, route_reason = routed
 
         resolved = await self._resolve_attachment(attachment)
 
@@ -1470,8 +1510,9 @@ class SessionRunner:
             logger.debug(
                 "session_runner.fallback_vision_call",
                 media_id=attachment.platform_id,
-                fallback_provider=provider_id,
+                fallback_provider=slot.id,
                 fallback_model=fallback_model or slot.default_model,
+                route_reason=route_reason,
                 image_part_type=content_parts[-1].type,
             )
             response = await slot.provider.chat(messages=[vision_msg], **chat_kwargs)
@@ -1479,7 +1520,7 @@ class SessionRunner:
                 logger.debug(
                     "session_runner.fallback_vision_success",
                     media_id=attachment.platform_id,
-                    fallback_provider=provider_id,
+                    fallback_provider=slot.id,
                     fallback_model=fallback_model or slot.default_model,
                     description_chars=len(response.content),
                 )
@@ -1825,3 +1866,14 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+
+
+def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
+    """Build a model spec from legacy provider/model split fields."""
+    provider_id = provider_id.strip()
+    model = model.strip()
+    if provider_id and model:
+        if model.startswith(f"{provider_id}/"):
+            return model
+        return f"{provider_id}/{model}"
+    return model

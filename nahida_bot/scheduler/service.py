@@ -553,17 +553,16 @@ class SchedulerService:
         router = self._runner.model_router
         if router is not None:
             # Build explicit override from legacy config fields
-            explicit = ""
-            pid = self._config.memory_dreaming_provider_id.strip()
-            model = self._config.memory_dreaming_model.strip()
-            if pid and model:
-                explicit = f"{pid}/{model}"
-            elif pid:
-                explicit = pid
-            elif model:
-                explicit = model
-
-            result = router.resolve_for_task("memory_dreaming", explicit=explicit)
+            explicit = _legacy_model_spec(
+                provider_id=self._config.memory_dreaming_provider_id,
+                model=self._config.memory_dreaming_model,
+            )
+            result = router.resolve_for_task(
+                "memory_dreaming",
+                explicit=explicit,
+                default_spec="memory",
+                fallback="session",
+            )
             if result is not None:
                 return (result.slot, result.model, result.reason)
 
@@ -784,3 +783,14 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
+
+
+def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
+    """Build a model spec from legacy provider/model split fields."""
+    provider_id = provider_id.strip()
+    model = model.strip()
+    if provider_id and model:
+        if model.startswith(f"{provider_id}/"):
+            return model
+        return f"{provider_id}/{model}"
+    return model

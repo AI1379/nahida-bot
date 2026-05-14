@@ -104,8 +104,8 @@ default_provider: deepseek-main   # 可选，默认使用第一个 key
 multimodal:
   image_fallback_mode: "auto"
   media_context_policy: "cache_aware"
-  image_fallback_provider: "siliconflow"
-  image_fallback_model: "Qwen/Qwen3.6-35B-A3B"
+  image_fallback_provider: ""  # Legacy；建议把 provider 写进 image_fallback_model
+  image_fallback_model: "siliconflow/Qwen/Qwen3.6-35B-A3B"
   max_images_per_turn: 4
   max_image_bytes: 10485760
   media_cache_ttl_seconds: 3600
@@ -197,8 +197,8 @@ telegram:
 #   memory_dreaming_initial_delay_seconds: 300   # 启动后首次 dreaming 延迟（秒）
 #   memory_dreaming_session_limit: 20            # 单次最多扫描会话数
 #   memory_dreaming_recent_turn_limit: 40        # 单会话最多读取 turns 数
-#   memory_dreaming_provider_id: ""     # 专用 provider；空则走 model_routing 或会话当前 provider
-#   memory_dreaming_model: ""           # 专用模型；空则走 model_routing 或会话当前模型
+#   memory_dreaming_provider_id: ""     # Legacy；建议改用 memory_dreaming_model
+#   memory_dreaming_model: ""           # model spec；空则默认找 memory tag，失败后走会话模型
 
 # ── Router ─────────────────────────────────────────────
 # 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。
@@ -211,21 +211,11 @@ telegram:
 #   command_timeout_seconds: 30.0       # 命令执行超时（秒）
 #   command_timeout_message: "Command timed out. Please try again later."
 
-# ── Model Routing ──────────────────────────────────────
-# 按任务类型自动路由到打了 tag 的模型。
-# providers 的 models 中用 tags 字段标记模型角色：primary / cheap / memory / embedding / reranker / vision
-# 每个任务条目：prefer_tags 按顺序匹配，fallback 指定无匹配时的策略。
-#
-# model_routing:
-#   memory_dreaming:
-#     prefer_tags: [memory, cheap]
-#     fallback: session
-#   embedding:
-#     prefer_tags: [embedding]
-#     fallback: none
-#   reranker:
-#     prefer_tags: [reranker, cheap]
-#     fallback: disabled
+# ── Model Tags / Specs ─────────────────────────────────
+# providers 的 models 中用 tags 字段标记模型角色：
+# primary / cheap / memory / embedding / reranker / vision
+# 需要内部模型的配置项都接受一个 model spec 字符串；这个字符串可以是 tag，
+# 也可以是 provider/model 或裸模型名。
 
 # ── Memory ─────────────────────────────────────────────
 # 长期记忆检索和 embedding 配置。默认只启用 SQLite FTS；vector/hybrid
@@ -242,8 +232,7 @@ telegram:
 #     max_injected_chars: 1200
 #   embedding:
 #     enabled: false
-#     provider_id: ""
-#     model: ""
+#     model: ""             # model spec；空则默认找 embedding tag
 #     dimensions: 0
 #     batch_size: 16
 #     embed_after_consolidation: true

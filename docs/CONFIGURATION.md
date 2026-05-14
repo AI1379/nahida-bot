@@ -178,6 +178,34 @@ default_provider: deepseek-main
 
 ---
 
+## Model Specs
+
+内部任务的模型配置使用单个 model spec 字符串。model spec 可以是 tag、`provider/model` 或裸模型名，统一由 `ModelRouter.resolve()` 解析。
+
+常用默认 tag：
+
+| Tag | 用途 |
+|----|------|
+| `primary` | 主对话模型 |
+| `memory` | memory dreaming / consolidation |
+| `embedding` | 文本 embedding |
+| `reranker` | 检索重排 |
+| `vision` | 图片理解 fallback |
+| `cheap` | 低成本后台任务标记 |
+
+示例：
+
+```yaml
+memory:
+  embedding:
+    model: embedding
+
+multimodal:
+  image_fallback_model: siliconflow/Qwen/Qwen3.6-35B-A3B
+```
+
+---
+
 ## 多模态 / 图片处理
 
 在 `multimodal` 键下配置。
@@ -186,8 +214,8 @@ default_provider: deepseek-main
 |----|------|--------|------|
 | `image_fallback_mode` | `str` | `"auto"` | 主模型不支持图片时的策略：`auto`（自动调用 fallback 视觉模型）、`tool`（注入 `image_understand` 工具）、`off`（跳过图片） |
 | `media_context_policy` | `str` | `"cache_aware"` | 历史中的媒体保留方式：`cache_aware`（近期图片保留原生块，旧的降级为描述）、`native_recent`（仅最新图片保留原生）、`description_only`（全部使用文本描述） |
-| `image_fallback_provider` | `str` | `""` | Fallback 视觉模型的 provider ID |
-| `image_fallback_model` | `str` | `""` | Fallback provider 中的模型名称 |
+| `image_fallback_provider` | `str` | `""` | Legacy 字段；建议把 provider 写进 `image_fallback_model` |
+| `image_fallback_model` | `str` | `""` | Fallback 视觉模型 spec；空则默认找 `vision` tag |
 | `max_images_per_turn` | `int` | `4` | 每轮对话处理的最大图片数 |
 | `max_image_bytes` | `int` | `10485760` | 单张图片最大字节数（10 MB） |
 | `media_cache_ttl_seconds` | `int` | `3600` | 媒体缓存过期时间（秒） |
@@ -198,8 +226,7 @@ default_provider: deepseek-main
 multimodal:
   image_fallback_mode: "auto"
   media_context_policy: "cache_aware"
-  image_fallback_provider: "siliconflow"
-  image_fallback_model: "Qwen/Qwen3.6-35B-A3B"
+  image_fallback_model: "siliconflow/Qwen/Qwen3.6-35B-A3B"
 ```
 
 ---
@@ -258,8 +285,8 @@ multimodal:
 | `memory_dreaming_initial_delay_seconds` | `int` | `300` | 应用启动后首次 dreaming 延迟（秒） |
 | `memory_dreaming_session_limit` | `int` | `20` | 单次 dreaming 最多扫描的最近会话数 |
 | `memory_dreaming_recent_turn_limit` | `int` | `40` | 单个会话最多读取的最近 turns 数 |
-| `memory_dreaming_provider_id` | `str` | `""` | dreaming 专用 provider ID；为空则使用会话当前 provider |
-| `memory_dreaming_model` | `str` | `""` | dreaming 专用模型名；为空则使用会话当前模型 |
+| `memory_dreaming_provider_id` | `str` | `""` | Legacy 字段；建议把 provider 写进 `memory_dreaming_model` |
+| `memory_dreaming_model` | `str` | `""` | dreaming 模型 spec；空则默认找 `memory` tag，失败后使用会话模型 |
 
 ---
 
@@ -277,8 +304,8 @@ multimodal:
 | `retrieval.max_injected_items` | `int` | `5` | 单轮最多注入的长期记忆条数 |
 | `retrieval.max_injected_chars` | `int` | `1200` | 单轮长期记忆注入字符预算 |
 | `embedding.enabled` | `bool` | `false` | 是否启用长期记忆 embedding |
-| `embedding.provider_id` | `str` | `""` | embedding provider；为空则走 `model_routing.embedding` |
-| `embedding.model` | `str` | `""` | embedding 模型；为空则使用解析到的 provider 默认模型 |
+| `embedding.provider_id` | `str` | `""` | Legacy 字段；建议把 provider 写进 `embedding.model` |
+| `embedding.model` | `str` | `""` | embedding 模型 spec；空则默认找 `embedding` tag |
 | `embedding.dimensions` | `int` | `0` | embedding 维度；`sqlite-vec` 后端必须填写 |
 | `embedding.batch_size` | `int` | `16` | embedding 批量大小 |
 | `embedding.embed_after_consolidation` | `bool` | `true` | consolidation/dreaming 写入长期记忆后是否刷新 embedding |

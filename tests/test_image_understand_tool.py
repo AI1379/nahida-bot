@@ -17,6 +17,7 @@ from nahida_bot.agent.providers.base import (
     ToolDefinition,
 )
 from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
+from nahida_bot.agent.providers.router import ModelRouter
 from nahida_bot.agent.tokenization import Tokenizer
 from nahida_bot.core.config import MultimodalConfig
 from nahida_bot.core.context import current_attachments, current_session, SessionContext
@@ -112,12 +113,15 @@ def _runner(tmp_path: Path, provider: _VisionProvider) -> SessionRunner:
         capabilities_by_model={
             "vision-model": ModelCapabilities(image_input=True),
         },
+        tags_by_model={"vision-model": ["vision"]},
     )
+    provider_manager = ProviderManager([slot], default_id="vision")
     return SessionRunner(
-        provider_manager=ProviderManager([slot], default_id="vision"),
+        provider_manager=provider_manager,
+        model_router=ModelRouter(provider_manager),
         multimodal_config=MultimodalConfig(
             image_fallback_mode="tool",
-            image_fallback_provider="vision",
+            image_fallback_model="vision",
         ),
         media_resolver=MediaResolver(
             cache=MediaCache(tmp_path / "media_cache"),

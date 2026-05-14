@@ -503,7 +503,7 @@ Needs review:
 
 - 新增正式 `memory.retrieval` / `memory.embedding` 配置模型。
 - OpenAI-compatible / OpenAI Responses provider 支持 `/embeddings`。
-- embedding provider 通过 `model_routing.embedding` 或显式 `memory.embedding.provider_id/model` 解析。
+- embedding provider 通过单个 model spec 解析；空值默认查找 `embedding` tag。
 - `SessionRunner` 在 `memory.retrieval.vector_enabled=true` 时使用 `search_items_hybrid()`。
 - consolidation 或 dreaming 写入长期记忆后可自动刷新 `memory_embeddings`。
 - `sqlite-vec` 仍为可选后端；未安装或未配置维度时回退到 SQLite JSON embedding 扫描。
@@ -514,7 +514,7 @@ Needs review:
 - `/memory forget`、`/memory review`、手动触发 embedding rebuild 还没实现。
 - scope 仍主要默认写入 `global/__global__`，未按 workspace/chat/user 自动隔离。
 - consolidation 输入还不是完整 agent run/event，只包含主要 user/assistant 文本。
-- reranker 和 image fallback 还未统一迁移到 model routing。
+- 还没有独立 embedding 维护任务表、reranker 接入和更细粒度 scope 隔离。
 
 新增配置段：
 
@@ -534,8 +534,7 @@ memory:
     max_injected_tokens: 1200
 
   embedding:
-    provider_id: ""
-    model: ""
+    model: ""      # model spec；空则默认找 embedding tag
     dimensions: 1024
     batch_size: 16
 
@@ -610,7 +609,7 @@ memory:
 - [x] 实现 FTS + vector hybrid fusion；`search_items_hybrid()` 默认 FTS，传入 embedding provider 后用 RRF 融合向量召回。
 - [x] embedding id 使用 item/provider/model/content hash 派生的稳定 ID，方便重复 upsert 和可选向量索引同步。
 - [x] 新增 `memory.retrieval` / `memory.embedding` 配置。
-- [x] 将 embedding provider 选择接入 `model_routing.embedding`。
+- [x] 将 embedding provider 选择接入统一 model spec 解析。
 - [x] OpenAI-compatible provider 支持真实 `/embeddings`。
 - [x] 对话长期记忆注入可配置为 FTS + vector hybrid。
 - [x] consolidation/dreaming 写入记忆后自动刷新 embedding。

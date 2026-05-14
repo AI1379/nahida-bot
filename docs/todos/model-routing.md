@@ -1,70 +1,87 @@
-# Model Routing and Role Tags
+# Model Spec Resolution and Role Tags
 
 ## 背景
 
-当前 provider 选择主要服务主对话模型。memory dreaming、embedding、reranker、图片理解、未来的工具规划和摘要任务都需要“按任务选择模型”，否则会出现两个问题：
+内部任务，例如 memory dreaming、embedding、reranker、图片理解、摘要等，确实需要按用途选择模型。但当前 `model_routing.<task>.prefer_tags/fallback` 这层公开配置过早暴露了策略复杂度，并且和 provider model tags 的职责重叠。
 
-- 低价值后台任务误用昂贵主模型。
-- 每个子系统各自配置 provider/model，后续 fallback、限流、成本统计会分散。
+更合适的当前设计是：
 
-## 目标
+- `providers.*.models[].tags` 声明模型能力和用途。
+- `ModelRouter` 只负责解析一个 model spec 字符串。
+- 内部任务在代码中声明自己的默认 tag 和 fallback 行为。
+- 各模块配置层只暴露一个可选 model spec 字符串；这个字符串可以是 tag，也可以是固定模型 ID。
 
-- 给模型配置增加 role/tag，例如 `primary`、`cheap`、`vision`、`embedding`、`reranker`、`memory`。
-- 提供统一的 `ModelRouter` 或 `ProviderSelector`，按任务类型解析可用模型。
-- 支持 fallback 链：优先使用指定 role 的模型，失败时按配置回退到 session provider 或 default provider。
-- 让 memory dreaming、embedding、reranker、image fallback 共用同一套路由逻辑。
+## Model Spec 语义
 
-## 初始角色
+一个 model spec 是单个字符串，以下形式等价地进入同一个解析器：
 
-- `primary`：主对话模型。
-- `cheap`：低成本后台任务，例如 dreaming、摘要、轻量分类。
-- `memory`：专门用于 memory dreaming/consolidation。
-- `embedding`：文本向量模型。
-- `reranker`：检索重排模型。
-- `vision`：图片理解模型。
+```text
+embedding
+vision
+memory
+siliconflow/Qwen/Qwen3.6-35B-A3B
+Qwen/Qwen3.6-35B-A3B
+```
 
-## 配置草案
+解析顺序：
+
+1. `provider_id/model_name`
+2. 裸模型名
+3. tag
+
+模型名本身可以包含 `/`；只有第一段命中 provider id 时才按 `provider/model` 拆分。
+
+## 推荐配置形态
 
 ```yaml
 providers:
-  deepseek:
+  siliconflow:
     type: openai-compatible
     models:
-      - name: deepseek-chat
-        tags: [primary]
-      - name: deepseek-chat-lite
-        tags: [cheap, memory]
+      - name: Qwen/Qwen3.6-35B-A3B
+        tags: [primary, vision]
+      - name: Qwen/Qwen3-Embedding-8B
+        tags: [embedding]
+      - name: cheap-chat
+        tags: [memory, cheap]
 
-model_routing:
-  memory_dreaming:
-    prefer_tags: [memory, cheap]
-    fallback: session
+memory:
   embedding:
-    prefer_tags: [embedding]
-    fallback: none
-  reranker:
-    prefer_tags: [reranker, cheap]
-    fallback: disabled
-```
+    enabled: true
+    model: ""        # 空 = 默认找 embedding tag
+    # model: embedding
+    # model: siliconflow/Qwen/Qwen3-Embedding-8B
 
-## 与当前实现的关系
-
-当前 memory dreaming 已有专用配置：
-
-```yaml
 scheduler:
-  memory_dreaming_provider_id: ""
-  memory_dreaming_model: ""
+  memory_dreaming_model: ""  # 空 = 默认找 memory tag
+
+multimodal:
+  image_fallback_model: ""   # 空 = 默认找 vision tag
 ```
 
-这可以作为过渡方案。后续引入 model routing 后，保留显式 provider/model 作为最高优先级，然后再走 role/tag fallback。
+## 内部任务默认行为
+
+- `memory_dreaming`：显式 spec -> `memory` tag -> session provider fallback。
+- `embedding`：显式 spec -> `embedding` tag -> disabled。
+- `reranker`：显式 spec -> `reranker` tag -> disabled。
+- `image_fallback`：显式 spec -> `vision` tag -> disabled。
+
+这些 fallback 是代码里的任务语义，不作为公开 `model_routing` 配置项暴露。未来如果真实需要多 tag 优先级或用户可配置 fallback 链，再新增高级配置。
+
+## 迁移原则
+
+- 废弃 `model_routing` 配置项；保留字段兼容旧配置但不参与新解析。
+- 废弃各模块的 `provider_id + model` 双字段配置；新配置使用单个 `model` spec 字符串。
+- 旧字段若仍存在，只作为兼容输入拼成一个 spec，并在文档中标为 legacy。
+- 新代码不得绕过 `ModelRouter.resolve()` 直接解析 tag 或 provider/model。
 
 ## TODO
 
-- [x] 扩展 provider model config，支持 `tags` / `roles`。
-- [x] 新增统一 model routing 服务，避免各子系统重复解析 provider/model。
-- [x] 将 memory dreaming 接入 `memory` -> `cheap` -> `session` fallback。
-- [x] 将 embedding provider 选择改为 `embedding` role。
-- [x] 为 reranker 预留 `reranker` role。
-- [ ] 将 image fallback 的 provider/model 配置迁移到同一解析器。
-- [x] 增加模型选择日志：任务类型、候选、命中、fallback 原因。
+- [x] 扩展 provider model config，支持 `tags`。
+- [x] 新增统一 `ModelRouter.resolve(spec)`，支持 provider/model、裸模型名、tag。
+- [x] 移除公开 `model_routing.<task>.prefer_tags/fallback` 策略层。
+- [x] 新增代码级 `resolve_for_task(task, explicit, default_spec, fallback)` helper。
+- [x] 将 memory embedding 配置收敛为单个 `model` spec。
+- [x] 将 memory dreaming 配置收敛为单个 `memory_dreaming_model` spec。
+- [x] 将 image fallback 配置收敛为单个 `image_fallback_model` spec。
+- [x] 更新配置样例和文档，明确 tag 与固定模型 ID 都是 model spec 字符串。

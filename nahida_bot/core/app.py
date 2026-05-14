@@ -254,9 +254,7 @@ class Application:
 
             from nahida_bot.agent.providers.router import ModelRouter
 
-            self._model_router = ModelRouter(
-                self._provider_manager, self.settings.model_routing
-            )
+            self._model_router = ModelRouter(self._provider_manager)
             await self._init_memory_embedding()
 
             # Create a single AgentLoop with the default provider as fallback
@@ -299,29 +297,16 @@ class Application:
         from nahida_bot.agent.memory.vector import SQLiteVecIndex
 
         emb_cfg = self.settings.memory.embedding
-        explicit = ""
-        provider_id = emb_cfg.provider_id.strip()
-        model = emb_cfg.model.strip()
-        if provider_id and model:
-            explicit = f"{provider_id}/{model}"
-        elif provider_id:
-            explicit = provider_id
-        elif model:
-            explicit = model
-
-        routed = None
-        if provider_id and not model:
-            slot = self._provider_manager.get(provider_id)
-            if slot is not None:
-                from nahida_bot.agent.providers.router import RoutedModel
-
-                routed = RoutedModel(
-                    slot=slot,
-                    model=None,
-                    reason="explicit_provider",
-                )
-        if routed is None:
-            routed = self._model_router.resolve_for_task("embedding", explicit=explicit)
+        explicit = _legacy_model_spec(
+            provider_id=emb_cfg.provider_id,
+            model=emb_cfg.model,
+        )
+        routed = self._model_router.resolve_for_task(
+            "embedding",
+            explicit=explicit,
+            default_spec="embedding",
+            fallback="disabled",
+        )
         if routed is None:
             logger.warning(
                 "application.memory_embedding_disabled",
@@ -853,3 +838,14 @@ def _provider_model_entries(
             if name:
                 entries.append((name, raw.capabilities, raw.tags))
     return entries
+
+
+def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
+    """Build a model spec from legacy provider/model split fields."""
+    provider_id = provider_id.strip()
+    model = model.strip()
+    if provider_id and model:
+        if model.startswith(f"{provider_id}/"):
+            return model
+        return f"{provider_id}/{model}"
+    return model

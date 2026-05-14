@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
-    from nahida_bot.core.config import ModelRoutingConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -23,6 +22,9 @@ class RoutedModel:
     reason: str
 
 
+TaskFallback = Literal["session", "default", "disabled", "none"]
+
+
 class ModelRouter:
     """Resolves model specs to ``(ProviderSlot, model_name)`` pairs.
 
@@ -33,17 +35,15 @@ class ModelRouter:
     * A **tag** like ``"embedding"`` or ``"cheap"`` — resolved by scanning
       model tags across all provider slots.
 
-    Task-level routing (``resolve_for_task``) adds a fallback chain:
-    explicit override → ``prefer_tags`` → ``fallback`` policy.
+    Task-level routing is intentionally code-level, not user-configured:
+    explicit spec → task default spec → task fallback policy.
     """
 
     def __init__(
         self,
         provider_manager: ProviderManager,
-        routing_config: ModelRoutingConfig,
     ) -> None:
         self._pm = provider_manager
-        self._config = routing_config
 
     # ── Public API ─────────────────────────────────────────
 
@@ -74,15 +74,21 @@ class ModelRouter:
         )
         return None
 
-    def resolve_for_task(self, task: str, *, explicit: str = "") -> RoutedModel | None:
+    def resolve_for_task(
+        self,
+        task: str,
+        *,
+        explicit: str = "",
+        default_spec: str = "",
+        fallback: TaskFallback = "disabled",
+    ) -> RoutedModel | None:
         """Resolve model for a named task.
 
-        Priority: *explicit* override → task ``prefer_tags`` → fallback policy.
+        Priority: *explicit* spec → task default spec → fallback policy.
 
         When *fallback* is ``"session"`` this method returns ``None`` so the
         caller can apply its own session-level resolution.
         """
-        # 1. Explicit override (accepts concrete or tag form)
         if explicit:
             result = self.resolve(explicit)
             if result is not None:
@@ -94,28 +100,30 @@ class ModelRouter:
                     model=result.model,
                 )
                 return result
+            logger.warning(
+                "model_router.explicit_missed",
+                task=task,
+                explicit=explicit,
+            )
 
-        # 2. Look up task config
-        entry = self._get_task_entry(task)
-        if entry is None:
-            logger.debug("model_router.no_task_config", task=task)
-            return self._apply_fallback(task, "session")
-
-        # 3. Try prefer_tags in order
-        for tag in entry.prefer_tags:
-            match = self._resolve_by_tag(tag)
+        if default_spec:
+            match = self.resolve(default_spec)
             if match is not None:
                 logger.debug(
                     "model_router.task_resolved",
                     task=task,
-                    reason=f"tag:{tag}",
+                    reason=f"default:{default_spec}",
                     slot=match.slot.id,
                     model=match.model,
                 )
                 return match
+            logger.warning(
+                "model_router.default_spec_missed",
+                task=task,
+                default_spec=default_spec,
+            )
 
-        # 4. Apply fallback policy
-        return self._apply_fallback(task, entry.fallback)
+        return self._apply_fallback(task, fallback)
 
     # ── Internals ──────────────────────────────────────────
 
@@ -144,7 +152,7 @@ class ModelRouter:
                     )
         return None
 
-    def _apply_fallback(self, task: str, fallback: str) -> RoutedModel | None:
+    def _apply_fallback(self, task: str, fallback: TaskFallback) -> RoutedModel | None:
         """Apply the fallback policy for a task."""
         if fallback == "default":
             slot = self._pm.default
@@ -165,15 +173,4 @@ class ModelRouter:
                 fallback=fallback,
             )
             return None
-
         return None
-
-    def _get_task_entry(self, task: str):
-        """Retrieve the routing entry for a task name."""
-        # Try direct attribute first (defined fields)
-        entry = getattr(self._config, task, None)
-        if entry is not None:
-            return entry
-        # Try extra fields (Pydantic stores them via extra="allow")
-        extra = getattr(self._config, "model_extra", None) or {}
-        return extra.get(task)

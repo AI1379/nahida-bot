@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
 from nahida_bot.agent.providers.router import ModelRouter
-from nahida_bot.core.config import ModelRoutingConfig, ModelRoutingEntry
 
 
 def _make_slot(
@@ -30,10 +29,9 @@ def _make_router(
     slots: list[ProviderSlot],
     *,
     default_id: str = "",
-    routing: ModelRoutingConfig | None = None,
 ) -> ModelRouter:
     pm = ProviderManager(slots, default_id=default_id or (slots[0].id if slots else ""))
-    return ModelRouter(pm, routing or ModelRoutingConfig())
+    return ModelRouter(pm)
 
 
 # ── resolve() — concrete model ──────────────────────────
@@ -151,47 +149,43 @@ class TestResolveForTask:
         assert result is not None
         assert result.model == "deepseek-lite"
 
-    def test_prefer_tags_from_config(self) -> None:
+    def test_default_spec_resolves_when_no_explicit_spec(self) -> None:
         slot = _make_slot(
             "ds",
             ["deepseek-chat", "deepseek-lite"],
             tags={"deepseek-lite": ["cheap", "memory"]},
         )
-        routing = ModelRoutingConfig(
-            memory_dreaming=ModelRoutingEntry(
-                prefer_tags=["memory", "cheap"],
-                fallback="session",
-            ),
+        router = _make_router([slot])
+        result = router.resolve_for_task(
+            "memory_dreaming",
+            default_spec="memory",
+            fallback="session",
         )
-        router = _make_router([slot], routing=routing)
-        result = router.resolve_for_task("memory_dreaming")
         assert result is not None
         assert result.model == "deepseek-lite"
         assert "tag:memory" in result.reason
 
     def test_fallback_session_returns_none(self) -> None:
         slot = _make_slot("ds", ["deepseek-chat"])
-        routing = ModelRoutingConfig(
-            memory_dreaming=ModelRoutingEntry(
-                prefer_tags=["memory"],
+        router = _make_router([slot])
+        assert (
+            router.resolve_for_task(
+                "memory_dreaming",
+                default_spec="memory",
                 fallback="session",
-            ),
+            )
+            is None
         )
-        router = _make_router([slot], routing=routing)
-        # No model has "memory" tag → fallback="session" → return None
-        assert router.resolve_for_task("memory_dreaming") is None
 
     def test_fallback_default(self) -> None:
         slot_a = _make_slot("ds", ["deepseek-chat"])
         slot_b = _make_slot("sf", ["glm-5"])
-        routing = ModelRoutingConfig(
-            memory_dreaming=ModelRoutingEntry(
-                prefer_tags=["memory"],
-                fallback="default",
-            ),
+        router = _make_router([slot_a, slot_b], default_id="ds")
+        result = router.resolve_for_task(
+            "memory_dreaming",
+            default_spec="memory",
+            fallback="default",
         )
-        router = _make_router([slot_a, slot_b], default_id="ds", routing=routing)
-        result = router.resolve_for_task("memory_dreaming")
         assert result is not None
         assert result.slot.id == "ds"
         assert result.model is None  # use default
@@ -199,58 +193,53 @@ class TestResolveForTask:
 
     def test_fallback_disabled_returns_none(self) -> None:
         slot = _make_slot("ds", ["deepseek-chat"])
-        routing = ModelRoutingConfig(
-            reranker=ModelRoutingEntry(
-                prefer_tags=["reranker"],
+        router = _make_router([slot])
+        assert (
+            router.resolve_for_task(
+                "reranker",
+                default_spec="reranker",
                 fallback="disabled",
-            ),
+            )
+            is None
         )
-        router = _make_router([slot], routing=routing)
-        assert router.resolve_for_task("reranker") is None
 
     def test_unknown_task_returns_none(self) -> None:
         slot = _make_slot("ds", ["deepseek-chat"])
         router = _make_router([slot])
         assert router.resolve_for_task("nonexistent_task") is None
 
-    def test_custom_task_via_extra_allow(self) -> None:
+    def test_task_default_can_be_any_model_spec(self) -> None:
         slot = _make_slot(
             "ds",
             ["deepseek-chat", "summarizer"],
             tags={"summarizer": ["summarization"]},
         )
-        routing = ModelRoutingConfig(
-            **{  # type: ignore[arg-type]
-                "summarization": ModelRoutingEntry(
-                    prefer_tags=["summarization"],
-                    fallback="default",
-                ),
-            },
+        router = _make_router([slot])
+        result = router.resolve_for_task(
+            "summarization",
+            default_spec="ds/summarizer",
+            fallback="disabled",
         )
-        router = _make_router([slot], routing=routing)
-        result = router.resolve_for_task("summarization")
         assert result is not None
         assert result.model == "summarizer"
 
-    def test_prefer_tags_order_matters(self) -> None:
+    def test_explicit_miss_falls_back_to_default_spec(self) -> None:
         slot = _make_slot(
             "ds",
             ["model-a", "model-b"],
             tags={
-                "model-a": ["cheap"],
                 "model-b": ["memory"],
             },
         )
-        routing = ModelRoutingConfig(
-            memory_dreaming=ModelRoutingEntry(
-                prefer_tags=["memory", "cheap"],
-                fallback="session",
-            ),
+        router = _make_router([slot])
+        result = router.resolve_for_task(
+            "memory_dreaming",
+            explicit="missing-model",
+            default_spec="memory",
+            fallback="session",
         )
-        router = _make_router([slot], routing=routing)
-        result = router.resolve_for_task("memory_dreaming")
         assert result is not None
-        assert result.model == "model-b"  # "memory" tag matched first
+        assert result.model == "model-b"
 
 
 # ── Config model tests ──────────────────────────────────
@@ -268,20 +257,6 @@ class TestConfigModels:
 
         cfg = ProviderModelConfig(name="test-model", tags=["primary", "cheap"])
         assert cfg.tags == ["primary", "cheap"]
-
-    def test_model_routing_config_defaults(self) -> None:
-        cfg = ModelRoutingConfig()
-        assert cfg.memory_dreaming.prefer_tags == ["memory", "cheap"]
-        assert cfg.memory_dreaming.fallback == "session"
-        assert cfg.embedding.prefer_tags == ["embedding"]
-        assert cfg.reranker.prefer_tags == ["reranker", "cheap"]
-
-    def test_model_routing_config_extra_tasks(self) -> None:
-        cfg = ModelRoutingConfig(
-            **{"custom_task": ModelRoutingEntry(prefer_tags=["custom"])}  # type: ignore[arg-type]
-        )
-        extra = cfg.model_extra or {}
-        assert "custom_task" in extra
 
     def test_memory_config_defaults_keep_vector_disabled(self) -> None:
         from nahida_bot.core.config import MemoryConfig

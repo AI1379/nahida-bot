@@ -72,8 +72,8 @@ default_provider: default
 multimodal:
   image_fallback_mode: "auto"        # auto / tool / off
   media_context_policy: "cache_aware" # cache_aware / native_recent / description_only
-  image_fallback_provider: ""        # 例如 "vision"
-  image_fallback_model: ""           # 例如 "vision-model"
+  image_fallback_provider: ""        # Legacy；建议留空
+  image_fallback_model: ""           # model spec；空则默认找 vision tag
   max_images_per_turn: 4
   max_image_bytes: 10485760
   media_cache_ttl_seconds: 3600
@@ -165,12 +165,13 @@ telegram:
 #   memory_dreaming_initial_delay_seconds: 300   # 启动后首次 dreaming 延迟（秒）
 #   memory_dreaming_session_limit: 20            # 单次最多扫描会话数
 #   memory_dreaming_recent_turn_limit: 40        # 单会话最多读取 turns 数
-#   memory_dreaming_provider_id: ""     # 专用 provider；空则使用会话当前 provider
-#   memory_dreaming_model: ""           # 专用模型；空则走 model_routing 或会话当前模型
+#   memory_dreaming_provider_id: ""     # Legacy；建议改用 memory_dreaming_model
+#   memory_dreaming_model: ""           # model spec；空则默认找 memory tag，失败后走会话模型
 
-# ── Model Routing ──────────────────────────────────────
-# 按任务类型自动路由到打了 tag 的模型。
-# providers 的 models 中可以用 tags 字段标记模型角色：
+# ── Model Tags / Specs ─────────────────────────────────
+# providers 的 models 中可以用 tags 字段标记模型角色。
+# 需要内部模型的配置项都接受一个 model spec 字符串；这个字符串可以是 tag，
+# 也可以是 provider/model 或裸模型名。
 #   models:
 #     - name: deepseek-chat
 #       tags: [primary]          # 主对话模型（隐式：每个 provider 的第一个模型）
@@ -178,24 +179,6 @@ telegram:
 #       tags: [cheap, memory]    # 低成本后台任务 / 记忆 dreaming
 #
 # 可用 tags: primary / cheap / memory / embedding / reranker / vision
-#
-# model_routing 中的每个任务条目：
-#   prefer_tags: 按顺序匹配，找到第一个有此 tag 的模型
-#   fallback:    没有匹配时如何处理
-#               - session: 使用当前会话的 provider（默认）
-#               - default: 使用默认 provider
-#               - disabled / none: 不使用任何模型
-#
-# model_routing:
-#   memory_dreaming:
-#     prefer_tags: [memory, cheap]
-#     fallback: session
-#   embedding:
-#     prefer_tags: [embedding]
-#     fallback: none
-#   reranker:
-#     prefer_tags: [reranker, cheap]
-#     fallback: disabled
 
 # ── Memory ─────────────────────────────────────────────
 # 长期记忆检索和 embedding 配置。默认只启用 SQLite FTS；vector/hybrid
@@ -212,8 +195,7 @@ telegram:
 #     max_injected_chars: 1200
 #   embedding:
 #     enabled: false
-#     provider_id: ""             # 可选；为空则走 model_routing.embedding
-#     model: ""                   # 可选；通常使用 tagged embedding 模型
+#     model: ""                   # model spec；空则默认找 embedding tag
 #     dimensions: 0               # sqlite-vec 后端必须显式填写维度
 #     batch_size: 16
 #     embed_after_consolidation: true

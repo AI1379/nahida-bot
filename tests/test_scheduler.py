@@ -19,7 +19,6 @@ from nahida_bot.agent.providers.base import (
 from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
 from nahida_bot.agent.providers.router import ModelRouter
 from nahida_bot.agent.tokenization import Tokenizer
-from nahida_bot.core.config import ModelRoutingConfig
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.plugins.base import OutboundMessage
@@ -280,7 +279,7 @@ async def test_scheduler_runs_memory_dreaming_as_internal_periodic_job() -> None
             ],
             default_id="dream",
         )
-        router = ModelRouter(pm, ModelRoutingConfig())
+        router = ModelRouter(pm)
         runner = SessionRunner(
             memory_store=memory,
             provider_manager=pm,
