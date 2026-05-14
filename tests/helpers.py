@@ -77,6 +77,11 @@ class MockBotAPI:
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         return None
 
+    async def update_runtime_settings(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        return dict(updates)
+
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
         return []
 

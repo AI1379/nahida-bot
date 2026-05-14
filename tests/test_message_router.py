@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from nahida_bot.agent.loop import LoopEvent
-from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+from nahida_bot.agent.memory.models import (
+    ConversationTurn,
+    MemoryRecord,
+    SessionSummary,
+)
+from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.events import (
     EventBus,
@@ -66,7 +72,7 @@ class _StubChannel(Plugin):
         return "msg_1"
 
 
-class _MockMemoryStore:
+class _MockMemoryStore(MemoryStore):
     """Minimal MemoryStore mock."""
 
     def __init__(self) -> None:
@@ -101,8 +107,29 @@ class _MockMemoryStore:
     ) -> list[MemoryRecord]:
         return []
 
-    async def evict_before(self, cutoff: Any) -> int:
+    async def evict_before(self, cutoff: datetime) -> int:
         return 0
+
+    async def clear_session(self, session_id: str) -> int:
+        turns = self.sessions.pop(session_id, [])
+        self.workspace_ids.pop(session_id, None)
+        self.session_meta.pop(session_id, None)
+        return len(turns)
+
+    async def list_sessions(self, *, limit: int = 50) -> list[SessionSummary]:
+        now = datetime.now(UTC).isoformat()
+        summaries = [
+            SessionSummary(
+                session_id=session_id,
+                workspace_id=self.workspace_ids.get(session_id),
+                created_at=now,
+                last_active_at=now,
+                turn_count=len(turns),
+                metadata=dict(self.session_meta.get(session_id, {})),
+            )
+            for session_id, turns in self.sessions.items()
+        ]
+        return summaries[:limit]
 
     async def persist_active_session(self, chat_key: str, session_id: str) -> None:
         self.persisted_overrides[chat_key] = session_id
