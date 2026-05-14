@@ -14,6 +14,7 @@ from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
     EventBus,
     MessagePayload,
+    MessageObserved,
     MessageReceived,
     MessageSending,
     MessageSent,
@@ -50,6 +51,7 @@ class RouterConfig:
     command_timeout_message: str = "Command timed out. Please try again later."
     show_reasoning: bool = False
     reasoning_max_chars: int = 2000
+    group_context_enabled: bool = True
 
 
 class MessageRouter:
@@ -78,6 +80,7 @@ class MessageRouter:
         self._workspace = workspace_manager
         self._config = config or RouterConfig()
         self._subscription: Subscription | None = None
+        self._observed_subscription: Subscription | None = None
         # Maps deterministic session key → active session id (for /new)
         self._active_sessions: dict[str, str] = {}
         # Per-session queues for messages arriving while agent is busy
@@ -123,6 +126,12 @@ class MessageRouter:
             priority=0,
             timeout=120.0,
         )
+        self._observed_subscription = self._event_bus.subscribe(
+            MessageObserved,
+            self._handle_message_observed,
+            priority=0,
+            timeout=30.0,
+        )
         await self.restore_active_sessions()
         logger.info("message_router.started")
 
@@ -132,6 +141,9 @@ class MessageRouter:
         if self._subscription is not None:
             self._subscription.unsubscribe()
             self._subscription = None
+        if self._observed_subscription is not None:
+            self._observed_subscription.unsubscribe()
+            self._observed_subscription = None
 
         # Wait for active agent runs to finish, then cancel stragglers
         if self._runner is not None:
@@ -232,6 +244,36 @@ class MessageRouter:
         token = current_session.set(session_ctx)
         try:
             await self._dispatch_message(inbound, session_id, workspace_id)
+        finally:
+            current_session.reset(token)
+
+    async def _handle_message_observed(
+        self, event: MessageObserved, ctx: EventContext
+    ) -> None:
+        """Persist an observed-only inbound message without running the agent."""
+        runner = self._runner
+        if runner is None or not self._config.group_context_enabled:
+            return
+
+        inbound: InboundMessage = event.payload.message
+        if not inbound.is_group:
+            return
+
+        session_id = self.get_active_session_id(inbound.platform, inbound.chat_id)
+        workspace_id = self._resolve_workspace_id()
+        session_ctx = SessionContext(
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+        )
+        token = current_session.set(session_ctx)
+        try:
+            await runner.persist_observed_message(
+                inbound=inbound,
+                session_id=session_id,
+                workspace_id=workspace_id,
+            )
         finally:
             current_session.reset(token)
 

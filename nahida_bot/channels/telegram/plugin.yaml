@@ -9,3 +9,7 @@ permissions:
     outbound:
       - "api.telegram.org"
     inbound: false
+
+config:
+  group_trigger_mode: "always"
+  group_context_capture: false

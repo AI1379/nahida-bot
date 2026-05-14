@@ -143,6 +143,11 @@ class MessageReceived(Event[MessagePayload]):
 
 
 @dataclass(slots=True, frozen=True)
+class MessageObserved(Event[MessagePayload]):
+    """Raised for inbound messages recorded as context but not handled by agent."""
+
+
+@dataclass(slots=True, frozen=True)
 class MessageSending(Event[MessagePayload]):
     """Raised before sending a message for observation and audit hooks."""
 

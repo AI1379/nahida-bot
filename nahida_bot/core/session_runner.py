@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, AbstractSet, Any, cast
 
 import structlog
@@ -13,13 +14,14 @@ from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.agent.memory.sqlite import build_fts_query
-from nahida_bot.agent.memory.models import ConversationTurn
+from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.config import MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
     assistant_context,
+    context_from_inbound,
     message_context_from_metadata,
     message_context_to_metadata,
     render_message_with_context,
@@ -38,7 +40,11 @@ if TYPE_CHECKING:
     from nahida_bot.agent.providers.router import ModelRouter
     from nahida_bot.core.channel_registry import ChannelRegistry
     from nahida_bot.core.config import MemoryRetrievalConfig, MultimodalConfig
-    from nahida_bot.plugins.base import InboundAttachment, MessageContext
+    from nahida_bot.plugins.base import (
+        InboundAttachment,
+        InboundMessage,
+        MessageContext,
+    )
     from nahida_bot.plugins.registry import ToolRegistry
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -48,6 +54,8 @@ _FALLBACK_VISION_PROMPT = (
     "Describe this image in detail. Include any visible text (OCR). "
     "Note any safety concerns."
 )
+_GROUP_CONTEXT_HISTORY_OVERFETCH_FACTOR = 4
+_GROUP_CONTEXT_HISTORY_OVERFETCH_MIN = 50
 
 
 @dataclass(slots=True)
@@ -115,6 +123,9 @@ class SessionRunner:
         memory_embedding_provider: EmbeddingProvider | None = None,
         memory_vector_index: VectorIndex | None = None,
         memory_embed_after_consolidation: bool = False,
+        group_context_max_messages: int = 20,
+        group_context_ttl_seconds: int = 900,
+        group_context_max_chars: int = 4000,
         media_resolver: MediaResolver | None = None,
         channel_registry: ChannelRegistry | None = None,
     ) -> None:
@@ -133,6 +144,9 @@ class SessionRunner:
         self._memory_embedding_provider = memory_embedding_provider
         self._memory_vector_index = memory_vector_index
         self._memory_embed_after_consolidation = memory_embed_after_consolidation
+        self._group_context_max_messages = group_context_max_messages
+        self._group_context_ttl_seconds = group_context_ttl_seconds
+        self._group_context_max_chars = group_context_max_chars
         self._media_resolver = media_resolver
         self._channel_registry = channel_registry
         self._run_tracker = ActiveRunTracker()
@@ -351,11 +365,26 @@ class SessionRunner:
                 ),
             )
 
-            history = await self._load_history(
+            recent_records = await self._load_recent_records(
                 session_id,
                 workspace_id=workspace_id,
+                include_observed_surplus=bool(
+                    message_context is not None and message_context.chat_type == "group"
+                ),
+            )
+            history = await self._build_history_context(
+                session_id,
+                recent_records,
                 capabilities=capabilities,
             )
+            observed_context = await self._load_observed_group_context(
+                session_id,
+                records=recent_records,
+                current_message_context=message_context,
+                current_message_content=user_message,
+            )
+            if observed_context is not None:
+                history.append(observed_context)
             relevant_memory = await self._load_relevant_memory(user_message)
             if relevant_memory:
                 history = [relevant_memory, *history]
@@ -658,7 +687,26 @@ class SessionRunner:
         *,
         workspace_id: str | None = None,
         capabilities: ModelCapabilities | None = None,
+        include_observed_surplus: bool = False,
     ) -> list[ContextMessage]:
+        records = await self._load_recent_records(
+            session_id,
+            workspace_id=workspace_id,
+            include_observed_surplus=include_observed_surplus,
+        )
+        return await self._build_history_context(
+            session_id,
+            records,
+            capabilities=capabilities,
+        )
+
+    async def _load_recent_records(
+        self,
+        session_id: str,
+        *,
+        workspace_id: str | None = None,
+        include_observed_surplus: bool = False,
+    ) -> list[MemoryRecord]:
         if self._memory is None:
             logger.debug(
                 "session_runner.history_skipped",
@@ -667,15 +715,17 @@ class SessionRunner:
             )
             return []
         await self._memory.ensure_session(session_id, workspace_id=workspace_id)
-        records = await self._memory.get_recent(
-            session_id, limit=self._max_history_turns
+        history_query_limit = self._history_query_limit(
+            include_observed_surplus=include_observed_surplus,
         )
+        records = await self._memory.get_recent(session_id, limit=history_query_limit)
         logger.debug(
             "session_runner.history_loaded",
             session_id=session_id,
             workspace_id=workspace_id or "",
             record_count=len(records),
             max_history_turns=self._max_history_turns,
+            history_query_limit=history_query_limit,
             roles=[r.turn.role for r in records],
             sources=[r.turn.source for r in records],
         )
@@ -697,10 +747,20 @@ class SessionRunner:
                 for r in records
             ],
         )
+        return records
 
+    async def _build_history_context(
+        self,
+        session_id: str,
+        records: list[MemoryRecord],
+        *,
+        capabilities: ModelCapabilities | None = None,
+    ) -> list[ContextMessage]:
         messages: list[ContextMessage] = []
         for r in records:
             metadata = r.turn.metadata
+            if isinstance(metadata, dict) and metadata.get("observed_only") is True:
+                continue
             parts = (
                 await self._reconstruct_parts_for_history(metadata)
                 if r.turn.role == "user"
@@ -735,6 +795,9 @@ class SessionRunner:
                 )
             )
 
+        if len(messages) > self._max_history_turns:
+            messages = messages[-self._max_history_turns :]
+
         # Apply media context policy to history
         if self._multimodal_config is not None and any(
             m.parts for m in messages if m.role == "user"
@@ -760,6 +823,124 @@ class SessionRunner:
         )
 
         return messages
+
+    def _history_query_limit(self, *, include_observed_surplus: bool = False) -> int:
+        """Return how many raw turns to fetch before filtering observed-only rows."""
+        if not include_observed_surplus or self._group_context_max_messages <= 0:
+            return self._max_history_turns
+
+        # Observed-only rows are stored in the same session stream but do not count
+        # toward normal dialogue history. Fetch a bounded surplus so active group
+        # chatter does not crowd out the last N user/assistant turns.
+        surplus = max(
+            self._group_context_max_messages * _GROUP_CONTEXT_HISTORY_OVERFETCH_FACTOR,
+            _GROUP_CONTEXT_HISTORY_OVERFETCH_MIN,
+        )
+        return self._max_history_turns + surplus
+
+    async def _load_observed_group_context(
+        self,
+        session_id: str,
+        *,
+        records: list[MemoryRecord] | None = None,
+        current_message_context: MessageContext | None,
+        current_message_content: str = "",
+    ) -> ContextMessage | None:
+        """Load recent observed-only group messages for a triggered group turn."""
+        if (
+            self._memory is None
+            or self._group_context_max_messages <= 0
+            or self._group_context_max_chars <= 0
+            or current_message_context is None
+            or current_message_context.chat_type != "group"
+        ):
+            return None
+
+        if records is None:
+            records = await self._memory.get_recent(
+                session_id,
+                limit=self._history_query_limit(include_observed_surplus=True),
+            )
+        cutoff: datetime | None = None
+        if self._group_context_ttl_seconds > 0:
+            cutoff = datetime.now(UTC) - timedelta(
+                seconds=self._group_context_ttl_seconds
+            )
+
+        selected: list[MemoryRecord] = []
+        for record in reversed(records):
+            metadata = record.turn.metadata
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("observed_only") is not True
+            ):
+                continue
+            if cutoff is not None and record.turn.created_at < cutoff:
+                continue
+            if self._is_current_observed_record(
+                record,
+                current_message_context=current_message_context,
+                current_message_content=current_message_content,
+            ):
+                continue
+            selected.append(record)
+            if len(selected) >= self._group_context_max_messages:
+                break
+
+        if not selected:
+            return None
+
+        lines = [
+            "Recent group chat context observed before the current trigger.",
+            "These messages did not directly summon the bot; use them only as nearby context.",
+        ]
+        remaining = self._group_context_max_chars
+        for record in reversed(selected):
+            visible = render_message_with_context(
+                record.turn.content,
+                message_context_from_metadata(record.turn.metadata),
+                role=record.turn.role,
+            )
+            line = f"- {visible}".replace("\n", "\n  ")
+            if len(line) > remaining:
+                line = line[:remaining].rstrip() + "..."
+            lines.append(line)
+            remaining -= len(line)
+            if remaining <= 0:
+                break
+
+        if len(lines) <= 2:
+            return None
+        return ContextMessage(
+            role="system",
+            source="group_observed_context",
+            content="\n".join(lines),
+            metadata={
+                "observed_message_count": len(lines) - 2,
+                "ttl_seconds": self._group_context_ttl_seconds,
+            },
+        )
+
+    @staticmethod
+    def _is_current_observed_record(
+        record: MemoryRecord,
+        *,
+        current_message_context: MessageContext,
+        current_message_content: str,
+    ) -> bool:
+        """Return true when an observed row appears to duplicate current input."""
+        if record.turn.content != current_message_content:
+            return False
+        observed_context = message_context_from_metadata(record.turn.metadata)
+        if observed_context is None:
+            return False
+        if observed_context.sender_id != current_message_context.sender_id:
+            return False
+        if observed_context.chat_id != current_message_context.chat_id:
+            return False
+        if observed_context.timestamp and current_message_context.timestamp:
+            return observed_context.timestamp == current_message_context.timestamp
+        return True
 
     async def _load_relevant_memory(self, query: str) -> ContextMessage | None:
         """Load a small relevant durable-memory context block for the current turn."""
@@ -1675,20 +1856,12 @@ class SessionRunner:
             return None
         return self._workspace.workspace_path(workspace_id)
 
-    async def _persist_turns(
+    async def _build_user_turn_metadata(
         self,
-        session_id: str,
-        user_message: str,
-        result: Any,
         *,
         attachments: list[InboundAttachment],
-        message_context: MessageContext | None = None,
-        source_tag: str,
-        workspace_id: str | None = None,
-        workspace_root: Any = None,
-    ) -> None:
-        if self._memory is None:
-            return
+        message_context: MessageContext | None,
+    ) -> dict[str, Any] | None:
         metadata: dict[str, Any] | None = None
         message_context_metadata = message_context_to_metadata(message_context)
         if message_context_metadata is not None:
@@ -1724,6 +1897,59 @@ class SessionRunner:
             if metadata is None:
                 metadata = {}
             metadata["attachments"] = persisted_attachments
+        return metadata
+
+    async def persist_observed_message(
+        self,
+        *,
+        inbound: InboundMessage,
+        session_id: str,
+        workspace_id: str | None = None,
+    ) -> None:
+        """Persist a group message as context without running the agent."""
+        if self._memory is None:
+            return
+        await self._memory.ensure_session(session_id, workspace_id=workspace_id)
+        metadata = await self._build_user_turn_metadata(
+            attachments=inbound.attachments,
+            message_context=inbound.message_context or context_from_inbound(inbound),
+        )
+        if metadata is None:
+            metadata = {}
+        metadata["observed_only"] = True
+        metadata["triggered_agent"] = False
+        metadata["mentions_bot"] = inbound.mentions_bot
+        if inbound.mentioned_user_ids:
+            metadata["mentioned_user_ids"] = list(inbound.mentioned_user_ids)
+
+        await self._memory.append_turn(
+            session_id,
+            ConversationTurn(
+                role="user",
+                content=inbound.text,
+                source="group_observation",
+                metadata=metadata,
+            ),
+        )
+
+    async def _persist_turns(
+        self,
+        session_id: str,
+        user_message: str,
+        result: Any,
+        *,
+        attachments: list[InboundAttachment],
+        message_context: MessageContext | None = None,
+        source_tag: str,
+        workspace_id: str | None = None,
+        workspace_root: Any = None,
+    ) -> None:
+        if self._memory is None:
+            return
+        metadata = await self._build_user_turn_metadata(
+            attachments=attachments,
+            message_context=message_context,
+        )
         user_turn = ConversationTurn(
             role="user", content=user_message, source=source_tag, metadata=metadata
         )

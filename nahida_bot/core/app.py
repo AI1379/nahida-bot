@@ -429,6 +429,13 @@ class Application:
                 self.settings.memory.embedding.enabled
                 and self.settings.memory.embedding.embed_after_consolidation
             ),
+            group_context_max_messages=(
+                self.settings.router.group_context.max_messages
+                if self.settings.router.group_context.enabled
+                else 0
+            ),
+            group_context_ttl_seconds=self.settings.router.group_context.ttl_seconds,
+            group_context_max_chars=self.settings.router.group_context.max_chars,
             media_resolver=media_resolver,
             channel_registry=self.channel_registry,
         )
@@ -636,6 +643,7 @@ class Application:
                     command_timeout_message=self.settings.router.command_timeout_message,
                     show_reasoning=self.settings.router.show_reasoning,
                     reasoning_max_chars=self.settings.router.reasoning_max_chars,
+                    group_context_enabled=self.settings.router.group_context.enabled,
                 ),
             )
             await self.message_router.start()

@@ -59,16 +59,26 @@ class TestTelegramMessageConverter:
         assert result.text == "/help"
 
     def test_group_message_strips_mention_with_text(self) -> None:
-        conv = TelegramMessageConverter(bot_username="mybot")
+        conv = TelegramMessageConverter(bot_username="mybot", bot_user_id=12345)
         msg = _make_message(text="@mybot what is 2+2?", chat_type="supergroup")
         result = conv.to_inbound(msg)
         assert result.text == "what is 2+2?"
+        assert result.mentions_bot is True
+        assert result.mentioned_user_ids == ("12345",)
+
+    def test_group_mention_without_bot_id_does_not_fake_user_id(self) -> None:
+        conv = TelegramMessageConverter(bot_username="mybot")
+        msg = _make_message(text="@mybot hello", chat_type="supergroup")
+        result = conv.to_inbound(msg)
+        assert result.mentions_bot is True
+        assert result.mentioned_user_ids == ()
 
     def test_private_message_no_strip(self) -> None:
         conv = TelegramMessageConverter(bot_username="mybot")
         msg = _make_message(text="@mybot hello", chat_type="private")
         result = conv.to_inbound(msg)
         assert result.text == "@mybot hello"
+        assert result.mentions_bot is False
 
     def test_group_message_no_mention_no_strip(self) -> None:
         conv = TelegramMessageConverter(bot_username="mybot")

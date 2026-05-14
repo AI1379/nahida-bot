@@ -19,6 +19,7 @@ config:
   ws_url: ""
   command_prefix: "/"
   group_trigger_mode: "mention"
+  group_context_capture: false
   allowed_friends: []
   allowed_groups: []
   connect_timeout: 10.0

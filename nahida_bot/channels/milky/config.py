@@ -47,6 +47,13 @@ class MilkyPluginConfig(BaseModel):
         default="mention",
         description="How group messages trigger the bot: mention, command, or always.",
     )
+    group_context_capture: bool = Field(
+        default=False,
+        description=(
+            "When true, non-triggering group messages are published as observed "
+            "context instead of being dropped."
+        ),
+    )
     allowed_friends: list[str] = Field(
         default_factory=list,
         description="Optional friend allow-list. Empty means all friends.",

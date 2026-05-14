@@ -83,6 +83,21 @@ async def test_group_message_without_trigger_is_ignored() -> None:
     assert inbound is None
 
 
+async def test_group_message_without_trigger_can_be_observed() -> None:
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "mention"}),
+        self_id=999,
+        observe_untriggered_group_messages=True,
+    )
+
+    inbound = await converter.to_inbound(_message(message_scene="group", peer_id=20001))
+
+    assert inbound is not None
+    assert inbound.is_group is True
+    assert inbound.text == "hello"
+    assert inbound.mentions_bot is False
+
+
 async def test_group_command_trigger_is_accepted() -> None:
     converter = MilkyMessageConverter(
         parse_milky_config({"group_trigger_mode": "command", "command_prefix": "!"}),
@@ -100,6 +115,28 @@ async def test_group_command_trigger_is_accepted() -> None:
     assert inbound is not None
     assert inbound.text == "!help"
     assert inbound.command_prefix == "!"
+
+
+async def test_group_mention_records_target_signal() -> None:
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "mention"}),
+        self_id=999,
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            segments=[
+                {"type": "mention", "data": {"user_id": 999, "name": "bot"}},
+                {"type": "text", "data": {"text": " help"}},
+            ],
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.mentions_bot is True
+    assert inbound.mentioned_user_ids == ("999",)
 
 
 async def test_allowed_lists_filter_messages() -> None:

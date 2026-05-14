@@ -52,11 +52,13 @@ class MilkyMessageConverter:
         self_id: int = 0,
         forward_client: ForwardMessageClient | None = None,
         logger_warning: WarningLogger | None = None,
+        observe_untriggered_group_messages: bool = False,
     ) -> None:
         self._config = config
         self._self_id = self_id
         self._forward_client = forward_client
         self._logger_warning = logger_warning
+        self._observe_untriggered_group_messages = observe_untriggered_group_messages
 
     async def to_inbound(
         self, message_data: dict[str, Any], *, raw_event: dict[str, Any] | None = None
@@ -74,7 +76,11 @@ class MilkyMessageConverter:
         if self._forward_client is not None and self._config.max_forward_depth > 0:
             segments = await self._resolve_forward_segments(segments, depth=0)
 
-        if is_group and not self._should_accept_group_message(segments):
+        if (
+            is_group
+            and not self._observe_untriggered_group_messages
+            and not self._should_accept_group_message(segments)
+        ):
             return None
 
         visible_segments = (
@@ -122,6 +128,8 @@ class MilkyMessageConverter:
             attachments=attachments,
             sender_context=sender_context,
             chat_context=chat_context,
+            mentions_bot=self._has_self_mention(segments),
+            mentioned_user_ids=self._mentioned_user_ids(segments),
         )
         return replace(inbound, message_context=context_from_inbound(inbound))
 
@@ -194,6 +202,14 @@ class MilkyMessageConverter:
             and segment.user_id == self._self_id
             for segment in segments
         )
+
+    @staticmethod
+    def _mentioned_user_ids(segments: list[IncomingSegment]) -> tuple[str, ...]:
+        ids: list[str] = []
+        for segment in segments:
+            if isinstance(segment, IncomingMentionSegment):
+                ids.append(str(segment.user_id))
+        return tuple(dict.fromkeys(ids))
 
     def _strip_self_mentions(
         self, segments: list[IncomingSegment]

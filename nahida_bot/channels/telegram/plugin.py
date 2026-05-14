@@ -14,7 +14,8 @@ from nahida_bot.channels.telegram.markdown_converter import (
     split_html_message,
 )
 from nahida_bot.channels.telegram.message_converter import TelegramMessageConverter
-from nahida_bot.core.events import MessagePayload, MessageReceived
+from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
+from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.router import MessageRouter
 from nahida_bot.plugins.base import (
     Attachment,
@@ -82,7 +83,10 @@ class TelegramPlugin(Plugin):
         bot = Bot(**bot_kwargs)
         self._bot = bot
         me = await bot.get_me()
-        self._converter = TelegramMessageConverter(bot_username=me.username)
+        self._converter = TelegramMessageConverter(
+            bot_username=me.username,
+            bot_user_id=me.id,
+        )
         logger.info(
             "telegram.connected",
             bot_username=me.username,
@@ -128,10 +132,20 @@ class TelegramPlugin(Plugin):
         normalized_message["text"] = text
 
         inbound = self._converter.to_inbound(normalized_message)
+        decision = GroupInteractionPolicy(
+            mode=self.manifest.config.get("group_trigger_mode", "always"),
+            observe_untriggered=bool(
+                self.manifest.config.get("group_context_capture", False)
+            ),
+        ).decide(inbound)
+        if not decision.observe:
+            return
+
         session_id = MessageRouter.make_session_id(inbound.platform, inbound.chat_id)
+        event_type = MessageReceived if decision.respond else MessageObserved
 
         await self.api.publish_event(
-            MessageReceived(
+            event_type(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="telegram",
             )

@@ -20,8 +20,13 @@ class TelegramMessageConverter:
     Handles @mention stripping in group chats and preserves command prefixes.
     """
 
-    def __init__(self, bot_username: str | None = None) -> None:
+    def __init__(
+        self,
+        bot_username: str | None = None,
+        bot_user_id: str | int | None = None,
+    ) -> None:
         self._bot_username = bot_username
+        self._bot_user_id = str(bot_user_id) if bot_user_id is not None else ""
 
     def to_inbound(self, msg_data: dict[str, Any]) -> InboundMessage:
         """Convert a Telegram message dict to InboundMessage.
@@ -36,10 +41,16 @@ class TelegramMessageConverter:
         chat_type = chat.get("type", "private")
 
         is_group = chat_type in ("group", "supergroup")
+        mentions_bot = False
+        mentioned_user_ids: tuple[str, ...] = ()
 
         # Strip @mention in groups: "@botname /help" → "/help"
         if is_group and self._bot_username:
             mention = f"@{self._bot_username}"
+            mentions_bot = mention.lower() in text.lower()
+            mentioned_user_ids = (
+                (self._bot_user_id,) if mentions_bot and self._bot_user_id else ()
+            )
             if text.strip().startswith(mention):
                 text = text.strip()[len(mention) :].strip()
 
@@ -78,6 +89,8 @@ class TelegramMessageConverter:
             attachments=attachments,
             sender_context=sender_context,
             chat_context=chat_context,
+            mentions_bot=mentions_bot,
+            mentioned_user_ids=mentioned_user_ids,
         )
         return replace(inbound, message_context=context_from_inbound(inbound))
 

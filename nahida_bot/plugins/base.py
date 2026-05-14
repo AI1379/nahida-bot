@@ -92,6 +92,8 @@ class InboundMessage:
     sender_context: SenderContext | None = None
     chat_context: ChatContext | None = None
     message_context: MessageContext | None = None
+    mentions_bot: bool = False
+    mentioned_user_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

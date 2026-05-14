@@ -27,7 +27,8 @@ from nahida_bot.channels.milky.segment_converter import (
     resolve_target,
 )
 from nahida_bot.channels.milky.segments import OutgoingTextSegment
-from nahida_bot.core.events import MessagePayload, MessageReceived
+from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
+from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.router import MessageRouter
 from nahida_bot.plugins.base import OutboundMessage, Plugin
 
@@ -79,6 +80,7 @@ class MilkyPlugin(Plugin):
             self_id=self._self_id,
             forward_client=self._client,
             logger_warning=logger.warning,
+            observe_untriggered_group_messages=config.group_context_capture,
         )
         self._outbound_converter = MilkyOutboundConverter(config)
         logger.info(
@@ -133,13 +135,21 @@ class MilkyPlugin(Plugin):
         if inbound is None:
             return
 
+        decision = GroupInteractionPolicy(
+            mode=self.config.group_trigger_mode,
+            observe_untriggered=self.config.group_context_capture,
+        ).decide(inbound)
+        if not decision.observe:
+            return
+
         scene = str(data.get("message_scene") or "")
         if scene:
             self._remember_scene(inbound.chat_id, scene)
 
         session_id = MessageRouter.make_session_id(inbound.platform, inbound.chat_id)
+        event_type = MessageReceived if decision.respond else MessageObserved
         await self.api.publish_event(
-            MessageReceived(
+            event_type(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="milky",
             )

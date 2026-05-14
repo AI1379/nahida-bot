@@ -148,6 +148,17 @@ class MemoryConfig(BaseModel):
     embedding: MemoryEmbeddingConfig = MemoryEmbeddingConfig()
 
 
+class GroupContextConfig(BaseModel):
+    """Observed group-chat context injection configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = True
+    max_messages: int = Field(default=20, ge=0)
+    ttl_seconds: int = Field(default=900, ge=0)
+    max_chars: int = Field(default=4000, ge=0)
+
+
 class RouterConfigModel(BaseModel):
     """Message router configuration."""
 
@@ -160,6 +171,7 @@ class RouterConfigModel(BaseModel):
     command_timeout_message: str = "Command timed out. Please try again later."
     show_reasoning: bool = False
     reasoning_max_chars: int = Field(default=2000, ge=0)
+    group_context: GroupContextConfig = GroupContextConfig()
 
 
 class Settings(BaseModel):

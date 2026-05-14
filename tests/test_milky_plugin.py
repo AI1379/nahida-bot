@@ -10,6 +10,7 @@ import pytest
 from nahida_bot.channels.milky.client import MilkyAPIError
 from nahida_bot.channels.milky.plugin import MilkyPlugin
 from nahida_bot.channels.milky.segments import OutgoingTextSegment
+from nahida_bot.core.events import MessageObserved, MessageReceived
 from nahida_bot.plugins.base import Attachment, OutboundMessage
 from nahida_bot.plugins.manifest import PluginManifest
 
@@ -121,11 +122,43 @@ async def test_handle_inbound_event_publishes_message_received() -> None:
 
     assert len(api.published_events) == 1
     event = api.published_events[0]
+    assert isinstance(event, MessageReceived)
     inbound = event.payload.message
     assert inbound.platform == "milky"
     assert inbound.chat_id == "20001"
     assert inbound.text == "ping"
     assert event.payload.session_id == "milky:20001"
+
+
+async def test_handle_inbound_event_observes_untriggered_group_context() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(group_context_capture=True, group_trigger_mode="mention"),
+    )
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "message_receive",
+            "data": {
+                "message_scene": "group",
+                "peer_id": 20001,
+                "sender_id": 10001,
+                "message_seq": 123,
+                "time": 1700000000,
+                "segments": [{"type": "text", "data": {"text": "nearby chat"}}],
+            },
+        }
+    )
+
+    assert len(api.published_events) == 1
+    event = api.published_events[0]
+    assert isinstance(event, MessageObserved)
+    inbound = event.payload.message
+    assert inbound.text == "nearby chat"
+    assert inbound.mentions_bot is False
 
 
 async def test_handle_inbound_ignores_non_message_event() -> None:

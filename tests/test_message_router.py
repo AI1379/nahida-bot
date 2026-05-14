@@ -13,6 +13,7 @@ from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.events import (
     EventBus,
     EventContext,
+    MessageObserved,
     MessageReceived,
     MessagePayload,
 )
@@ -72,6 +73,7 @@ class _MockMemoryStore:
         self.sessions: dict[str, list[ConversationTurn]] = {}
         self.workspace_ids: dict[str, str | None] = {}
         self.persisted_overrides: dict[str, str] = {}
+        self.get_recent_calls = 0
 
     async def ensure_session(
         self, session_id: str, workspace_id: str | None = None
@@ -86,6 +88,7 @@ class _MockMemoryStore:
     async def get_recent(
         self, session_id: str, *, limit: int = 50
     ) -> list[MemoryRecord]:
+        self.get_recent_calls += 1
         turns = self.sessions.get(session_id, [])
         return [
             MemoryRecord(turn_id=i, session_id=session_id, turn=t)
@@ -536,6 +539,173 @@ class TestMessageRouterMemory:
         assert turns[0].metadata["message_context"]["sender_id"] == "u1"
         assert turns[1].role == "assistant"
         assert turns[1].content == "answer"
+
+    async def test_observed_group_message_is_persisted_without_agent_run(self) -> None:
+        memory = _MockMemoryStore()
+        agent = _MockAgentLoop(response="answer")
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+
+        await router.start()
+        inbound = InboundMessage(
+            message_id="1",
+            platform="test",
+            chat_id="c1",
+            user_id="u1",
+            text="nearby context",
+            raw_event={},
+            is_group=True,
+        )
+        await event_bus.publish(
+            MessageObserved(
+                payload=MessagePayload(message=inbound, session_id="test:c1"),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert agent.calls == []
+        turns = memory.sessions["test:c1"]
+        assert len(turns) == 1
+        assert turns[0].source == "group_observation"
+        assert turns[0].metadata is not None
+        assert turns[0].metadata["observed_only"] is True
+        assert turns[0].metadata["triggered_agent"] is False
+
+    async def test_persist_observed_message_records_target_metadata(self) -> None:
+        memory = _MockMemoryStore()
+        runner = SessionRunner(memory_store=memory)
+
+        await runner.persist_observed_message(
+            inbound=InboundMessage(
+                message_id="m1",
+                platform="test",
+                chat_id="c1",
+                user_id="u1",
+                text="nearby context",
+                raw_event={},
+                is_group=True,
+                mentions_bot=True,
+                mentioned_user_ids=("bot-1",),
+            ),
+            session_id="test:c1",
+            workspace_id="default",
+        )
+
+        turns = memory.sessions["test:c1"]
+        assert len(turns) == 1
+        assert memory.workspace_ids["test:c1"] == "default"
+        assert turns[0].metadata is not None
+        assert turns[0].metadata["observed_only"] is True
+        assert turns[0].metadata["triggered_agent"] is False
+        assert turns[0].metadata["mentions_bot"] is True
+        assert turns[0].metadata["mentioned_user_ids"] == ["bot-1"]
+        assert turns[0].metadata["message_context"]["chat_type"] == "group"
+
+    async def test_observed_group_context_is_injected_on_trigger(self) -> None:
+        memory = _MockMemoryStore()
+        agent = _MockAgentLoop(response="answer")
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+
+        await router.start()
+        await event_bus.publish(
+            MessageObserved(
+                payload=MessagePayload(
+                    message=InboundMessage(
+                        message_id="1",
+                        platform="test",
+                        chat_id="c1",
+                        user_id="u1",
+                        text="Alice mentioned the deployment",
+                        raw_event={},
+                        is_group=True,
+                    ),
+                    session_id="test:c1",
+                ),
+                source="test",
+            )
+        )
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=InboundMessage(
+                        message_id="2",
+                        platform="test",
+                        chat_id="c1",
+                        user_id="u2",
+                        text="@bot summarize",
+                        raw_event={},
+                        is_group=True,
+                        mentions_bot=True,
+                    ),
+                    session_id="test:c1",
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert len(agent.calls) == 1
+        history = agent.calls[0]["history_messages"]
+        observed = [m for m in history if m.source == "group_observed_context"]
+        assert len(observed) == 1
+        assert "Alice mentioned the deployment" in observed[0].content
+        assert memory.get_recent_calls == 1
+        assert all(
+            not (
+                isinstance(message.metadata, dict)
+                and message.metadata.get("observed_only") is True
+            )
+            for message in history
+        )
+
+    async def test_observed_context_skips_duplicate_current_trigger(self) -> None:
+        memory = _MockMemoryStore()
+        agent = _MockAgentLoop(response="answer")
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+
+        await router.start()
+        await event_bus.publish(
+            MessageObserved(
+                payload=MessagePayload(
+                    message=InboundMessage(
+                        message_id="1",
+                        platform="test",
+                        chat_id="c1",
+                        user_id="u1",
+                        text="same message",
+                        raw_event={},
+                        is_group=True,
+                        timestamp=123.0,
+                    ),
+                    session_id="test:c1",
+                ),
+                source="test",
+            )
+        )
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=InboundMessage(
+                        message_id="1",
+                        platform="test",
+                        chat_id="c1",
+                        user_id="u1",
+                        text="same message",
+                        raw_event={},
+                        is_group=True,
+                        timestamp=123.0,
+                        mentions_bot=True,
+                    ),
+                    session_id="test:c1",
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert len(agent.calls) == 1
+        history = agent.calls[0]["history_messages"]
+        assert [m for m in history if m.source == "group_observed_context"] == []
 
     async def test_set_active_session_persists_override(self) -> None:
         memory = _MockMemoryStore()
