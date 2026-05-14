@@ -241,7 +241,7 @@ telegram:
 #   embedding:
 #     enabled: false
 #     model: ""             # model spec；空则默认找 embedding tag
-#     dimensions: 0
+#     dimensions: 0             # 0 = auto-detect via probe embed call
 #     batch_size: 16
 #     embed_after_consolidation: true
 #   consolidation:

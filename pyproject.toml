@@ -32,6 +32,7 @@ dependencies = [
     # MCP (Model Context Protocol) client
     "mcp>=1.27.0",
     "croniter>=6.2.2",
+    "sqlite-vec>=0.1.9",
 ]
 
 [dependency-groups]

@@ -338,13 +338,25 @@ class Application:
             retrieval_cfg.vector_enabled
             and retrieval_cfg.vector_backend == "sqlite-vec"
         ):
-            if emb_cfg.dimensions <= 0:
+            dimensions = emb_cfg.dimensions
+            if dimensions <= 0:
+                try:
+                    probe = await self._memory_embedding_provider.embed_texts(["0"])
+                    dimensions = len(probe[0].embedding) if probe else 0
+                except Exception as exc:
+                    logger.warning(
+                        "application.memory_vector_index_disabled",
+                        reason="probe_embed_failed",
+                        error=str(exc),
+                    )
+                    dimensions = 0
+            if dimensions <= 0:
                 logger.warning(
                     "application.memory_vector_index_disabled",
                     reason="sqlite_vec_requires_dimensions",
                 )
             else:
-                index = SQLiteVecIndex(self._db_engine, dimensions=emb_cfg.dimensions)
+                index = SQLiteVecIndex(self._db_engine, dimensions=dimensions)
                 try:
                     await index.setup()
                 except Exception as exc:

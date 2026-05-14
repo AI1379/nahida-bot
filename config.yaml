@@ -199,7 +199,7 @@ telegram:
 #   embedding:
 #     enabled: false
 #     model: ""                   # model spec；空则默认找 embedding tag
-#     dimensions: 0               # sqlite-vec 后端必须显式填写维度
+#     dimensions: 0               # 0 = auto-detect via probe embed call
 #     batch_size: 16
 #     embed_after_consolidation: true
 #   consolidation:
