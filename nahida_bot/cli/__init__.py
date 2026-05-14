@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from nahida_bot.cli.config_commands import config_app
 from nahida_bot.core.app import Application
 from nahida_bot.core.config import load_settings
 
@@ -15,6 +16,7 @@ logger = structlog.get_logger(__name__)
 console = Console()
 
 app = typer.Typer(help="Nahida Bot - LLM Chatbot Framework")
+app.add_typer(config_app, name="config")
 
 
 @app.command()
@@ -47,26 +49,6 @@ def start(
         asyncio.run(app_instance.run())
     except KeyboardInterrupt:
         console.print("[bold yellow]Shutdown complete[/bold yellow]")
-
-
-@app.command()
-def config() -> None:
-    """Show current configuration."""
-    settings = load_settings()
-
-    table = Table(title="Current Configuration")
-    table.add_column("Setting", style="cyan")
-    table.add_column("Value", style="green")
-
-    table.add_row("App Name", settings.app_name)
-    table.add_row("Debug", str(settings.debug))
-    table.add_row("Log Level", settings.log_level)
-    table.add_row("JSON Logs", str(settings.log_json))
-    table.add_row("Host", settings.host)
-    table.add_row("Port", str(settings.port))
-    table.add_row("Database", settings.db_path)
-
-    console.print(table)
 
 
 @app.command()
