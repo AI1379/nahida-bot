@@ -418,10 +418,7 @@ class MessageRouter:
                                 inbound, session_id, final, reasoning=reasoning
                             )
         except asyncio.CancelledError:
-            try:
-                await self._send_response(inbound, session_id, "[Agent stopped.]")
-            except Exception:
-                logger.debug("router.cancelled_send_failed", session_id=session_id)
+            logger.debug("router.agent_cancelled", session_id=session_id)
             raise
         except Exception:
             logger.exception("router.agent_run_failed", session_id=session_id)
