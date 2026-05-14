@@ -153,6 +153,10 @@ class _ProviderManager:
         self.slot = SimpleNamespace(id="p1", default_model="model-a")
         self.slot_p2 = SimpleNamespace(id="p2", default_model="model-b")
 
+    @property
+    def default(self) -> Any:
+        return self.slot
+
     def list_available(self) -> list[dict[str, str]]:
         return [
             {"provider_id": "p1", "model": "model-a"},
@@ -356,3 +360,24 @@ async def test_provider_model_helpers(tmp_path: Path) -> None:
         "provider_id": "p2",
         "model": "model-b",
     }
+
+
+@pytest.mark.asyncio
+async def test_runtime_settings_merge_and_reset(tmp_path: Path) -> None:
+    api, _, _, _ = _api(tmp_path)
+
+    runtime = await api.update_runtime_settings(
+        "s1", {"reasoning": {"show": True, "effort": "high"}}
+    )
+    assert runtime == {"reasoning": {"show": True, "effort": "high"}}
+    assert await api.get_session_info("s1") == {
+        "provider_id": "p1",
+        "model": "model-a",
+        "runtime": {"reasoning": {"show": True, "effort": "high"}},
+    }
+
+    runtime = await api.update_runtime_settings("s1", {"reasoning": {"effort": None}})
+    assert runtime == {"reasoning": {"show": True}}
+
+    runtime = await api.update_runtime_settings("s1", {"reasoning": None})
+    assert runtime == {}

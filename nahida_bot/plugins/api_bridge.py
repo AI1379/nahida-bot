@@ -14,6 +14,11 @@ from nahida_bot.plugins.base import (
     SessionInfo,
     SubscriptionHandle,
 )
+from nahida_bot.core.runtime_settings import (
+    RUNTIME_META_KEY,
+    merge_runtime_meta,
+    runtime_meta_from_session_meta,
+)
 from nahida_bot.plugins.commands import CommandEntry, CommandHandlerResult, CommandInfo
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
@@ -458,6 +463,29 @@ class RealBotAPI:
             has_explicit_meta=bool(meta),
         )
         return result
+
+    async def update_runtime_settings(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge runtime settings into session metadata and return the result."""
+        if self._memory is None:
+            self._logger.debug(
+                "runtime_settings_update_skipped",
+                session_id=session_id,
+                reason="missing_memory",
+            )
+            return {}
+        await self._memory.ensure_session(session_id)
+        meta = await self._memory.get_session_meta(session_id)
+        runtime = runtime_meta_from_session_meta(meta)
+        merged = merge_runtime_meta(runtime, updates)
+        await self._memory.update_session_meta(session_id, {RUNTIME_META_KEY: merged})
+        self._logger.debug(
+            "runtime_settings_updated",
+            session_id=session_id,
+            keys=sorted(merged.keys()),
+        )
+        return merged
 
     def get_provider_manager(self) -> Any:
         """Access the ProviderManager (if configured)."""

@@ -8,6 +8,11 @@ from nahida_bot.agent.loop import AgentLoop
 from nahida_bot.agent.providers.base import ProviderResponse, ToolCall, ToolDefinition
 from nahida_bot.agent.providers.errors import ProviderBadResponseError
 from nahida_bot.agent.providers.openai_responses import OpenAIResponsesProvider
+from nahida_bot.core.runtime_settings import (
+    ReasoningRuntimeSettings,
+    RuntimeSettings,
+    current_runtime_settings,
+)
 
 
 class _FakeResponse:
@@ -165,6 +170,40 @@ async def test_chat_uses_previous_response_id_and_sends_only_new_input() -> None
             "content": [{"type": "input_text", "text": "Next?"}],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reasoning_effort_overrides_provider_default() -> None:
+    provider = _provider(reasoning_effort="medium")
+    fake_client = _FakeClient(
+        {
+            "id": "resp_new",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                }
+            ],
+        }
+    )
+    provider._client = cast(Any, fake_client)
+
+    token = current_runtime_settings.set(
+        RuntimeSettings(
+            reasoning=ReasoningRuntimeSettings(effort="high"),
+        )
+    )
+    try:
+        await provider.chat(
+            messages=[ContextMessage(role="user", source="user_input", content="Hi")]
+        )
+    finally:
+        current_runtime_settings.reset(token)
+
+    assert fake_client.payload is not None
+    assert fake_client.payload["reasoning"] == {"effort": "high"}
 
 
 @pytest.mark.asyncio

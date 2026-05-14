@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from nahida_bot.core.context import SessionContext, current_session
+from nahida_bot.core.runtime_settings import merge_runtime_meta
 from nahida_bot.plugins.base import InboundMessage, MemoryRef, OutboundMessage
 from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
 from nahida_bot.plugins.commands import CommandEntry, CommandRegistry
@@ -150,6 +151,17 @@ class _FakeAPI:
             result.setdefault("model", default["model"])
         return result
 
+    async def update_runtime_settings(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        existing = self.session_meta.get("runtime")
+        runtime = merge_runtime_meta(
+            existing if isinstance(existing, dict) else {},
+            updates,
+        )
+        self.session_meta["runtime"] = runtime
+        return runtime
+
     def list_commands(self) -> list[Any]:
         return [entry.to_info() for entry in self.command_registry.all_commands()]
 
@@ -161,7 +173,9 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
 
     await plugin.on_load()
 
-    assert {"reset", "new", "status", "model", "help", "memory"} <= set(api.commands)
+    assert {"reset", "new", "status", "model", "reasoning", "help", "memory"} <= set(
+        api.commands
+    )
     assert {
         "workspace_read",
         "workspace_write",
@@ -255,6 +269,8 @@ async def test_reset_status_model_and_help_commands() -> None:
     status = await plugin._cmd_status(args="", inbound=_inbound(), session_id="s1")
     assert "Provider: p1" in status
     assert "Model: model-a" in status
+    assert "Reasoning display: default" in status
+    assert "Reasoning effort: default" in status
     model_list = await plugin._cmd_model(args="", inbound=_inbound(), session_id="s1")
     assert "p1/model-a (current)" in model_list
     switched = await plugin._cmd_model(
@@ -273,6 +289,40 @@ async def test_reset_status_model_and_help_commands() -> None:
     help_text = await plugin._cmd_help(args="", inbound=_inbound(), session_id="s1")
     assert "/help (h)" in help_text
     assert "Show help" in help_text
+
+
+@pytest.mark.asyncio
+async def test_reasoning_command_updates_runtime_settings() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    initial = await plugin._cmd_reasoning(args="", inbound=_inbound(), session_id="s1")
+    assert "display: default" in initial
+    assert "effort: default" in initial
+
+    enabled = await plugin._cmd_reasoning(
+        args="on", inbound=_inbound(), session_id="s1"
+    )
+    assert "display: on" in enabled
+    assert api.session_meta["runtime"]["reasoning"]["show"] is True
+
+    effort = await plugin._cmd_reasoning(
+        args="effort high", inbound=_inbound(), session_id="s1"
+    )
+    assert "effort: high" in effort
+    assert api.session_meta["runtime"]["reasoning"]["effort"] == "high"
+
+    reset_effort = await plugin._cmd_reasoning(
+        args="effort default", inbound=_inbound(), session_id="s1"
+    )
+    assert "effort: default" in reset_effort
+    assert "effort" not in api.session_meta["runtime"]["reasoning"]
+
+    reset_all = await plugin._cmd_reasoning(
+        args="reset", inbound=_inbound(), session_id="s1"
+    )
+    assert "display: default" in reset_all
+    assert api.session_meta["runtime"] == {}
 
 
 @pytest.mark.asyncio

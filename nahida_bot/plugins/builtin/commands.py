@@ -27,6 +27,10 @@ from nahida_bot.agent.memory.markdown import (
 from nahida_bot.plugins.base import InboundMessage, Plugin
 
 from nahida_bot.core.context import current_session
+from nahida_bot.core.runtime_settings import (
+    REASONING_EFFORTS,
+    runtime_settings_from_meta,
+)
 
 _logger = structlog.get_logger(__name__)
 
@@ -79,6 +83,15 @@ class BuiltinCommandsPlugin(Plugin):
         )
         self.api.register_command(
             "model", self._cmd_model, description="List or switch model (/model [name])"
+        )
+        self.api.register_command(
+            "reasoning",
+            self._cmd_reasoning,
+            description=(
+                "Show or change reasoning settings "
+                "(/reasoning on|off|effort <level>|reset)"
+            ),
+            aliases=["think"],
         )
         self.api.register_command(
             "help", self._cmd_help, description="List available commands"
@@ -1233,11 +1246,16 @@ class BuiltinCommandsPlugin(Plugin):
         info = await self.api.get_session_info(session_id)
         provider_id = info.get("provider_id", "(default)")
         model = info.get("model", "(default)")
+        runtime = runtime_settings_from_meta(info)
+        reasoning_display = self._format_optional_bool(runtime.reasoning.show)
+        reasoning_effort = runtime.reasoning.effort or "default"
 
         lines = [
             f"Session: {session_id}",
             f"Provider: {provider_id}",
             f"Model: {model}",
+            f"Reasoning display: {reasoning_display}",
+            f"Reasoning effort: {reasoning_effort}",
         ]
         return "\n".join(lines)
 
@@ -1290,6 +1308,102 @@ class BuiltinCommandsPlugin(Plugin):
             requested_model=model_name,
         )
         return f"Model '{model_name}' not found in any provider."
+
+    async def _cmd_reasoning(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        # TODO(runtime-commands): once runtime commands grow beyond a few simple
+        # subcommands, replace this ad hoc string splitting with a shared command
+        # parser that supports subcommands, typed arguments, validation, and help.
+        raw = args.strip()
+        if not raw:
+            return await self._format_reasoning_settings(session_id)
+
+        parts = raw.split()
+        action = parts[0].lower()
+        if action in {"on", "enable", "enabled", "show"}:
+            await self.api.update_runtime_settings(
+                session_id, {"reasoning": {"show": True}}
+            )
+            return await self._format_reasoning_settings(
+                session_id,
+                prefix="Reasoning display enabled for this session.",
+            )
+
+        if action in {"off", "disable", "disabled", "hide"}:
+            await self.api.update_runtime_settings(
+                session_id, {"reasoning": {"show": False}}
+            )
+            return await self._format_reasoning_settings(
+                session_id,
+                prefix="Reasoning display disabled for this session.",
+            )
+
+        if action in {"effort", "eff"}:
+            if len(parts) < 2:
+                return "Usage: /reasoning effort <low|medium|high|max|default>"
+            effort = parts[1].lower()
+            if effort in {"default", "reset", "none"}:
+                await self.api.update_runtime_settings(
+                    session_id, {"reasoning": {"effort": None}}
+                )
+                return await self._format_reasoning_settings(
+                    session_id,
+                    prefix="Reasoning effort reset to provider default.",
+                )
+            if effort not in REASONING_EFFORTS:
+                allowed = ", ".join(sorted(REASONING_EFFORTS))
+                return f"Invalid reasoning effort '{effort}'. Use: {allowed}, default."
+            await self.api.update_runtime_settings(
+                session_id, {"reasoning": {"effort": effort}}
+            )
+            return await self._format_reasoning_settings(
+                session_id,
+                prefix=f"Reasoning effort set to {effort} for this session.",
+            )
+
+        if action in {"reset", "default"}:
+            await self.api.update_runtime_settings(session_id, {"reasoning": None})
+            return await self._format_reasoning_settings(
+                session_id,
+                prefix="Reasoning settings reset to defaults for this session.",
+            )
+
+        return "\n".join(
+            [
+                "Usage:",
+                "  /reasoning",
+                "  /reasoning on",
+                "  /reasoning off",
+                "  /reasoning effort <low|medium|high|max|default>",
+                "  /reasoning reset",
+            ]
+        )
+
+    async def _format_reasoning_settings(
+        self, session_id: str, *, prefix: str = ""
+    ) -> str:
+        info = await self.api.get_session_info(session_id)
+        runtime = runtime_settings_from_meta(info)
+        lines: list[str] = []
+        if prefix:
+            lines.append(prefix)
+        lines.extend(
+            [
+                "Current reasoning settings:",
+                f"  display: {self._format_optional_bool(runtime.reasoning.show)}",
+                f"  effort: {runtime.reasoning.effort or 'default'}",
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_optional_bool(value: bool | None) -> str:
+        if value is True:
+            return "on"
+        if value is False:
+            return "off"
+        return "default"
 
     async def _cmd_help(
         self, *, args: str, inbound: InboundMessage, session_id: str

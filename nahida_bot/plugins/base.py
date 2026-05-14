@@ -313,6 +313,12 @@ class BotAPI(Protocol):
         """Switch the session to a model and return provider id if found."""
         ...
 
+    async def update_runtime_settings(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge runtime settings into session metadata and return the result."""
+        ...
+
     # ── Memory ─────────────────────────────────────────
 
     async def memory_search(self, query: str, *, limit: int = 5) -> list[MemoryRef]:

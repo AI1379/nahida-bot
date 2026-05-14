@@ -26,6 +26,11 @@ from nahida_bot.core.message_context import (
     message_context_to_metadata,
     render_message_with_context,
 )
+from nahida_bot.core.runtime_settings import (
+    RuntimeSettings,
+    current_runtime_settings,
+    runtime_settings_from_meta,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -330,6 +335,8 @@ class SessionRunner:
 
         attachments_for_turn = tuple(attachments or [])
         attachments_token = current_attachments.set(attachments_for_turn)
+        runtime_settings = await self._load_runtime_settings(session_id)
+        runtime_token = current_runtime_settings.set(runtime_settings)
         done_data: dict[str, Any] = {}
         try:
             provider_slot, selected_model = await self._resolve_provider(session_id)
@@ -488,9 +495,25 @@ class SessionRunner:
                 workspace_root=workspace_root,
             )
         finally:
+            current_runtime_settings.reset(runtime_token)
             current_attachments.reset(attachments_token)
 
     # ── Public helpers (used by image_understand tool) ─────────
+
+    async def _load_runtime_settings(self, session_id: str) -> RuntimeSettings:
+        """Load per-session runtime settings from memory metadata."""
+        if self._memory is None:
+            return runtime_settings_from_meta(None)
+        try:
+            meta = await self._memory.get_session_meta(session_id)
+            return runtime_settings_from_meta(meta)
+        except Exception:
+            logger.warning(
+                "session_runner.runtime_settings_load_failed",
+                session_id=session_id,
+                exc_info=True,
+            )
+            return runtime_settings_from_meta(None)
 
     async def handle_image_understand_tool(
         self, *, media_id: str = "latest", question: str = ""

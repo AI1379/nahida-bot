@@ -73,6 +73,7 @@ class _MockMemoryStore:
         self.sessions: dict[str, list[ConversationTurn]] = {}
         self.workspace_ids: dict[str, str | None] = {}
         self.persisted_overrides: dict[str, str] = {}
+        self.session_meta: dict[str, dict[str, Any]] = {}
         self.get_recent_calls = 0
 
     async def ensure_session(
@@ -108,6 +109,14 @@ class _MockMemoryStore:
 
     async def load_active_sessions(self) -> dict[str, str]:
         return dict(self.persisted_overrides)
+
+    async def get_session_meta(self, session_id: str) -> dict[str, Any]:
+        return dict(self.session_meta.get(session_id, {}))
+
+    async def update_session_meta(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> None:
+        self.session_meta.setdefault(session_id, {}).update(updates)
 
 
 class _MockAgentLoop:
@@ -376,6 +385,42 @@ class TestMessageRouterAgentDispatch:
             )
         )
         await router.stop()
+
+    async def test_runtime_reasoning_display_override(self) -> None:
+        class _ReasoningAgent(_MockAgentLoop):
+            async def run_stream(self, **kwargs: Any) -> Any:
+                self.calls.append(kwargs)
+                yield LoopEvent(type="text", text="answer", reasoning="hidden steps")
+                yield LoopEvent(
+                    type="done",
+                    final_response="answer",
+                    reasoning="hidden steps",
+                )
+
+        memory = _MockMemoryStore()
+        memory.session_meta["test:c1"] = {"runtime": {"reasoning": {"show": True}}}
+        agent = _ReasoningAgent(response="answer")
+        router, event_bus, channel_registry, _ = _make_router(
+            agent=agent,
+            memory=memory,
+            config=RouterConfig(show_reasoning=False),
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=_inbound("show reasoning"),
+                    session_id="",
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].reasoning == "hidden steps"
 
     async def test_registered_tools_are_passed_to_agent(self) -> None:
         async def _tool_handler(query: str) -> str:

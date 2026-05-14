@@ -10,6 +10,11 @@ import pytest
 
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.providers.deepseek import DeepSeekProvider
+from nahida_bot.core.runtime_settings import (
+    ReasoningRuntimeSettings,
+    RuntimeSettings,
+    current_runtime_settings,
+)
 
 
 def _build_transport(handler):  # noqa: ANN001
@@ -145,6 +150,54 @@ async def test_reasoning_effort_injected(
     )
 
     assert captured["thinking"] == {"type": "enabled"}
+    assert captured["reasoning_effort"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_runtime_reasoning_effort_overrides_configured_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeepSeek should use per-session runtime effort for the request."""
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured
+        captured = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "nahida_bot.agent.providers.openai_compatible.httpx.AsyncClient",
+        _mock_client(_build_transport(handler)),
+    )
+
+    provider = DeepSeekProvider(
+        base_url="https://api.deepseek.com",
+        api_key="x",
+        model="deepseek-v4-pro",
+        reasoning_effort="high",
+    )
+    token = current_runtime_settings.set(
+        RuntimeSettings(
+            reasoning=ReasoningRuntimeSettings(effort="max"),
+        )
+    )
+    try:
+        await provider.chat(
+            messages=[ContextMessage(role="user", source="u", content="hi")]
+        )
+    finally:
+        current_runtime_settings.reset(token)
+
     assert captured["reasoning_effort"] == "max"
 
 

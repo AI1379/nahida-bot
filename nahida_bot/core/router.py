@@ -20,6 +20,7 @@ from nahida_bot.core.events import (
     MessageSent,
 )
 from nahida_bot.core.message_context import context_from_inbound
+from nahida_bot.core.runtime_settings import runtime_settings_from_meta
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import (
     CommandEntry,
@@ -52,6 +53,14 @@ class RouterConfig:
     show_reasoning: bool = False
     reasoning_max_chars: int = 2000
     group_context_enabled: bool = True
+
+
+@dataclass(slots=True, frozen=True)
+class ReasoningDisplayConfig:
+    """Effective reasoning display settings for one agent run."""
+
+    show: bool
+    max_chars: int
 
 
 class MessageRouter:
@@ -367,6 +376,7 @@ class MessageRouter:
         """Run agent loop in background, streaming responses as they arrive."""
         tracker = runner.run_tracker
         last_sent = ""
+        reasoning_display = await self._load_reasoning_display_config(session_id)
         try:
             async for event in runner.run_stream(
                 user_message=inbound.text,
@@ -379,7 +389,10 @@ class MessageRouter:
                 stop_event=stop_event,
             ):
                 if event.type == "text":
-                    reasoning = self._prepare_reasoning(event.reasoning)
+                    reasoning = self._prepare_reasoning(
+                        event.reasoning,
+                        reasoning_display,
+                    )
                     if event.text and event.text != last_sent:
                         await self._send_response(
                             inbound, session_id, event.text, reasoning=reasoning
@@ -396,7 +409,10 @@ class MessageRouter:
                         )
                     else:
                         final = event.final_response or ""
-                        reasoning = self._prepare_reasoning(event.reasoning)
+                        reasoning = self._prepare_reasoning(
+                            event.reasoning,
+                            reasoning_display,
+                        )
                         if final and final != last_sent:
                             await self._send_response(
                                 inbound, session_id, final, reasoning=reasoning
@@ -433,11 +449,38 @@ class MessageRouter:
             del self._pending[session_id]
         await self._dispatch_message(next_inbound, next_sid, next_wid)
 
-    def _prepare_reasoning(self, reasoning: str | None) -> str:
+    async def _load_reasoning_display_config(
+        self, session_id: str
+    ) -> ReasoningDisplayConfig:
+        """Resolve reasoning display config from session runtime metadata."""
+        show = self._config.show_reasoning
+        memory = self.memory
+        if memory is not None:
+            try:
+                meta = await memory.get_session_meta(session_id)
+                runtime = runtime_settings_from_meta(meta)
+                if runtime.reasoning.show is not None:
+                    show = runtime.reasoning.show
+            except Exception:
+                logger.warning(
+                    "router.runtime_settings_load_failed",
+                    session_id=session_id,
+                    exc_info=True,
+                )
+        return ReasoningDisplayConfig(
+            show=show,
+            max_chars=self._config.reasoning_max_chars,
+        )
+
+    def _prepare_reasoning(
+        self,
+        reasoning: str | None,
+        display: ReasoningDisplayConfig,
+    ) -> str:
         """Truncate reasoning if display is enabled."""
-        if not self._config.show_reasoning or not reasoning:
+        if not display.show or not reasoning:
             return ""
-        limit = self._config.reasoning_max_chars
+        limit = display.max_chars
         if limit and len(reasoning) > limit:
             return reasoning[:limit] + "..."
         return reasoning

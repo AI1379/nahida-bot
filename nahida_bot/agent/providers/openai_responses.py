@@ -40,6 +40,7 @@ from nahida_bot.agent.providers.errors import (
 )
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
+from nahida_bot.core.runtime_settings import current_runtime_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -432,8 +433,10 @@ class OpenAIResponsesProvider(ChatProvider):
         if previous_response_id is not None:
             payload["previous_response_id"] = previous_response_id
 
-        if self.reasoning_effort:
-            payload["reasoning"] = {"effort": self.reasoning_effort}
+        runtime_effort = current_runtime_settings.get().reasoning.effort
+        reasoning_effort = runtime_effort or self.reasoning_effort
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
 
         if self.max_output_tokens is not None:
             payload["max_output_tokens"] = self.max_output_tokens
@@ -468,7 +471,7 @@ class OpenAIResponsesProvider(ChatProvider):
                 store=self.store_responses,
                 stream=self.stream_responses,
                 has_previous_response_id=previous_response_id is not None,
-                reasoning_effort=self.reasoning_effort,
+                reasoning_effort=reasoning_effort,
                 timeout_seconds=timeout,
             )
             client = self._ensure_client()

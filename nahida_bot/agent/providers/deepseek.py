@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.providers.openai_compatible import OpenAICompatibleProvider
 from nahida_bot.agent.providers.registry import register_provider
+from nahida_bot.core.runtime_settings import current_runtime_settings
 
 
 @register_provider("deepseek", "DeepSeek Provider")
@@ -36,8 +37,10 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         params: dict[str, object] = {}
         if self.thinking_enabled:
             params["thinking"] = {"type": "enabled"}
-        if self.reasoning_effort is not None:
-            params["reasoning_effort"] = self.reasoning_effort
+        runtime_effort = current_runtime_settings.get().reasoning.effort
+        reasoning_effort = runtime_effort or self.reasoning_effort
+        if reasoning_effort is not None:
+            params["reasoning_effort"] = reasoning_effort
         return params
 
     def _serialize_message(self, message: ContextMessage) -> dict[str, object]:
