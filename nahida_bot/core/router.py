@@ -50,6 +50,7 @@ class RouterConfig:
     agent_enabled: bool = True
     command_timeout_seconds: float = 30.0
     command_timeout_message: str = "Command timed out. Please try again later."
+    reply_to_inbound: bool = True
     show_reasoning: bool = False
     reasoning_max_chars: int = 2000
     group_context_enabled: bool = True
@@ -314,7 +315,7 @@ class MessageRouter:
                 )
                 outbound = self._coerce_command_result(
                     result,
-                    default_reply_to=inbound.message_id,
+                    default_reply_to=self._default_reply_to(inbound),
                 )
                 if outbound is not None:
                     active_after_command = self.get_active_session_id(
@@ -498,9 +499,27 @@ class MessageRouter:
             inbound,
             session_id,
             OutboundMessage(
-                text=text, reply_to=inbound.message_id, reasoning=reasoning
+                text=text,
+                reply_to=self._default_reply_to(inbound),
+                reasoning=reasoning,
             ),
         )
+
+    def _default_reply_to(self, inbound: InboundMessage) -> str:
+        """Return the inbound message id when reply-by-default is enabled."""
+        if not inbound.message_id:
+            return ""
+        if not self._should_reply_to_inbound(inbound.platform):
+            return ""
+        return inbound.message_id
+
+    def _should_reply_to_inbound(self, platform: str) -> bool:
+        """Resolve reply-to behavior from channel override or router default."""
+        channel = self._channels.get(platform)
+        override = getattr(channel, "reply_to_inbound", None) if channel else None
+        if isinstance(override, bool):
+            return override
+        return self._config.reply_to_inbound
 
     async def _send_outbound(
         self, inbound: InboundMessage, session_id: str, outbound: OutboundMessage

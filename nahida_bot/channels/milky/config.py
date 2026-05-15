@@ -54,6 +54,13 @@ class MilkyPluginConfig(BaseModel):
             "context instead of being dropped."
         ),
     )
+    reply_to_inbound: bool | None = Field(
+        default=None,
+        description=(
+            "Optional override for the router's default reply-to-inbound behavior. "
+            "Null means use the global router setting."
+        ),
+    )
     allowed_friends: list[str] = Field(
         default_factory=list,
         description="Optional friend allow-list. Empty means all friends.",

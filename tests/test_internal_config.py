@@ -149,6 +149,7 @@ class TestRouterConfigModel:
         assert cfg.agent_enabled is True
         assert cfg.command_timeout_seconds == 30.0
         assert "timed out" in cfg.command_timeout_message
+        assert cfg.reply_to_inbound is True
 
     def test_custom_values(self) -> None:
         cfg = RouterConfigModel(
@@ -157,11 +158,13 @@ class TestRouterConfigModel:
             agent_enabled=False,
             command_timeout_seconds=60.0,
             command_timeout_message="Timeout!",
+            reply_to_inbound=False,
         )
         assert cfg.system_prompt == "Custom prompt"
         assert cfg.max_history_turns == 100
         assert cfg.agent_enabled is False
         assert cfg.command_timeout_message == "Timeout!"
+        assert cfg.reply_to_inbound is False
 
     def test_negative_values_rejected(self) -> None:
         with pytest.raises(ValidationError):

@@ -27,6 +27,23 @@ def _make_manifest(**overrides: object) -> PluginManifest:
 
 
 class TestTelegramPluginLifecycle:
+    def test_reply_to_inbound_config_override(self) -> None:
+        api = RecordingMockBotAPI()
+        plugin = TelegramPlugin(
+            api=api,
+            manifest=_make_manifest(
+                config={"bot_token": "test-token-123", "reply_to_inbound": False}
+            ),
+        )
+
+        assert plugin.reply_to_inbound is False
+
+    def test_reply_to_inbound_config_unset_uses_router_default(self) -> None:
+        api = RecordingMockBotAPI()
+        plugin = TelegramPlugin(api=api, manifest=_make_manifest())
+
+        assert plugin.reply_to_inbound is None
+
     async def test_on_load_creates_bot(self) -> None:
         api = RecordingMockBotAPI()
         manifest = _make_manifest()

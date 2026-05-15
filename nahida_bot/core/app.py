@@ -656,6 +656,7 @@ class Application:
                     agent_enabled=self.settings.router.agent_enabled,
                     command_timeout_seconds=self.settings.router.command_timeout_seconds,
                     command_timeout_message=self.settings.router.command_timeout_message,
+                    reply_to_inbound=self.settings.router.reply_to_inbound,
                     show_reasoning=self.settings.router.show_reasoning,
                     reasoning_max_chars=self.settings.router.reasoning_max_chars,
                     group_context_enabled=self.settings.router.group_context.enabled,

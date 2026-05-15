@@ -68,6 +68,11 @@ class MilkyPlugin(Plugin):
         """Parsed Milky plugin configuration."""
         return self._config
 
+    @property
+    def reply_to_inbound(self) -> bool | None:
+        """Optional channel override for router default reply-to behavior."""
+        return self.config.reply_to_inbound
+
     async def on_load(self) -> None:
         """Create client, verify connection, and register channel."""
         config = self.config

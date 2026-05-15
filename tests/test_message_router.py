@@ -55,6 +55,7 @@ class _StubChannel(Plugin):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._channel_id = self.manifest.id
+        self.reply_to_inbound: bool | None = None
         self.sent: list[tuple[str, OutboundMessage]] = []
 
     @property
@@ -290,6 +291,92 @@ class TestMessageRouterCommandDispatch:
 
         handler.assert_awaited_once()
         assert handler.call_args.kwargs["args"] == "hello world"
+
+    async def test_command_reply_to_can_be_disabled_globally(self) -> None:
+        router, event_bus, channel_registry, command_registry = _make_router(
+            config=RouterConfig(reply_to_inbound=False)
+        )
+        handler = AsyncMock(return_value="ok")
+        command_registry.register(
+            CommandEntry(
+                name="ping",
+                handler=handler,
+                description="Ping",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("/ping"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].reply_to == ""
+
+    async def test_channel_reply_to_override_can_disable_global_default(self) -> None:
+        router, event_bus, channel_registry, command_registry = _make_router(
+            config=RouterConfig(reply_to_inbound=True)
+        )
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        channel.reply_to_inbound = False
+        handler = AsyncMock(return_value="ok")
+        command_registry.register(
+            CommandEntry(
+                name="ping",
+                handler=handler,
+                description="Ping",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("/ping"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert channel.sent[0][1].reply_to == ""
+
+    async def test_channel_reply_to_override_can_enable_global_disabled(self) -> None:
+        router, event_bus, channel_registry, command_registry = _make_router(
+            config=RouterConfig(reply_to_inbound=False)
+        )
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        channel.reply_to_inbound = True
+        handler = AsyncMock(return_value="ok")
+        command_registry.register(
+            CommandEntry(
+                name="ping",
+                handler=handler,
+                description="Ping",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("/ping"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert channel.sent[0][1].reply_to == "1"
 
     async def test_command_can_return_outbound_message(self) -> None:
         router, event_bus, channel_registry, command_registry = _make_router()

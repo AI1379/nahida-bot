@@ -16,6 +16,7 @@ def test_milky_config_defaults() -> None:
     assert config.event_ws_url == "ws://127.0.0.1:3000/event"
     assert config.command_prefix == "/"
     assert config.group_trigger_mode == "mention"
+    assert config.reply_to_inbound is None
     assert config.allowed_friends == []
     assert config.allowed_groups == []
     assert config.cache_media_on_receive is True
@@ -41,6 +42,12 @@ def test_milky_config_normalizes_paths_and_ids() -> None:
     assert config.event_ws_url == "wss://example.com:8443/root/event"
     assert config.allowed_friends == ["12345"]
     assert config.allowed_groups == ["1000", "2000"]
+
+
+def test_milky_config_accepts_reply_to_inbound_override() -> None:
+    config = parse_milky_config({"reply_to_inbound": False})
+
+    assert config.reply_to_inbound is False
 
 
 def test_milky_config_accepts_ws_url_override() -> None:

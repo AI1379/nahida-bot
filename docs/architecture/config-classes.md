@@ -224,6 +224,7 @@ class RouterConfig:
     agent_enabled: bool = True                             # ← settings.router.agent_enabled
     command_timeout_seconds: float = 30.0                  # ← settings.router.command_timeout_seconds
     command_timeout_message: str = "Command timed out..."  # ← settings.router.command_timeout_message
+    reply_to_inbound: bool = True                          # ← settings.router.reply_to_inbound
 ```
 
 ---

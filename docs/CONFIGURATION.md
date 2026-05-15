@@ -326,6 +326,7 @@ multimodal:
 | `agent_enabled` | `bool` | `true` | 是否启用 Agent 循环（设为 `false` 进入纯命令模式） |
 | `command_timeout_seconds` | `float` | `30.0` | 命令处理器执行超时（秒） |
 | `command_timeout_message` | `str` | `"Command timed out..."` | 命令超时时显示的消息 |
+| `reply_to_inbound` | `bool` | `true` | 默认是否让回复引用触发消息；频道插件可用同名配置覆盖 |
 
 ---
 
@@ -344,6 +345,7 @@ multimodal:
 | `polling_timeout` | `int` | `30` | Long polling 超时（秒） |
 | `polling_max_backoff` | `float` | `30` | 轮询错误时的最大退避延迟 |
 | `allowed_chats` | `list[str]` | `[]` | 聊天 ID 白名单，空 = 接受所有 |
+| `reply_to_inbound` | `bool \| null` | `null` | 是否覆盖 `router.reply_to_inbound`；`null`/省略表示跟随全局 |
 | `send_retry_attempts` | `int` | `3` | 发送限流时的重试次数 |
 | `media_download_dir` | `str` | `"./data/temp/media"` | 媒体文件下载目录 |
 
@@ -376,6 +378,7 @@ telegram:
 |----|------|--------|------|
 | `command_prefix` | `str` | `"/"` | 命令前缀 |
 | `group_trigger_mode` | `str` | `"mention"` | 群消息触发方式：`mention`（@机器人）、`command`（命令前缀）、`always`（全部消息） |
+| `reply_to_inbound` | `bool \| null` | `null` | 是否覆盖 `router.reply_to_inbound`；`null`/省略表示跟随全局 |
 | `allowed_friends` | `list[str]` | `[]` | QQ 好友白名单，空 = 不限制 |
 | `allowed_groups` | `list[str]` | `[]` | QQ 群白名单，空 = 不限制 |
 

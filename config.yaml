@@ -95,6 +95,7 @@ telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"
   # group_trigger_mode: "always"      # always / mention / command
   # group_context_capture: false      # mention/command 模式下，是否记录未触发群消息作为上下文
+  # reply_to_inbound: null            # true/false 覆盖 router.reply_to_inbound；null/省略表示跟随全局
   # proxy: "${TELEGRAM_PROXY:}"     # SOCKS5/HTTP 代理，如 socks5://127.0.0.1:1080
   # polling_timeout: 30
   # allowed_chats: []
@@ -112,6 +113,7 @@ telegram:
 #   command_prefix: "/"
 #   group_trigger_mode: "mention"  # mention / command / always
 #   group_context_capture: false   # true 时，未 at/非命令的群消息只记录为上下文，不触发回复
+#   reply_to_inbound: null         # true/false 覆盖 router.reply_to_inbound；null/省略表示跟随全局
 #   allowed_friends: []            # QQ 号白名单；空列表表示不限制
 #   allowed_groups: []             # 群号白名单；空列表表示不限制
 #   connect_timeout: 10.0
@@ -224,6 +226,7 @@ telegram:
 #   agent_enabled: true                 # 是否启用 Agent
 #   command_timeout_seconds: 30.0       # 命令执行超时（秒）
 #   command_timeout_message: "Command timed out. Please try again later."
+#   reply_to_inbound: true              # 默认是否引用回复触发消息；平台插件可覆盖
 #   group_context:
 #     enabled: true                     # 是否在触发时注入 observed-only 群上下文
 #     max_messages: 20                  # 最多注入最近多少条未触发群消息

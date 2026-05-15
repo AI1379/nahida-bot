@@ -53,6 +53,12 @@ class TelegramPlugin(Plugin):
         """Unique identifier used by the channel registry."""
         return self._channel_id
 
+    @property
+    def reply_to_inbound(self) -> bool | None:
+        """Optional channel override for router default reply-to behavior."""
+        value = self.manifest.config.get("reply_to_inbound")
+        return value if isinstance(value, bool) else None
+
     async def on_load(self) -> None:
         """Create the aiogram Bot instance and verify the token."""
         from aiogram import Bot
