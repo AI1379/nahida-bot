@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, Protocol
 
 from nahida_bot.channels.milky._parsing import coerce_int, coerce_str
@@ -26,6 +28,8 @@ from nahida_bot.core.message_context import (
     sender_context_from_values,
 )
 from nahida_bot.plugins.base import InboundAttachment, InboundMessage
+
+_MILKY_TIMESTAMP_CORRECTION_TOLERANCE_SECONDS = 300
 
 
 class ForwardMessageClient(Protocol):
@@ -123,7 +127,7 @@ class MilkyMessageConverter:
             raw_event=raw_event or message_data,
             is_group=is_group,
             reply_to=self._reply_to(segments),
-            timestamp=float(coerce_int(message_data.get("time"))),
+            timestamp=_normalize_milky_timestamp(message_data.get("time")),
             command_prefix=self._config.command_prefix,
             attachments=attachments,
             sender_context=sender_context,
@@ -333,3 +337,44 @@ class MilkyMessageConverter:
                     )
                 )
         return attachments
+
+
+def _normalize_milky_timestamp(
+    value: object,
+    *,
+    now: float | None = None,
+    local_utc_offset_seconds: float | None = None,
+) -> float:
+    """Normalize Milky message time to a real Unix timestamp.
+
+    Some Milky/Lagrange deployments emit a timestamp that has already been
+    shifted by the local UTC offset. For example, UTC+8 deployments can produce
+    ``real_epoch - 28800``. Detect that shape near receive time and repair it at
+    the channel boundary so the rest of the bot only sees standard epoch seconds.
+    """
+    raw = float(coerce_int(value))
+    if raw <= 0:
+        return raw
+
+    observed_now = time.time() if now is None else now
+    offset = (
+        _local_utc_offset_seconds(observed_now)
+        if local_utc_offset_seconds is None
+        else local_utc_offset_seconds
+    )
+    if not offset:
+        return raw
+
+    corrected = raw + offset
+    tolerance = _MILKY_TIMESTAMP_CORRECTION_TOLERANCE_SECONDS
+    if (
+        abs((observed_now - raw) - offset) <= tolerance
+        and abs(observed_now - corrected) <= tolerance
+    ):
+        return corrected
+    return raw
+
+
+def _local_utc_offset_seconds(timestamp: float) -> float:
+    offset = datetime.fromtimestamp(timestamp).astimezone().utcoffset()
+    return offset.total_seconds() if offset is not None else 0.0

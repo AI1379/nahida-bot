@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from nahida_bot.channels.milky.config import parse_milky_config
-from nahida_bot.channels.milky.message_converter import MilkyMessageConverter
+from nahida_bot.channels.milky.message_converter import (
+    MilkyMessageConverter,
+    _normalize_milky_timestamp,
+)
 from nahida_bot.channels.milky.segments import (
     IncomingForwardedMessage,
     IncomingTextSegment,
@@ -44,6 +47,36 @@ async def test_friend_message_to_inbound() -> None:
     assert inbound.message_context.channel == "milky"
     assert inbound.message_context.chat_type == "private"
     assert inbound.message_context.sender_id == "10001"
+
+
+async def test_normalize_milky_timestamp_repairs_local_offset_shift() -> None:
+    corrected = _normalize_milky_timestamp(
+        1778818654,
+        now=1778847455.0,
+        local_utc_offset_seconds=28800,
+    )
+
+    assert corrected == 1778847454.0
+
+
+async def test_normalize_milky_timestamp_keeps_normal_epoch() -> None:
+    timestamp = _normalize_milky_timestamp(
+        1778847454,
+        now=1778847455.0,
+        local_utc_offset_seconds=28800,
+    )
+
+    assert timestamp == 1778847454.0
+
+
+async def test_normalize_milky_timestamp_keeps_utc_environment_epoch() -> None:
+    timestamp = _normalize_milky_timestamp(
+        1778818654,
+        now=1778847455.0,
+        local_utc_offset_seconds=0,
+    )
+
+    assert timestamp == 1778818654.0
 
 
 async def test_group_mention_strips_self_mention() -> None:
