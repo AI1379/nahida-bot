@@ -100,6 +100,9 @@ class MockBotAPI:
     async def workspace_write(self, path: str, content: str) -> None:
         pass
 
+    def resolve_workspace_path(self, path: str) -> str:
+        return path
+
     async def publish_event(self, event: Any) -> None:
         pass
 
