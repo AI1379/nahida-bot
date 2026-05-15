@@ -109,6 +109,9 @@ class AgentRunPayload:
     system_prompt: str
     requester_session_id: str
     workspace_id: str | None = None
+    provider_id: str | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
+    tool_allowlist: frozenset[str] = frozenset()
     tool_filter: frozenset[str] = frozenset()
     timeout_seconds: int | None = None

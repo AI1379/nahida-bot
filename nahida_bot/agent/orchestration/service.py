@@ -25,6 +25,11 @@ from nahida_bot.agent.orchestration.policy import OrchestrationPolicy
 from nahida_bot.agent.orchestration.registry import AgentRegistry
 from nahida_bot.agent.orchestration.task_store import BackgroundTaskStore
 from nahida_bot.core.context import current_agent_run, current_session
+from nahida_bot.core.runtime_settings import (
+    RUNTIME_META_KEY,
+    merge_runtime_meta,
+    runtime_meta_from_session_meta,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -125,7 +130,10 @@ class AgentOrchestrator:
             system_prompt=self._build_child_system_prompt(spec),
             requester_session_id=requester_session_id,
             workspace_id=session_ctx.workspace_id,
+            provider_id=spec.provider_id,
             model=spec.model,
+            reasoning_effort=spec.reasoning_effort,
+            tool_allowlist=frozenset(spec.tool_allowlist),
             tool_filter=frozenset(spec.tool_denylist) | _DEFAULT_CHILD_TOOL_DENYLIST,
             timeout_seconds=spec.timeout_seconds
             or self._config.subagent_timeout_seconds,
@@ -207,6 +215,38 @@ class AgentOrchestrator:
                 await self._prepare_child_session(run, payload, spec)
                 result = await self._executor.run(run, payload)
                 summary = result.final_response.strip()
+                if result.error:
+                    error = f"Subagent run failed: {result.error}"
+                    run.status = AgentRunStatus.FAILED
+                    run.error = error
+                    run.ended_at = utc_now()
+                    await self._task_store.update_status(
+                        run.task_id or "",
+                        AgentRunStatus.FAILED,
+                        error=error,
+                        terminal=True,
+                    )
+                    if spec.notify_policy != "silent":
+                        await self._deliver_completion(
+                            run, AgentRunStatus.FAILED, "", error
+                        )
+                    return result
+                if not summary:
+                    error = "Subagent completed without a final response."
+                    run.status = AgentRunStatus.FAILED
+                    run.error = error
+                    run.ended_at = utc_now()
+                    await self._task_store.update_status(
+                        run.task_id or "",
+                        AgentRunStatus.FAILED,
+                        error=error,
+                        terminal=True,
+                    )
+                    if spec.notify_policy != "silent":
+                        await self._deliver_completion(
+                            run, AgentRunStatus.FAILED, "", error
+                        )
+                    return result
                 run.status = AgentRunStatus.SUCCEEDED
                 run.summary = summary
                 run.ended_at = utc_now()
@@ -290,17 +330,93 @@ class AgentOrchestrator:
         await self._memory.ensure_session(
             run.session_id, workspace_id=payload.workspace_id
         )
-        meta: dict[str, str] = {
+        meta: dict[str, Any] = {
             "requester_session_id": payload.requester_session_id,
             "parent_run_id": run.parent_run_id or "",
             "task_id": run.task_id or "",
             "run_kind": run.kind.value,
         }
-        if spec.provider_id:
-            meta["provider_id"] = spec.provider_id
-        if spec.model:
-            meta["model"] = spec.model
+        if payload.provider_id:
+            meta["provider_id"] = payload.provider_id
+        if payload.model:
+            meta["model"] = payload.model
+        if payload.reasoning_effort:
+            existing = await self._memory.get_session_meta(run.session_id)
+            runtime = runtime_meta_from_session_meta(existing)
+            meta[RUNTIME_META_KEY] = merge_runtime_meta(
+                runtime,
+                {"reasoning": {"effort": payload.reasoning_effort}},
+            )
         await self._memory.update_session_meta(run.session_id, meta)
+        await self._seed_child_context(run, payload, spec)
+
+    async def _seed_child_context(
+        self,
+        run: AgentRun,
+        payload: AgentRunPayload,
+        spec: SubagentSpec,
+    ) -> None:
+        if self._memory is None or spec.context_mode == "isolated":
+            return
+        records = await self._memory.get_recent(payload.requester_session_id, limit=20)
+        records = [
+            record
+            for record in records
+            if record.turn.role in {"user", "assistant"} and record.turn.content.strip()
+        ]
+        if not records:
+            return
+
+        if spec.context_mode == "fork":
+            for record in records:
+                metadata = dict(record.turn.metadata or {})
+                metadata["forked_from_session"] = payload.requester_session_id
+                metadata["forked_turn_id"] = record.turn_id
+                await self._memory.append_turn(
+                    run.session_id,
+                    ConversationTurn(
+                        role=record.turn.role,
+                        content=record.turn.content,
+                        source=f"subagent_fork:{record.turn.source}",
+                        metadata=metadata,
+                    ),
+                )
+            return
+
+        if spec.context_mode == "summary" and not spec.handoff_summary:
+            excerpt = self._format_parent_context_excerpt(records)
+            if excerpt:
+                await self._memory.append_turn(
+                    run.session_id,
+                    ConversationTurn(
+                        role="user",
+                        content=(
+                            "Parent context excerpt for the delegated task:\n" + excerpt
+                        ),
+                        source="subagent_context_summary",
+                        metadata={"source_session_id": payload.requester_session_id},
+                    ),
+                )
+
+    @staticmethod
+    def _format_parent_context_excerpt(
+        records: list[Any], *, max_chars: int = 6000
+    ) -> str:
+        lines: list[str] = []
+        remaining = max_chars
+        for record in records:
+            label = "User" if record.turn.role == "user" else "Assistant"
+            text = " ".join(record.turn.content.split())
+            if not text:
+                continue
+            line = f"{label}: {text}"
+            if len(line) > remaining:
+                line = line[: max(0, remaining - 3)].rstrip() + "..."
+            lines.append(line)
+            remaining -= len(line) + 1
+            if remaining <= 0:
+                break
+        return "\n".join(lines)
 
     @staticmethod
     def _build_child_user_message(spec: SubagentSpec) -> str:

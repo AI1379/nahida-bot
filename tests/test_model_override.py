@@ -219,6 +219,26 @@ class TestSessionRunnerModelResolution:
         assert model == "deepseek-reasoner"
 
     @pytest.mark.asyncio
+    async def test_direct_provider_and_model_override_takes_priority(self) -> None:
+        slot1 = _slot("ds", models=["deepseek-chat", "deepseek-reasoner"])
+        slot2 = _slot("glm", models=["glm-4-flash"])
+        pm = ProviderManager([slot1, slot2], default_id="ds")
+        memory = _FakeMemoryStore(meta={"provider_id": "ds", "model": "deepseek-chat"})
+
+        runner = SessionRunner(
+            provider_manager=pm,
+            memory_store=cast(Any, memory),
+        )
+        resolved_slot, model = await runner._resolve_provider(
+            "s1",
+            provider_id="glm",
+            model="glm-4-flash",
+        )
+
+        assert resolved_slot is slot2
+        assert model == "glm-4-flash"
+
+    @pytest.mark.asyncio
     async def test_no_provider_manager(self) -> None:
         runner = SessionRunner()
         resolved_slot, model = await runner._resolve_provider("s1")

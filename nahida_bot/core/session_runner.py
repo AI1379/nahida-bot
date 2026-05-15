@@ -27,6 +27,8 @@ from nahida_bot.core.message_context import (
     render_message_with_context,
 )
 from nahida_bot.core.runtime_settings import (
+    REASONING_EFFORTS,
+    ReasoningRuntimeSettings,
     RuntimeSettings,
     current_runtime_settings,
     runtime_settings_from_meta,
@@ -283,6 +285,10 @@ class SessionRunner:
         workspace_root: Any = None,
         attachments: list[InboundAttachment] | None = None,
         message_context: MessageContext | None = None,
+        provider_id: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        tool_allowlist: AbstractSet[str] | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
         stop_event: asyncio.Event | None = None,
@@ -297,6 +303,10 @@ class SessionRunner:
             workspace_root=workspace_root,
             attachments=attachments,
             message_context=message_context,
+            provider_id=provider_id,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            tool_allowlist=tool_allowlist,
             tool_filter=tool_filter,
             source_tag=source_tag,
             stop_event=stop_event,
@@ -324,6 +334,10 @@ class SessionRunner:
         workspace_root: Any = None,
         attachments: list[InboundAttachment] | None = None,
         message_context: MessageContext | None = None,
+        provider_id: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        tool_allowlist: AbstractSet[str] | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
         stop_event: asyncio.Event | None = None,
@@ -340,10 +354,18 @@ class SessionRunner:
         attachments_for_turn = tuple(attachments or [])
         attachments_token = current_attachments.set(attachments_for_turn)
         runtime_settings = await self._load_runtime_settings(session_id)
+        runtime_settings = self._apply_runtime_overrides(
+            runtime_settings,
+            reasoning_effort=reasoning_effort,
+        )
         runtime_token = current_runtime_settings.set(runtime_settings)
         done_data: dict[str, Any] = {}
         try:
-            provider_slot, selected_model = await self._resolve_provider(session_id)
+            provider_slot, selected_model = await self._resolve_provider(
+                session_id,
+                provider_id=provider_id,
+                model=model,
+            )
             effective_model = (
                 selected_model or provider_slot.default_model
                 if provider_slot is not None
@@ -399,7 +421,11 @@ class SessionRunner:
             relevant_memory = await self._load_relevant_memory(user_message)
             if relevant_memory:
                 history = [relevant_memory, *history]
-            tools = self._collect_tools(tool_filter, capabilities=capabilities)
+            tools = self._collect_tools(
+                tool_filter,
+                tool_allowlist=tool_allowlist,
+                capabilities=capabilities,
+            )
             logger.debug(
                 "session_runner.tools_collected",
                 session_id=session_id,
@@ -407,7 +433,10 @@ class SessionRunner:
                 effective_model=effective_model,
                 tool_count=len(tools),
                 tool_names=[tool.name for tool in tools[:50]],
-                tool_filter=sorted(tool_filter) if tool_filter is not None else [],
+                tool_denylist=sorted(tool_filter) if tool_filter is not None else [],
+                tool_allowlist=(
+                    sorted(tool_allowlist) if tool_allowlist is not None else []
+                ),
                 model_tool_calling=(
                     capabilities.tool_calling if capabilities is not None else None
                 ),
@@ -519,6 +548,30 @@ class SessionRunner:
             )
             return runtime_settings_from_meta(None)
 
+    @staticmethod
+    def _apply_runtime_overrides(
+        settings: RuntimeSettings,
+        *,
+        reasoning_effort: str | None = None,
+    ) -> RuntimeSettings:
+        effort = str(reasoning_effort or "").strip().lower()
+        if not effort:
+            return settings
+        if effort not in REASONING_EFFORTS:
+            logger.warning(
+                "session_runner.runtime_override_ignored",
+                key="reasoning.effort",
+                value=reasoning_effort,
+            )
+            return settings
+        return replace(
+            settings,
+            reasoning=ReasoningRuntimeSettings(
+                show=settings.reasoning.show,
+                effort=effort,
+            ),
+        )
+
     async def handle_image_understand_tool(
         self, *, media_id: str = "latest", question: str = ""
     ) -> str:
@@ -603,7 +656,13 @@ class SessionRunner:
 
     # ── Private helpers ──────────────────────────────────────
 
-    async def _resolve_provider(self, session_id: str) -> tuple[Any, str | None]:
+    async def _resolve_provider(
+        self,
+        session_id: str,
+        *,
+        provider_id: str | None = None,
+        model: str | None = None,
+    ) -> tuple[Any, str | None]:
         if self._providers is None:
             logger.debug(
                 "session_runner.provider_resolved",
@@ -611,6 +670,79 @@ class SessionRunner:
                 reason="no_provider_manager",
             )
             return None, None
+        direct_model = str(model or "").strip()
+        direct_provider_id = str(provider_id or "").strip()
+        if direct_provider_id:
+            slot = self._providers.get(direct_provider_id)
+            if slot is not None:
+                provider_model = direct_model
+                if "/" in provider_model:
+                    prefix, _, suffix = provider_model.partition("/")
+                    if prefix == direct_provider_id:
+                        provider_model = suffix
+                if provider_model and slot.supports_model(provider_model):
+                    override = (
+                        provider_model if provider_model != slot.default_model else None
+                    )
+                    logger.debug(
+                        "session_runner.provider_resolved",
+                        session_id=session_id,
+                        reason="direct_provider_and_model",
+                        provider_id=slot.id,
+                        requested_model=direct_model,
+                        selected_model=override or "",
+                        effective_model=provider_model,
+                        default_model=slot.default_model,
+                    )
+                    return slot, override
+                if not provider_model:
+                    logger.debug(
+                        "session_runner.provider_resolved",
+                        session_id=session_id,
+                        reason="direct_provider_id",
+                        provider_id=slot.id,
+                        default_model=slot.default_model,
+                    )
+                    return slot, None
+                logger.warning(
+                    "session_runner.direct_provider_model_mismatch",
+                    session_id=session_id,
+                    provider_id=slot.id,
+                    requested_model=direct_model,
+                    provider_model=provider_model,
+                    available_models=slot.available_models,
+                )
+                return slot, None
+            else:
+                logger.debug(
+                    "session_runner.direct_provider_id_not_found",
+                    session_id=session_id,
+                    provider_id=direct_provider_id,
+                )
+
+        if direct_model:
+            resolved = self._providers.resolve_model_selection(direct_model)
+            if resolved is not None:
+                slot, provider_model = resolved
+                override = (
+                    provider_model if provider_model != slot.default_model else None
+                )
+                logger.debug(
+                    "session_runner.provider_resolved",
+                    session_id=session_id,
+                    reason="direct_model",
+                    provider_id=slot.id,
+                    requested_model=direct_model,
+                    selected_model=override or "",
+                    effective_model=provider_model,
+                    default_model=slot.default_model,
+                )
+                return slot, override
+            logger.debug(
+                "session_runner.direct_model_not_found",
+                session_id=session_id,
+                requested_model=direct_model,
+            )
         if self._memory is not None:
             meta = await self._memory.get_session_meta(session_id)
             logger.debug(
@@ -1357,9 +1489,12 @@ class SessionRunner:
         self,
         tool_filter: AbstractSet[str] | None,
         *,
+        tool_allowlist: AbstractSet[str] | None = None,
         capabilities: ModelCapabilities | None = None,
     ) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = []
+        denied = set(tool_filter or ())
+        allowed = set(tool_allowlist or ())
         if self._tools is not None:
             tools.extend(
                 ToolDefinition(
@@ -1368,7 +1503,7 @@ class SessionRunner:
                     parameters=entry.parameters,
                 )
                 for entry in self._tools.all()
-                if tool_filter is None or entry.name not in tool_filter
+                if entry.name not in denied and (not allowed or entry.name in allowed)
             )
 
         # Conditionally inject image_understand tool for non-vision models
@@ -1377,6 +1512,8 @@ class SessionRunner:
             and not capabilities.image_input
             and self._multimodal_config is not None
             and self._multimodal_config.image_fallback_mode == "tool"
+            and "image_understand" not in denied
+            and (not allowed or "image_understand" in allowed)
             and "image_understand" not in {tool.name for tool in tools}
         ):
             tools.append(

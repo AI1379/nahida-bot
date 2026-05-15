@@ -861,6 +861,19 @@ class BuiltinCommandsPlugin(Plugin):
                         "enum": ["isolated", "summary", "fork"],
                         "description": "How much parent context to pass.",
                     },
+                    "provider_id": {
+                        "type": "string",
+                        "description": "Optional provider id for the child agent.",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model or provider/model for the child agent.",
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "enum": sorted(REASONING_EFFORTS),
+                        "description": "Optional reasoning effort override for the child agent.",
+                    },
                     "handoff_summary": {
                         "type": "string",
                         "description": "Brief parent context summary for summary mode.",
@@ -878,6 +891,11 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Extra tool names to hide from the child.",
+                    },
+                    "tool_allowlist": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "If set, only these tool names are visible to the child.",
                     },
                 },
                 "required": ["task"],
@@ -945,9 +963,13 @@ class BuiltinCommandsPlugin(Plugin):
         label: str = "",
         instructions: str = "",
         context_mode: str = "isolated",
+        provider_id: str = "",
+        model: str = "",
+        reasoning_effort: str = "",
         handoff_summary: str = "",
         timeout_seconds: int | None = None,
         notify: str = "done_only",
+        tool_allowlist: list[str] | None = None,
         tool_denylist: list[str] | None = None,
     ) -> str:
         orchestrator = self._get_orchestrator()
@@ -962,7 +984,11 @@ class BuiltinCommandsPlugin(Plugin):
                 instructions=instructions or None,
                 context_mode=context_mode,  # type: ignore[arg-type]
                 handoff_summary=handoff_summary or None,
+                provider_id=provider_id or None,
+                model=model or None,
+                reasoning_effort=reasoning_effort or None,
                 timeout_seconds=timeout_seconds,
+                tool_allowlist=tuple(tool_allowlist or ()),
                 tool_denylist=tuple(tool_denylist or ()),
                 notify_policy=notify,  # type: ignore[arg-type]
             )

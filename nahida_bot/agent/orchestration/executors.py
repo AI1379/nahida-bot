@@ -51,6 +51,10 @@ class LocalAgentRunExecutor:
                 session_id=run.session_id,
                 system_prompt=payload.system_prompt,
                 workspace_id=payload.workspace_id,
+                provider_id=payload.provider_id,
+                model=payload.model,
+                reasoning_effort=payload.reasoning_effort,
+                tool_allowlist=payload.tool_allowlist,
                 tool_filter=payload.tool_filter,
                 source_tag="subagent_task",
             )
