@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import types as _types
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, get_args, get_origin
 
 import typer
@@ -182,13 +184,29 @@ def schema_cmd(
     show_providers: bool = typer.Option(
         False, "--providers", help="Also show ProviderEntryConfig fields"
     ),
+    show_plugins: bool = typer.Option(
+        True,
+        "--plugins/--no-plugins",
+        help="Include discovered plugin configuration entries",
+    ),
+    config_yaml: str | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to YAML configuration file; used for plugin_paths discovery",
+    ),
 ) -> None:
     """Print all configuration keys with types and defaults.
 
     Use --section to narrow down (e.g. -s memory.embedding).
     Use --providers to also expand the per-provider model schema.
     """
-    entries = _build_schema(section, show_providers)
+    entries = _build_schema(
+        section,
+        show_providers,
+        show_plugins=show_plugins,
+        config_yaml=config_yaml,
+    )
 
     if output_format == "json":
         console.out(
@@ -218,7 +236,13 @@ def schema_cmd(
     console.print(table)
 
 
-def _build_schema(section: str | None, show_providers: bool) -> list[SchemaEntry]:
+def _build_schema(
+    section: str | None,
+    show_providers: bool,
+    *,
+    show_plugins: bool = True,
+    config_yaml: str | None = None,
+) -> list[SchemaEntry]:
     """Build the schema entry list, optionally filtered."""
     entries: list[SchemaEntry] = []
 
@@ -262,6 +286,9 @@ def _build_schema(section: str | None, show_providers: bool) -> list[SchemaEntry
         mem_entries = _build_memory_schema()
         entries.extend(mem_entries)
 
+    if show_plugins:
+        entries.extend(_build_plugin_schema(section=section, config_yaml=config_yaml))
+
     if section:
         entries = [e for e in entries if e.path.startswith(section)]
 
@@ -287,6 +314,229 @@ def _build_memory_schema() -> list[SchemaEntry]:
     for e in walk_schema(type(mem.consolidation), "memory.consolidation"):
         entries.append(e)
     return entries
+
+
+def _build_plugin_schema(
+    *, section: str | None = None, config_yaml: str | None = None
+) -> list[SchemaEntry]:
+    """Build schema entries for discovered plugin configuration sections."""
+    try:
+        settings = load_settings(config_yaml=config_yaml)
+    except Exception:
+        # Schema output should still be useful even when the user's config file
+        # has unrelated validation problems.
+        settings = Settings()
+
+    entries: list[SchemaEntry] = []
+    for manifest in _discover_plugin_manifests(settings):
+        plugin_id = manifest.id
+        if section and not (
+            plugin_id.startswith(section) or section.startswith(plugin_id)
+        ):
+            continue
+
+        entries.append(
+            SchemaEntry(
+                path=plugin_id,
+                type_=f"PluginConfig ({manifest.name})",
+                default_="{}",
+            )
+        )
+
+        config_schema = manifest.config_schema or {}
+        if config_schema:
+            entries.extend(
+                _walk_json_schema(
+                    config_schema,
+                    prefix=plugin_id,
+                    defaults=manifest.config,
+                )
+            )
+        else:
+            entries.extend(_infer_config_entries(manifest.config, prefix=plugin_id))
+    return entries
+
+
+def _discover_plugin_manifests(settings: Settings) -> list[Any]:
+    """Discover plugin manifests using the same paths as Application startup."""
+    from nahida_bot.plugins.loader import PluginLoader
+
+    paths: list[Path] = []
+    builtin_plugins = _package_dir("nahida_bot.plugins.builtin")
+    if builtin_plugins is not None:
+        paths.append(builtin_plugins)
+
+    if settings.discover_builtin_channels:
+        builtin_channels = _package_dir("nahida_bot.channels")
+        if builtin_channels is not None:
+            paths.append(builtin_channels)
+
+    builtin_mcp = _package_dir("nahida_bot.plugins.mcp")
+    if builtin_mcp is not None:
+        paths.append(builtin_mcp)
+
+    paths.extend(
+        path for p in settings.plugin_paths if (path := Path(p).resolve()).is_dir()
+    )
+
+    loader = PluginLoader()
+    manifests: dict[str, Any] = {}
+    for manifest, _plugin_dir in loader.discover(paths):
+        manifests.setdefault(manifest.id, manifest)
+    return list(manifests.values())
+
+
+def _package_dir(module_name: str) -> Path | None:
+    spec = importlib.util.find_spec(module_name)
+    if spec is None:
+        return None
+    if spec.submodule_search_locations:
+        return Path(next(iter(spec.submodule_search_locations)))
+    if spec.origin:
+        return Path(spec.origin).parent
+    return None
+
+
+def _walk_json_schema(
+    schema: dict[str, Any],
+    *,
+    prefix: str,
+    defaults: dict[str, Any],
+) -> list[SchemaEntry]:
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+
+    required = schema.get("required", [])
+    required_fields = set(required) if isinstance(required, list) else set()
+    entries: list[SchemaEntry] = []
+    for name, prop in properties.items():
+        if not isinstance(prop, dict):
+            continue
+        path = f"{prefix}.{name}"
+        default_value = defaults.get(name, prop.get("default", PydanticUndefined))
+        constraints = _json_schema_constraints(prop)
+        if name in required_fields and default_value is PydanticUndefined:
+            default_text = "required"
+        else:
+            default_text = _format_default(default_value)
+
+        child_properties = prop.get("properties")
+        if isinstance(child_properties, dict):
+            entries.append(
+                SchemaEntry(
+                    path=path,
+                    type_=_json_schema_type(prop),
+                    default_=default_text,
+                    constraints=constraints,
+                )
+            )
+            child_defaults = defaults.get(name, {})
+            entries.extend(
+                _walk_json_schema(
+                    prop,
+                    prefix=path,
+                    defaults=child_defaults if isinstance(child_defaults, dict) else {},
+                )
+            )
+            continue
+
+        entries.append(
+            SchemaEntry(
+                path=path,
+                type_=_json_schema_type(prop),
+                default_=default_text,
+                constraints=constraints,
+            )
+        )
+    return entries
+
+
+def _infer_config_entries(config: dict[str, Any], *, prefix: str) -> list[SchemaEntry]:
+    entries: list[SchemaEntry] = []
+    for name, value in config.items():
+        path = f"{prefix}.{name}"
+        if isinstance(value, dict):
+            entries.append(SchemaEntry(path=path, type_="dict", default_="{...}"))
+            entries.extend(_infer_config_entries(value, prefix=path))
+            continue
+        entries.append(
+            SchemaEntry(
+                path=path,
+                type_=_value_type(value),
+                default_=_format_default(value),
+            )
+        )
+    return entries
+
+
+def _json_schema_type(schema: dict[str, Any]) -> str:
+    if "enum" in schema and isinstance(schema["enum"], list):
+        return " | ".join(repr(value) for value in schema["enum"])
+    for key in ("anyOf", "oneOf"):
+        variants = schema.get(key)
+        if isinstance(variants, list):
+            return " | ".join(
+                _json_schema_type(v) for v in variants if isinstance(v, dict)
+            )
+    raw_type = schema.get("type")
+    if isinstance(raw_type, list):
+        return " | ".join(str(item) for item in raw_type)
+    if raw_type == "array":
+        item_type = "any"
+        items = schema.get("items")
+        if isinstance(items, dict):
+            item_type = _json_schema_type(items)
+        return f"list[{item_type}]"
+    if raw_type == "object":
+        return "dict"
+    if isinstance(raw_type, str):
+        return {
+            "boolean": "bool",
+            "integer": "int",
+            "number": "float",
+            "string": "str",
+            "null": "null",
+        }.get(raw_type, raw_type)
+    return "any"
+
+
+def _json_schema_constraints(schema: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for name, symbol in [
+        ("exclusiveMinimum", ">"),
+        ("minimum", ">="),
+        ("exclusiveMaximum", "<"),
+        ("maximum", "<="),
+        ("minLength", "len>="),
+        ("maxLength", "len<="),
+        ("minItems", "items>="),
+        ("maxItems", "items<="),
+    ]:
+        if name in schema:
+            parts.append(f"{symbol}{schema[name]}")
+    return " ".join(parts) if parts else "-"
+
+
+def _value_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, list):
+        if not value:
+            return "list"
+        item_types = sorted({_value_type(item) for item in value})
+        return f"list[{' | '.join(item_types)}]"
+    if isinstance(value, dict):
+        return "dict"
+    if value is None:
+        return "null"
+    return type(value).__name__
 
 
 # ---------------------------------------------------------------------------

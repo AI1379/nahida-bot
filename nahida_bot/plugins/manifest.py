@@ -75,6 +75,7 @@ class PluginManifest(BaseModel):
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     config: dict[str, Any] = Field(default_factory=dict)
+    config_schema: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[PluginDependency] = Field(default_factory=list)
 
 

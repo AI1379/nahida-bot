@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -74,6 +75,66 @@ def test_schema_reads_pydantic_v2_constraints() -> None:
     entry = _build_schema("agent.max_steps", show_providers=False)[0]
 
     assert entry.constraints == ">=1"
+
+
+def test_schema_includes_builtin_plugin_config_defaults() -> None:
+    entries = {
+        entry.path: entry
+        for entry in _build_schema("builtin-commands", show_providers=False)
+    }
+
+    assert entries["builtin-commands.allow_external_attachment_paths"].type_ == "bool"
+    assert (
+        entries["builtin-commands.allow_external_attachment_paths"].default_ == "False"
+    )
+    assert entries["builtin-commands.external_attachment_roots"].type_ == "list"
+
+
+def test_schema_reads_external_plugin_config_schema(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text(
+        """
+id: demo
+name: Demo Plugin
+version: "1.0.0"
+entrypoint: demo:DemoPlugin
+config:
+  enabled: true
+config_schema:
+  type: object
+  required: [api_key]
+  properties:
+    enabled:
+      type: boolean
+      default: false
+    api_key:
+      type: string
+    retries:
+      type: integer
+      minimum: 0
+      default: 2
+""",
+        encoding="utf-8",
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"plugin_paths:\n  - {json.dumps(str(tmp_path / 'plugins'))}\n",
+        encoding="utf-8",
+    )
+
+    entries = {
+        entry.path: entry
+        for entry in _build_schema(
+            "demo",
+            show_providers=False,
+            config_yaml=str(config_path),
+        )
+    }
+
+    assert entries["demo.enabled"].default_ == "True"
+    assert entries["demo.api_key"].default_ == "required"
+    assert entries["demo.retries"].constraints == ">=0"
 
 
 def test_validate_accepts_vision_tag_fallback() -> None:

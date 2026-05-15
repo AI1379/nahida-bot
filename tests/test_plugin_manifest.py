@@ -60,11 +60,16 @@ class TestPluginManifest:
                 tools=[{"name": "web_search", "description": "Search the web"}],
                 subscribes_to=["MessageReceived"],
             ),
-            config={"type": "object", "properties": {"api_key": {"type": "string"}}},
+            config={"api_key": ""},
+            config_schema={
+                "type": "object",
+                "properties": {"api_key": {"type": "string"}},
+            },
         )
         assert m.load_phase == "pre-agent"
         assert m.permissions.network.outbound == ["https://api.example.com/*"]
         assert m.permissions.system.subprocess is True
+        assert m.config_schema["properties"]["api_key"]["type"] == "string"
 
     def test_default_permissions(self) -> None:
         m = PluginManifest(id="test", name="T", version="0.1.0", entrypoint="t:T")
