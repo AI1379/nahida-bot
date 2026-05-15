@@ -1,5 +1,8 @@
 # Runtime Settings TODO
 
+Status as of 2026-05-15: first-pass reasoning runtime settings are implemented.
+The broader runtime settings surface and shared command parser are still deferred.
+
 This note tracks runtime-configurable settings that should not be implemented in
 the first pass. The first pass only supports session-persisted reasoning display
 and reasoning effort.
@@ -11,9 +14,19 @@ and reasoning effort.
 - `/reasoning effort <low|medium|high|max|default>`: session-level override for
   request-time reasoning effort. `default` removes the override and falls back
   to the provider/config default.
+- `/reasoning reset`: removes the session-level reasoning runtime metadata.
+- `/status`: displays the effective session reasoning display/effort values.
 
 Runtime values live in session metadata under `runtime`. `config.yaml` remains
 the startup/default source.
+
+Implementation notes:
+
+- `nahida_bot/core/runtime_settings.py` owns parsing and merge semantics.
+- `SessionRunner` loads runtime settings into `current_runtime_settings` for each run.
+- DeepSeek and OpenAI Responses providers read runtime reasoning effort from that context var.
+- `MessageRouter` resolves reasoning display from session runtime metadata before sending responses.
+- Command handling is still ad hoc string splitting in the built-in commands plugin.
 
 ## Later runtime settings
 

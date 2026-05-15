@@ -1,6 +1,8 @@
 # Agent Loop 优化调研：Codex vs nahida-bot 架构对比
 
 > 调研时间：2026-05-08
+> 最近审计：2026-05-15
+> 当前状态：部分实现。已落地流式事件、停止命令、provider/tool 重试和工具 transcript 止血；并行工具、语义压缩、provider usage 预算和完整 transcript 持久化仍未实现。
 > 目标：通过对比 Codex (OpenAI CLI) 的 agent loop 实现，识别 nahida-bot 可参考的优化方向
 
 ---
@@ -446,29 +448,49 @@ total = server_total_tokens
 
 > 补充：本文件聚焦单个 `AgentLoop` 的循环与上下文优化；多 Agent / Subagent / 后台任务 / 跨会话管理的完整架构已拆到 [docs/architecture/agent-orchestration.md](../architecture/agent-orchestration.md)。后续实现时应先保持两条线边界清晰：`AgentLoop` 负责一次模型-工具循环，`AgentOrchestrator` 负责 run、queue、task、session 和父子关系。
 
+### 当前实现审计（2026-05-15）
+
+已完成或部分完成：
+
+- `AgentLoop.run_stream()` 已输出 `LoopEvent(text/tool_start/tool_end/done)`，`SessionRunner` 和 `MessageRouter` 已按 async iterator 消费。
+- 已有 `/stop` 命令、`ActiveRunTracker` 和 `stop_event`，可以请求取消当前 session 的 agent run。
+- `ContextBuilder` 裁剪时会把 assistant tool calls 和紧随其后的 tool messages 作为组处理。
+- OpenAI-compatible provider 发送前会清洗孤立 tool message 和不完整 assistant tool call 组，并输出协议诊断日志。
+- provider 调用和工具调用已有重试、超时、指标记录和 lifecycle metadata。
+- `agent.max_steps` 已从配置接入 `AgentLoopConfig`。
+
+仍未完成或仅有止血：
+
+- 工具调用仍在 `_execute_tools()` 中串行执行，没有 `asyncio.gather` 或并发安全策略。
+- tool result 的 `content` 仍完整进入上下文；当前只截断 `logs`，没有对大 `output` 做 token/字节中间截断。
+- `RouterConfig.max_history_turns` 仍未在 `Application._init_scheduler()` 创建 `SessionRunner` 时传入，非默认值会被 `SessionRunner(max_history_turns=50)` 覆盖。
+- provider `usage` 尚未反哺 `ContextBuilder` 的预算，也没有基于模型 context window 的动态预算。
+- 没有 mid-loop compaction 和 LLM 语义压缩；仍是滑动窗口 + 简单摘要。
+- tool call/result 不会作为完整 agent run transcript 持久化，跨轮恢复主要依赖用户/助手 turn 和 metadata。
+
 ### Phase 1: 基础完善（高优先级）
 
-1. **修复配置接线** — `RouterConfig.max_history_turns` 正确传入 `SessionRunner`
-2. **工具输出截断** — 在 `ContextBuilder` 或 `AgentLoop` 中为 tool result 添加 token 预算，超出时中间截断
-3. **利用 provider usage** — 将 provider 返回的 token usage 信息用于上下文预算管理
-4. **提高 token 预算** — 默认值应参考模型实际 context window，而非硬编码 8000
+1. [ ] **修复配置接线** — `RouterConfig.max_history_turns` 正确传入 `SessionRunner`
+2. [ ] **工具输出截断** — 在 `ContextBuilder` 或 `AgentLoop` 中为 tool result 添加 token 预算，超出时中间截断
+3. [ ] **利用 provider usage** — 将 provider 返回的 token usage 信息用于上下文预算管理
+4. [ ] **提高 token 预算** — 默认值应参考模型实际 context window，而非硬编码 8000
 
 ### Phase 2: 核心优化（中优先级）
 
-1. **并行工具执行** — `asyncio.gather` 替代串行 for 循环
-2. **中途压缩检测** — Agent loop 每步后检查 token 用量，超限时触发压缩
-3. **LLM 语义压缩** — 引入 LLM 生成结构化摘要替代简单的字符截取摘要
-4. **分类丢弃策略** — 压缩时按类型优先级丢弃：tool output > reasoning > assistant > user
-5. **持久化 tool call/result** — 可选地将关键 tool interaction 持久化，支持断点续对话
-6. **历史规范化** — 加载历史后校验 tool call/output 配对完整性
+1. [ ] **并行工具执行** — `asyncio.gather` 替代串行 for 循环
+2. [ ] **中途压缩检测** — Agent loop 每步后检查 token 用量，超限时触发压缩
+3. [ ] **LLM 语义压缩** — 引入 LLM 生成结构化摘要替代简单的字符截取摘要
+4. [ ] **分类丢弃策略** — 压缩时按类型优先级丢弃：tool output > reasoning > assistant > user
+5. [ ] **持久化 tool call/result** — 可选地将关键 tool interaction 持久化，支持断点续对话
+6. [~] **历史规范化** — 已有 ContextBuilder 原子组裁剪和 provider 发送前清洗；仍缺统一 transcript validator
 
 ### Phase 3: 高级特性（低优先级）
 
-1. **取消/中断机制** — 引入 `CancellationToken` 等效物
-2. **增量上下文更新** — 缓存 prefix 部分，只更新动态部分
-3. **流式 reasoning 输出** — 将 reasoning token 流式传递给前端
-4. **差分 context 更新** — 跟踪环境变化，只注入差异部分
-5. **Hook 系统** — 在关键时机提供扩展点
+1. [x] **取消/中断机制** — 已有 `/stop`、`ActiveRunTracker` 和 `stop_event`，但取消粒度仍较粗
+2. [ ] **增量上下文更新** — 缓存 prefix 部分，只更新动态部分
+3. [~] **流式 reasoning 输出** — `LoopEvent.text` 可携带 reasoning，但 provider token 级 reasoning 流式尚未贯通
+4. [ ] **差分 context 更新** — 跟踪环境变化，只注入差异部分
+5. [ ] **Hook 系统** — 在关键时机提供扩展点
 
 ---
 

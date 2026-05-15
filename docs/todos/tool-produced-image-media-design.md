@@ -1,8 +1,9 @@
 # 工具产出图片的多模态读取设计与实现路径
 
-状态：待实现
+状态：部分实现。用户附件图片链路和 `image_understand` 已可用；工具产出图片的 media artifact 注册、自动注入和跨轮持久化仍待实现。
 
 背景日期：2026-05-14
+最近审计：2026-05-15
 
 ## 1. 问题背景
 
@@ -32,6 +33,27 @@
 - 工具产出图片：只是普通文本结果。
 
 ## 2. 当前实现现状
+
+### 2.0 实现审计（2026-05-15）
+
+已完成：
+
+- 用户消息附件已经统一为 `InboundAttachment`，Telegram/Milky 转换器会提取图片、文件等附件。
+- `MediaResolver` 已支持本地 path / URL 图片解析、MIME 和大小校验、缓存、base64 编码。
+- `SessionRunner._build_user_parts()` 已按 `ModelCapabilities.image_input` 分流：视觉模型直接注入 image part，非视觉模型走 `image_fallback_mode=auto/tool/off`。
+- `image_understand` 工具已能读取当前 turn 附件和历史用户附件 metadata 中的图片。
+- 用户附件 metadata 会持久化 path、mime、尺寸、描述等信息，历史恢复时可重新构造 image part 或 image description。
+- OpenAI-compatible / OpenAI Responses 等 provider 已能序列化用户图片 part。
+
+仍未实现：
+
+- 工具返回值中还没有统一 `media` / `media_artifacts` 协议，也没有 `extract_media_artifacts()`。
+- `AgentLoop._build_tool_message()` 仍只把工具结果序列化成 JSON 文本，没有在 metadata 中记录图片 artifact。
+- `AgentLoop` 没有工具结果后的 media hook，`SessionRunner` 也没有 `_build_tool_media_context_messages()`。
+- 工具产出的 path/url 不会自动变成下一轮 provider 的 image part，也不会自动触发 fallback vision 描述。
+- `image_understand` 不能按受控 `media_id` 查找工具产出图片；它仍只查当前/历史用户附件。
+- MCP image content、下载工具、图片生成结果还没有接入统一媒体 registry；OpenAI Responses generated image 当前只会变成占位文本 `[generated image available]`。
+- 没有跨轮 tool media 持久化表，也没有 `/media list`、`/media clear` 等调试命令。
 
 ### 2.1 用户附件图片链路
 
@@ -843,13 +865,13 @@ async def _find_media_attachment(self, media_id: str) -> InboundAttachment | Non
 
 为了降低风险，第一版可以只做：
 
-1. 新增 `extract_media_artifacts()`。
-2. 识别工具返回 JSON 中的显式 `media` 数组。
-3. 支持 Telegram 旧格式 path 和 Milky 旧格式 url。
-4. 在 tool message metadata 记录 `media_artifacts`。
-5. 新增 AgentLoop hook，让 SessionRunner 在工具结果后插入一条 `tool_media` user message。
-6. 只处理“刚刚工具调用产出的图片”，不做跨轮持久化。
-7. `image_understand` 暂时仍只处理用户附件，第二版再扩展。
+1. [ ] 新增 `extract_media_artifacts()`。
+2. [ ] 识别工具返回 JSON 中的显式 `media` 数组。
+3. [ ] 支持 Telegram 旧格式 path 和 Milky 旧格式 url。
+4. [ ] 在 tool message metadata 记录 `media_artifacts`。
+5. [ ] 新增 AgentLoop hook，让 SessionRunner 在工具结果后插入一条 `tool_media` user message。
+6. [ ] 只处理“刚刚工具调用产出的图片”，不做跨轮持久化。
+7. [ ] `image_understand` 暂时仍只处理用户附件，第二版再扩展。
 
 这个最小版本可以验证核心价值：
 
@@ -868,7 +890,7 @@ async def _find_media_attachment(self, media_id: str) -> InboundAttachment | Non
 
 ## 15. 当前结论
 
-当前系统已经有较完整的“用户附件图片”多模态处理能力，但“工具产出图片”还停留在文本结果层。后续推荐引入工具媒体 artifact 注册机制，把工具产出的图片统一转为受控 `media_id` 和 `InboundAttachment`，再复用现有 `MediaResolver`、`ModelCapabilities.image_input`、`image_fallback_mode` 和 `image_understand`。
+当前系统已经有较完整的“用户附件图片”多模态处理能力，且 `image_understand` 可以读取当前/历史用户附件。但“工具产出图片”仍停留在文本结果层。后续推荐引入工具媒体 artifact 注册机制，把工具产出的图片统一转为受控 `media_id` 和 `InboundAttachment`，再复用现有 `MediaResolver`、`ModelCapabilities.image_input`、`image_fallback_mode` 和 `image_understand`。
 
 这样可以保持架构边界清晰：
 

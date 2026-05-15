@@ -1,5 +1,8 @@
 # Model Spec Resolution and Role Tags
 
+> 最近审计：2026-05-15
+> 状态：已实现。旧 `model_routing` 配置字段仍作为 legacy ignored 字段保留，内部任务已改用单个 model spec 字符串和 `ModelRouter.resolve_for_task()`。
+
 ## 背景
 
 内部任务，例如 memory dreaming、embedding、reranker、图片理解、摘要等，确实需要按用途选择模型。但当前 `model_routing.<task>.prefer_tags/fallback` 这层公开配置过早暴露了策略复杂度，并且和 provider model tags 的职责重叠。
@@ -85,3 +88,12 @@ multimodal:
 - [x] 将 memory dreaming 配置收敛为单个 `memory_dreaming_model` spec。
 - [x] 将 image fallback 配置收敛为单个 `image_fallback_model` spec。
 - [x] 更新配置样例和文档，明确 tag 与固定模型 ID 都是 model spec 字符串。
+
+## 当前实现备注
+
+- `ProviderModelConfig.tags` 已接入配置解析和 `ProviderSlot.tags_by_model`。
+- `ModelRouter.resolve()` 的解析顺序是 provider/model 或裸模型名优先，tag 兜底。
+- `resolve_for_task()` 支持 explicit -> default spec -> fallback policy，fallback 目前为代码级语义，不暴露公开配置链。
+- `memory.embedding.model`、`scheduler.memory_dreaming_model`、`multimodal.image_fallback_model` 都是单字符串 model spec。
+- legacy 双字段仍保留兼容：`memory.embedding.provider_id`、`scheduler.memory_dreaming_provider_id`、`multimodal.image_fallback_provider`。
+- `Settings.model_routing` 仍存在但标记为 legacy ignored，CLI config validator 也把它当旧字段处理。

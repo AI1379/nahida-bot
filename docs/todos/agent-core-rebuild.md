@@ -1,7 +1,8 @@
 # Agent Core 重建计划
 
 > 记录时间：2026-05-11
-> 状态：搁置，等待后续集中处理
+> 最近审计：2026-05-15
+> 状态：部分实现；协议止血和事件流已落地，强类型 `AgentTranscript` / `agent_runs` / `agent_events` 仍未实现
 
 ## 背景
 
@@ -166,6 +167,25 @@ agent_events
 
 ## 分阶段计划
 
+### 当前实现审计（2026-05-15）
+
+已落地：
+
+- `ContextBuilder` 已在滑动窗口裁剪时把 assistant tool calls 和连续 tool results 作为原子组处理。
+- OpenAI-compatible provider 已在发送前清洗孤立 tool message 和不完整 tool call 组，并输出 `serialized_protocol` / `dropped_*` / `sanitized_tool_transcript` 日志。
+- `SessionRunner._load_history()` 会保留 turn metadata，历史中的 `tool_call_id`、`tool_calls`、reasoning 等字段可以被恢复。
+- `AgentLoop.run_stream()` 已输出 `LoopEvent(text/tool_start/tool_end/done)`，Router/SessionRunner 已能消费流式事件。
+- provider/tool 调用已有 retry、timeout、metrics 和 tool lifecycle metadata。
+- DeepSeek reasoning replay、OpenAI Responses native replay、Anthropic tool/result 序列化均已有 provider 级适配测试。
+
+仍未落地：
+
+- 没有强类型 `AgentTranscript` / `AgentItem` 数据模型，也没有统一 invariant validator。
+- 仍以 `ContextMessage + metadata` 作为跨模块 transcript 表示，provider adapter 仍需要读取 metadata。
+- `LoopEvent` 只是外层进度事件，不是完整的 `AgentEvent` 事实源；没有 token 级 delta、单个 tool call started/completed/failed 事件，也没有 run replay。
+- `SessionRunner` 仍只持久化 user turn 和最终 assistant turn；tool result 和中间 assistant tool call 不会作为完整 run/event 落库。
+- 目前只有 `background_tasks` 任务账本和内存态 `AgentRun`，没有 `agent_runs` / `agent_events` 调试表。
+
 ### Phase 0: 稳定现状
 
 已完成部分止血：
@@ -183,6 +203,8 @@ agent_events
 
 ### Phase 1: Transcript 数据模型
 
+状态：未开始。
+
 目标：引入 `AgentTranscript`，但不立即替换全部调用链。
 
 任务：
@@ -198,6 +220,8 @@ agent_events
 - 当前 AgentLoop 可继续运行，但内部先能生成 transcript。
 
 ### Phase 2: Provider adapter 改造
+
+状态：部分完成。当前已补 provider 级协议清洗、reasoning replay 和多 provider 序列化测试，但尚未迁移到统一 transcript/event 模型。
 
 目标：把 provider serialization/parsing 迁移到 transcript/event 模型。
 
@@ -215,14 +239,16 @@ agent_events
 
 ### Phase 3: AgentLoop 事件化
 
+状态：部分完成。`run_stream()` 和 `LoopEvent` 已落地，但事件粒度仍是外层进度事件，不是完整 run replay 事实源。
+
 目标：AgentLoop 输出事件流，Router/SessionRunner 决定如何消费。
 
 任务：
 
-- `AgentLoop.run()` 内部产出 `AgentEvent`。
-- 增加 callback 或 async iterator 接口。
-- Router 默认只发送 final response，后续可配置发送中间事件。
-- ToolExecutor 执行状态事件化。
+- [~] `AgentLoop.run()` 内部产出 `AgentEvent`。当前为 `LoopEvent`，覆盖 text/tool_start/tool_end/done。
+- [x] 增加 callback 或 async iterator 接口。当前使用 async iterator。
+- [x] Router/SessionRunner 已消费 `run_stream()` 事件；默认行为仍以最终响应为主，并可发送中间 text/reasoning。
+- [~] ToolExecutor 执行状态事件化。当前只有批量 `tool_start/tool_end` 和日志/metadata，未到单个 tool lifecycle 事件。
 
 验收：
 
@@ -230,6 +256,8 @@ agent_events
 - 即使 channel 不支持流式，也能合并出最终用户可读响应。
 
 ### Phase 4: Memory 和调试工具
+
+状态：未开始。
 
 目标：让 agent run 可回放、可诊断。
 

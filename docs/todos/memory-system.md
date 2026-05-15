@@ -1,7 +1,8 @@
 # Nahida Bot 记忆系统设计草案
 
 > 记录时间：2026-05-11
-> 状态：设计中
+> 最近审计：2026-05-15
+> 状态：大部分已实现；Phase 4 agent run/event 和 Phase 5 轻量图谱仍待实现
 > 相关文档：
 >
 > - [ROADMAP.md](../ROADMAP.md#phase-25---记忆模型与持久化)
@@ -488,7 +489,7 @@ Needs review:
 
 ## 9. 配置建议
 
-### 9.0 当前实现审计（2026-05-13）
+### 9.0 当前实现审计（2026-05-15）
 
 已确认完成：
 
@@ -498,15 +499,13 @@ Needs review:
 - FTS/BM25 长期记忆注入已接入 `SessionRunner`。
 - Markdown memory、`memory_read` / `memory_write`、workspace `MEMORY.md` 投影已可用。
 - 规则 consolidation 和 scheduler 后台 LLM dreaming 已可用。
-
-本轮补齐：
-
 - 新增正式 `memory.retrieval` / `memory.embedding` 配置模型。
 - OpenAI-compatible / OpenAI Responses provider 支持 `/embeddings`。
 - embedding provider 通过单个 model spec 解析；空值默认查找 `embedding` tag。
 - `SessionRunner` 在 `memory.retrieval.vector_enabled=true` 时使用 `search_items_hybrid()`。
 - consolidation 或 dreaming 写入长期记忆后可自动刷新 `memory_embeddings`。
 - `sqlite-vec` 仍为可选后端；未安装或未配置维度时回退到 SQLite JSON embedding 扫描。
+- scheduler 后台 dreaming 已按 `memory_dream_last_turn_id` 做增量处理。
 
 仍未完成：
 
@@ -514,60 +513,51 @@ Needs review:
 - `/memory forget`、`/memory review`、手动触发 embedding rebuild 还没实现。
 - scope 仍主要默认写入 `global/__global__`，未按 workspace/chat/user 自动隔离。
 - consolidation 输入还不是完整 agent run/event，只包含主要 user/assistant 文本。
-- 还没有独立 embedding 维护任务表、reranker 接入和更细粒度 scope 隔离。
+- 还没有实际 reranker 接入；`ModelRouter.resolve_for_task()` 已能支撑后续 reranker model spec 选择。
+- 还没有 `agent_runs` / `agent_events` 持久化表，也没有 dream run 历史表。
 
 新增配置段：
 
 ```yaml
 memory:
   enabled: true
-  backend: sqlite
 
   retrieval:
-    recent_turns: 50
     fts_enabled: true
     vector_enabled: false
-    vector_backend: sqlite-vec
-    hybrid_fusion: rrf
-    rerank_enabled: false
-    max_injected_items: 8
-    max_injected_tokens: 1200
+    hybrid_enabled: true
+    vector_backend: json       # json / sqlite-vec / none
+    max_injected_items: 5
+    max_injected_chars: 1200
 
   embedding:
+    enabled: false
     model: ""      # model spec；空则默认找 embedding tag
-    dimensions: 1024
+    provider_id: ""  # legacy
+    dimensions: 0
     batch_size: 16
+    embed_after_consolidation: true
 
   consolidation:
-    enabled: true
-    schedule: "0 4 * * *"
-    dreaming_interval_seconds: 3600
-    dreaming_provider_id: ""
-    dreaming_model: ""
-    mode: auto_safe
-    max_sessions_per_run: 50
-    max_input_tokens: 64000
+    rule_based_enabled: true
 
-  markdown:
-    enabled: true
-    sync_mode: export_and_import
-    daily_notes: true
-    memory_file: "MEMORY.md"
-    daily_dir: "memory"
-
-  safety:
-    redact_secrets: true
-    default_retention_days: 365
-    require_user_explicit_for_private_profile: true
+scheduler:
+  memory_dreaming_enabled: true
+  memory_dreaming_interval_seconds: 3600
+  memory_dreaming_initial_delay_seconds: 300
+  memory_dreaming_session_limit: 20
+  memory_dreaming_recent_turn_limit: 40
+  memory_dreaming_provider_id: ""  # legacy
+  memory_dreaming_model: ""        # model spec；空则默认找 memory tag
 ```
 
 ## 10. 分阶段计划
 
 ### Phase 0：文档与边界
 
-- [ ] 完成本设计讨论。
-- [ ] 明确 memory scope、kind、sensitivity 枚举。
-- [ ] 明确 `ConversationTurn`、`AgentRun`、`MemoryItem` 三者边界。
+- [x] 完成本设计讨论。
+- [x] 明确 memory item 当前使用的 `scope_type`、`kind`、`sensitivity` 字段。
+- [ ] 明确并落库 `ConversationTurn`、`AgentRun`、`MemoryItem` 三者边界；目前 `AgentRun` 仍主要是 orchestration 内存/后台任务模型。
 
 ### Phase 0.5：Markdown Memory MVP
 
@@ -628,7 +618,7 @@ memory:
 - [x] 支持单独配置 dreaming provider/model；未配置时回退到 session 当前 provider/model。
 - [ ] 后续增加 dream run 历史表和更细的手动触发/暂停命令。
 - [ ] 评估在规则抽取和 LLM dreaming 中间加入 spaCy/NLTK 层：用 matcher/entity ruler/noun phrase extraction 识别偏好、项目实体和关系，降低 token 成本，并为 Phase 5 轻量图谱提供候选实体/边。
-- [ ] 将 reranker 的模型选择迁移到统一 model routing 设计，见 `docs/todos/model-routing.md`。
+- [x] reranker 的模型选择已可复用统一 model routing helper；实际 reranker 接入仍未实现。
 
 ### Phase 4：Agent Run/Event 集成
 
