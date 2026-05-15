@@ -231,14 +231,21 @@ class AgentLoop:
             user_preview=user_message[:80],
         )
 
-        conversation = list(history_messages or [])
-        conversation.append(
+        history = list(history_messages or [])
+        active_turn_messages: list[ContextMessage] = [
             ContextMessage(
                 role="user",
                 source="user_input",
                 content=user_message,
                 parts=list(user_parts or []),
             )
+        ]
+        logger.debug(
+            "agent_loop.active_turn_started",
+            trace_id=trace.trace_id if trace else "",
+            history_count=len(history),
+            protected_count=len(active_turn_messages),
+            protected_roles=[m.role for m in active_turn_messages],
         )
         tool_messages: list[ContextMessage] = []
         assistant_messages: list[ContextMessage] = []
@@ -262,7 +269,8 @@ class AgentLoop:
                 prompt_messages = active_builder.build_context(
                     system_prompt=effective_system_prompt,
                     workspace_root=workspace_root,
-                    history_messages=conversation,
+                    history_messages=history,
+                    protected_messages=active_turn_messages,
                 )
                 logger.debug(
                     "agent_loop.context_built",
@@ -286,7 +294,7 @@ class AgentLoop:
                 assistant_message = self._build_assistant_message(response)
                 if assistant_message is not None:
                     assistant_messages.append(assistant_message)
-                    conversation.append(assistant_message)
+                    active_turn_messages.append(assistant_message)
 
                 display = self._display_content(response)
                 reasoning = response.reasoning_content or None
@@ -348,7 +356,7 @@ class AgentLoop:
                     trace=trace,
                 )
                 tool_messages.extend(executed_messages)
-                conversation.extend(executed_messages)
+                active_turn_messages.extend(executed_messages)
                 logger.debug(
                     "agent_loop.tools_executed",
                     trace_id=trace.trace_id if trace else "",

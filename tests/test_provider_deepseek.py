@@ -8,8 +8,9 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from nahida_bot.agent.context import ContextMessage
+from nahida_bot.agent.context import ContextBudget, ContextBuilder, ContextMessage
 from nahida_bot.agent.providers.deepseek import DeepSeekProvider
+from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
 from nahida_bot.core.runtime_settings import (
     ReasoningRuntimeSettings,
     RuntimeSettings,
@@ -382,3 +383,63 @@ def test_full_tool_call_roundtrip_serialization() -> None:
     # Turn 1.3: reasoning present, no tool_calls
     assert serialized[5]["reasoning_content"] == "Got the result, share it with user."
     assert "tool_calls" not in serialized[5]
+
+
+def test_context_budgeted_tool_round_remains_deepseek_protocol_valid() -> None:
+    """Protected active tool transcripts should serialize as valid DeepSeek input."""
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=90, reserved_tokens=0, summary_max_chars=80),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=10),
+    )
+    provider = DeepSeekProvider(
+        base_url="https://api.deepseek.com",
+        api_key="x",
+        model="deepseek-v4-pro",
+    )
+
+    prompt = builder.build_context(
+        system_prompt="baseline",
+        history_messages=[
+            ContextMessage(role="user", source="history", content="old " * 120)
+        ],
+        protected_messages=[
+            ContextMessage(role="user", source="user_input", content="weather?"),
+            ContextMessage(
+                role="assistant",
+                source="provider_response",
+                content="",
+                reasoning="Need a tool result before answering.",
+                metadata={
+                    "tool_calls": [
+                        {
+                            "id": "call_weather",
+                            "name": "get_weather",
+                            "arguments": {"city": "Hangzhou"},
+                        }
+                    ]
+                },
+            ),
+            ContextMessage(
+                role="tool",
+                source="tool_result:get_weather",
+                content="x" * 500,
+                metadata={
+                    "tool_call_id": "call_weather",
+                    "tool_name": "get_weather",
+                },
+            ),
+        ],
+    )
+
+    serialized = provider.serialize_messages(prompt)
+
+    assert provider._serialized_protocol_issues(serialized) == []
+    assistant = next(
+        message for message in serialized if message.get("role") == "assistant"
+    )
+    tool = next(message for message in serialized if message.get("role") == "tool")
+    tool_calls = cast(list[dict[str, Any]], assistant["tool_calls"])
+    assert assistant["reasoning_content"] == "Need a tool result before answering."
+    assert tool_calls[0]["id"] == "call_weather"
+    assert tool["tool_call_id"] == "call_weather"
+    assert len(str(tool["content"])) < 500

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -211,6 +211,7 @@ class ContextBuilder:
         workspace_root: Path | None = None,
         history_messages: list[ContextMessage] | None = None,
         tool_messages: list[ContextMessage] | None = None,
+        protected_messages: list[ContextMessage] | None = None,
     ) -> list[ContextMessage]:
         """Build ordered context and apply budget policy.
 
@@ -219,6 +220,7 @@ class ContextBuilder:
         2. Workspace instructions (AGENTS.md -> SOUL.md -> USER.md)
         3. History messages
         4. Tool messages
+        5. Protected messages, usually the active user turn and live tool transcript
         """
         prefix_messages: list[ContextMessage] = [
             ContextMessage(
@@ -235,7 +237,9 @@ class ContextBuilder:
             if memory_message is not None:
                 prefix_messages.append(memory_message)
 
-        dynamic_messages = [*(history_messages or []), *(tool_messages or [])]
+        optional_messages = [*(history_messages or []), *(tool_messages or [])]
+        protected = list(protected_messages or [])
+        dynamic_messages = [*optional_messages, *protected]
         merged = [*prefix_messages, *dynamic_messages]
 
         merged_tokens = self._estimate_tokens(merged)
@@ -276,6 +280,13 @@ class ContextBuilder:
                 usable_tokens=self.budget.usable_tokens,
             )
             return merged
+
+        if protected:
+            return self._build_context_with_protected_messages(
+                prefix_messages=prefix_messages,
+                optional_messages=optional_messages,
+                protected_messages=protected,
+            )
 
         windowed_dynamic, dropped = self._sliding_window(
             dynamic_messages, prefix_messages
@@ -346,17 +357,263 @@ class ContextBuilder:
         )
         return windowed
 
+    def _build_context_with_protected_messages(
+        self,
+        *,
+        prefix_messages: list[ContextMessage],
+        optional_messages: list[ContextMessage],
+        protected_messages: list[ContextMessage],
+    ) -> list[ContextMessage]:
+        """Build context while preserving the active turn suffix.
+
+        Agent loops need the latest user request and any immediately following
+        assistant/tool transcript to survive budgeting. If a large tool result
+        blows the budget, truncate protected message content before falling back
+        to dropping older optional history.
+        """
+        protected_fit = self._fit_protected_messages(
+            prefix_messages=prefix_messages,
+            protected_messages=protected_messages,
+        )
+        windowed_optional, dropped = self._sliding_window_with_suffix(
+            optional_messages,
+            prefix_messages=prefix_messages,
+            suffix_messages=protected_fit,
+        )
+        windowed = [*prefix_messages, *windowed_optional, *protected_fit]
+
+        logger.debug(
+            "context_builder.protected_window_applied",
+            optional_kept_count=len(windowed_optional),
+            protected_count=len(protected_fit),
+            dropped_count=len(dropped),
+            windowed_tokens=self._estimate_tokens(windowed),
+            usable_tokens=self.budget.usable_tokens,
+            dropped_roles=[m.role for m in dropped],
+            dropped_sources=[m.source for m in dropped],
+            protected_roles=[m.role for m in protected_fit],
+            protected_sources=[m.source for m in protected_fit],
+        )
+
+        if not dropped:
+            return windowed
+
+        summary_message = self._build_summary_message(dropped)
+        with_summary = self._fit_summary_with_window(
+            prefix_messages=prefix_messages,
+            windowed_dynamic=windowed_optional,
+            summary_message=summary_message,
+            suffix_messages=protected_fit,
+        )
+        if with_summary is not None:
+            logger.debug(
+                "context_builder.build_done",
+                reason="protected_summary_fit",
+                message_count=len(with_summary),
+                estimated_tokens=self._estimate_tokens(with_summary),
+                summary_chars=len(summary_message.content),
+            )
+            return with_summary
+
+        compact_summary = self._truncate_message_to_budget(
+            summary_message,
+            self.budget.usable_tokens - self._estimate_tokens(windowed),
+        )
+        if compact_summary is None:
+            logger.debug(
+                "context_builder.build_done",
+                reason="protected_window_without_summary",
+                message_count=len(windowed),
+                estimated_tokens=self._estimate_tokens(windowed),
+            )
+            return windowed
+
+        maybe_summarized = self._fit_summary_with_window(
+            prefix_messages=prefix_messages,
+            windowed_dynamic=windowed_optional,
+            summary_message=compact_summary,
+            suffix_messages=protected_fit,
+        )
+        if maybe_summarized is not None:
+            logger.debug(
+                "context_builder.build_done",
+                reason="protected_compact_summary_fit",
+                message_count=len(maybe_summarized),
+                estimated_tokens=self._estimate_tokens(maybe_summarized),
+                summary_chars=len(compact_summary.content),
+            )
+            return maybe_summarized
+
+        logger.debug(
+            "context_builder.build_done",
+            reason="protected_window_after_summary_failed",
+            message_count=len(windowed),
+            estimated_tokens=self._estimate_tokens(windowed),
+        )
+        return windowed
+
+    def _fit_protected_messages(
+        self,
+        *,
+        prefix_messages: list[ContextMessage],
+        protected_messages: list[ContextMessage],
+    ) -> list[ContextMessage]:
+        """Fit protected active-turn messages by truncating large contents first."""
+        if (
+            self._estimate_tokens([*prefix_messages, *protected_messages])
+            <= self.budget.usable_tokens
+        ):
+            return protected_messages
+
+        compacted = list(protected_messages)
+        truncated: list[dict[str, object]] = []
+
+        while (
+            self._estimate_tokens([*prefix_messages, *compacted])
+            > self.budget.usable_tokens
+        ):
+            made_progress = False
+            for index in self._protected_truncation_order(compacted):
+                message = compacted[index]
+                message_tokens = self._estimate_tokens([message])
+                without_message = [
+                    *prefix_messages,
+                    *compacted[:index],
+                    *compacted[index + 1 :],
+                ]
+                remaining = self.budget.usable_tokens - self._estimate_tokens(
+                    without_message
+                )
+                if remaining <= 0 or message_tokens <= remaining:
+                    continue
+
+                truncated_message = self._truncate_message_to_budget(
+                    message,
+                    remaining,
+                    truncation_marker="\n[truncated due to context budget]",
+                    allow_empty=True,
+                )
+                if truncated_message is None:
+                    truncated_message = self._truncate_message_to_budget(
+                        message,
+                        remaining,
+                        allow_empty=True,
+                    )
+                if (
+                    truncated_message is None
+                    or truncated_message.content == message.content
+                ):
+                    continue
+
+                compacted[index] = truncated_message
+                truncated.append(
+                    {
+                        "role": message.role,
+                        "source": message.source,
+                        "original_chars": len(message.content),
+                        "truncated_chars": len(truncated_message.content),
+                    }
+                )
+                made_progress = True
+                break
+
+            if not made_progress:
+                break
+
+        if (
+            self._estimate_tokens([*prefix_messages, *compacted])
+            <= self.budget.usable_tokens
+        ):
+            if truncated:
+                logger.warning(
+                    "context_builder.protected_messages_truncated",
+                    truncated=truncated,
+                    protected_roles=[m.role for m in protected_messages],
+                    protected_sources=[m.source for m in protected_messages],
+                )
+            return compacted
+
+        kept, dropped = self._sliding_window(compacted, prefix_messages)
+        logger.warning(
+            "context_builder.protected_messages_dropped",
+            reason="protected_suffix_exceeds_budget",
+            kept_roles=[m.role for m in kept],
+            kept_sources=[m.source for m in kept],
+            dropped_roles=[m.role for m in dropped],
+            dropped_sources=[m.source for m in dropped],
+            truncated=truncated,
+            usable_tokens=self.budget.usable_tokens,
+        )
+        return kept
+
+    def _protected_truncation_order(
+        self,
+        messages: list[ContextMessage],
+    ) -> list[int]:
+        """Return protected message indices ordered by safest truncation first."""
+        buckets: list[list[int]] = [
+            [
+                index
+                for index, message in enumerate(messages)
+                if message.role == "tool" and message.content
+            ],
+            [
+                index
+                for index, message in enumerate(messages)
+                if message.role == "assistant"
+                and self._has_assistant_tool_calls(message)
+                and message.content
+            ],
+            [
+                index
+                for index, message in enumerate(messages)
+                if message.role == "assistant"
+                and not self._has_assistant_tool_calls(message)
+                and message.content
+            ],
+            [
+                index
+                for index, message in enumerate(messages)
+                if message.role == "user" and message.content
+            ],
+        ]
+
+        ordered: list[int] = []
+        for bucket in buckets:
+            ordered.extend(
+                sorted(
+                    bucket,
+                    key=lambda index: len(messages[index].content),
+                    reverse=True,
+                )
+            )
+        return ordered
+
     def _sliding_window(
         self,
         dynamic_messages: list[ContextMessage],
         prefix_messages: list[ContextMessage],
     ) -> tuple[list[ContextMessage], list[ContextMessage]]:
         """Apply newest-first retention to dynamic messages."""
+        return self._sliding_window_with_suffix(
+            dynamic_messages,
+            prefix_messages=prefix_messages,
+            suffix_messages=[],
+        )
+
+    def _sliding_window_with_suffix(
+        self,
+        dynamic_messages: list[ContextMessage],
+        *,
+        prefix_messages: list[ContextMessage],
+        suffix_messages: list[ContextMessage],
+    ) -> tuple[list[ContextMessage], list[ContextMessage]]:
+        """Apply newest-first retention with a required suffix already reserved."""
         message_groups = self._tool_transcript_groups(dynamic_messages)
         kept_groups_reversed: list[list[ContextMessage]] = []
         dropped_groups_reversed: list[list[ContextMessage]] = []
 
-        current_size = self._estimate_tokens(prefix_messages)
+        current_size = self._estimate_tokens([*prefix_messages, *suffix_messages])
         for group in reversed(message_groups):
             group_size = self._estimate_tokens(group)
             if current_size + group_size <= self.budget.usable_tokens:
@@ -423,12 +680,15 @@ class ContextBuilder:
         self,
         message: ContextMessage,
         remaining_budget_tokens: int,
+        *,
+        truncation_marker: str = "",
+        allow_empty: bool = False,
     ) -> ContextMessage | None:
         """Trim a message content to fit a remaining token budget."""
-        overhead_tokens = self._estimate_tokens(
-            [ContextMessage(role=message.role, source=message.source, content="")]
-        )
-        if remaining_budget_tokens <= overhead_tokens + 4:
+        overhead_tokens = self._estimate_tokens([replace(message, content="")])
+        if remaining_budget_tokens < overhead_tokens:
+            return None
+        if not allow_empty and remaining_budget_tokens <= overhead_tokens + 4:
             return None
 
         content = message.content
@@ -437,16 +697,14 @@ class ContextBuilder:
 
         low = 0
         high = len(content)
-        best = ""
+        best: str | None = None
 
         while low <= high:
             mid = (low + high) // 2
             candidate_content = content[:mid]
-            candidate = ContextMessage(
-                role=message.role,
-                source=message.source,
-                content=candidate_content,
-            )
+            if truncation_marker and mid < len(content):
+                candidate_content += truncation_marker
+            candidate = replace(message, content=candidate_content)
             size = self._estimate_tokens([candidate])
             if size <= remaining_budget_tokens:
                 best = candidate_content
@@ -454,14 +712,10 @@ class ContextBuilder:
             else:
                 high = mid - 1
 
-        if not best:
+        if best is None or (best == "" and not allow_empty):
             return None
 
-        return ContextMessage(
-            role=message.role,
-            source=message.source,
-            content=best,
-        )
+        return replace(message, content=best)
 
     def _fit_summary_with_window(
         self,
@@ -469,14 +723,21 @@ class ContextBuilder:
         prefix_messages: list[ContextMessage],
         windowed_dynamic: list[ContextMessage],
         summary_message: ContextMessage,
+        suffix_messages: list[ContextMessage] | None = None,
     ) -> list[ContextMessage] | None:
         """Try to include summary by dropping oldest retained dynamic messages."""
+        suffix = list(suffix_messages or [])
         candidate_groups = self._tool_transcript_groups(windowed_dynamic)
         while True:
             candidate_dynamic = [
                 message for group in candidate_groups for message in group
             ]
-            candidate = [*prefix_messages, summary_message, *candidate_dynamic]
+            candidate = [
+                *prefix_messages,
+                summary_message,
+                *candidate_dynamic,
+                *suffix,
+            ]
             if self._estimate_tokens(candidate) <= self.budget.usable_tokens:
                 return candidate
             if not candidate_groups:
@@ -505,15 +766,30 @@ class ContextBuilder:
                 else ""
             )
             parts_serialized = self._serialize_parts_for_budget(message)
+            reasoning_serialized = self._serialize_reasoning_for_budget(message)
             serialized = (
                 f"role:{message.role}\n"
                 f"source:{message.source}\n"
                 f"content:{message.content}\n"
+                f"{reasoning_serialized}"
                 f"parts:{parts_serialized}\n"
                 f"metadata:{metadata_serialized}"
             )
             total += self.tokenizer.count_tokens(serialized)
         return total
+
+    @staticmethod
+    def _serialize_reasoning_for_budget(message: ContextMessage) -> str:
+        parts: list[str] = []
+        if message.reasoning:
+            parts.append(f"reasoning:{message.reasoning}")
+        if message.reasoning_signature:
+            parts.append(f"reasoning_signature:{message.reasoning_signature}")
+        if message.has_redacted_thinking:
+            parts.append("has_redacted_thinking:true")
+        if not parts:
+            return ""
+        return "\n".join(parts) + "\n"
 
     def _serialize_parts_for_budget(self, message: ContextMessage) -> str:
         if not message.parts:

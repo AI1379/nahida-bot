@@ -266,6 +266,68 @@ async def test_agent_loop_supports_multiple_tool_rounds() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_preserves_active_tool_transcript_when_budget_is_tight() -> (
+    None
+):
+    """A large tool result should be truncated, not dropped before the next step."""
+    provider = _QueuedProvider(
+        responses=[
+            ProviderResponse(
+                content="calling tool",
+                tool_calls=[
+                    ToolCall(call_id="tc_1", name="search", arguments={"q": "x"})
+                ],
+            ),
+            ProviderResponse(content="done", tool_calls=[]),
+        ]
+    )
+    tool_executor = _QueuedToolExecutor(
+        responses=[ToolExecutionResult.success(output="x" * 500)]
+    )
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=80, reserved_tokens=0, summary_max_chars=80),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=10),
+    )
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=builder,
+        tool_executor=tool_executor,
+    )
+
+    result = await loop.run(
+        user_message="task details",
+        system_prompt="sys",
+        history_messages=[
+            ContextMessage(role="user", source="history", content="old " * 80)
+        ],
+        tools=[
+            ToolDefinition(
+                name="search",
+                description="search",
+                parameters={
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            )
+        ],
+    )
+
+    assert result.final_response == "done"
+    second_prompt = provider.observed_messages[1]
+    assert [message.source for message in second_prompt] == [
+        "system_baseline",
+        "user_input",
+        "provider_response",
+        "tool_result:search",
+    ]
+    tool_message = second_prompt[-1]
+    assert tool_message.metadata is not None
+    assert tool_message.metadata["tool_call_id"] == "tc_1"
+    assert len(tool_message.content) < len(result.tool_messages[0].content)
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_injects_tool_use_guidance_when_tools_are_available() -> None:
     provider = _QueuedProvider(responses=[ProviderResponse(content="ok")])
     builder = ContextBuilder(

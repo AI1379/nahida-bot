@@ -183,6 +183,80 @@ class TestContextBuilder:
         assert result[1].source == "history_summary"
         assert "tool" not in [item.role for item in result]
 
+    def test_budget_preserves_protected_active_turn_and_truncates_tool_result(
+        self,
+    ) -> None:
+        """Protected active-turn messages should survive tight context budgets."""
+        builder = ContextBuilder(
+            budget=ContextBudget(
+                max_tokens=40,
+                reserved_tokens=0,
+                summary_max_chars=80,
+            ),
+            fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=10),
+        )
+        history = [ContextMessage(role="user", source="history", content="old " * 50)]
+        protected = [
+            ContextMessage(role="user", source="user_input", content="task details"),
+            ContextMessage(
+                role="assistant",
+                source="provider_response",
+                content="calling",
+                metadata={
+                    "tool_calls": [{"id": "call_1", "name": "search", "arguments": {}}]
+                },
+            ),
+            ContextMessage(
+                role="tool",
+                source="tool_result:search",
+                content="x" * 400,
+                metadata={"tool_call_id": "call_1", "tool_name": "search"},
+            ),
+        ]
+
+        result = builder.build_context(
+            system_prompt="baseline",
+            history_messages=history,
+            protected_messages=protected,
+        )
+
+        assert [item.source for item in result] == [
+            "system_baseline",
+            "user_input",
+            "provider_response",
+            "tool_result:search",
+        ]
+        tool_message = result[-1]
+        assert tool_message.role == "tool"
+        assert tool_message.metadata == {
+            "tool_call_id": "call_1",
+            "tool_name": "search",
+        }
+        assert 0 <= len(tool_message.content) < 400
+
+    def test_budget_estimate_counts_reasoning_replay_fields(self) -> None:
+        """Reasoning replay must count toward context pressure for provider budgets."""
+        builder = ContextBuilder(
+            fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=1)
+        )
+        plain = ContextMessage(
+            role="assistant",
+            source="provider_response",
+            content="answer",
+        )
+        with_reasoning = ContextMessage(
+            role="assistant",
+            source="provider_response",
+            content="answer",
+            reasoning="deepseek thinking replay",
+            reasoning_signature="sig",
+            has_redacted_thinking=True,
+        )
+
+        assert builder._estimate_tokens([with_reasoning]) > builder._estimate_tokens(
+            [plain]
+        )
+
     def test_budget_adds_summary_when_messages_are_dropped(self) -> None:
         """Dropped context should be represented by a summary message when possible."""
         # Arrange
