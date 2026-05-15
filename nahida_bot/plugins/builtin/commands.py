@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import mimetypes
 import socket
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -24,7 +26,7 @@ from nahida_bot.agent.memory.markdown import (
     recent_daily_memory_paths,
     validate_memory_content,
 )
-from nahida_bot.plugins.base import InboundMessage, Plugin
+from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage, Plugin
 
 from nahida_bot.core.context import current_session
 from nahida_bot.core.runtime_settings import (
@@ -56,6 +58,7 @@ class BuiltinCommandsPlugin(Plugin):
     async def on_load(self) -> None:
         self._register_commands()
         self._register_workspace_tools()
+        self._register_attachment_tools()
         self._register_memory_tools()
         self._register_exec_tool()
         self._register_web_fetch_tool()
@@ -160,6 +163,45 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_workspace_write,
+        )
+
+    def _register_attachment_tools(self) -> None:
+        self.api.register_tool(
+            "send_local_attachment",
+            "Send a local workspace file to the current chat as an attachment. "
+            "Use this for images, documents, audio, or video files that already "
+            "exist in the active workspace.",
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Path to the local file. By default this must be "
+                            "relative to the active workspace. Absolute paths require "
+                            "the builtin-commands allow_external_attachment_paths config."
+                        ),
+                    },
+                    "attachment_type": {
+                        "type": "string",
+                        "enum": ["auto", "photo", "document", "audio", "video"],
+                        "description": (
+                            "Attachment type. Use auto to infer from the file MIME type."
+                        ),
+                    },
+                    "caption": {
+                        "type": "string",
+                        "description": "Optional caption sent with the attachment.",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional filename shown by the platform.",
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            self._tool_send_local_attachment,
         )
 
     def _register_memory_tools(self) -> None:
@@ -1563,3 +1605,108 @@ class BuiltinCommandsPlugin(Plugin):
         """Write a text file to the active workspace."""
         await self.api.workspace_write(path, content)
         return f"Written workspace file: {path}"
+
+    async def _tool_send_local_attachment(
+        self,
+        path: str,
+        attachment_type: str = "auto",
+        caption: str = "",
+        filename: str = "",
+    ) -> str:
+        """Send a workspace file to the current chat as an attachment."""
+        ctx = current_session.get()
+        if ctx is None:
+            return "Error: No active session context."
+
+        if attachment_type not in {"auto", "photo", "document", "audio", "video"}:
+            return (
+                "Error: attachment_type must be one of: "
+                "auto, photo, document, audio, video."
+            )
+
+        try:
+            file_path = self._resolve_attachment_path(path)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        except Exception as exc:
+            return f"Error: Invalid attachment path: {exc}"
+
+        if not file_path.is_file():
+            return f"Error: File does not exist: {path}"
+
+        selected_type = (
+            self._infer_attachment_type(file_path)
+            if attachment_type == "auto"
+            else attachment_type
+        )
+        message_id = await self.api.send_message(
+            ctx.chat_id,
+            OutboundMessage(
+                text="",
+                attachments=[
+                    Attachment(
+                        type=selected_type,
+                        path=str(file_path),
+                        filename=filename or file_path.name,
+                        caption=caption,
+                    )
+                ],
+            ),
+            channel=ctx.platform,
+        )
+        return f"Attachment sent: {message_id}" if message_id else "Attachment sent."
+
+    def _resolve_attachment_path(self, path: str) -> Path:
+        raw_path = Path(path).expanduser()
+        if raw_path.is_absolute():
+            if not self._allow_external_attachment_paths():
+                raise ValueError(
+                    "Absolute attachment paths are disabled. Use a workspace-relative "
+                    "path or enable builtin-commands.allow_external_attachment_paths."
+                )
+            resolved = raw_path.resolve(strict=False)
+            self._validate_external_attachment_path(resolved)
+            return resolved
+
+        resolved_workspace_path = self.api.resolve_workspace_path(path)
+        if not resolved_workspace_path:
+            raise ValueError("Workspace is not available.")
+        return Path(resolved_workspace_path)
+
+    def _allow_external_attachment_paths(self) -> bool:
+        return bool(self.manifest.config.get("allow_external_attachment_paths", False))
+
+    def _validate_external_attachment_path(self, path: Path) -> None:
+        raw_roots = self.manifest.config.get("external_attachment_roots", [])
+        if not raw_roots:
+            return
+        if not isinstance(raw_roots, list):
+            raise ValueError("external_attachment_roots must be a list of paths.")
+
+        allowed_roots = [
+            Path(str(root)).expanduser().resolve(strict=False)
+            for root in raw_roots
+            if str(root).strip()
+        ]
+        if not allowed_roots:
+            return
+        for root in allowed_roots:
+            try:
+                path.relative_to(root)
+                return
+            except ValueError:
+                continue
+        roots = ", ".join(str(root) for root in allowed_roots)
+        raise ValueError(f"Attachment path is outside allowed external roots: {roots}")
+
+    @staticmethod
+    def _infer_attachment_type(path: Path) -> str:
+        mime_type, _ = mimetypes.guess_type(str(path))
+        if mime_type:
+            if mime_type.startswith("image/"):
+                return "photo"
+            if mime_type.startswith("audio/"):
+                return "audio"
+            if mime_type.startswith("video/"):
+                return "video"
+        return "document"

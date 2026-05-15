@@ -82,6 +82,15 @@ multimodal:
 # Settings 的 extra="allow" 机制：顶层 key 如果不是已知字段，
 # 且值为 dict，则按 plugin id 匹配并注入到对应插件的 manifest.config 中。
 
+builtin-commands:
+  # send_local_attachment 默认只允许发送 active workspace 内的相对路径。
+  # 如确实需要发送工作区外的本地文件，可打开下面开关。
+  allow_external_attachment_paths: false
+  # 可选白名单目录；为空表示打开上方开关后允许任意绝对路径。
+  # external_attachment_roots:
+  #   - "D:/Pictures"
+  external_attachment_roots: []
+
 telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"
   # group_trigger_mode: "always"      # always / mention / command

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -15,12 +16,13 @@ from nahida_bot.plugins.manifest import PluginManifest
 from nahida_bot.scheduler.models import CronJob
 
 
-def _manifest() -> PluginManifest:
+def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
     return PluginManifest(
         id="builtin-commands",
         name="Builtin Commands",
         version="0.1.0",
         entrypoint="nahida_bot.plugins.builtin.commands:BuiltinCommandsPlugin",
+        config=config or {},
     )
 
 
@@ -50,6 +52,8 @@ class _FakeAPI:
         self.command_registry = CommandRegistry()
         self.scheduler_service: Any | None = None
         self.stored_memories: list[tuple[str, str, dict[str, Any] | None]] = []
+        self.workspace_root = Path("fake-workspace")
+        self.sent_messages: list[tuple[str, OutboundMessage, str]] = []
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -57,6 +61,7 @@ class _FakeAPI:
     async def send_message(
         self, target: str, message: OutboundMessage, *, channel: str = ""
     ) -> str:
+        self.sent_messages.append((target, message, channel))
         return "msg-1"
 
     def on_event(self, event_type: type) -> Any:
@@ -92,6 +97,9 @@ class _FakeAPI:
 
     async def workspace_write(self, path: str, content: str) -> None:
         self.files[path] = content
+
+    def resolve_workspace_path(self, path: str) -> str:
+        return str(self.workspace_root / path)
 
     async def get_session(self, session_id: str) -> Any:
         return None
@@ -179,6 +187,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert {
         "workspace_read",
         "workspace_write",
+        "send_local_attachment",
         "memory_read",
         "memory_write",
         "cron_create",
@@ -192,6 +201,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "path",
         "content",
     ]
+    assert api.tools["send_local_attachment"]["parameters"]["required"] == ["path"]
     assert api.tools["memory_read"]["parameters"]["required"] == []
     assert api.tools["memory_write"]["parameters"]["required"] == ["content"]
     create_params = api.tools["cron_create"]["parameters"]
@@ -210,6 +220,172 @@ async def test_workspace_tools_delegate_to_bot_api() -> None:
     result = await plugin._tool_workspace_write("notes/a.txt", "hello")
     assert result == "Written workspace file: notes/a.txt"
     assert await plugin._tool_workspace_read("notes/a.txt") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_send_local_attachment_sends_in_current_session(tmp_path: Path) -> None:
+    api = _FakeAPI()
+    api.workspace_root = tmp_path
+    image_path = tmp_path / "images" / "a.png"
+    image_path.parent.mkdir()
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+    )
+    try:
+        result = await plugin._tool_send_local_attachment(
+            "images/a.png", caption="caption"
+        )
+    finally:
+        current_session.reset(token)
+
+    assert result == "Attachment sent: msg-1"
+    assert len(api.sent_messages) == 1
+    target, outbound, channel = api.sent_messages[0]
+    assert target == "c1"
+    assert channel == "telegram"
+    assert outbound.text == ""
+    assert len(outbound.attachments) == 1
+    attachment = outbound.attachments[0]
+    assert attachment.type == "photo"
+    assert attachment.path == str(image_path)
+    assert attachment.filename == "a.png"
+    assert attachment.caption == "caption"
+
+
+@pytest.mark.asyncio
+async def test_send_local_attachment_supports_document_type(tmp_path: Path) -> None:
+    api = _FakeAPI()
+    api.workspace_root = tmp_path
+    doc_path = tmp_path / "report.bin"
+    doc_path.write_bytes(b"data")
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(platform="milky", chat_id="20001", session_id="milky:20001")
+    )
+    try:
+        result = await plugin._tool_send_local_attachment(
+            "report.bin", attachment_type="document", filename="report.dat"
+        )
+    finally:
+        current_session.reset(token)
+
+    assert result == "Attachment sent: msg-1"
+    target, outbound, channel = api.sent_messages[0]
+    assert target == "20001"
+    assert channel == "milky"
+    assert outbound.attachments[0].type == "document"
+    assert outbound.attachments[0].filename == "report.dat"
+
+
+@pytest.mark.asyncio
+async def test_send_local_attachment_requires_session_context(tmp_path: Path) -> None:
+    api = _FakeAPI()
+    api.workspace_root = tmp_path
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_send_local_attachment("a.png")
+
+    assert result == "Error: No active session context."
+    assert api.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_send_local_attachment_rejects_missing_file(tmp_path: Path) -> None:
+    api = _FakeAPI()
+    api.workspace_root = tmp_path
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+    )
+    try:
+        result = await plugin._tool_send_local_attachment("missing.png")
+    finally:
+        current_session.reset(token)
+
+    assert result == "Error: File does not exist: missing.png"
+    assert api.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_send_local_attachment_rejects_absolute_path_by_default(
+    tmp_path: Path,
+) -> None:
+    api = _FakeAPI()
+    file_path = tmp_path / "a.png"
+    file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+    )
+    try:
+        result = await plugin._tool_send_local_attachment(str(file_path))
+    finally:
+        current_session.reset(token)
+
+    assert "Absolute attachment paths are disabled" in result
+    assert api.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_send_local_attachment_allows_absolute_path_when_configured(
+    tmp_path: Path,
+) -> None:
+    api = _FakeAPI()
+    file_path = tmp_path / "a.png"
+    file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    plugin = BuiltinCommandsPlugin(
+        api=api,
+        manifest=_manifest({"allow_external_attachment_paths": True}),
+    )
+    token = current_session.set(
+        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+    )
+    try:
+        result = await plugin._tool_send_local_attachment(str(file_path))
+    finally:
+        current_session.reset(token)
+
+    assert result == "Attachment sent: msg-1"
+    assert api.sent_messages[0][1].attachments[0].path == str(file_path)
+
+
+@pytest.mark.asyncio
+async def test_send_local_attachment_enforces_external_root_allowlist(
+    tmp_path: Path,
+) -> None:
+    api = _FakeAPI()
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    allowed_file = allowed / "a.png"
+    outside_file = outside / "b.png"
+    allowed_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+    outside_file.write_bytes(b"\x89PNG\r\n\x1a\n")
+    plugin = BuiltinCommandsPlugin(
+        api=api,
+        manifest=_manifest(
+            {
+                "allow_external_attachment_paths": True,
+                "external_attachment_roots": [str(allowed)],
+            }
+        ),
+    )
+    token = current_session.set(
+        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+    )
+    try:
+        rejected = await plugin._tool_send_local_attachment(str(outside_file))
+        accepted = await plugin._tool_send_local_attachment(str(allowed_file))
+    finally:
+        current_session.reset(token)
+
+    assert "outside allowed external roots" in rejected
+    assert accepted == "Attachment sent: msg-1"
+    assert len(api.sent_messages) == 1
+    assert api.sent_messages[0][1].attachments[0].path == str(allowed_file)
 
 
 @pytest.mark.asyncio

@@ -341,6 +341,10 @@ class BotAPI(Protocol):
         """Write a file to the workspace. Subject to permission checks."""
         ...
 
+    def resolve_workspace_path(self, path: str) -> str:
+        """Resolve a workspace-relative path to an absolute local path."""
+        ...
+
     # ── Event Publishing ───────────────────────────────
 
     async def publish_event(self, event: Any) -> None:

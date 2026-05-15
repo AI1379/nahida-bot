@@ -246,6 +246,10 @@ async def test_workspace_and_memory_methods_delegate_to_runtime(
 
     await api.workspace_write("notes/a.txt", "hello")
     assert await api.workspace_read("notes/a.txt") == "hello"
+    resolved = Path(api.resolve_workspace_path("notes/a.txt"))
+    assert resolved.is_absolute()
+    assert resolved.name == "a.txt"
+    assert resolved.read_text(encoding="utf-8") == "hello"
 
     results = await api.memory_search("nahida")
     assert results[0].content == "found nahida"

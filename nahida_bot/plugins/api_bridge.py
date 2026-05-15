@@ -355,6 +355,14 @@ class RealBotAPI:
         sandbox = self._workspace.get_sandbox()
         sandbox.write_text(path, content)
 
+    def resolve_workspace_path(self, path: str) -> str:
+        """Resolve a workspace-relative path for local file attachment sends."""
+        self._permissions.check_filesystem_read("workspace")
+        if self._workspace is None:
+            return ""
+        sandbox = self._workspace.get_sandbox()
+        return str(sandbox.resolve_safe_path(path))
+
     # ── Logging ────────────────────────────────────────
 
     @property

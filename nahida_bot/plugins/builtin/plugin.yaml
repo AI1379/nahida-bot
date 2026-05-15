@@ -3,6 +3,9 @@ name: "Builtin Commands"
 version: "0.1.0"
 description: "Core commands, workspace tools, exec, web fetch, plan, cron, and agent orchestration"
 entrypoint: "nahida_bot.plugins.builtin.commands:BuiltinCommandsPlugin"
+config:
+  allow_external_attachment_paths: false
+  external_attachment_roots: []
 permissions:
   filesystem:
     read:
@@ -23,6 +26,8 @@ capabilities:
       description: Read a text file from the active workspace
     - name: workspace_write
       description: Write a text file to the active workspace
+    - name: send_local_attachment
+      description: Send a workspace file to the current chat as an attachment
     - name: memory_read
       description: Read workspace Markdown memory
     - name: memory_write
