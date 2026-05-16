@@ -13,6 +13,13 @@ from nahida_bot.plugins.base import (
     SenderContext,
 )
 
+ENVELOPE_INSTRUCTION = (
+    "Each message in the conversation is prefixed with a metadata tag in "
+    "[brackets] containing the timestamp, channel/chat info, and sender "
+    "identity. This tag is contextual metadata only — do NOT reproduce or "
+    "mimic this bracket format in your own replies. Respond with plain text."
+)
+
 
 def context_from_inbound(inbound: InboundMessage) -> MessageContext:
     """Build a MessageContext from normalized inbound fields and channel facts."""

@@ -20,6 +20,7 @@ from nahida_bot.core.config import MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
+    ENVELOPE_INSTRUCTION,
     assistant_context,
     context_from_inbound,
     message_context_from_metadata,
@@ -464,9 +465,13 @@ class SessionRunner:
             if workspace_root is None and workspace_id is not None:
                 workspace_root = self._resolve_workspace_root(workspace_id)
 
+            effective_system_prompt = self._append_envelope_instruction(
+                system_prompt, message_context
+            )
+
             run_kwargs: dict[str, Any] = {
                 "user_message": visible_user_message,
-                "system_prompt": system_prompt,
+                "system_prompt": effective_system_prompt,
                 "history_messages": history,
             }
             if user_parts:
@@ -2014,6 +2019,14 @@ class SessionRunner:
                 if attachment.platform_id == media_id:
                     return attachment
         return None
+
+    @staticmethod
+    def _append_envelope_instruction(
+        system_prompt: str, context: MessageContext | None
+    ) -> str:
+        if context is None or context.channel in ("", "bot"):
+            return system_prompt
+        return f"{system_prompt.rstrip()}\n\n{ENVELOPE_INSTRUCTION}"
 
     def _resolve_workspace_root(self, workspace_id: str | None) -> Any:
         if self._workspace is None or workspace_id is None:
