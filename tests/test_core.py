@@ -1,8 +1,11 @@
 """Tests for core module."""
 
 import asyncio
+import logging
+from pathlib import Path
 
 import pytest
+import structlog
 
 from nahida_bot.core.app import Application
 from nahida_bot.core.config import Settings, load_settings
@@ -60,6 +63,9 @@ class TestSettings:
         assert settings.debug is False
         assert settings.log_level == "INFO"
         assert settings.log_json is None
+        assert settings.log_file is None
+        assert settings.log_file_level is None
+        assert settings.log_file_json is True
         assert settings.port == 6185
 
     def test_custom_settings(self) -> None:
@@ -69,6 +75,9 @@ class TestSettings:
             debug=True,
             log_level="DEBUG",
             log_json=False,
+            log_file="./data/logs/nahida.log",
+            log_file_level="DEBUG",
+            log_file_json=True,
             host="0.0.0.0",
             port=8000,
         )
@@ -76,6 +85,9 @@ class TestSettings:
         assert settings.debug is True
         assert settings.log_level == "DEBUG"
         assert settings.log_json is False
+        assert settings.log_file == "./data/logs/nahida.log"
+        assert settings.log_file_level == "DEBUG"
+        assert settings.log_file_json is True
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
 
@@ -83,6 +95,52 @@ class TestSettings:
         """Test settings with custom database path."""
         settings = Settings(db_path="/custom/path/db.sqlite")
         assert settings.db_path == "/custom/path/db.sqlite"
+
+
+class TestLogging:
+    """Test logging configuration."""
+
+    def test_file_handler_can_capture_debug_without_console_noise(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """File handler can have a lower level than the console handler."""
+        from nahida_bot.core import logging as logging_config
+
+        monkeypatch.setattr(logging_config, "_configured", False)
+        log_file = tmp_path / "nahida.log"
+
+        try:
+            logging_config.configure_logging(
+                debug=False,
+                log_level="INFO",
+                log_file=str(log_file),
+                log_file_level="DEBUG",
+            )
+
+            logger = structlog.get_logger("nahida_bot.tests.logging")
+            logger.debug("debug.only_in_file", answer=42)
+            logger.info("info.in_both", answer=43)
+
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+
+            captured = capsys.readouterr()
+            console_output = captured.out + captured.err
+            file_output = log_file.read_text(encoding="utf-8")
+
+            assert "debug.only_in_file" not in console_output
+            assert "info.in_both" in console_output
+            assert "debug.only_in_file" in file_output
+            assert "info.in_both" in file_output
+        finally:
+            monkeypatch.setattr(logging_config, "_configured", False)
+            for handler in list(logging.getLogger().handlers):
+                if getattr(handler, logging_config._HANDLER_ATTR, False):
+                    logging.getLogger().removeHandler(handler)
+                    handler.close()
 
 
 class TestApplication:

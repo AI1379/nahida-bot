@@ -56,6 +56,9 @@ class Application:
             debug=self.settings.debug,
             log_level=self.settings.log_level,
             log_json=self.settings.log_json,
+            log_file=self.settings.log_file,
+            log_file_level=self.settings.log_file_level,
+            log_file_json=self.settings.log_file_json,
         )
         self._initialized = False
         self._started = False

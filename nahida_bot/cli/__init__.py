@@ -1,6 +1,7 @@
 """Command-line interface."""
 
 import asyncio
+from typing import Any
 
 import structlog
 
@@ -33,14 +34,28 @@ def start(
         None, help="Path to YAML configuration file"
     ),
     debug: bool = typer.Option(False, help="Enable debug mode"),
+    log_file: str | None = typer.Option(None, help="Path to application log file"),
+    log_file_level: str | None = typer.Option(
+        None, help="File log level; defaults to log_level"
+    ),
 ) -> None:
     """Start the Nahida Bot application."""
-    settings = load_settings(config_yaml=config_yaml, debug=debug)
+    overrides: dict[str, Any] = {"debug": debug}
+    if log_file is not None:
+        overrides["log_file"] = log_file
+    if log_file_level is not None:
+        overrides["log_file_level"] = log_file_level
+    settings = load_settings(config_yaml=config_yaml, **overrides)
 
     console.print(f"[bold cyan]Config YAML Path: {config_yaml}[/bold cyan]")
     console.print(f"[bold cyan]Starting {settings.app_name}...[/bold cyan]")
     console.print(f"Debug mode: {debug}")
     console.print(f"Log level: {settings.log_level}")
+    if settings.log_file:
+        console.print(
+            f"Log file: {settings.log_file} "
+            f"({settings.log_file_level or settings.log_level})"
+        )
     console.print(f"Listening on {settings.host}:{settings.port}")
 
     app_instance = Application(settings=settings)

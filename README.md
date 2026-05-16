@@ -119,7 +119,7 @@ uv run nahida-bot start
 
 ```bash
 nahida-bot version                # 显示版本信息
-nahida-bot start [--debug]        # 启动应用（可指定 --config-yaml 路径）
+nahida-bot start [--debug]        # 启动应用（可指定 --config-yaml / --log-file）
 nahida-bot config                 # 显示当前配置
 nahida-bot doctor                 # 运行诊断检查
 ```
@@ -129,6 +129,9 @@ nahida-bot doctor                 # 运行诊断检查
 ```yaml
 # config.yaml
 app_name: "Nahida Bot"
+log_level: "INFO"
+log_file: "./data/logs/nahida.log"
+log_file_level: "DEBUG"
 
 providers:
   default:

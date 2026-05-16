@@ -6,6 +6,9 @@ app_name: "Nahida Bot"
 debug: false
 log_level: "INFO"        # DEBUG / INFO / WARNING / ERROR
 # log_json: true          # 设为 true 输出 JSON 格式日志（生产环境推荐）
+# log_file: "./data/logs/nahida.log"  # 可选：把应用日志写入文件，不需要 tee
+# log_file_level: "DEBUG"             # 可选：文件日志级别；默认跟随 log_level
+# log_file_json: true                 # 文件日志默认使用 JSON Lines
 
 # ── 服务器 ────────────────────────────────────────────
 host: "127.0.0.1"
