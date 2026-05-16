@@ -231,24 +231,28 @@ class MilkyMessageConverter:
 
     @staticmethod
     def _sender_display_name(message_data: dict[str, Any]) -> str:
-        for key in (
-            "sender_name",
-            "sender_nickname",
-            "nickname",
-            "member_name",
-            "card",
-        ):
-            value = coerce_str(message_data.get(key))
-            if value:
-                return value
+        # Group card (群名片) vs QQ nickname: when they differ in a group
+        # chat, show both as "GroupCard(QQNick)" so the LLM can tell them
+        # apart and address the user correctly.
+        card = coerce_str(message_data.get("card") or message_data.get("member_name"))
+        nickname = coerce_str(
+            message_data.get("sender_name")
+            or message_data.get("sender_nickname")
+            or message_data.get("nickname")
+        )
 
-        sender = message_data.get("sender")
-        if isinstance(sender, dict):
-            for key in ("name", "nickname", "card"):
-                value = coerce_str(sender.get(key))
-                if value:
-                    return value
-        return ""
+        if not card:
+            sender = message_data.get("sender")
+            if isinstance(sender, dict):
+                card = coerce_str(sender.get("card"))
+        if not nickname:
+            sender = message_data.get("sender")
+            if isinstance(sender, dict):
+                nickname = coerce_str(sender.get("name") or sender.get("nickname"))
+
+        if card and nickname and card != nickname:
+            return f"{card}({nickname})"
+        return card or nickname
 
     @staticmethod
     def _sender_role_tags(message_data: dict[str, Any]) -> tuple[str, ...]:

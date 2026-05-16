@@ -170,16 +170,31 @@ def _format_timestamp(timestamp: float) -> str:
 def _format_channel(context: MessageContext) -> str:
     channel = _clean(context.channel)
     chat_type = _clean(context.chat_type)
+    chat_name = _clean(context.chat_display_name)
+    chat_id = _clean(context.chat_id)
+
     if channel and chat_type and chat_type != "unknown":
-        return f"{channel}/{chat_type}"
-    return channel or chat_type
+        base = f"{channel}/{chat_type}"
+    else:
+        base = channel or chat_type
+
+    if chat_name and chat_id and chat_name != chat_id:
+        return f"{base}:{chat_name}({chat_id})"
+    if chat_id:
+        return f"{base}:{chat_id}"
+    return base
 
 
 def _format_sender(context: MessageContext, *, role: str) -> str:
     if role == "assistant":
         base = "bot"
     else:
-        base = _clean(context.sender_display_name) or _clean(context.sender_id)
+        name = _clean(context.sender_display_name)
+        sid = _clean(context.sender_id)
+        if name and sid and name != sid:
+            base = f"{name}({sid})"
+        else:
+            base = name or sid
     if not base:
         base = role or "sender"
 
