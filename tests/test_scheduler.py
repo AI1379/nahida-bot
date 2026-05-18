@@ -152,7 +152,7 @@ def _make_service(
     channel: _Channel | None = None,
     config: SchedulerConfig | None = None,
 ) -> SchedulerService:
-    runner = SessionRunner(agent_loop=agent)
+    runner = SessionRunner(agent_loop=cast(Any, agent))
     return SchedulerService(
         repo,
         runner=runner,
@@ -650,7 +650,7 @@ async def test_isolated_cron_uses_dedicated_session_id() -> None:
     try:
         agent = _Agent()
         channel = _Channel()
-        runner = SessionRunner(agent_loop=agent)
+        runner = SessionRunner(agent_loop=cast(Any, agent))
         service = SchedulerService(
             repo,
             runner=runner,
@@ -680,14 +680,14 @@ async def test_isolated_cron_uses_dedicated_session_id() -> None:
         await repo.insert_job(job)
 
         # Capture session_id via a thin wrapper on runner.run
-        captured: dict[str, object] = {}
-        original_run = runner.run
+        captured: dict[str, Any] = {}
+        original_run = cast(Any, runner.run)
 
-        async def spy_run(**kwargs: object) -> AgentRunResult:
+        async def spy_run(**kwargs: Any) -> AgentRunResult:
             captured.update(kwargs)
             return await original_run(**kwargs)
 
-        runner.run = spy_run  # type: ignore[method-assign]
+        runner.run = cast(Any, spy_run)
 
         await service._fire_job(job)
 
@@ -703,7 +703,7 @@ async def test_main_cron_uses_chat_session() -> None:
     try:
         agent = _Agent()
         channel = _Channel()
-        runner = SessionRunner(agent_loop=agent)
+        runner = SessionRunner(agent_loop=cast(Any, agent))
         service = SchedulerService(
             repo,
             runner=runner,
@@ -713,14 +713,14 @@ async def test_main_cron_uses_chat_session() -> None:
         job = _job()  # defaults to session_mode="main"
         await repo.insert_job(job)
 
-        captured: dict[str, object] = {}
-        original_run = runner.run
+        captured: dict[str, Any] = {}
+        original_run = cast(Any, runner.run)
 
-        async def spy_run(**kwargs: object) -> AgentRunResult:
+        async def spy_run(**kwargs: Any) -> AgentRunResult:
             captured.update(kwargs)
             return await original_run(**kwargs)
 
-        runner.run = spy_run  # type: ignore[method-assign]
+        runner.run = cast(Any, spy_run)
 
         await service._fire_job(job)
 

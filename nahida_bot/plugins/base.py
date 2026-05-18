@@ -301,6 +301,10 @@ class BotAPI(Protocol):
         """Return command-facing session metadata."""
         ...
 
+    def get_session_run_status(self, session_id: str) -> dict[str, Any]:
+        """Return command-facing agent run status for a session."""
+        ...
+
     def list_commands(self) -> list[CommandInfo]:
         """List registered commands."""
         ...

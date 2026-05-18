@@ -68,6 +68,9 @@ class MockBotAPI:
     async def get_session_info(self, session_id: str) -> dict[str, Any]:
         return {}
 
+    def get_session_run_status(self, session_id: str) -> dict[str, Any]:
+        return {"active": False, "state": "idle", "pending_messages": 0}
+
     def list_commands(self) -> list[Any]:
         return []
 
