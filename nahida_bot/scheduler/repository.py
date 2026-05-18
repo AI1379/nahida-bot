@@ -37,6 +37,7 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         claimed_at=r["claimed_at"],
         failure_count=r["failure_count"],
         last_error=r["last_error"],
+        session_mode=r["session_mode"] if "session_mode" in r.keys() else "main",
     )
 
 
@@ -55,8 +56,8 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -78,6 +79,7 @@ class CronRepository:
                     job.claimed_at,
                     job.failure_count,
                     job.last_error,
+                    job.session_mode,
                 ),
             )
             await self._engine.db.commit()
@@ -351,8 +353,8 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -374,6 +376,7 @@ class CronRepository:
                     job.claimed_at,
                     job.failure_count,
                     job.last_error,
+                    job.session_mode,
                 ),
             )
             await self._engine.db.commit()

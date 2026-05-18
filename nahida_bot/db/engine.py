@@ -184,6 +184,10 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_memory_embeddings_item
         ON memory_embeddings(item_id);
     """,
+    # Migration 010: cron session_mode (main vs isolated)
+    """
+    ALTER TABLE cron_jobs ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'main';
+    """,
 ]
 
 

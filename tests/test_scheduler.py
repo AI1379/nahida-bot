@@ -511,3 +511,259 @@ async def test_quota_enforced_atomically() -> None:
             )
     finally:
         await engine.close()
+
+
+# ── Sentinel token tests ──────────────────────────────────────
+
+
+class _SilentAgent:
+    """Agent mock that returns a configurable response."""
+
+    def __init__(self, response: str) -> None:
+        self.response = response
+
+    async def run(self, **kwargs: object) -> AgentRunResult:
+        return AgentRunResult(
+            final_response=self.response,
+            assistant_messages=[],
+            tool_messages=[],
+        )
+
+    async def run_stream(self, **kwargs: object) -> Any:
+        yield LoopEvent(type="done", final_response=self.response)
+
+
+@pytest.mark.asyncio
+async def test_fire_job_no_reply_suppresses_send() -> None:
+    engine, repo = await _repo()
+    try:
+        channel = _Channel()
+        agent = _SilentAgent("NO_REPLY")
+        service = _make_service(engine, repo, agent=agent, channel=channel)
+        job = _job()
+        await repo.insert_job(job)
+
+        await service._fire_job(job)
+
+        assert len(channel.sent) == 0
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fire_job_heartbeat_ok_suppresses_send() -> None:
+    engine, repo = await _repo()
+    try:
+        channel = _Channel()
+        agent = _SilentAgent("HEARTBEAT_OK")
+        service = _make_service(engine, repo, agent=agent, channel=channel)
+        job = _job()
+        await repo.insert_job(job)
+
+        await service._fire_job(job)
+
+        assert len(channel.sent) == 0
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fire_job_trailing_no_reply_sends_remaining() -> None:
+    engine, repo = await _repo()
+    try:
+        channel = _Channel()
+        agent = _SilentAgent("Status ok\nNO_REPLY")
+        service = _make_service(engine, repo, agent=agent, channel=channel)
+        job = _job()
+        await repo.insert_job(job)
+
+        await service._fire_job(job)
+
+        assert len(channel.sent) == 1
+        assert channel.sent[0][1].text == "Status ok"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fire_job_sentinel_disabled_sends_raw() -> None:
+    engine, repo = await _repo()
+    try:
+        channel = _Channel()
+        agent = _SilentAgent("NO_REPLY")
+        service = _make_service(engine, repo, agent=agent, channel=channel, config=None)
+        service._enable_silent_reply = False
+        job = _job()
+        await repo.insert_job(job)
+
+        await service._fire_job(job)
+
+        assert len(channel.sent) == 1
+        assert channel.sent[0][1].text == "NO_REPLY"
+    finally:
+        await engine.close()
+
+
+# ── Session mode tests ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_job_defaults_to_main_session_mode() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        job = await service.create_job(
+            platform="telegram",
+            chat_id="c1",
+            prompt="test",
+            mode="once",
+            fire_at=fire_at,
+        )
+        assert job.session_mode == "main"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_create_job_isolated_session_mode() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        job = await service.create_job(
+            platform="telegram",
+            chat_id="c1",
+            prompt="test",
+            mode="once",
+            fire_at=fire_at,
+            session_mode="isolated",
+        )
+        assert job.session_mode == "isolated"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_isolated_cron_uses_dedicated_session_id() -> None:
+    engine, repo = await _repo()
+    try:
+        agent = _Agent()
+        channel = _Channel()
+        runner = SessionRunner(agent_loop=agent)
+        service = SchedulerService(
+            repo,
+            runner=runner,
+            channel_registry=cast(Any, _Channels(channel)),
+        )
+
+        job = _job()
+        job = CronJob(
+            job_id=job.job_id,
+            platform=job.platform,
+            chat_id=job.chat_id,
+            session_key=job.session_key,
+            prompt=job.prompt,
+            mode=job.mode,
+            fire_at=job.fire_at,
+            interval_seconds=job.interval_seconds,
+            cron_expression=job.cron_expression,
+            max_runs=job.max_runs,
+            run_count=job.run_count,
+            is_active=job.is_active,
+            created_at=job.created_at,
+            next_fire_at=job.next_fire_at,
+            last_fired_at=job.last_fired_at,
+            workspace_id=job.workspace_id,
+            session_mode="isolated",
+        )
+        await repo.insert_job(job)
+
+        # Capture session_id via a thin wrapper on runner.run
+        captured: dict[str, object] = {}
+        original_run = runner.run
+
+        async def spy_run(**kwargs: object) -> AgentRunResult:
+            captured.update(kwargs)
+            return await original_run(**kwargs)
+
+        runner.run = spy_run  # type: ignore[method-assign]
+
+        await service._fire_job(job)
+
+        assert agent.calls == 1
+        assert captured.get("session_id") == "telegram:c1:cron:job1"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_main_cron_uses_chat_session() -> None:
+    engine, repo = await _repo()
+    try:
+        agent = _Agent()
+        channel = _Channel()
+        runner = SessionRunner(agent_loop=agent)
+        service = SchedulerService(
+            repo,
+            runner=runner,
+            channel_registry=cast(Any, _Channels(channel)),
+        )
+
+        job = _job()  # defaults to session_mode="main"
+        await repo.insert_job(job)
+
+        captured: dict[str, object] = {}
+        original_run = runner.run
+
+        async def spy_run(**kwargs: object) -> AgentRunResult:
+            captured.update(kwargs)
+            return await original_run(**kwargs)
+
+        runner.run = spy_run  # type: ignore[method-assign]
+
+        await service._fire_job(job)
+
+        assert agent.calls == 1
+        assert captured.get("session_id") == "telegram:c1"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_isolated_session_roundtrip_from_repo() -> None:
+    engine, repo = await _repo()
+    try:
+        job = _job()
+        job = CronJob(
+            job_id=job.job_id,
+            platform=job.platform,
+            chat_id=job.chat_id,
+            session_key=job.session_key,
+            prompt=job.prompt,
+            mode=job.mode,
+            fire_at=job.fire_at,
+            interval_seconds=job.interval_seconds,
+            cron_expression=job.cron_expression,
+            max_runs=job.max_runs,
+            run_count=job.run_count,
+            is_active=job.is_active,
+            created_at=job.created_at,
+            next_fire_at=job.next_fire_at,
+            last_fired_at=job.last_fired_at,
+            workspace_id=job.workspace_id,
+            session_mode="isolated",
+        )
+        await repo.insert_job(job)
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.session_mode == "isolated"
+
+        claimed = await repo.claim_due_jobs(
+            (datetime.now(UTC) + timedelta(hours=1)).isoformat(), limit=1
+        )
+        assert len(claimed) == 1
+        assert claimed[0].session_mode == "isolated"
+    finally:
+        await engine.close()

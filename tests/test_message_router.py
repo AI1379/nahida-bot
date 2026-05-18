@@ -916,3 +916,102 @@ class TestMessageRouterMemory:
         # Agent should have been called with the restored session's (empty) history
         assert len(agent.calls) == 1
         assert agent.calls[0]["history_messages"] == []
+
+
+class TestMessageRouterSentinel:
+    """Sentinel token suppression in the streaming reply path."""
+
+    async def test_no_reply_suppresses_send(self) -> None:
+        agent = _MockAgentLoop(response="NO_REPLY")
+        router, event_bus, channel_registry, _ = _make_router(agent=agent)
+        channel = channel_registry.get("test")
+        assert channel is not None
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("hello"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert isinstance(channel, _StubChannel)
+        assert len(channel.sent) == 0
+
+    async def test_heartbeat_ok_suppresses_send(self) -> None:
+        agent = _MockAgentLoop(response="HEARTBEAT_OK")
+        router, event_bus, channel_registry, _ = _make_router(agent=agent)
+        channel = channel_registry.get("test")
+        assert channel is not None
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("check"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert isinstance(channel, _StubChannel)
+        assert len(channel.sent) == 0
+
+    async def test_trailing_no_reply_sends_remaining(self) -> None:
+        agent = _MockAgentLoop(response="Summary of results\nNO_REPLY")
+        router, event_bus, channel_registry, _ = _make_router(agent=agent)
+        channel = channel_registry.get("test")
+        assert channel is not None
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("report"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert isinstance(channel, _StubChannel)
+        assert len(channel.sent) == 1
+        assert channel.sent[0][1].text == "Summary of results"
+
+    async def test_sentinel_disabled_sends_raw(self) -> None:
+        agent = _MockAgentLoop(response="NO_REPLY")
+        config = RouterConfig(enable_silent_reply=False)
+        router, event_bus, channel_registry, _ = _make_router(
+            agent=agent, config=config
+        )
+        channel = channel_registry.get("test")
+        assert channel is not None
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("hello"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert isinstance(channel, _StubChannel)
+        assert len(channel.sent) == 1
+        assert channel.sent[0][1].text == "NO_REPLY"
+
+    async def test_json_envelope_no_reply_suppresses(self) -> None:
+        agent = _MockAgentLoop(response='{"action": "NO_REPLY"}')
+        router, event_bus, channel_registry, _ = _make_router(agent=agent)
+        channel = channel_registry.get("test")
+        assert channel is not None
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("hello"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert isinstance(channel, _StubChannel)
+        assert len(channel.sent) == 0

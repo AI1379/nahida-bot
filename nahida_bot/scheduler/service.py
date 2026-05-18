@@ -13,6 +13,7 @@ import structlog
 
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
+from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
@@ -46,6 +47,7 @@ class SchedulerService:
         system_prompt: str = "You are a helpful assistant.",
         app_name: str = "the assistant",
         config: SchedulerConfig | None = None,
+        enable_silent_reply: bool = True,
     ) -> None:
         self._repo = repo
         self._runner = runner
@@ -54,6 +56,7 @@ class SchedulerService:
         self._system_prompt = system_prompt
         self._app_name = app_name
         self._config = config or SchedulerConfig()
+        self._enable_silent_reply = enable_silent_reply
 
         self._poll_task: asyncio.Task[None] | None = None
         self._memory_dream_task: asyncio.Task[None] | None = None
@@ -154,6 +157,7 @@ class SchedulerService:
         cron_expression: str | None = None,
         max_runs: int | None = None,
         workspace_id: str | None = None,
+        session_mode: Literal["main", "isolated"] = "main",
     ) -> CronJob:
         """Create and persist a new scheduled job."""
         now = datetime.now(UTC)
@@ -196,6 +200,7 @@ class SchedulerService:
             next_fire_at=next_fire_at,
             last_fired_at=None,
             workspace_id=workspace_id,
+            session_mode=session_mode,
         )
 
         await self._repo.insert_job_with_quota(
@@ -649,10 +654,15 @@ class SchedulerService:
             logger.warning("scheduler.no_agent", job_id=job.job_id)
             return
 
-        # Resolve current active session for the chat
-        session_id = job.session_key
-        if self._router is not None:
-            session_id = self._router.get_active_session_id(job.platform, job.chat_id)
+        # Resolve session_id based on session_mode
+        if job.session_mode == "isolated":
+            session_id = f"{job.session_key}:cron:{job.job_id}"
+        else:
+            session_id = job.session_key
+            if self._router is not None:
+                session_id = self._router.get_active_session_id(
+                    job.platform, job.chat_id
+                )
 
         # Set session context for tool handlers
         ctx_token = current_session.set(
@@ -681,12 +691,24 @@ class SchedulerService:
         )
 
         # Send response via channel
-        if result.final_response and self._channels is not None:
+        response_text = result.final_response
+        if self._enable_silent_reply and response_text:
+            sr = detect_sentinel(response_text)
+            if sr.action is not None:
+                response_text = sr.text
+                logger.debug(
+                    "scheduler.sentinel_detected",
+                    job_id=job.job_id,
+                    action=sr.action,
+                    suppressed=not response_text,
+                )
+
+        if response_text and self._channels is not None:
             channel = self._channels.get(job.platform)
             if channel is not None:
                 await channel.send_message(
                     job.chat_id,
-                    OutboundMessage(text=result.final_response),
+                    OutboundMessage(text=response_text),
                 )
             else:
                 logger.warning(

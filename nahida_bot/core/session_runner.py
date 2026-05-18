@@ -21,6 +21,8 @@ from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
+    HEARTBEAT_INSTRUCTION,
+    SILENT_REPLY_INSTRUCTION,
     assistant_context,
     context_from_inbound,
     message_context_from_metadata,
@@ -137,6 +139,7 @@ class SessionRunner:
         group_context_max_chars: int = 4000,
         media_resolver: MediaResolver | None = None,
         channel_registry: ChannelRegistry | None = None,
+        enable_silent_reply: bool = True,
     ) -> None:
         self._agent = agent_loop
         self._memory = memory_store
@@ -161,6 +164,7 @@ class SessionRunner:
         self._group_context_max_chars = group_context_max_chars
         self._media_resolver = media_resolver
         self._channel_registry = channel_registry
+        self._enable_silent_reply = enable_silent_reply
         self._run_tracker = ActiveRunTracker()
 
     @property
@@ -465,8 +469,11 @@ class SessionRunner:
             if workspace_root is None and workspace_id is not None:
                 workspace_root = self._resolve_workspace_root(workspace_id)
 
-            effective_system_prompt = self._append_envelope_instruction(
-                system_prompt, message_context
+            effective_system_prompt = self._build_system_prompt(
+                system_prompt,
+                message_context,
+                source_tag=source_tag,
+                enable_silent_reply=self._enable_silent_reply,
             )
 
             run_kwargs: dict[str, Any] = {
@@ -2021,12 +2028,20 @@ class SessionRunner:
         return None
 
     @staticmethod
-    def _append_envelope_instruction(
-        system_prompt: str, context: MessageContext | None
+    def _build_system_prompt(
+        system_prompt: str,
+        context: MessageContext | None,
+        source_tag: str = "user_input",
+        enable_silent_reply: bool = True,
     ) -> str:
-        if context is None or context.channel in ("", "bot"):
-            return system_prompt
-        return f"{system_prompt.rstrip()}\n\n{ENVELOPE_INSTRUCTION}"
+        parts = [system_prompt.rstrip()]
+        if context is not None and context.channel not in ("", "bot"):
+            parts.append(ENVELOPE_INSTRUCTION)
+        if enable_silent_reply:
+            parts.append(SILENT_REPLY_INSTRUCTION)
+        if source_tag == "cron_trigger":
+            parts.append(HEARTBEAT_INSTRUCTION)
+        return "\n\n".join(parts)
 
     def _resolve_workspace_root(self, workspace_id: str | None) -> Any:
         if self._workspace is None or workspace_id is None:

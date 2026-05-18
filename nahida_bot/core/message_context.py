@@ -15,9 +15,31 @@ from nahida_bot.plugins.base import (
 
 ENVELOPE_INSTRUCTION = (
     "Each message in the conversation is prefixed with a metadata tag in "
-    "[brackets] containing the timestamp, channel/chat info, and sender "
+    "[brackets containing the timestamp, channel/chat info, and sender "
     "identity. This tag is contextual metadata only — do NOT reproduce or "
     "mimic this bracket format in your own replies. Respond with plain text."
+)
+
+SILENT_REPLY_INSTRUCTION = (
+    "## Silent Replies\n"
+    "Use NO_REPLY ONLY when no user-visible reply is required.\n"
+    "Rules:\n"
+    "- Valid cases: silent housekeeping, deliberate no-op, after a tool "
+    "already delivered the reply.\n"
+    "- It must be your ENTIRE message — nothing else.\n"
+    "- Never append it to an actual response.\n"
+    "- Never wrap it in markdown or code blocks.\n"
+    '- You may also use {"action": "NO_REPLY"} JSON format.'
+)
+
+HEARTBEAT_INSTRUCTION = (
+    "## Heartbeats\n"
+    "This is a scheduled periodic check-in. If nothing needs attention, "
+    "reply exactly:\n"
+    "HEARTBEAT_OK\n"
+    'If something needs attention, do NOT include "HEARTBEAT_OK"; reply '
+    "with the alert text instead.\n"
+    '- You may also use {"action": "HEARTBEAT_OK"} JSON format.'
 )
 
 

@@ -29,6 +29,7 @@ class CronJob:
     claimed_at: str | None = None
     failure_count: int = 0
     last_error: str | None = None
+    session_mode: Literal["main", "isolated"] = "main"
 
 
 @dataclass(slots=True, frozen=True)

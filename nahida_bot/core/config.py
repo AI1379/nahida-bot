@@ -181,6 +181,7 @@ class RouterConfigModel(BaseModel):
     reply_to_inbound: bool = True
     show_reasoning: bool = False
     reasoning_max_chars: int = Field(default=2000, ge=0)
+    enable_silent_reply: bool = True
     group_context: GroupContextConfig = GroupContextConfig()
 
 
@@ -214,6 +215,7 @@ class Settings(BaseModel):
 
     # Agent / Router
     system_prompt: str = "You are a helpful assistant."
+    enable_silent_reply: bool = True
 
     # LLM providers. Dict keyed by provider id.
     providers: dict[str, ProviderEntryConfig] = {}

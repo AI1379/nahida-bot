@@ -740,6 +740,11 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "integer",
                         "description": "Max number of fires for interval or cron mode. Omit for infinite.",
                     },
+                    "session_mode": {
+                        "type": "string",
+                        "enum": ["main", "isolated"],
+                        "description": "'main' (default) injects the cron turn into the active chat session. 'isolated' uses a separate session so the task's internal turns don't pollute the chat history.",
+                    },
                 },
                 "required": ["prompt", "mode"],
                 "additionalProperties": False,
@@ -1075,6 +1080,7 @@ class BuiltinCommandsPlugin(Plugin):
         interval_seconds: int | None = None,
         cron_expression: str | None = None,
         max_runs: int | None = None,
+        session_mode: str = "main",
     ) -> str:
         ctx = current_session.get()
         if ctx is None:
@@ -1118,6 +1124,7 @@ class BuiltinCommandsPlugin(Plugin):
                 cron_expression=cron_expression,
                 max_runs=max_runs,
                 workspace_id=ctx.workspace_id,
+                session_mode=session_mode,
             )
         except Exception as e:
             return f"Error creating scheduled task: {e}"
@@ -1139,6 +1146,7 @@ class BuiltinCommandsPlugin(Plugin):
             else:
                 lines.append("  Max runs: infinite")
         lines.append(f"  Next fire: {job.next_fire_at}")
+        lines.append(f"  Session: {job.session_mode}")
         lines.append(f"  Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
         return "\n".join(lines)
 
@@ -1164,7 +1172,9 @@ class BuiltinCommandsPlugin(Plugin):
             else:
                 schedule = f"every {j.interval_seconds}s"
             preview = j.prompt[:60] + ("..." if len(j.prompt) > 60 else "")
-            lines.append(f"  {j.job_id}: [{j.mode}] {schedule} — {preview}")
+            lines.append(
+                f"  {j.job_id}: [{j.mode}/{j.session_mode}] {schedule} — {preview}"
+            )
             lines.append(f"    runs: {j.run_count}, next: {j.next_fire_at}")
             if j.failure_count:
                 lines.append(

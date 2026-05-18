@@ -20,6 +20,7 @@ from nahida_bot.core.events import (
     MessageSent,
 )
 from nahida_bot.core.message_context import context_from_inbound
+from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.core.runtime_settings import runtime_settings_from_meta
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import (
@@ -54,6 +55,7 @@ class RouterConfig:
     show_reasoning: bool = False
     reasoning_max_chars: int = 2000
     group_context_enabled: bool = True
+    enable_silent_reply: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -394,12 +396,20 @@ class MessageRouter:
                         event.reasoning,
                         reasoning_display,
                     )
-                    if event.text and event.text != last_sent:
+                    send_text = event.text
+                    if self._config.enable_silent_reply and send_text:
+                        sr = detect_sentinel(send_text)
+                        if sr.action is not None:
+                            if sr.text:
+                                send_text = sr.text
+                            else:
+                                continue
+                    if send_text and send_text != last_sent:
                         await self._send_response(
-                            inbound, session_id, event.text, reasoning=reasoning
+                            inbound, session_id, send_text, reasoning=reasoning
                         )
-                        last_sent = event.text
-                    elif reasoning and not event.text:
+                        last_sent = send_text
+                    elif reasoning and not send_text:
                         await self._send_response(
                             inbound, session_id, "", reasoning=reasoning
                         )
@@ -410,6 +420,12 @@ class MessageRouter:
                         )
                     else:
                         final = event.final_response or ""
+                        if self._config.enable_silent_reply and final:
+                            sr = detect_sentinel(final)
+                            if sr.action is not None:
+                                if not sr.text:
+                                    continue
+                                final = sr.text
                         reasoning = self._prepare_reasoning(
                             event.reasoning,
                             reasoning_display,

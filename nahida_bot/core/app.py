@@ -456,6 +456,7 @@ class Application:
             group_context_max_chars=self.settings.router.group_context.max_chars,
             media_resolver=media_resolver,
             channel_registry=self.channel_registry,
+            enable_silent_reply=self.settings.enable_silent_reply,
         )
 
         from nahida_bot.agent.orchestration import (
@@ -546,6 +547,7 @@ class Application:
                 memory_dreaming_provider_id=(scheduler_cfg.memory_dreaming_provider_id),
                 memory_dreaming_model=scheduler_cfg.memory_dreaming_model,
             ),
+            enable_silent_reply=self.settings.enable_silent_reply,
         )
         if self.plugin_manager is not None:
             self.plugin_manager.scheduler_service = self.scheduler_service
@@ -663,6 +665,7 @@ class Application:
                     show_reasoning=self.settings.router.show_reasoning,
                     reasoning_max_chars=self.settings.router.reasoning_max_chars,
                     group_context_enabled=self.settings.router.group_context.enabled,
+                    enable_silent_reply=self.settings.enable_silent_reply,
                 ),
             )
             await self.message_router.start()
