@@ -40,6 +40,11 @@ repos:
   # Type checking (local)
   - repo: local
     hooks:
+      - id: check-commit-msg
+        name: check commit message format
+        entry: uv run python scripts/check_commit_msg.py
+        language: system
+        stages: [commit-msg]
       - id: pyright
         name: pyright (type check)
         entry: uv run pyright
