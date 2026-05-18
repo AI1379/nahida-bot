@@ -35,11 +35,53 @@ class ModelCapabilities:
         "image/webp",
     )
 
+    # Context window metadata.
+    context_window: int | None = None
+    max_context_window: int | None = None
+    auto_compact_token_limit: int | None = None
+    effective_context_window_percent: int = 95
+
     # Built-in tool capabilities (Responses API)
     image_generation: bool = False
     web_search: bool = False
     file_search: bool = False
     code_interpreter: bool = False
+
+    @staticmethod
+    def _int_or_none(value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    def resolved_context_window(self) -> int | None:
+        """Return the effective context window used for prompt budgeting."""
+        context_window = self._int_or_none(self.context_window)
+        if context_window is not None and context_window > 0:
+            return context_window
+        max_context_window = self._int_or_none(self.max_context_window)
+        if max_context_window is not None and max_context_window > 0:
+            return max_context_window
+        return None
+
+    def normalized_effective_context_window_percent(self) -> int:
+        """Return a sane usable-window percentage."""
+        percent = self._int_or_none(self.effective_context_window_percent)
+        if percent is not None and 1 <= percent <= 100:
+            return percent
+        return 95
+
+    def resolved_auto_compact_token_limit(self) -> int | None:
+        """Return explicit or derived automatic compaction threshold."""
+        explicit = self._int_or_none(self.auto_compact_token_limit)
+        if explicit is not None:
+            return max(0, explicit)
+        context_window = self.resolved_context_window()
+        if context_window is None:
+            return None
+        return (context_window * 9) // 10
 
 
 @dataclass(slots=True, frozen=True)

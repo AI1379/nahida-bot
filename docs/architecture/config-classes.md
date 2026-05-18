@@ -59,7 +59,7 @@ class ProviderEntryConfig(BaseModel):
     models: list[ProviderModelEntry] = []  # 模型列表
 ```
 
-`extra="allow"` 使得 provider 特有的字段（如 `merge_system_messages`, `stream_responses`, `store_responses`, `reasoning_effort` 等）可以透传，在 `app.py` 中通过 `getattr()` 读取后传入 `create_provider()`。
+`extra="allow"` 使得 provider 特有的字段（如 `merge_system_messages`, `stream_responses`, `thinking_enabled`, `store_responses`, `reasoning_effort` 等）可以透传，在 `app.py` 中通过 `getattr()` 读取后传入 `create_provider()`。
 
 ---
 
@@ -144,6 +144,10 @@ class ModelCapabilities:
     max_image_count: int = 0
     max_image_bytes: int = 0
     supported_image_mime_types: tuple[str, ...] = ("image/jpeg", "image/png", "image/webp")
+    context_window: int | None = None
+    max_context_window: int | None = None
+    auto_compact_token_limit: int | None = None
+    effective_context_window_percent: int = 95
     image_generation: bool = False
     web_search: bool = False
     file_search: bool = False
@@ -220,7 +224,7 @@ class ProviderSlot:
 @dataclass(slots=True)
 class RouterConfig:
     system_prompt: str = "You are a helpful assistant."   # ← settings.system_prompt
-    max_history_turns: int = 50                            # ← settings.router.max_history_turns
+    max_history_turns: int = 200                           # ← settings.router.max_history_turns
     agent_enabled: bool = True                             # ← settings.router.agent_enabled
     command_timeout_seconds: float = 30.0                  # ← settings.router.command_timeout_seconds
     command_timeout_message: str = "Command timed out..."  # ← settings.router.command_timeout_message
@@ -243,7 +247,7 @@ class RouterConfig:
 @dataclass(slots=True, frozen=True)
 class AgentLoopConfig:
     max_steps: int = 8                       # 最大工具调用迭代轮数
-    provider_timeout_seconds: float = 30.0   # 单次 LLM 调用超时
+    provider_timeout_seconds: float = 120.0  # 单次 LLM 调用超时
     retry_attempts: int = 2                  # LLM 调用重试次数
     retry_backoff_seconds: float = 0.2       # 重试退避间隔
     tool_timeout_seconds: float = 135.0      # 工具执行超时
@@ -258,16 +262,17 @@ class AgentLoopConfig:
 
 - **定义**: [context.py:74](../../nahida_bot/agent/context.py#L74)
 - **YAML 接入**: [config.py](../../nahida_bot/core/config.py) 中 `ContextConfig` BaseModel → `Settings.context`
-- **映射**: `app.py` 中 `_build_context_budget()` 将 `ContextConfig` 映射为 `ContextBudget`（含 `reasoning_policy` 字符串 → 枚举转换）
+- **映射**: `build_context_budget()` 将 `ContextConfig` 映射为 fallback `ContextBudget`；`SessionRunner` 每轮解析模型后会用 `ModelCapabilities.context_window` 等字段重算本轮预算
 
 ```python
 @dataclass(slots=True, frozen=True)
 class ContextBudget:
-    max_tokens: int = 8000                   # 最大 token 数
-    reserved_tokens: int = 1000              # 为输出保留的 token
+    max_tokens: int = 272000                 # fallback context window
+    reserved_tokens: int = 10000             # fallback 输出保留 token
+    auto_compact_token_limit: int | None = None  # 软压缩阈值
     max_chars: int | None = None             # 字符数上限（兼容旧逻辑）
     reserved_chars: int = 0                  # 字符保留数
-    summary_max_chars: int = 600             # 历史摘要最大字符数
+    summary_max_chars: int = 2000            # 历史摘要最大字符数
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.BUDGET  # reasoning 截断策略
     max_reasoning_tokens: int = 2000         # reasoning chain 预算
 ```
@@ -285,7 +290,7 @@ class SchedulerConfig:
     max_concurrent_fires: int = 5            # 最大并发执行数
     job_timeout_seconds: float = 120.0       # 单任务超时
     min_interval_seconds: int = 60           # cron 最小间隔
-    max_prompt_chars: int = 4000             # 定时任务 prompt 最大字符数
+    max_prompt_chars: int = 12000            # 定时任务 prompt 最大字符数
     max_jobs_per_chat: int = 20              # 每个会话最大任务数
     failure_retry_seconds: int = 300         # 失败重试等待
     max_consecutive_failures: int = 3        # 连续失败上限

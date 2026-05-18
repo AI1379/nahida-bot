@@ -40,7 +40,7 @@ class SchedulerConfig:
     max_concurrent_fires: int = 5
     job_timeout_seconds: float = 120.0
     min_interval_seconds: int = 60
-    max_prompt_chars: int = 4000
+    max_prompt_chars: int = 12000
     max_jobs_per_chat: int = 20
     failure_retry_seconds: int = 300
     max_consecutive_failures: int = 3

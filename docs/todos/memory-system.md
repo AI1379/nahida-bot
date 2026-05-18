@@ -528,7 +528,7 @@ memory:
     hybrid_enabled: true
     vector_backend: json       # json / sqlite-vec / none
     max_injected_items: 5
-    max_injected_chars: 1200
+    max_injected_chars: 4000
 
   embedding:
     enabled: false

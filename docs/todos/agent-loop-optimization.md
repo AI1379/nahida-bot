@@ -95,12 +95,13 @@
 4. History messages（历史消息）
 5. Tool messages（工具结果）
 
-**Token 预算**: `max_tokens(8000) - reserved_tokens(1000) = 7000 usable`
+**Token 预算**: 默认 fallback 为 `max_tokens(272000)` / `reserved_tokens(10000)`；
+模型声明 `capabilities.context_window` 时按模型窗口重算，并使用 95% effective window 和 90% soft compaction threshold。
 
 **溢出处理**:
 
 1. 滑动窗口：从最新消息往回保留，丢弃最旧的
-2. 摘要生成：被丢弃的消息压缩为一行 `- <role>: <前120字符>`，总限 600 字符
+2. 摘要生成：被丢弃的消息压缩为一行 `- <role>: <前120字符>`，总限 2000 字符
 3. 二分截断：如果单条消息太大，二分搜索最大可容纳前缀
 
 **每步重建**: Agent loop 每一步都调用 `build_context()`，整个 conversation 列表传入，每次都重新估算 token。
@@ -155,15 +156,14 @@
 
 **加载策略**:
 
-- `SQLiteMemoryStore.get_recent(session_id, limit=50)`
+- `SQLiteMemoryStore.get_recent(session_id, limit=200)`
 - SQL: `SELECT * FROM memory_turns WHERE session_id = ? ORDER BY created_at DESC LIMIT ?`
-- 逆序取最新 50 条，再 reverse 回时间序
+- 逆序取最新 200 条，再 reverse 回时间序
 
 **问题**:
 
-- `max_history_turns=50` 实际只有约 25 轮完整对话
+- `max_history_turns=200` 仍然是按消息条数计数，不是严格的“轮”计数
 - Tool calling 的中间推理过程完全丢失
-- `RouterConfig.max_history_turns` 和 `SessionRunner.max_history_turns` 的接线可能断裂（`app.py` 创建 SessionRunner 时未传入 router 的配置值）
 
 ### 4.2 Codex 实现
 
@@ -195,8 +195,8 @@
 | 优化 | 优先级 | 说明 |
 |------|--------|------|
 | 持久化 tool call/result | **高** | 当前中间推理完全丢失，重开对话后工具调用上下文断裂 |
-| 配置接线修复 | **高** | `RouterConfig.max_history_turns` 未传入 `SessionRunner`，配置不生效 |
-| 按轮而非按条计数 | **中** | 50 "turns" 实为 25 轮对话，语义不清，易配置错误 |
+| 配置接线修复 | **高** | `RouterConfig.max_history_turns` 已传入 `SessionRunner` |
+| 按轮而非按条计数 | **中** | 200 "turns" 仍是按消息条数计数，语义不清，易配置错误 |
 | 关键词搜索增强 | **低** | 当前 jieba 分词搜索功能存在但可能未充分利用 |
 
 ---
@@ -391,8 +391,9 @@ after stream ends:
 ### 8.1 nahida-bot 当前实现
 
 ```
-max_tokens(8000) - reserved_tokens(1000) = 7000 usable
-每步: serialize所有消息 → tokenizer.count_tokens() → 超限则滑动窗口
+fallback: max_tokens(272000) - reserved_tokens(10000) = 262000 usable
+model-aware: context_window × 95% usable，90% context_window 触发软压缩
+每步: serialize所有消息 → tokenizer.count_tokens() → 超 soft limit 则滑动窗口/摘要
 ```
 
 **Token 估算**: 消息序列化为 `role:...\nsource:...\ncontent:...\n` 格式，然后调用 tokenizer。
@@ -402,8 +403,8 @@ max_tokens(8000) - reserved_tokens(1000) = 7000 usable
 **问题**:
 
 - 每步完整重建和完整计算 token，无缓存
-- 7000 usable tokens 对大多数模型偏小（GPT-4 128k, Claude 200k）
-- `reserved_tokens` 的含义不明确（给谁预留？）
+- 已接入模型级 `context_window`，但仍依赖手工配置能力数据
+- `reserved_tokens` 仅作为未知模型 fallback；模型窗口已知时按 effective percent 派生余量
 
 ### 8.2 Codex 实现
 
@@ -438,9 +439,9 @@ total = server_total_tokens
 | 优化 | 优先级 | 说明 |
 |------|--------|------|
 | 利用服务端 token 计数 | **高** | 当前完全依赖客户端估算，provider 返回的 usage 信息未用于预算管理 |
-| 提高默认 token 预算 | **高** | 7000 对现代模型太小，浪费了模型的大上下文能力 |
+| 提高默认 token 预算 | **已完成** | fallback 已提升到 272k，并支持模型级窗口 |
 | Token 计数缓存 | **中** | prefix 部分不变时可缓存，避免每步重复计算 |
-| 动态压缩阈值 | **中** | 根据模型 context window 动态设置，而非固定值 |
+| 动态压缩阈值 | **已完成** | 根据模型 context window 派生 90% soft threshold |
 
 ---
 
@@ -463,17 +464,17 @@ total = server_total_tokens
 
 - 工具调用仍在 `_execute_tools()` 中串行执行，没有 `asyncio.gather` 或并发安全策略。
 - tool result 的 `content` 仍完整进入上下文；当前只截断 `logs`，没有对大 `output` 做 token/字节中间截断。
-- `RouterConfig.max_history_turns` 仍未在 `Application._init_scheduler()` 创建 `SessionRunner` 时传入，非默认值会被 `SessionRunner(max_history_turns=50)` 覆盖。
-- provider `usage` 尚未反哺 `ContextBuilder` 的预算，也没有基于模型 context window 的动态预算。
+- `RouterConfig.max_history_turns` 现已在 `Application._init_scheduler()` 创建 `SessionRunner` 时传入。
+- provider `usage` 尚未反哺 `ContextBuilder` 的预算；基于模型 context window 的动态预算已接入。
 - 没有 mid-loop compaction 和 LLM 语义压缩；仍是滑动窗口 + 简单摘要。
 - tool call/result 不会作为完整 agent run transcript 持久化，跨轮恢复主要依赖用户/助手 turn 和 metadata。
 
 ### Phase 1: 基础完善（高优先级）
 
-1. [ ] **修复配置接线** — `RouterConfig.max_history_turns` 正确传入 `SessionRunner`
+1. [x] **修复配置接线** — `RouterConfig.max_history_turns` 正确传入 `SessionRunner`
 2. [ ] **工具输出截断** — 在 `ContextBuilder` 或 `AgentLoop` 中为 tool result 添加 token 预算，超出时中间截断
 3. [ ] **利用 provider usage** — 将 provider 返回的 token usage 信息用于上下文预算管理
-4. [ ] **提高 token 预算** — 默认值应参考模型实际 context window，而非硬编码 8000
+4. [x] **提高 token 预算** — 默认值已提升，并按模型实际 context window 重算预算
 
 ### Phase 2: 核心优化（中优先级）
 

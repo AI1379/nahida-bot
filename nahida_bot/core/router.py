@@ -48,7 +48,7 @@ class RouterConfig:
     """Configuration for the MessageRouter."""
 
     system_prompt: str = "You are a helpful assistant."
-    max_history_turns: int = 50
+    max_history_turns: int = 200
     agent_enabled: bool = True
     command_timeout_seconds: float = 30.0
     command_timeout_message: str = "Command timed out. Please try again later."

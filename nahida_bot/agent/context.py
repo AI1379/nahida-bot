@@ -37,7 +37,7 @@ class ReasoningPolicy(Enum):
 
 
 if TYPE_CHECKING:
-    from nahida_bot.agent.providers.base import ChatProvider
+    from nahida_bot.agent.providers.base import ChatProvider, ModelCapabilities
     from nahida_bot.core.config import ContextConfig
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
@@ -81,11 +81,12 @@ class ContextMessage:
 class ContextBudget:
     """Budget settings for context assembly."""
 
-    max_tokens: int = 8000
-    reserved_tokens: int = 1000
+    max_tokens: int = 272000
+    reserved_tokens: int = 10000
+    auto_compact_token_limit: int | None = None
     max_chars: int | None = None
     reserved_chars: int = 0
-    summary_max_chars: int = 600
+    summary_max_chars: int = 2000
 
     # Reasoning chain budgeting (Phase 2.8)
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.BUDGET
@@ -105,8 +106,23 @@ class ContextBudget:
         usable = self.max_tokens - self.reserved_tokens
         return usable if usable > 0 else 0
 
+    @property
+    def soft_token_limit(self) -> int:
+        """Token threshold that triggers proactive context compaction.
 
-def build_context_budget(cfg: ContextConfig) -> ContextBudget:
+        When unset, manual budgets keep the historical behavior and compact only
+        at the hard usable budget.
+        """
+        if self.auto_compact_token_limit is None:
+            return self.usable_tokens
+        return min(max(0, self.auto_compact_token_limit), self.usable_tokens)
+
+
+def build_context_budget(
+    cfg: ContextConfig,
+    *,
+    capabilities: ModelCapabilities | None = None,
+) -> ContextBudget:
     """Build a ContextBudget dataclass from a ContextConfig Pydantic model."""
     _policy_map = {
         "strip": ReasoningPolicy.STRIP,
@@ -114,9 +130,26 @@ def build_context_budget(cfg: ContextConfig) -> ContextBudget:
         "budget": ReasoningPolicy.BUDGET,
     }
     policy = _policy_map.get(cfg.reasoning_policy, ReasoningPolicy.BUDGET)
+    max_tokens = cfg.max_tokens
+    reserved_tokens = cfg.reserved_tokens
+    auto_compact_token_limit: int | None = None
+
+    if capabilities is not None:
+        context_window = capabilities.resolved_context_window()
+        if context_window is not None:
+            max_tokens = context_window
+            percent = capabilities.normalized_effective_context_window_percent()
+            usable = (max_tokens * percent) // 100
+            reserved_tokens = max(0, max_tokens - usable)
+        auto_compact_token_limit = capabilities.resolved_auto_compact_token_limit()
+
+    if auto_compact_token_limit is None and cfg.max_chars is None:
+        auto_compact_token_limit = (max_tokens * 9) // 10
+
     return ContextBudget(
-        max_tokens=cfg.max_tokens,
-        reserved_tokens=cfg.reserved_tokens,
+        max_tokens=max_tokens,
+        reserved_tokens=reserved_tokens,
+        auto_compact_token_limit=auto_compact_token_limit,
         max_chars=cfg.max_chars,
         reserved_chars=cfg.reserved_chars,
         summary_max_chars=cfg.summary_max_chars,
@@ -243,6 +276,7 @@ class ContextBuilder:
         merged = [*prefix_messages, *dynamic_messages]
 
         merged_tokens = self._estimate_tokens(merged)
+        soft_token_limit = self.budget.soft_token_limit
         logger.debug(
             "context_builder.build_start",
             prefix_count=len(prefix_messages),
@@ -250,6 +284,7 @@ class ContextBuilder:
             merged_count=len(merged),
             merged_tokens=merged_tokens,
             usable_tokens=self.budget.usable_tokens,
+            soft_token_limit=soft_token_limit,
             roles=[m.role for m in merged],
             sources=[m.source for m in merged],
         )
@@ -271,13 +306,14 @@ class ContextBuilder:
             ],
         )
 
-        if merged_tokens <= self.budget.usable_tokens:
+        if merged_tokens <= soft_token_limit:
             logger.debug(
                 "context_builder.build_done",
-                reason="within_budget",
+                reason="within_soft_budget",
                 message_count=len(merged),
                 estimated_tokens=merged_tokens,
                 usable_tokens=self.budget.usable_tokens,
+                soft_token_limit=soft_token_limit,
             )
             return merged
 
@@ -286,10 +322,13 @@ class ContextBuilder:
                 prefix_messages=prefix_messages,
                 optional_messages=optional_messages,
                 protected_messages=protected,
+                token_limit=soft_token_limit,
             )
 
         windowed_dynamic, dropped = self._sliding_window(
-            dynamic_messages, prefix_messages
+            dynamic_messages,
+            prefix_messages,
+            token_limit=soft_token_limit,
         )
         windowed = [*prefix_messages, *windowed_dynamic]
         logger.debug(
@@ -310,6 +349,7 @@ class ContextBuilder:
             prefix_messages=prefix_messages,
             windowed_dynamic=windowed_dynamic,
             summary_message=summary_message,
+            token_limit=soft_token_limit,
         )
         if with_summary is not None:
             logger.debug(
@@ -323,7 +363,7 @@ class ContextBuilder:
 
         compact_summary = self._truncate_message_to_budget(
             summary_message,
-            self.budget.usable_tokens - self._estimate_tokens(windowed),
+            soft_token_limit - self._estimate_tokens(windowed),
         )
         if compact_summary is None:
             logger.debug(
@@ -338,6 +378,7 @@ class ContextBuilder:
             prefix_messages=prefix_messages,
             windowed_dynamic=windowed_dynamic,
             summary_message=compact_summary,
+            token_limit=soft_token_limit,
         )
         if maybe_summarized is not None:
             logger.debug(
@@ -363,6 +404,7 @@ class ContextBuilder:
         prefix_messages: list[ContextMessage],
         optional_messages: list[ContextMessage],
         protected_messages: list[ContextMessage],
+        token_limit: int,
     ) -> list[ContextMessage]:
         """Build context while preserving the active turn suffix.
 
@@ -379,6 +421,7 @@ class ContextBuilder:
             optional_messages,
             prefix_messages=prefix_messages,
             suffix_messages=protected_fit,
+            token_limit=token_limit,
         )
         windowed = [*prefix_messages, *windowed_optional, *protected_fit]
 
@@ -404,6 +447,7 @@ class ContextBuilder:
             windowed_dynamic=windowed_optional,
             summary_message=summary_message,
             suffix_messages=protected_fit,
+            token_limit=token_limit,
         )
         if with_summary is not None:
             logger.debug(
@@ -417,7 +461,7 @@ class ContextBuilder:
 
         compact_summary = self._truncate_message_to_budget(
             summary_message,
-            self.budget.usable_tokens - self._estimate_tokens(windowed),
+            token_limit - self._estimate_tokens(windowed),
         )
         if compact_summary is None:
             logger.debug(
@@ -433,6 +477,7 @@ class ContextBuilder:
             windowed_dynamic=windowed_optional,
             summary_message=compact_summary,
             suffix_messages=protected_fit,
+            token_limit=token_limit,
         )
         if maybe_summarized is not None:
             logger.debug(
@@ -593,12 +638,15 @@ class ContextBuilder:
         self,
         dynamic_messages: list[ContextMessage],
         prefix_messages: list[ContextMessage],
+        *,
+        token_limit: int | None = None,
     ) -> tuple[list[ContextMessage], list[ContextMessage]]:
         """Apply newest-first retention to dynamic messages."""
         return self._sliding_window_with_suffix(
             dynamic_messages,
             prefix_messages=prefix_messages,
             suffix_messages=[],
+            token_limit=token_limit,
         )
 
     def _sliding_window_with_suffix(
@@ -607,16 +655,18 @@ class ContextBuilder:
         *,
         prefix_messages: list[ContextMessage],
         suffix_messages: list[ContextMessage],
+        token_limit: int | None = None,
     ) -> tuple[list[ContextMessage], list[ContextMessage]]:
         """Apply newest-first retention with a required suffix already reserved."""
         message_groups = self._tool_transcript_groups(dynamic_messages)
         kept_groups_reversed: list[list[ContextMessage]] = []
         dropped_groups_reversed: list[list[ContextMessage]] = []
+        limit = self.budget.usable_tokens if token_limit is None else token_limit
 
         current_size = self._estimate_tokens([*prefix_messages, *suffix_messages])
         for group in reversed(message_groups):
             group_size = self._estimate_tokens(group)
-            if current_size + group_size <= self.budget.usable_tokens:
+            if current_size + group_size <= limit:
                 kept_groups_reversed.append(group)
                 current_size += group_size
             else:
@@ -724,9 +774,11 @@ class ContextBuilder:
         windowed_dynamic: list[ContextMessage],
         summary_message: ContextMessage,
         suffix_messages: list[ContextMessage] | None = None,
+        token_limit: int | None = None,
     ) -> list[ContextMessage] | None:
         """Try to include summary by dropping oldest retained dynamic messages."""
         suffix = list(suffix_messages or [])
+        limit = self.budget.usable_tokens if token_limit is None else token_limit
         candidate_groups = self._tool_transcript_groups(windowed_dynamic)
         while True:
             candidate_dynamic = [
@@ -738,7 +790,7 @@ class ContextBuilder:
                 *candidate_dynamic,
                 *suffix,
             ]
-            if self._estimate_tokens(candidate) <= self.budget.usable_tokens:
+            if self._estimate_tokens(candidate) <= limit:
                 return candidate
             if not candidate_groups:
                 return None

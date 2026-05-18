@@ -80,8 +80,11 @@ class ToolExecutionResult:
 class AgentLoopConfig:
     """Config for loop retries and termination conditions."""
 
+    # TODO: there is already an AgentConfig pydantic model in config.py.
+    # Check if we should merge these two classes, and if there is any similar issues.
+
     max_steps: int = 8
-    provider_timeout_seconds: float = 30.0
+    provider_timeout_seconds: float = 120.0
     retry_attempts: int = 2
     retry_backoff_seconds: float = 0.2
     tool_timeout_seconds: float = 135.0

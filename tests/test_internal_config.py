@@ -18,7 +18,7 @@ class TestAgentConfig:
     def test_defaults(self) -> None:
         cfg = AgentConfig()
         assert cfg.max_steps == 8
-        assert cfg.provider_timeout_seconds == 30.0
+        assert cfg.provider_timeout_seconds == 120.0
         assert cfg.retry_attempts == 2
         assert cfg.retry_backoff_seconds == 0.2
         assert cfg.tool_timeout_seconds == 135.0
@@ -61,11 +61,11 @@ class TestAgentConfig:
 class TestContextConfig:
     def test_defaults(self) -> None:
         cfg = ContextConfig()
-        assert cfg.max_tokens == 8000
-        assert cfg.reserved_tokens == 1000
+        assert cfg.max_tokens == 272000
+        assert cfg.reserved_tokens == 10000
         assert cfg.max_chars is None
         assert cfg.reserved_chars == 0
-        assert cfg.summary_max_chars == 600
+        assert cfg.summary_max_chars == 2000
         assert cfg.reasoning_policy == "budget"
         assert cfg.max_reasoning_tokens == 2000
 
@@ -111,7 +111,7 @@ class TestSchedulerConfigModel:
         assert cfg.max_concurrent_fires == 5
         assert cfg.job_timeout_seconds == 120.0
         assert cfg.min_interval_seconds == 60
-        assert cfg.max_prompt_chars == 4000
+        assert cfg.max_prompt_chars == 12000
         assert cfg.max_jobs_per_chat == 20
         assert cfg.failure_retry_seconds == 300
         assert cfg.max_consecutive_failures == 3
@@ -145,7 +145,7 @@ class TestRouterConfigModel:
     def test_defaults(self) -> None:
         cfg = RouterConfigModel()
         assert cfg.system_prompt == "You are a helpful assistant."
-        assert cfg.max_history_turns == 50
+        assert cfg.max_history_turns == 200
         assert cfg.agent_enabled is True
         assert cfg.command_timeout_seconds == 30.0
         assert "timed out" in cfg.command_timeout_message
@@ -182,7 +182,7 @@ class TestSettingsSubConfigs:
     def test_default_context(self) -> None:
         s = Settings()
         assert isinstance(s.context, ContextConfig)
-        assert s.context.max_tokens == 8000
+        assert s.context.max_tokens == 272000
 
     def test_default_scheduler(self) -> None:
         s = Settings()
@@ -196,7 +196,7 @@ class TestSettingsSubConfigs:
     def test_default_router(self) -> None:
         s = Settings()
         assert isinstance(s.router, RouterConfigModel)
-        assert s.router.max_history_turns == 50
+        assert s.router.max_history_turns == 200
 
     def test_default_memory(self) -> None:
         s = Settings()
@@ -207,7 +207,7 @@ class TestSettingsSubConfigs:
     def test_agent_from_dict(self) -> None:
         s = Settings.model_validate({"agent": {"max_steps": 16}})
         assert s.agent.max_steps == 16
-        assert s.agent.provider_timeout_seconds == 30.0  # unchanged default
+        assert s.agent.provider_timeout_seconds == 120.0  # unchanged default
 
     def test_context_from_dict(self) -> None:
         s = Settings.model_validate(

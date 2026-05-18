@@ -216,7 +216,12 @@ class Application:
             merge_flag = getattr(cfg, "merge_system_messages", None)
             if merge_flag is not None:
                 provider_kwargs["merge_system_messages"] = merge_flag
+            if cfg.type == "deepseek":
+                thinking_enabled = getattr(cfg, "thinking_enabled", None)
+                if thinking_enabled is not None:
+                    provider_kwargs["thinking_enabled"] = thinking_enabled
             for extra_field in (
+                "max_tokens",
                 "max_output_tokens",
                 "store_responses",
                 "use_previous_response_id",
@@ -436,6 +441,8 @@ class Application:
             model_router=self._model_router,
             workspace_manager=self.workspace_manager,
             tool_registry=tool_registry,
+            max_history_turns=self.settings.router.max_history_turns,
+            context_config=self.settings.context,
             multimodal_config=multimodal,
             memory_retrieval_config=self.settings.memory.retrieval,
             memory_embedding_provider=self._memory_embedding_provider,

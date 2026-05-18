@@ -11,9 +11,11 @@ from nahida_bot.agent.context import (
     ContextBuilder,
     ContextMessage,
     ContextPart,
+    build_context_budget,
 )
-from nahida_bot.agent.providers import ChatProvider, ProviderResponse
+from nahida_bot.agent.providers import ChatProvider, ModelCapabilities, ProviderResponse
 from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
+from nahida_bot.core.config import ContextConfig
 
 
 class _AlwaysOneTokenizer:
@@ -46,6 +48,42 @@ class _ProviderWithoutTokenizer(ChatProvider):
 
     async def chat(self, *, messages, tools=None, timeout_seconds=None, model=None):  # noqa: ANN001
         return ProviderResponse(content="ok")
+
+
+class TestContextBudgetResolution:
+    def test_default_budget_uses_modern_fallback_window(self) -> None:
+        budget = build_context_budget(ContextConfig())
+
+        assert budget.max_tokens == 272000
+        assert budget.reserved_tokens == 10000
+        assert budget.auto_compact_token_limit == 244800
+        assert budget.usable_tokens == 262000
+        assert budget.soft_token_limit == 244800
+        assert budget.summary_max_chars == 2000
+
+    def test_model_context_window_overrides_fallback(self) -> None:
+        budget = build_context_budget(
+            ContextConfig(max_tokens=16000, reserved_tokens=2000),
+            capabilities=ModelCapabilities(context_window=128000),
+        )
+
+        assert budget.max_tokens == 128000
+        assert budget.reserved_tokens == 6400
+        assert budget.auto_compact_token_limit == 115200
+        assert budget.usable_tokens == 121600
+        assert budget.soft_token_limit == 115200
+
+    def test_model_auto_compact_override_is_clamped_to_hard_budget(self) -> None:
+        budget = build_context_budget(
+            ContextConfig(),
+            capabilities=ModelCapabilities(
+                context_window=100000,
+                auto_compact_token_limit=98000,
+            ),
+        )
+
+        assert budget.usable_tokens == 95000
+        assert budget.soft_token_limit == 95000
 
 
 class TestContextBuilder:
@@ -118,6 +156,33 @@ class TestContextBuilder:
         contents = [item.content for item in result]
         assert any("new-2" in item for item in contents)
         assert not any("old-1" in item for item in retained_history_contents)
+
+    def test_auto_compact_soft_limit_triggers_before_hard_limit(self) -> None:
+        """Auto-compaction should reserve headroom before the hard context limit."""
+        builder = ContextBuilder(
+            budget=ContextBudget(
+                max_tokens=10,
+                reserved_tokens=0,
+                auto_compact_token_limit=5,
+            ),
+            tokenizer=_AlwaysOneTokenizer(),
+        )
+        history = [
+            ContextMessage(role="user", source="history", content=f"msg-{idx}")
+            for idx in range(6)
+        ]
+
+        result = builder.build_context(
+            system_prompt="baseline",
+            history_messages=history,
+        )
+
+        retained_history_contents = [
+            item.content for item in result if item.source == "history"
+        ]
+        assert any(item.source == "history_summary" for item in result)
+        assert "msg-5" in retained_history_contents
+        assert "msg-0" not in retained_history_contents
 
     def test_budget_keeps_tool_call_transcript_atomic(self) -> None:
         """Sliding window should not split assistant tool_calls from tool results."""

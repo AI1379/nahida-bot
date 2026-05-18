@@ -54,8 +54,9 @@ class AgentConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
+    # A small default steps to prevent unexpected long-running loops.
     max_steps: int = Field(default=8, ge=1)
-    provider_timeout_seconds: float = Field(default=30.0, ge=0)
+    provider_timeout_seconds: float = Field(default=120.0, ge=0)
     retry_attempts: int = Field(default=2, ge=0)
     retry_backoff_seconds: float = Field(default=0.2, ge=0)
     tool_timeout_seconds: float = Field(default=135.0, ge=0)
@@ -81,11 +82,12 @@ class ContextConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    max_tokens: int = Field(default=8000, ge=1)
-    reserved_tokens: int = Field(default=1000, ge=0)
+    max_tokens: int = Field(default=272000, ge=1)
+    reserved_tokens: int = Field(default=10000, ge=0)
     max_chars: int | None = None
     reserved_chars: int = Field(default=0, ge=0)
-    summary_max_chars: int = Field(default=600, ge=0)
+    # Larger summaries help preserve more dropped context on modern long-window models.
+    summary_max_chars: int = Field(default=2000, ge=0)
     reasoning_policy: ReasoningPolicyValue = "budget"
     max_reasoning_tokens: int = Field(default=2000, ge=0)
 
@@ -99,7 +101,7 @@ class SchedulerConfigModel(BaseModel):
     max_concurrent_fires: int = Field(default=5, ge=1)
     job_timeout_seconds: float = Field(default=120.0, ge=1)
     min_interval_seconds: int = Field(default=60, ge=1)
-    max_prompt_chars: int = Field(default=4000, ge=1)
+    max_prompt_chars: int = Field(default=12000, ge=1)
     max_jobs_per_chat: int = Field(default=20, ge=1)
     failure_retry_seconds: int = Field(default=300, ge=1)
     max_consecutive_failures: int = Field(default=3, ge=1)
@@ -121,7 +123,7 @@ class MemoryRetrievalConfig(BaseModel):
     vector_enabled: bool = False
     hybrid_enabled: bool = True
     max_injected_items: int = Field(default=5, ge=0)
-    max_injected_chars: int = Field(default=1200, ge=0)
+    max_injected_chars: int = Field(default=4000, ge=0)
     vector_backend: Literal["json", "sqlite-vec", "none"] = "json"
 
 
@@ -174,12 +176,13 @@ class RouterConfigModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
     system_prompt: str = "You are a helpful assistant."
-    max_history_turns: int = Field(default=50, ge=1)
+    max_history_turns: int = Field(default=200, ge=1)
     agent_enabled: bool = True
     command_timeout_seconds: float = Field(default=30.0, ge=0)
     command_timeout_message: str = "Command timed out. Please try again later."
     reply_to_inbound: bool = True
     show_reasoning: bool = False
+    # TODO: Check if 2000 chars is too small for reasoning traces.
     reasoning_max_chars: int = Field(default=2000, ge=0)
     enable_silent_reply: bool = True
     group_context: GroupContextConfig = GroupContextConfig()

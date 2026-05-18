@@ -497,7 +497,7 @@ DeepSeek 当前有两个主要模型系列，其能力组合不同，对适配�
   ],
   "store": true,
   "reasoning": {"effort": "medium"},
-  "max_output_tokens": 4096,
+  "max_output_tokens": 16000,
   "previous_response_id": "resp_abc123"
 }
 ```
@@ -826,6 +826,7 @@ class AnthropicProvider(ChatProvider):
     """独立 Anthropic Provider。不继承 OpenAICompatibleProvider。"""
 
     api_family: str = "anthropic-messages"
+    max_tokens: int = 16000
 
     # format_tools: Anthropic 使用 input_schema 而非 parameters
     def format_tools(self, tools: list[ToolDefinition]) -> list[object]:
@@ -1013,11 +1014,12 @@ class _ReasoningMixin:
 class ContextBudget:
     """上下文预算设置。"""
 
-    max_tokens: int = 8000
-    reserved_tokens: int = 1000
+    max_tokens: int = 272000
+    reserved_tokens: int = 10000
+    auto_compact_token_limit: int | None = None
     max_chars: int | None = None
     reserved_chars: int = 0
-    summary_max_chars: int = 600
+    summary_max_chars: int = 2000
 
     # Phase 2.8 新增
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.BUDGET

@@ -60,7 +60,7 @@ class AnthropicProvider(ChatProvider):
     model: str
     name: str = "anthropic"
     api_family: str = "anthropic-messages"
-    max_tokens: int = 4096
+    max_tokens: int = 16000
     stream_responses: bool = False
     tokenizer_impl: Tokenizer | None = None
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)

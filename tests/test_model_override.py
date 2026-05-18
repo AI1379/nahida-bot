@@ -22,6 +22,7 @@ from nahida_bot.agent.providers.base import (
 )
 from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
 from nahida_bot.agent.tokenization import Tokenizer
+from nahida_bot.core.config import ContextConfig
 from nahida_bot.core.runtime_settings import current_runtime_settings
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.plugins.base import InboundAttachment
@@ -268,6 +269,7 @@ class _SpyAgentLoop:
         self.captured_model: str | None = "NOT_CALLED"
         self.captured_provider: Any = None
         self.captured_user_parts: Any = None
+        self.captured_context_builder: Any = None
         self.captured_reasoning_effort: str | None = None
 
     async def run(self, **kwargs: Any) -> Any:
@@ -287,6 +289,7 @@ class _SpyAgentLoop:
         self.captured_model = kwargs.get("model")
         self.captured_provider = kwargs.get("provider")
         self.captured_user_parts = kwargs.get("user_parts")
+        self.captured_context_builder = kwargs.get("context_builder")
         self.captured_reasoning_effort = current_runtime_settings.get().reasoning.effort
         yield LoopEvent(type="text", text="ok")
         yield LoopEvent(type="done", final_response="ok")
@@ -313,6 +316,38 @@ class TestSessionRunnerEndToEnd:
 
         assert spy_loop.captured_model == "deepseek-reasoner"
         assert spy_loop.captured_provider is slot.provider
+
+    @pytest.mark.asyncio
+    async def test_run_builds_context_budget_from_selected_model(self) -> None:
+        slot = _slot(
+            "ds",
+            models=["deepseek-chat"],
+            default_model="deepseek-chat",
+        )
+        slot.capabilities_by_model = {
+            "deepseek-chat": ModelCapabilities(context_window=128000)
+        }
+        pm = ProviderManager([slot], default_id="ds")
+        memory = _FakeMemoryStore(meta={})
+        spy_loop = _SpyAgentLoop()
+
+        runner = SessionRunner(
+            agent_loop=cast(Any, spy_loop),
+            memory_store=cast(Any, memory),
+            provider_manager=pm,
+            context_config=ContextConfig(max_tokens=16000, reserved_tokens=2000),
+        )
+        await runner.run(
+            user_message="hello",
+            session_id="s1",
+            system_prompt="sys",
+        )
+
+        assert spy_loop.captured_context_builder is not slot.context_builder
+        budget = spy_loop.captured_context_builder.budget
+        assert budget.max_tokens == 128000
+        assert budget.reserved_tokens == 6400
+        assert budget.auto_compact_token_limit == 115200
 
     @pytest.mark.asyncio
     async def test_run_no_model_no_override(self) -> None:

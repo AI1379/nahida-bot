@@ -69,6 +69,14 @@ default_provider: deepseek-main
 
 `stream_responses` 当前支持 `openai-compatible` 族（含 `deepseek`、`glm`、`groq`）、`anthropic` 族（含 `minimax`）和 `openai-responses`。开启后 provider 会持续读取上游 SSE 事件，最后仍返回一个完整 `ProviderResponse`；这主要用于长推理/重任务时区分“服务端仍在生成”与“服务端完全无响应”。当前不会把 token 级增量直接发送到聊天频道。
 
+`deepseek` provider 还支持 `thinking_enabled`（默认 `true`）和 `reasoning_effort`；前者控制是否向请求体注入 `thinking: {"type": "enabled"}`，后者可被运行时 `reasoning.effort` 覆盖。
+
+### Anthropic / Minimax 输出上限
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `max_tokens` | `int` | `16000` | Anthropic / Minimax 的输出 token 上限；适用于 `anthropic` 和 `minimax` provider |
+
 ### 模型条目
 
 `models` 中的每个元素可以是纯字符串或对象：
@@ -80,6 +88,7 @@ models:
     capabilities:
       image_input: true
       max_image_count: 4
+      context_window: 128000
 ```
 
 ### 模型能力声明
@@ -99,6 +108,10 @@ models:
 | `max_image_count` | `int` | `0` | 每次请求最大图片数（0 = 不限） |
 | `max_image_bytes` | `int` | `0` | 单张图片最大字节数（0 = 不限） |
 | `supported_image_mime_types` | `list[str]` | `["image/jpeg", "image/png", "image/webp"]` | 接受的 MIME 类型 |
+| `context_window` | `int\|null` | `null` | 模型实际上下文窗口；声明后每轮按模型重算 prompt 预算 |
+| `max_context_window` | `int\|null` | `null` | 模型可配置的最大上下文窗口；当 `context_window` 为空时作为 fallback |
+| `effective_context_window_percent` | `int` | `95` | 可用于 prompt 的上下文比例；默认保留 5% 余量 |
+| `auto_compact_token_limit` | `int\|null` | `null` | 自动摘要/滑窗的软阈值；为空时按 90% context window 派生 |
 | `image_generation` | `bool` | `false` | 模型可通过内置工具生成图片 |
 | `web_search` | `bool` | `false` | 模型支持内置网页搜索 |
 | `file_search` | `bool` | `false` | 模型支持内置文件搜索 |
@@ -245,7 +258,7 @@ multimodal:
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `max_steps` | `int` | `8` | 每轮对话最大工具调用迭代次数 |
-| `provider_timeout_seconds` | `float` | `30.0` | 单次 LLM API 调用超时时间（秒） |
+| `provider_timeout_seconds` | `float` | `120.0` | 单次 LLM API 调用超时时间（秒） |
 | `retry_attempts` | `int` | `2` | Provider 瞬态错误重试次数 |
 | `retry_backoff_seconds` | `float` | `0.2` | 重试退避间隔（秒） |
 | `tool_timeout_seconds` | `float` | `135.0` | 单次工具执行超时时间（秒） |
@@ -260,14 +273,16 @@ multimodal:
 ## Context Budget
 
 在 `context` 键下配置。控制 prompt 上下文组装和 token 预算。
+如果当前模型在 `providers.*.models[].capabilities` 中声明了 `context_window`，
+运行时会优先使用模型窗口；这里的 `max_tokens` / `reserved_tokens` 是未知模型的 fallback。
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
-| `max_tokens` | `int` | `8000` | prompt 上下文最大 token 预算 |
-| `reserved_tokens` | `int` | `1000` | 为模型响应保留的 token 数 |
+| `max_tokens` | `int` | `272000` | 未声明模型窗口时的 fallback context window |
+| `reserved_tokens` | `int` | `10000` | 未声明模型窗口时为模型响应保留的 token 数 |
 | `max_chars` | `int\|null` | `null` | 字符数预算覆盖（兼容旧逻辑，优先使用 `max_tokens`） |
 | `reserved_chars` | `int` | `0` | 使用 `max_chars` 时的字符保留数 |
-| `summary_max_chars` | `int` | `600` | 历史消息摘要的最大字符数 |
+| `summary_max_chars` | `int` | `2000` | 历史消息摘要的最大字符数 |
 | `reasoning_policy` | `str` | `"budget"` | reasoning chain 处理方式：`strip`（丢弃）、`append`（始终包含）、`budget`（预算内包含） |
 | `max_reasoning_tokens` | `int` | `2000` | reasoning chain 内容的 token 预算 |
 
@@ -283,7 +298,7 @@ multimodal:
 | `max_concurrent_fires` | `int` | `5` | 最大并发执行任务数 |
 | `job_timeout_seconds` | `float` | `120.0` | 单个定时任务执行超时（秒） |
 | `min_interval_seconds` | `int` | `60` | 允许的最小 cron 间隔（防止过于频繁触发） |
-| `max_prompt_chars` | `int` | `4000` | 定时任务 prompt 最大字符数 |
+| `max_prompt_chars` | `int` | `12000` | 定时任务 prompt 最大字符数 |
 | `max_jobs_per_chat` | `int` | `20` | 每个聊天会话的最大定时任务数 |
 | `failure_retry_seconds` | `int` | `300` | 任务失败后重试等待时间（秒） |
 | `max_consecutive_failures` | `int` | `3` | 连续失败多少次后自动禁用任务 |
@@ -309,7 +324,7 @@ multimodal:
 | `retrieval.hybrid_enabled` | `bool` | `true` | FTS 和 vector 同时可用时是否使用 RRF hybrid fusion |
 | `retrieval.vector_backend` | `str` | `"json"` | 向量后端：`json`、`sqlite-vec`、`none` |
 | `retrieval.max_injected_items` | `int` | `5` | 单轮最多注入的长期记忆条数 |
-| `retrieval.max_injected_chars` | `int` | `1200` | 单轮长期记忆注入字符预算 |
+| `retrieval.max_injected_chars` | `int` | `4000` | 单轮长期记忆注入字符预算 |
 | `embedding.enabled` | `bool` | `false` | 是否启用长期记忆 embedding |
 | `embedding.provider_id` | `str` | `""` | Legacy 字段；建议把 provider 写进 `embedding.model` |
 | `embedding.model` | `str` | `""` | embedding 模型 spec；空则默认找 `embedding` tag |
@@ -327,7 +342,7 @@ multimodal:
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `system_prompt` | `str` | `"You are a helpful assistant."` | Agent 系统提示词（建议使用顶层 `system_prompt` 字段） |
-| `max_history_turns` | `int` | `50` | 每个会话加载的最大对话历史轮数 |
+| `max_history_turns` | `int` | `200` | 每个会话加载的最大对话历史轮数 |
 | `agent_enabled` | `bool` | `true` | 是否启用 Agent 循环（设为 `false` 进入纯命令模式） |
 | `command_timeout_seconds` | `float` | `30.0` | 命令处理器执行超时（秒） |
 | `command_timeout_message` | `str` | `"Command timed out..."` | 命令超时时显示的消息 |

@@ -16,7 +16,7 @@ from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.agent.memory.sqlite import build_fts_query
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.providers import ToolDefinition
-from nahida_bot.core.config import MediaContextPolicy
+from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.memory.embedding import EmbeddingProvider
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.memory.vector import VectorIndex
-    from nahida_bot.agent.providers.base import ModelCapabilities
+    from nahida_bot.agent.providers.base import ChatProvider, ModelCapabilities
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.agent.providers.router import ModelRouter
     from nahida_bot.core.channel_registry import ChannelRegistry
@@ -127,7 +127,8 @@ class SessionRunner:
         model_router: ModelRouter | None = None,
         workspace_manager: WorkspaceManager | None = None,
         tool_registry: ToolRegistry | None = None,
-        max_history_turns: int = 50,
+        max_history_turns: int = 200,
+        context_config: ContextConfig | None = None,
         multimodal_config: MultimodalConfig | None = None,
         memory_retrieval_config: MemoryRetrievalConfig | None = None,
         memory_embedding_provider: EmbeddingProvider | None = None,
@@ -151,6 +152,7 @@ class SessionRunner:
         self._workspace = workspace_manager
         self._tools = tool_registry
         self._max_history_turns = max_history_turns
+        self._context_config = context_config or ContextConfig()
         self._multimodal_config = multimodal_config
         self._memory_retrieval_config = memory_retrieval_config
         self._memory_embedding_provider = memory_embedding_provider
@@ -280,6 +282,20 @@ class SessionRunner:
     def run_tracker(self) -> ActiveRunTracker:
         return self._run_tracker
 
+    def _context_builder_for_model(
+        self,
+        provider: ChatProvider,
+        capabilities: ModelCapabilities | None,
+    ) -> Any:
+        """Create a context builder whose budget matches the selected model."""
+        from nahida_bot.agent.context import ContextBuilder, build_context_budget
+
+        budget = build_context_budget(
+            self._context_config,
+            capabilities=capabilities,
+        )
+        return ContextBuilder(budget=budget, provider=provider)
+
     async def run(
         self,
         *,
@@ -381,6 +397,14 @@ class SessionRunner:
                 if provider_slot is not None
                 else None
             )
+            context_builder = None
+            context_budget = None
+            if provider_slot is not None:
+                context_builder = self._context_builder_for_model(
+                    provider_slot.provider,
+                    capabilities,
+                )
+                context_budget = context_builder.budget
             image_count = sum(1 for att in attachments_for_turn if att.kind == "image")
             logger.debug(
                 "session_runner.route_selected",
@@ -389,6 +413,19 @@ class SessionRunner:
                 selected_model=selected_model or "",
                 effective_model=effective_model,
                 image_input=bool(capabilities and capabilities.image_input),
+                context_max_tokens=(
+                    context_budget.max_tokens if context_budget is not None else None
+                ),
+                context_reserved_tokens=(
+                    context_budget.reserved_tokens
+                    if context_budget is not None
+                    else None
+                ),
+                context_soft_token_limit=(
+                    context_budget.soft_token_limit
+                    if context_budget is not None
+                    else None
+                ),
                 image_count=image_count,
                 attachment_count=len(attachments_for_turn),
                 image_fallback_mode=(
@@ -489,7 +526,9 @@ class SessionRunner:
                 run_kwargs["tools"] = tools
             if provider_slot is not None:
                 run_kwargs["provider"] = provider_slot.provider
-                run_kwargs["context_builder"] = provider_slot.context_builder
+                run_kwargs["context_builder"] = (
+                    context_builder or provider_slot.context_builder
+                )
             if selected_model is not None:
                 run_kwargs["model"] = selected_model
 
@@ -1119,7 +1158,7 @@ class SessionRunner:
             return None
         cfg = self._memory_retrieval_config
         limit = cfg.max_injected_items if cfg is not None else 5
-        max_chars = cfg.max_injected_chars if cfg is not None else 1200
+        max_chars = cfg.max_injected_chars if cfg is not None else 4000
         if limit <= 0 or max_chars <= 0:
             return None
         fts_enabled = cfg.fts_enabled if cfg is not None else True
