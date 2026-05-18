@@ -135,6 +135,9 @@ class _FakeAPI:
         self.new_sessions.append((platform, chat_id))
         return f"{platform}:{chat_id}:abc12345"
 
+    def get_session_run_status(self, session_id: str) -> dict[str, Any]:
+        return {"active": False, "state": "idle", "pending_messages": 0}
+
     def list_models(self) -> list[dict[str, str]]:
         return self.models
 

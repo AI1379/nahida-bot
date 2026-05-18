@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import structlog
@@ -166,6 +167,51 @@ class MessageRouter:
 
         self._pending.clear()
         logger.info("message_router.stopped")
+
+    def get_session_run_status(self, session_id: str) -> dict[str, Any]:
+        """Return the current agent run status for a session.
+
+        Returns a dict with keys:
+        - active: bool
+        - state: "running" | "done" | "cancelled" | "crashed" | "idle"
+        - elapsed_seconds: float (only when active)
+        - error: str (only when crashed)
+        - pending_messages: int
+        """
+        result: dict[str, Any] = {
+            "active": False,
+            "state": "idle",
+            "pending_messages": 0,
+        }
+
+        pending = self._pending.get(session_id)
+        if pending:
+            result["pending_messages"] = len(pending)
+
+        if self._runner is None:
+            return result
+
+        run = self._runner.run_tracker.get(session_id)
+        if run is None:
+            return result
+
+        result["active"] = True
+        result["elapsed_seconds"] = round(time.monotonic() - run.started_at, 1)
+
+        task = run.task
+        if task.cancelled():
+            result["state"] = "cancelled"
+        elif task.done():
+            exc = task.exception()
+            if exc is not None:
+                result["state"] = "crashed"
+                result["error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                result["state"] = "done"
+        else:
+            result["state"] = "running"
+
+        return result
 
     def _persist_override(self, key: str, session_id: str) -> None:
         """Fire-and-forget persist of the session override."""

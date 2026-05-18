@@ -1332,10 +1332,40 @@ class BuiltinCommandsPlugin(Plugin):
             f"Session: {session_id}",
             f"Provider: {provider_id}",
             f"Model: {model}",
-            f"Reasoning display: {reasoning_display}",
-            f"Reasoning effort: {reasoning_effort}",
         ]
+
+        run_status = self.api.get_session_run_status(session_id)
+        agent_line = self._format_agent_status(run_status)
+        lines.append(f"Agent: {agent_line}")
+
+        lines.extend(
+            [
+                f"Reasoning display: {reasoning_display}",
+                f"Reasoning effort: {reasoning_effort}",
+            ]
+        )
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_agent_status(status: dict) -> str:
+        state = status.get("state", "idle")
+        if state == "idle":
+            parts = ["idle"]
+            pending = status.get("pending_messages", 0)
+            if pending:
+                parts.append(f"({pending} queued)")
+            return " ".join(parts)
+        if state == "running":
+            elapsed = status.get("elapsed_seconds", 0)
+            return f"running ({elapsed:.1f}s)"
+        if state == "crashed":
+            error = status.get("error", "unknown")
+            return f"crashed — {error}"
+        if state == "cancelled":
+            return "cancelled"
+        if state == "done":
+            return "done (awaiting cleanup)"
+        return f"unknown ({state})"
 
     async def _cmd_model(
         self, *, args: str, inbound: InboundMessage, session_id: str

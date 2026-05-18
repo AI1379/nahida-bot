@@ -509,6 +509,13 @@ class RealBotAPI:
         """Access the MessageRouter for /stop command support."""
         return self._event_bus.context.app.message_router
 
+    def get_session_run_status(self, session_id: str) -> dict[str, Any]:
+        """Return the current agent run status for a session."""
+        router = self.message_router
+        if router is None:
+            return {"active": False, "state": "idle", "pending_messages": 0}
+        return router.get_session_run_status(session_id)
+
     # ── Cleanup ────────────────────────────────────────
 
     def clear_subscriptions(self) -> None:
