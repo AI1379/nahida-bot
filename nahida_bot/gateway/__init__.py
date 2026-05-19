@@ -1,3 +1,5 @@
 """Gateway and remote node support."""
 
-__all__ = []
+from nahida_bot.gateway.app import WebAPIApp
+
+__all__ = ["WebAPIApp"]

@@ -245,8 +245,8 @@ async def _dispatch_interval_batch(self, platform, chat_id):
 
 ### 3.2 Agent Cron 增强
 
-- [ ] Phase 1：优化 cron turn 的 system prompt 隔离
-- [ ] Phase 2：增加 `isolated` 模式，cron turn 用临时 session
+- [x] Phase 1：优化 cron turn 的 system prompt 隔离
+- [x] Phase 2：增加 `isolated` 模式，cron turn 用临时 session
 - [ ] Phase 3：增加 `session:<id>` 模式，支持跨 run 上下文累积
 
 ### 3.3 哨兵值 / 回复信号协议

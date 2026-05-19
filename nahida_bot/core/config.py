@@ -114,6 +114,18 @@ class SchedulerConfigModel(BaseModel):
     memory_dreaming_model: str = ""
 
 
+class WebAPIConfigModel(BaseModel):
+    """WebAPI service configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = False
+    auth_token: str = ""
+    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    host: str = ""
+    port: int = 0
+
+
 class MemoryRetrievalConfig(BaseModel):
     """Durable memory retrieval configuration."""
 
@@ -232,6 +244,7 @@ class Settings(BaseModel):
     context: ContextConfig = ContextConfig()
     scheduler: SchedulerConfigModel = SchedulerConfigModel()
     router: RouterConfigModel = RouterConfigModel()
+    webapi: WebAPIConfigModel = WebAPIConfigModel()
     model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
     memory: MemoryConfig = MemoryConfig()
 

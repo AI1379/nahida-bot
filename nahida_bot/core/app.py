@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from nahida_bot.scheduler.service import SchedulerService
     from nahida_bot.workspace.manager import WorkspaceManager
     from nahida_bot.agent.orchestration import AgentOrchestrator
+    from nahida_bot.gateway.app import WebAPIApp
 
 logger = structlog.get_logger(__name__)
 
@@ -81,6 +82,7 @@ class Application:
         self.session_runner: SessionRunner | None = None
         self.scheduler_service: SchedulerService | None = None
         self.orchestration_service: AgentOrchestrator | None = None
+        self.webapi_service: WebAPIApp | None = None
 
         logger.debug(
             "application.instance_created",
@@ -160,6 +162,9 @@ class Application:
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
             )
+
+            # Initialize webapi
+            self._init_webapi()
 
             self._initialized = True
         except Exception as e:
@@ -567,6 +572,35 @@ class Application:
             )
         logger.info("application.scheduler_initialized")
 
+    def _init_webapi(self) -> None:
+        """Create the WebAPI service."""
+        from nahida_bot.gateway.app import WebAPIApp
+
+        cfg = self.settings.webapi
+        if not cfg.enabled:
+            logger.info("application.webapi_disabled")
+            return
+
+        host = cfg.host or self.settings.host
+        port = cfg.port or self.settings.port
+
+        if not cfg.auth_token and host not in ("127.0.0.1", "localhost", "::1"):
+            logger.warning(
+                "application.webapi_no_auth_on_public_interface",
+                host=host,
+                _msg="WebAPI is exposed on a non-loopback interface without auth_token. "
+                "Set webapi.auth_token to restrict access.",
+            )
+
+        self.webapi_service = WebAPIApp(
+            application=self,
+            host=host,
+            port=port,
+            auth_token=cfg.auth_token,
+            cors_origins=list(cfg.cors_origins),
+        )
+        logger.info("application.webapi_initialized", host=host, port=port)
+
     def _get_plugin_configs(self) -> dict[str, dict[str, Any]]:
         """Extract plugin-specific configs from settings.
 
@@ -689,6 +723,10 @@ class Application:
                 )
                 await self.scheduler_service.start()
 
+            # Start webapi (after scheduler)
+            if self.webapi_service is not None:
+                await self.webapi_service.start()
+
             result = await self.event_bus.publish(
                 AppStarted(
                     payload=AppLifecyclePayload(
@@ -739,6 +777,10 @@ class Application:
                         source="core.app.stop",
                     )
                 )
+                # Shut down webapi before scheduler
+                if self.webapi_service is not None:
+                    await self.webapi_service.stop()
+
                 # Shut down scheduler before message router
                 if self.scheduler_service is not None:
                     await self.scheduler_service.stop()
