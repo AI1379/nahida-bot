@@ -90,3 +90,17 @@ class CreateCronRequest(BaseModel):
 class CreateCronResponse(BaseModel):
     job_id: str
     status: str
+
+
+class UpdateCronRequest(BaseModel):
+    prompt: str | None = None
+    mode: str | None = None
+    fire_at: str | None = None
+    interval_seconds: int | None = None
+    cron_expression: str | None = None
+    max_runs: int | None = None
+
+
+class CronActionResponse(BaseModel):
+    job_id: str
+    status: str

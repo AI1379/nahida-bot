@@ -121,6 +121,11 @@ class BuiltinCommandsPlugin(Plugin):
             description="Wait for a subagent task to finish (/agent_wait <task_id> [timeout])",
         )
         self.api.register_command(
+            "cron",
+            self._cmd_cron,
+            description="Manage scheduled tasks (/cron list|cancel|delete <id>)",
+        )
+        self.api.register_command(
             "stop",
             self._cmd_stop,
             description="Stop the currently running agent",
@@ -1287,6 +1292,80 @@ class BuiltinCommandsPlugin(Plugin):
         return f"Task {job_id} was already deleted."
 
     # ── Command Handlers ──────────────────────────────────
+
+    async def _cmd_cron(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        raw = args.strip()
+        if not raw or raw == "list":
+            return await self._cron_list(inbound)
+        action, _, rest = raw.partition(" ")
+        action = action.lower()
+        if action == "cancel":
+            return await self._cron_cancel(rest.strip(), inbound)
+        if action == "delete":
+            return await self._cron_delete(rest.strip(), inbound)
+        return (
+            "Usage:\n"
+            "  /cron          — List your scheduled tasks\n"
+            "  /cron list     — List your scheduled tasks\n"
+            "  /cron cancel <id> — Cancel a task\n"
+            "  /cron delete <id> — Permanently delete a task"
+        )
+
+    async def _cron_list(self, inbound: InboundMessage) -> str:
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Scheduler is not available."
+        jobs = await scheduler.list_jobs(inbound.platform, inbound.chat_id)
+        if not jobs:
+            return "No scheduled tasks for this chat."
+        lines = []
+        for j in jobs:
+            status_tag = "active" if j.is_active else "inactive"
+            next_at = f", next: {j.next_fire_at}" if j.is_active else ""
+            lines.append(
+                f"  {j.job_id}  [{j.mode}] {status_tag}  runs: {j.run_count}{next_at}"
+            )
+            prompt_preview = j.prompt[:80] + ("..." if len(j.prompt) > 80 else "")
+            lines.append(f"    {prompt_preview}")
+        return "\n".join(lines)
+
+    async def _cron_cancel(self, job_id: str, inbound: InboundMessage) -> str:
+        if not job_id:
+            return "Usage: /cron cancel <job_id>"
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Scheduler is not available."
+        job = await scheduler.get_job(job_id)
+        if (
+            job is None
+            or job.platform != inbound.platform
+            or job.chat_id != inbound.chat_id
+        ):
+            return f"Task '{job_id}' not found."
+        cancelled = await scheduler.cancel_job(job_id)
+        if cancelled:
+            return f"Cancelled task {job_id}."
+        return f"Task {job_id} is already inactive."
+
+    async def _cron_delete(self, job_id: str, inbound: InboundMessage) -> str:
+        if not job_id:
+            return "Usage: /cron delete <job_id>"
+        scheduler = self._get_scheduler()
+        if scheduler is None:
+            return "Scheduler is not available."
+        job = await scheduler.get_job(job_id)
+        if (
+            job is None
+            or job.platform != inbound.platform
+            or job.chat_id != inbound.chat_id
+        ):
+            return f"Task '{job_id}' not found."
+        deleted = await scheduler.delete_job(job_id)
+        if deleted:
+            return f"Deleted task {job_id}."
+        return f"Task {job_id} was already deleted."
 
     async def _cmd_reset(
         self, *, args: str, inbound: InboundMessage, session_id: str
