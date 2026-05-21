@@ -64,6 +64,16 @@ class _FakeAPI:
         self.sent_messages.append((target, message, channel))
         return "msg-1"
 
+    async def record_session_event(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        source: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        pass
+
     def on_event(self, event_type: type) -> Any:
         return lambda handler: handler
 

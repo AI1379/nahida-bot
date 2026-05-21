@@ -59,6 +59,7 @@ class OrchestrationPolicy:
             "agent_wait",
             "agent_stop",
             "sessions_send",
+            "message",
         }
         allowed = set(spec.tool_allowlist)
         result: list[ToolDefinition] = []

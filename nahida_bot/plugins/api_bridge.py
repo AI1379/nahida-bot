@@ -120,6 +120,29 @@ class RealBotAPI:
         )
         return f"msg_{self._plugin_id}_0"
 
+    async def record_session_event(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        source: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        from nahida_bot.agent.memory.models import ConversationTurn
+
+        if self._memory is None:
+            return
+        await self._memory.ensure_session(session_id)
+        await self._memory.append_turn(
+            session_id,
+            ConversationTurn(
+                role="system",
+                content=content,
+                source=source,
+                metadata=metadata,
+            ),
+        )
+
     # ── Event Publishing ───────────────────────────────
 
     async def publish_event(self, event: Any) -> None:

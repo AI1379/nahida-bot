@@ -16,6 +16,16 @@ class MockBotAPI:
     ) -> str:
         return ""
 
+    async def record_session_event(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        source: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        pass
+
     def on_event(self, event_type: type) -> Callable:
         return lambda f: f
 

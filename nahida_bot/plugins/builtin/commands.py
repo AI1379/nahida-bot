@@ -65,6 +65,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_plan_tool()
         self._register_cron_tools()
         self._register_agent_tools()
+        self._register_message_tool()
 
     # ── Command Registration ────────────────────────────────
 
@@ -1076,6 +1077,170 @@ class BuiltinCommandsPlugin(Plugin):
         if task.error:
             lines.append(f"  error: {task.error[:1000]}")
         return "\n".join(lines)
+
+    # ── Cross-Session Message Tool ───────────────────────
+
+    def _register_message_tool(self) -> None:
+        self.api.register_tool(
+            "message",
+            (
+                "Send a message to a chat on any registered platform. "
+                "Use 'notify' delivery for one-time notifications that do not "
+                "affect the target session's history. Use 'record' delivery to "
+                "also write the message into the target session's conversation "
+                "history, so the agent there can see it in context next time."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "description": "Target platform name (e.g. telegram, milky).",
+                    },
+                    "chat_id": {
+                        "type": "string",
+                        "description": "Target chat ID on the specified platform.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Message text to send.",
+                    },
+                    "delivery": {
+                        "type": "string",
+                        "enum": ["notify", "record"],
+                        "description": (
+                            "Delivery mode. 'notify' (default) sends without "
+                            "affecting the target session's history. 'record' "
+                            "also writes into the target session's history so "
+                            "the agent there sees it in context."
+                        ),
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string",
+                                    "description": (
+                                        "Path to the file. Relative to workspace, "
+                                        "or absolute if allowed by config."
+                                    ),
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "auto",
+                                        "photo",
+                                        "document",
+                                        "audio",
+                                        "video",
+                                    ],
+                                    "description": (
+                                        "Attachment type. 'auto' infers from file MIME type."
+                                    ),
+                                },
+                                "caption": {
+                                    "type": "string",
+                                    "description": "Optional caption for the attachment.",
+                                },
+                            },
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                        "description": "Optional files to send alongside the message.",
+                    },
+                },
+                "required": ["platform", "chat_id", "text"],
+                "additionalProperties": False,
+            },
+            self._tool_message,
+        )
+
+    async def _tool_message(
+        self,
+        platform: str,
+        chat_id: str,
+        text: str,
+        delivery: str = "notify",
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> str:
+        ctx = current_session.get()
+        if ctx is None:
+            return "Error: No active session context."
+
+        if delivery not in ("notify", "record"):
+            return "Error: delivery must be 'notify' or 'record'."
+
+        # Resolve attachments
+        resolved_attachments: list[Attachment] = []
+        if attachments:
+            for item in attachments:
+                raw_path = item.get("path", "")
+                if not raw_path:
+                    return "Error: Each attachment must have a 'path'."
+                try:
+                    file_path = self._resolve_attachment_path(raw_path)
+                except ValueError as exc:
+                    return f"Error: {exc}"
+                if not file_path.is_file():
+                    return f"Error: File does not exist: {raw_path}"
+
+                attachment_type = item.get("type", "auto")
+                if attachment_type not in (
+                    "auto",
+                    "photo",
+                    "document",
+                    "audio",
+                    "video",
+                ):
+                    return (
+                        "Error: attachment type must be one of: "
+                        "auto, photo, document, audio, video."
+                    )
+                selected_type = (
+                    self._infer_attachment_type(file_path)
+                    if attachment_type == "auto"
+                    else attachment_type
+                )
+                resolved_attachments.append(
+                    Attachment(
+                        type=selected_type,
+                        path=str(file_path),
+                        caption=item.get("caption", ""),
+                    )
+                )
+
+        outbound = OutboundMessage(text=text, attachments=resolved_attachments)
+        message_id = await self.api.send_message(
+            chat_id,
+            outbound,
+            channel=platform,
+        )
+
+        # Record in target session history if requested
+        if delivery == "record":
+            target_session_id = f"{platform}:{chat_id}"
+            metadata: dict[str, Any] = {
+                "from_session": ctx.session_id,
+                "from_platform": ctx.platform,
+                "from_chat_id": ctx.chat_id,
+            }
+            if resolved_attachments:
+                metadata["attachment_count"] = len(resolved_attachments)
+            await self.api.record_session_event(
+                target_session_id,
+                text,
+                source="cross_session_message",
+                metadata=metadata,
+            )
+
+        parts = [f"Message sent to {platform}:{chat_id}"]
+        if delivery == "record":
+            parts.append("(recorded in target session history)")
+        if message_id:
+            parts[0] += f" (id: {message_id})"
+        return ", ".join(parts)
 
     async def _tool_cron_create(
         self,

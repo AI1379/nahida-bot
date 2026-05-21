@@ -222,6 +222,17 @@ class BotAPI(Protocol):
         """Send a message to an external target. Returns platform message ID."""
         ...
 
+    async def record_session_event(
+        self,
+        session_id: str,
+        content: str,
+        *,
+        source: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Write a system turn into a session's history without triggering a run."""
+        ...
+
     # ── Event System ───────────────────────────────────
 
     def on_event(self, event_type: type) -> Callable:
