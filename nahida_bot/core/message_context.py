@@ -14,10 +14,13 @@ from nahida_bot.plugins.base import (
 )
 
 ENVELOPE_INSTRUCTION = (
-    "Each message in the conversation is prefixed with a metadata tag in "
-    "[brackets containing the timestamp, channel/chat info, and sender "
-    "identity. This tag is contextual metadata only — do NOT reproduce or "
-    "mimic this bracket format in your own replies. Respond with plain text."
+    "## Message Metadata Tags\n"
+    "Each incoming message is prefixed with a context tag in square brackets:\n"
+    "[2026-05-10 14:03 +08 | milky/group:ChatName(chatid) | Alice admin]\n"
+    "This is system-generated metadata, NOT part of the message itself.\n"
+    "CRITICAL: Never produce, reproduce, or mimic these bracket tags in "
+    "your own replies. Your responses must contain only plain reply text — "
+    "no square-bracket metadata, no envelope formatting."
 )
 
 SILENT_REPLY_INSTRUCTION = (
