@@ -28,7 +28,11 @@ from nahida_bot.agent.memory.markdown import (
 )
 from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage, Plugin
 
-from nahida_bot.core.chat_address import ChatAddress, VALID_TARGET_TYPES
+from nahida_bot.core.chat_address import (
+    ChatAddress,
+    VALID_TARGET_TYPES,
+    classify_session_key,
+)
 from nahida_bot.core.context import current_session
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
@@ -1619,6 +1623,7 @@ class BuiltinCommandsPlugin(Plugin):
 
         lines = [
             f"Session: {session_id}",
+            f"Session key: {_format_session_key_kind(classify_session_key(session_id))}",
             f"Provider: {provider_id}",
             f"Model: {model}",
         ]
@@ -2070,6 +2075,18 @@ class BuiltinCommandsPlugin(Plugin):
 def _is_canonical_target(value: str) -> bool:
     parts = value.split(":")
     return len(parts) >= 3 and parts[1] in VALID_TARGET_TYPES
+
+
+def _format_session_key_kind(kind: str) -> str:
+    if kind == "typed":
+        return "typed"
+    if kind == "typed-derived":
+        return "typed derived"
+    if kind == "legacy":
+        return "legacy"
+    if kind == "legacy-derived":
+        return "legacy derived"
+    return "invalid"
 
 
 def _chat_type_from_session_context(ctx: Any) -> str:

@@ -7,6 +7,7 @@ import pytest
 from nahida_bot.core.chat_address import (
     ChatAddress,
     SessionKey,
+    classify_session_key,
 )
 
 
@@ -245,3 +246,20 @@ class TestSessionKey:
     def test_parse_single_segment_raises(self) -> None:
         with pytest.raises(ValueError, match="too few"):
             SessionKey.parse("onlyone")
+
+
+class TestClassifySessionKey:
+    def test_typed_base(self) -> None:
+        assert classify_session_key("milky:group:10001") == "typed"
+
+    def test_typed_derived(self) -> None:
+        assert classify_session_key("milky:group:10001:abcd1234") == "typed-derived"
+
+    def test_legacy_base(self) -> None:
+        assert classify_session_key("milky:10001") == "legacy"
+
+    def test_legacy_derived(self) -> None:
+        assert classify_session_key("milky:10001:abcd1234") == "legacy-derived"
+
+    def test_invalid(self) -> None:
+        assert classify_session_key("onlyone") == "invalid"

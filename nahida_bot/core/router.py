@@ -11,7 +11,7 @@ from uuid import uuid4
 import structlog
 
 from nahida_bot.core.channel_registry import ChannelRegistry
-from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.chat_address import ChatAddress, classify_session_key
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
     EventBus,
@@ -241,6 +241,17 @@ class MessageRouter:
             overrides = await memory.load_active_sessions()
             if overrides:
                 self._active_sessions.update(overrides)
+                legacy_keys = [
+                    key
+                    for key in overrides
+                    if classify_session_key(key).startswith("legacy")
+                ]
+                if legacy_keys:
+                    logger.warning(
+                        "router.restored_legacy_sessions",
+                        count=len(legacy_keys),
+                        keys=legacy_keys,
+                    )
                 logger.info(
                     "router.restored_sessions",
                     count=len(overrides),

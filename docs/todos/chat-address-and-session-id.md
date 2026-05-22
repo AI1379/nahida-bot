@@ -1,7 +1,7 @@
 # ChatAddress 与 Session ID 重构 TODO
 
 > 记录时间：2026-05-21
-> 状态：Phase 0 / Phase 1 已完成，Phase 2–4 待实施
+> 状态：Phase 0–2 已完成，Phase 3–4 待实施
 > 最后更新：2026-05-22
 > 相关文档：
 >
@@ -813,7 +813,7 @@ address = parse_chat_address_tool_args(...)
 ```
 Phase 0 (核心类型)         ✅ 已完成 (2026-05-22)
   └─→ Phase 1 (新数据写 typed key)  ✅ 已完成 (2026-05-22)
-        └─→ Phase 2 (兼容读 legacy)  ⬜ 待实施
+        └─→ Phase 2 (兼容读 legacy)  ✅ 已完成 (2026-05-22)
               └─→ Phase 3 (迁移工具)  ⬜ 待实施
                       └─→ Phase 4 (移除 legacy)  ⬜ 待实施
 ```
@@ -922,38 +922,51 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 
 ---
 
-### Phase 2: 兼容读取 Legacy 数据 ⬜ 待实施
+### Phase 2: 兼容读取 Legacy 数据 ✅ 已完成
+
+**完成时间：2026-05-22**
 
 **目标：** 旧 session 数据不丢失、不崩溃，但明确标记为 legacy，不参与正常 session 路由。
 
-**难度：中** | **预估工期：1–1.5 天**
-
-#### 需修改的文件
+#### 已修改的文件
 
 | 文件 | 改动范围 |
 |------|----------|
-| `nahida_bot/core/router.py` | `restore_active_sessions` 识别 legacy chat_key，加载但不用于新路由 |
-| `nahida_bot/plugins/builtin/commands.py` | `/status`、session list 显示 legacy/typed 状态 |
+| `nahida_bot/core/chat_address.py` | 新增 `classify_session_key()`，统一识别 `typed` / `typed-derived` / `legacy` / `legacy-derived` / `invalid` |
+| `nahida_bot/core/router.py` | `restore_active_sessions` 识别 legacy active session overrides，并输出 warning 日志 |
+| `nahida_bot/plugins/builtin/commands.py` | `/status` 输出 session key 分类，方便用户判断当前会话是否仍是 legacy |
+| `nahida_bot/gateway/schemas.py` | `SessionSummaryResponse` 新增 `session_key_kind` 字段 |
+| `nahida_bot/gateway/routes/sessions.py` | `/api/sessions` 为每个 session 返回 `session_key_kind` |
+| `tests/test_chat_address.py` | 覆盖 session key 分类 |
+| `tests/test_builtin_commands_plugin.py` | 覆盖 `/status` 的 typed/legacy 显示 |
+| `tests/test_webapi.py` | 覆盖 `/api/sessions` 的 `session_key_kind` 字段 |
 
 #### 关键实现步骤
 
-1. **Router 兼容查找**（已部分实现）
+1. **Router 兼容查找**
    - `get_active_session_id` 已支持 typed key 优先、legacy key fallback
-   - 需增强 `restore_active_sessions` 对 legacy key 的日志提示
+   - `restore_active_sessions` 会加载旧记录，但对 legacy key 输出 `router.restored_legacy_sessions` warning
 
 2. **Migration 011** ✅ 已在 Phase 1 中完成
    - `chat_type` 列和 `session_key_migration_log` 表已创建
 
 3. **Session 状态可视化**
    - `/status` 输出标注 session key 是否为 typed
-   - Session list 区分 legacy 和 typed sessions
+   - `/api/sessions` 返回 `session_key_kind`，方便 UI 或外部工具筛选 legacy sessions
+
+#### 测试结果
+
+- `uv run pyright` → 0 errors, 0 warnings
+- `uv run ruff check nahida_bot tests` → All checks passed
+- `uv run pytest tests/test_chat_address.py tests/test_builtin_commands_plugin.py tests/test_webapi.py tests/test_message_router.py` → 122 passed
 
 #### 验收标准
 
 - [x] 启动时 legacy active_sessions 记录不报错（Phase 1 fallback 机制已覆盖）
 - [x] Typed session 优先匹配，legacy 仅作为 fallback
 - [x] Migration 011 成功执行，审计表可用
-- [ ] `/status` 可区分 legacy/typed session
+- [x] `/status` 可区分 legacy/typed session
+- [x] `/api/sessions` 可区分 legacy/typed session
 
 ---
 
@@ -1067,7 +1080,7 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 ```
 ✅ Day 1:     Phase 0 — 核心类型 + Parser + 40 个测试
 ✅ Day 1–2:   Phase 1 — Router + Channel + SessionContext + Commands + Scheduler + WebAPI
-⬜ Day 3:     Phase 2 — 兼容读 legacy 增强 + 状态可视化
+✅ Day 3:     Phase 2 — 兼容读 legacy 增强 + 状态可视化
 ⬜ Day 3–4:   Phase 3 — 迁移脚本 inspect/apply 开发 + 测试
 ⬜ Day 5:     Phase 3 — 使用真实数据运行 inspect + 人工审核 + apply
 ⬜ Day 5:     Phase 4 — 清理 legacy 兼容代码 + 最终验证

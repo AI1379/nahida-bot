@@ -177,7 +177,7 @@ async def test_sessions_returns_list(client_no_auth: AsyncClient) -> None:
     mock_memory = AsyncMock()
     mock_memory.list_sessions.return_value = [
         SessionSummary(
-            session_id="telegram:123",
+            session_id="telegram:private:123",
             workspace_id=None,
             created_at="2026-01-01T00:00:00",
             last_active_at="2026-01-01T00:01:00",
@@ -191,7 +191,8 @@ async def test_sessions_returns_list(client_no_auth: AsyncClient) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["sessions"]) == 1
-    assert data["sessions"][0]["session_id"] == "telegram:123"
+    assert data["sessions"][0]["session_id"] == "telegram:private:123"
+    assert data["sessions"][0]["session_key_kind"] == "typed"
     assert data["sessions"][0]["turn_count"] == 5
 
 

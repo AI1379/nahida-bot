@@ -17,6 +17,7 @@ class HealthResponse(BaseModel):
 
 class SessionSummaryResponse(BaseModel):
     session_id: str
+    session_key_kind: str = ""
     workspace_id: str | None
     created_at: str
     last_active_at: str

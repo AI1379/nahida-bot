@@ -557,6 +557,22 @@ async def test_model_and_status_show_default_for_new_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_status_shows_session_key_kind() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    typed = await plugin._cmd_status(
+        args="", inbound=_inbound(), session_id="telegram:private:c1"
+    )
+    legacy = await plugin._cmd_status(
+        args="", inbound=_inbound(), session_id="telegram:c1:abc12345"
+    )
+
+    assert "Session key: typed" in typed
+    assert "Session key: legacy derived" in legacy
+
+
+@pytest.mark.asyncio
 async def test_new_command_switches_router_session() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())

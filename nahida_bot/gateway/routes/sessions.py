@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from nahida_bot.core.chat_address import classify_session_key
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import (
     SessionHistoryResponse,
@@ -28,6 +29,7 @@ async def list_sessions(
         sessions=[
             SessionSummaryResponse(
                 session_id=s.session_id,
+                session_key_kind=classify_session_key(s.session_id),
                 workspace_id=s.workspace_id,
                 created_at=s.created_at,
                 last_active_at=s.last_active_at,

@@ -6,6 +6,13 @@ from dataclasses import dataclass
 from typing import Literal, TypeGuard
 
 TargetType = Literal["private", "group", "channel", "thread", "unknown"]
+SessionKeyKind = Literal[
+    "typed",
+    "typed-derived",
+    "legacy",
+    "legacy-derived",
+    "invalid",
+]
 KNOWN_TARGET_TYPES: frozenset[TargetType] = frozenset(
     ("private", "group", "channel", "thread")
 )
@@ -27,6 +34,18 @@ def normalize_target_type(value: str) -> TargetType:
     raise ValueError(
         f"Invalid target_type {value!r}; expected one of {sorted(VALID_TARGET_TYPES)}"
     )
+
+
+def classify_session_key(value: str) -> SessionKeyKind:
+    """Classify a persisted session id for migration/status displays."""
+    try:
+        key = SessionKey.parse(value)
+    except ValueError:
+        return "invalid"
+
+    if key.address.is_typed:
+        return "typed-derived" if key.is_derived else "typed"
+    return "legacy-derived" if key.is_derived else "legacy"
 
 
 @dataclass(slots=True, frozen=True)
