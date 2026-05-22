@@ -188,6 +188,19 @@ _SCHEMA_MIGRATIONS = [
     """
     ALTER TABLE cron_jobs ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'main';
     """,
+    # Migration 011: chat_type column and session key migration audit log
+    """
+    ALTER TABLE cron_jobs ADD COLUMN chat_type TEXT NOT NULL DEFAULT '';
+
+    CREATE TABLE IF NOT EXISTS session_key_migration_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        old_session_id TEXT NOT NULL,
+        new_session_id TEXT,
+        status TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

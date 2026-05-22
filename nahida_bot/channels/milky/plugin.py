@@ -27,6 +27,7 @@ from nahida_bot.channels.milky.segment_converter import (
     resolve_target,
 )
 from nahida_bot.channels.milky.segments import OutgoingTextSegment
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
 from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.router import MessageRouter
@@ -151,7 +152,14 @@ class MilkyPlugin(Plugin):
         if scene:
             self._remember_scene(inbound.chat_id, scene)
 
-        session_id = MessageRouter.make_session_id(inbound.platform, inbound.chat_id)
+        # Build ChatAddress from scene (group vs private)
+        chat_type = "group" if scene == "group" else "private" if scene else "unknown"
+        address = ChatAddress(
+            channel=inbound.platform,
+            target_type=chat_type,
+            target_id=inbound.chat_id,
+        )
+        session_id = MessageRouter.make_session_id(address)
         event_type = MessageReceived if decision.respond else MessageObserved
         await self.api.publish_event(
             event_type(

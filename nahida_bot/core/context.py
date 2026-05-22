@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import InboundAttachment
 
 
@@ -14,8 +15,11 @@ class SessionContext:
 
     platform: str  # e.g. "telegram"
     chat_id: str  # e.g. "12345"
-    session_id: str  # e.g. "telegram:12345" or "telegram:12345:abc12345"
+    session_id: (
+        str  # e.g. "telegram:private:12345" or "telegram:private:12345:abc12345"
+    )
     workspace_id: str | None = None
+    chat_address: ChatAddress | None = None
 
 
 @dataclass(slots=True, frozen=True)

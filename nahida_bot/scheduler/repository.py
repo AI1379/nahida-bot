@@ -17,6 +17,7 @@ _logger = structlog.get_logger(__name__)
 
 def _row_to_job(r: aiosqlite.Row) -> CronJob:
     """Convert a database row to a CronJob dataclass."""
+    keys = r.keys()
     return CronJob(
         job_id=r["job_id"],
         platform=r["platform"],
@@ -26,7 +27,7 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         mode=r["mode"],
         fire_at=r["fire_at"],
         interval_seconds=r["interval_seconds"],
-        cron_expression=r["cron_expression"] if "cron_expression" in r.keys() else None,
+        cron_expression=r["cron_expression"] if "cron_expression" in keys else None,
         max_runs=r["max_runs"],
         run_count=r["run_count"],
         is_active=bool(r["is_active"]),
@@ -37,7 +38,8 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         claimed_at=r["claimed_at"],
         failure_count=r["failure_count"],
         last_error=r["last_error"],
-        session_mode=r["session_mode"] if "session_mode" in r.keys() else "main",
+        session_mode=r["session_mode"] if "session_mode" in keys else "main",
+        chat_type=r["chat_type"] if "chat_type" in keys else "",
     )
 
 
@@ -56,8 +58,8 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error, session_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode, chat_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -80,6 +82,7 @@ class CronRepository:
                     job.failure_count,
                     job.last_error,
                     job.session_mode,
+                    job.chat_type,
                 ),
             )
             await self._engine.db.commit()
@@ -353,8 +356,8 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error, session_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode, chat_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -377,6 +380,7 @@ class CronRepository:
                     job.failure_count,
                     job.last_error,
                     job.session_mode,
+                    job.chat_type,
                 ),
             )
             await self._engine.db.commit()

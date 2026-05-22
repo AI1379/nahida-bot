@@ -1,7 +1,8 @@
 # ChatAddress 与 Session ID 重构 TODO
 
 > 记录时间：2026-05-21
-> 状态：破坏性修正规划，尚未进入代码实现
+> 状态：Phase 0 / Phase 1 已完成，Phase 2–4 待实施
+> 最后更新：2026-05-22
 > 相关文档：
 >
 > - [cross-session-messaging.md](cross-session-messaging.md)
@@ -797,3 +798,277 @@ address = parse_chat_address_tool_args(...)
 - Milky 裸数字 outbound 需要显式 `chat_type`，除非 scene cache 或 session metadata 能证明类型。
 - 数据库迁移必须支持 dry-run、备份、审计 log 和 ambiguous 数据保留。
 - 无法确认 target type 的 cron job 应禁用或要求人工确认，不能冒险发送。
+
+---
+
+## ROADMAP — 实施路线图
+
+> 评估时间：2026-05-22
+> 总体难度：**中高**
+> 预估总工期：**6–8 个工作日**（单人，含测试）
+> 最复杂子系统：数据库迁移脚本（Phase 3）
+
+### 全局依赖关系
+
+```
+Phase 0 (核心类型)         ✅ 已完成 (2026-05-22)
+  └─→ Phase 1 (新数据写 typed key)  ✅ 已完成 (2026-05-22)
+        └─→ Phase 2 (兼容读 legacy)  ⬜ 待实施
+              └─→ Phase 3 (迁移工具)  ⬜ 待实施
+                      └─→ Phase 4 (移除 legacy)  ⬜ 待实施
+```
+
+Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移脚本开发可与兼容读实现同时进行），但 Phase 3 的 apply 必须在 Phase 2 完成后才能对真实数据执行。
+
+---
+
+### Phase 0: 核心类型与 Parser ✅ 已完成
+
+**完成时间：2026-05-22**
+
+#### 新增文件
+
+| 文件 | 内容 |
+|------|------|
+| `nahida_bot/core/chat_address.py` | `ChatAddress` dataclass, `SessionKey` dataclass, `parse()`, `from_inbound()`, 格式校验 |
+| `tests/test_chat_address.py` | 40 个 parser 测试，全部通过 |
+
+#### 已实现
+
+1. **ChatAddress dataclass** (`slots=True, frozen=True`)
+   - `channel: str`, `target_type: str`, `target_id: str`, `thread_id: str = ""`
+   - `__str__` → `channel:target_type:target_id[:thread_id]`
+   - `is_typed` / `chat_key` / `legacy_key` 属性
+   - `parse(value)` 类方法：typed、legacy、含 thread_id 三种路径
+   - `from_inbound(platform, chat_id, *, is_group, chat_type)` 构建方法
+
+2. **SessionKey dataclass**
+   - 持有 `ChatAddress` + 可选 `suffix: str`
+   - `__str__` → `milky:group:20001:abcd1234`
+   - `parse(value)` 处理 typed/legacy base + suffix
+   - `is_derived` 属性
+
+3. **Parser 设计原则**
+   - typed target: 第二段是 `KNOWN_TARGET_TYPES` 中的值 → `ChatAddress`
+   - legacy session: 第二段不是 target_type → `target_type="unknown"`
+   - **不默认补 private**，legacy 返回 `unknown`
+
+#### 验收标准
+
+- [x] `ChatAddress.parse("milky:group:20001")` 返回正确结构
+- [x] `SessionKey.parse("milky:10001")` 返回 `target_type="unknown"`
+- [x] `SessionKey.parse("milky:10001:abcd1234")` 正确识别 legacy suffix
+- [x] `str(SessionKey(address, "abcd1234"))` → `"milky:group:20001:abcd1234"`
+- [x] 40 个 parser 测试全部通过
+
+---
+
+### Phase 1: 新数据写 Typed Key ✅ 已完成
+
+**完成时间：2026-05-22**
+
+**目标：** 从 Router → Channel → Tool 全链路使用 `ChatAddress`，新产生的 session 不再有 collision 风险。
+
+#### 已修改的文件
+
+| 文件 | 实际改动 |
+|------|----------|
+| `nahida_bot/core/context.py` | `SessionContext` 新增 `chat_address: ChatAddress | None` 字段 |
+| `nahida_bot/core/router.py` | `make_session_id` / `make_new_session_id` 接受 `str \| ChatAddress`；`get/set_active_session` 接受 `str \| ChatAddress`；新增 `_address_from_inbound()` helper；入站路径构建 `ChatAddress` 并传入 `SessionContext`；`get_active_session_id` typed key 优先、legacy key fallback |
+| `nahida_bot/channels/milky/plugin.py` | `handle_inbound_event` 从 `message_scene` 构建 `ChatAddress`（`group`→`"group"`，`friend`→`"private"`，无 scene→`"unknown"`）；`make_session_id(address)` 生成 typed session id |
+| `nahida_bot/channels/telegram/plugin.py` | `handle_inbound_event` 从 `is_group` 构建 `ChatAddress`（`True`→`"group"`，`False`→`"private"`）；`make_session_id(address)` 生成 typed session id |
+| `nahida_bot/plugins/api_bridge.py` | `start_new_session` 从 `current_session.chat_address` 获取 `ChatAddress`，用 typed key 调用 router |
+| `nahida_bot/plugins/builtin/commands.py` | Message 工具新增 `target` 参数（`milky:group:20001`），解析为 `ChatAddress`；`record` 用 typed session id；cron create 从 `ctx.chat_address` 提取 `chat_type` 传给 scheduler |
+| `nahida_bot/scheduler/models.py` | `CronJob` 新增 `chat_type: str = ""` 字段 |
+| `nahida_bot/scheduler/service.py` | `create_job` 接受 `chat_type` 参数，有 `chat_type` 时生成 typed `session_key`；`list_jobs` 先查 typed key 再 fallback legacy；`_execute_fire` 构建 `ChatAddress` 传入 `SessionContext` |
+| `nahida_bot/scheduler/repository.py` | SQL insert/update 包含 `chat_type` 列；`_row_to_job` 安全读取 `chat_type`（兼容旧 schema） |
+| `nahida_bot/db/engine.py` | Migration 011：`ALTER TABLE cron_jobs ADD COLUMN chat_type`；`CREATE TABLE session_key_migration_log` |
+| `nahida_bot/gateway/schemas.py` | `SendMessageRequest` / `CreateCronRequest` 新增可选 `target` 字段 |
+| `nahida_bot/gateway/routes/messages.py` | 优先解析 `target`→`ChatAddress`，fallback 到 `platform+chat_id` |
+| `nahida_bot/gateway/routes/cron.py` | 优先解析 `target`→`ChatAddress`，提取 `chat_type` 传给 scheduler |
+
+#### 关键设计决策
+
+1. **Router 方法签名兼容**：`make_session_id` / `get_active_session_id` / `set_active_session` 同时接受 `ChatAddress` 和 legacy `(str, str)` 参数，通过 `isinstance` 分支处理。未改动的调用方继续工作。
+
+2. **Active session fallback**：`get_active_session_id(address)` 先查 typed key，找不到时查 legacy key。这让从 DB 恢复的旧 session override 仍能命中。
+
+3. **ChatAddress 来源**：
+   - Milky：从 `message_scene` 直接推断（`group`→group，`friend`→private）
+   - Telegram：从 `is_group` 推断（`True`→group，`False`→private）
+   - Router 入站：从 `chat_context.chat_type` > `message_context.chat_type` > `is_group` 逐级 fallback
+
+4. **Message 工具 `target` 参数**：新增为可选参数，与 `platform+chat_id` 二选一。`target` 解析为 `ChatAddress` 后用于 `record` 的 session id 生成。
+
+5. **Scheduler `chat_type`**：新增为 `create_job` 的可选参数。有 `chat_type` 时生成 typed `session_key`（如 `milky:group:20001`），无时 fallback 到 legacy（如 `milky:20001`）。
+
+#### 测试结果
+
+- 611 tests passed, 8 skipped (live integration tests), 0 failures
+- 测试改动：
+  - `test_message_router.py`：`_inbound` helper 添加 `ChatContext(chat_type="private")`；所有 session id 引用从 `test:c1` 更新为 `test:private:c1`；group 测试使用 `ChatContext(chat_type="group")`
+  - `test_milky_plugin.py`：session id 断言从 `milky:20001` 更新为 `milky:group:20001`
+
+#### 验收标准
+
+- [x] Milky 私聊 `10001` 和群聊 `10001` 产生不同 session id
+- [x] 新 session key 格式为 `milky:private:10001` 或 `milky:group:10001`
+- [x] `/new` 产生 `milky:group:10001:abcd1234` 格式
+- [x] Message 工具 `target="milky:group:20001"` 可解析并正确 record
+- [x] Cron fire 时 `SessionContext` 携带 `chat_address`
+- [x] WebAPI `target` 参数工作正常
+- [x] 旧 `platform/chat_id` 格式仍可解析（兼容读），但新写入均为 typed
+- [x] 现有测试全部通过
+
+---
+
+### Phase 2: 兼容读取 Legacy 数据 ⬜ 待实施
+
+**目标：** 旧 session 数据不丢失、不崩溃，但明确标记为 legacy，不参与正常 session 路由。
+
+**难度：中** | **预估工期：1–1.5 天**
+
+#### 需修改的文件
+
+| 文件 | 改动范围 |
+|------|----------|
+| `nahida_bot/core/router.py` | `restore_active_sessions` 识别 legacy chat_key，加载但不用于新路由 |
+| `nahida_bot/plugins/builtin/commands.py` | `/status`、session list 显示 legacy/typed 状态 |
+
+#### 关键实现步骤
+
+1. **Router 兼容查找**（已部分实现）
+   - `get_active_session_id` 已支持 typed key 优先、legacy key fallback
+   - 需增强 `restore_active_sessions` 对 legacy key 的日志提示
+
+2. **Migration 011** ✅ 已在 Phase 1 中完成
+   - `chat_type` 列和 `session_key_migration_log` 表已创建
+
+3. **Session 状态可视化**
+   - `/status` 输出标注 session key 是否为 typed
+   - Session list 区分 legacy 和 typed sessions
+
+#### 验收标准
+
+- [x] 启动时 legacy active_sessions 记录不报错（Phase 1 fallback 机制已覆盖）
+- [x] Typed session 优先匹配，legacy 仅作为 fallback
+- [x] Migration 011 成功执行，审计表可用
+- [ ] `/status` 可区分 legacy/typed session
+
+---
+
+### Phase 3: 数据库迁移工具 ⬜ 待实施
+
+**目标：** 提供可审计、可回滚、人工逐条批准的迁移脚本，将 legacy session key 转为 typed key。
+
+**难度：高** | **预估工期：2–3 天**
+
+#### 新增文件
+
+| 文件 | 内容 |
+|------|------|
+| `scripts/migrate_session_keys.py` | 一次性迁移脚本：inspect / apply / rollback |
+
+#### 需修改的文件（仅 minor）
+
+| 文件 | 改动 |
+|------|------|
+| `nahida_bot/db/engine.py` | 可能需要调整 migration 顺序或添加辅助索引 |
+
+#### 关键实现步骤
+
+1. **inspect 命令**
+   - 扫描所有 legacy session key
+   - 按第 7.3 节的推断优先级收集证据
+   - 生成每 session 的 `recommendation` / `confidence` / `evidence` / `affected`
+   - 输出 `migration-plan.json`
+
+2. **人工批准流程**
+   - 维护者编辑 plan JSON，逐条设置 `approval`
+   - 支持: `approved` / `rejected` / `force_keep_legacy` / `force_rename` / `force_split`
+
+3. **apply 命令**
+   - 串行逐条执行，每条独立事务
+   - rename: 更新 `sessions`, `memory_turns`, `active_sessions`, `cron_jobs`, `background_tasks`
+   - split: 按 turn_id 拆分到多个 typed session
+   - 冲突检测: 目标 typed session 已存在时合并而非覆盖
+   - 所有操作写入 `session_key_migration_log`
+   - apply 前自动备份 SQLite 文件
+
+4. **rollback 命令（可选但推荐）**
+   - 根据 migration log 反向恢复
+   - 不承诺能恢复已 split 的 session（文档已说明）
+
+#### 测试重点
+
+- 使用真实 db 副本运行 inspect，验证推断逻辑
+- 构造混合 private/group turns 的 session 测试 split
+- 测试目标 session 已存在时的合并逻辑
+- 测试 apply 中途失败的回滚
+- 测试重复运行 inspect/apply 的幂等性
+
+#### 验收标准
+
+- [ ] `inspect` 对每个 legacy session 输出完整建议和证据
+- [ ] `apply --dry-run` 不修改数据库但输出执行计划
+- [ ] `apply` 前自动备份 db
+- [ ] 每条迁移有独立事务，单条失败不影响后续
+- [ ] 所有迁移操作记录到 `session_key_migration_log`
+- [ ] `apply` 后跑一致性检查无 orphan 记录
+- [ ] 脚本可安全重复运行（幂等）
+
+---
+
+### Phase 4: 移除 Legacy 兼容 ⬜ 待实施
+
+**目标：** 清理所有 legacy 写入路径，删除兼容代码。
+
+**难度：低中** | **预估工期：0.5–1 天**
+
+#### 需修改的文件
+
+| 文件 | 改动 |
+|------|------|
+| `nahida_bot/core/router.py` | 删除 `make_session_id` / `get_active_session_id` / `set_active_session` 的 legacy `(str, str)` 分支 |
+| `nahida_bot/plugins/builtin/commands.py` | 移除 `platform/chat_id` 旧参数的兼容处理，只接受 `target` |
+| `nahida_bot/gateway/schemas.py` | 移除旧 `platform/chat_id` schema，只保留 `target` |
+| `nahida_bot/scheduler/service.py` | 移除 legacy `session_key` 构造（`f"{platform}:{chat_id}"`） |
+| `nahida_bot/channels/milky/segment_converter.py` | 移除 default-to-friend fallback |
+
+#### 关键实现步骤
+
+1. 删除 Router 的 legacy `isinstance(str)` 分支
+2. Message 工具要求必须传 `target`（含 target_type）
+3. WebAPI 要求 `target` 或 `chat_type`，缺少时报错
+4. Milky outbound 不再 default-to-friend，无 chat_type 时报错
+5. 更新相关文档
+
+#### 验收标准
+
+- [ ] 代码中无 `platform:chat_id` 的手动拼接（grep 验证）
+- [ ] 所有 session id 生成均通过 `ChatAddress` / `SessionKey`
+- [ ] Milky 缺少 target_type 时发送报错而非 fallback to friend
+- [ ] WebAPI 缺少 chat_type 时返回 400
+
+---
+
+### 风险与缓解
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|----------|
+| ~~Phase 1 改动面大，引入回归~~ | ~~中高~~ | ✅ Phase 1 已完成，611 tests passed，0 regressions |
+| Legacy session 中 private/group 数据混合 | 高 | Phase 3 inspect 自动检测冲突，split 需人工批准 |
+| Cron job 迁移后发送到错误目标 | 高 | 无法确认类型的 cron 默认禁用；fire 时强制使用 ChatAddress |
+| Migration apply 中途崩溃 | 中 | 每条 session 独立事务；自动备份；可重试 |
+| 并行部署时新旧格式冲突 | 低 | Phase 0–1 期间新格式向下兼容（parser 可读旧格式） |
+
+### 实施进度
+
+```
+✅ Day 1:     Phase 0 — 核心类型 + Parser + 40 个测试
+✅ Day 1–2:   Phase 1 — Router + Channel + SessionContext + Commands + Scheduler + WebAPI
+⬜ Day 3:     Phase 2 — 兼容读 legacy 增强 + 状态可视化
+⬜ Day 3–4:   Phase 3 — 迁移脚本 inspect/apply 开发 + 测试
+⬜ Day 5:     Phase 3 — 使用真实数据运行 inspect + 人工审核 + apply
+⬜ Day 5:     Phase 4 — 清理 legacy 兼容代码 + 最终验证
+```

@@ -127,7 +127,7 @@ async def test_handle_inbound_event_publishes_message_received() -> None:
     assert inbound.platform == "milky"
     assert inbound.chat_id == "20001"
     assert inbound.text == "ping"
-    assert event.payload.session_id == "milky:20001"
+    assert event.payload.session_id == "milky:group:20001"
 
 
 async def test_handle_inbound_event_observes_untriggered_group_context() -> None:

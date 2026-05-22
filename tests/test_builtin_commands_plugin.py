@@ -597,7 +597,9 @@ class _FakeScheduler:
     async def get_job(self, job_id: str) -> CronJob | None:
         return self.jobs.get(job_id)
 
-    async def list_jobs(self, platform: str, chat_id: str) -> list[CronJob]:
+    async def list_jobs(
+        self, platform: str, chat_id: str, *, chat_type: str = ""
+    ) -> list[CronJob]:
         return [
             job
             for job in self.jobs.values()

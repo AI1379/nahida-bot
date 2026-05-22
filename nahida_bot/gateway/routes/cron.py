@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import (
     CreateCronRequest,
@@ -26,12 +27,18 @@ def _require_scheduler(app):
 
 @router.get("/api/cron", response_model=CronListResponse)
 async def list_cron_jobs(
-    platform: str = Query(...),
-    chat_id: str = Query(...),
+    target: str | None = Query(None),
+    platform: str = Query(""),
+    chat_id: str = Query(""),
     app=Depends(get_application),
 ) -> CronListResponse:
     svc = _require_scheduler(app)
-    jobs = await svc.list_jobs(platform, chat_id)
+    platform, chat_id, chat_type = _resolve_target_fields(
+        target=target,
+        platform=platform,
+        chat_id=chat_id,
+    )
+    jobs = await svc.list_jobs(platform, chat_id, chat_type=chat_type)
     return CronListResponse(jobs=[_job_to_response(j) for j in jobs])
 
 
@@ -57,10 +64,18 @@ async def create_cron_job(
     app=Depends(get_application),
 ) -> CreateCronResponse:
     svc = _require_scheduler(app)
+
+    # Resolve platform/chat_id/chat_type from target or legacy fields
+    platform, chat_id, chat_type = _resolve_target_fields(
+        target=body.target,
+        platform=body.platform,
+        chat_id=body.chat_id,
+    )
+
     try:
         job = await svc.create_job(
-            platform=body.platform,
-            chat_id=body.chat_id,
+            platform=platform,
+            chat_id=chat_id,
             prompt=body.prompt,
             mode=body.mode,  # type: ignore[arg-type]
             fire_at=body.fire_at,
@@ -68,6 +83,7 @@ async def create_cron_job(
             cron_expression=body.cron_expression,
             max_runs=body.max_runs,
             session_mode=body.session_mode,  # type: ignore[arg-type]
+            chat_type=chat_type,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -147,4 +163,31 @@ def _job_to_response(job: object) -> CronJobResponse:
         next_fire_at=job.next_fire_at,  # type: ignore[union-attr]
         run_count=job.run_count,  # type: ignore[union-attr]
         created_at=job.created_at,  # type: ignore[union-attr]
+    )
+
+
+def _resolve_target_fields(
+    *,
+    target: str | None,
+    platform: str,
+    chat_id: str,
+) -> tuple[str, str, str]:
+    if target:
+        try:
+            address = ChatAddress.parse(target)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        return (
+            address.channel,
+            address.target_id,
+            address.target_type if address.is_typed else "",
+        )
+    if platform and chat_id:
+        return platform, chat_id, ""
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Provide 'target' or both 'platform' and 'chat_id'.",
     )

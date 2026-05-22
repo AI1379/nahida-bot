@@ -45,8 +45,9 @@ class SessionHistoryResponse(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    platform: str
-    chat_id: str
+    target: str | None = None
+    platform: str = ""
+    chat_id: str = ""
     text: str
     session_id: str | None = None
 
@@ -76,8 +77,9 @@ class CronListResponse(BaseModel):
 
 
 class CreateCronRequest(BaseModel):
-    platform: str
-    chat_id: str
+    target: str | None = None
+    platform: str = ""
+    chat_id: str = ""
     prompt: str
     mode: str
     fire_at: str | None = None

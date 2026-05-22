@@ -244,6 +244,35 @@ async def test_send_success(client_no_auth: AsyncClient) -> None:
     mock_channel.send_message.assert_called_once()
 
 
+async def test_send_with_typed_target_resolves_typed_session(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.core.chat_address import ChatAddress
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+
+    mock_router = MagicMock()
+    mock_router.get_active_session_id.return_value = "telegram:private:123:abc"
+    mock_app.message_router = mock_router
+
+    mock_channel = AsyncMock()
+    mock_channel.send_message = AsyncMock(return_value="msg-456")
+    mock_app.channel_registry.get.return_value = mock_channel
+
+    resp = await client_no_auth.post(
+        "/api/send",
+        json={"target": "telegram:private:123", "text": "hello"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == "telegram:private:123:abc"
+    address = mock_router.get_active_session_id.call_args.args[0]
+    assert isinstance(address, ChatAddress)
+    assert address.target_type == "private"
+    assert address.target_id == "123"
+    mock_channel.send_message.assert_called_once()
+
+
 # -- Cron -----------------------------------------------------------------
 
 
@@ -291,6 +320,23 @@ async def test_cron_list_returns_jobs(client_no_auth: AsyncClient) -> None:
     assert len(data["jobs"]) == 1
     assert data["jobs"][0]["job_id"] == "abc123"
     assert data["jobs"][0]["mode"] == "interval"
+
+
+async def test_cron_list_with_typed_target_passes_chat_type(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_scheduler = AsyncMock()
+    mock_scheduler.list_jobs.return_value = []
+    mock_app.scheduler_service = mock_scheduler
+
+    resp = await client_no_auth.get("/api/cron?target=telegram:private:123")
+    assert resp.status_code == 200
+    mock_scheduler.list_jobs.assert_awaited_once_with(
+        "telegram",
+        "123",
+        chat_type="private",
+    )
 
 
 async def test_cron_create_success(client_no_auth: AsyncClient) -> None:

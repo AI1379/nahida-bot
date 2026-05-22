@@ -11,6 +11,7 @@ from uuid import uuid4
 import structlog
 
 from nahida_bot.core.channel_registry import ChannelRegistry
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
     EventBus,
@@ -248,33 +249,74 @@ class MessageRouter:
         except Exception:
             logger.warning("router.restore_sessions_failed", exc_info=True)
 
-    def get_active_session_id(self, platform: str, chat_id: str) -> str:
+    def get_active_session_id(
+        self, platform_or_address: str | ChatAddress, chat_id: str = ""
+    ) -> str:
         """Return the active session ID for a chat.
 
+        Accepts either a ``ChatAddress`` or legacy ``(platform, chat_id)`` pair.
         If ``/new`` was used, returns the switched session id.
-        Otherwise returns the deterministic ``platform:chat_id`` key.
+        Otherwise returns the deterministic chat key.
         """
-        key = self.make_session_id(platform, chat_id)
-        active = self._active_sessions.get(key, key)
+        # TODO: Currently we make a lot of redundant calls to keep the legacy
+        # platform+chat_id interface working. Refactor to unify on ChatAddress
+        # and eliminate the legacy form.
+        if not isinstance(platform_or_address, ChatAddress):
+            key = self.make_session_id(platform_or_address, chat_id)
+            active = self._active_sessions.get(key, key)
+            logger.debug(
+                "router.resolve_session",
+                key=key,
+                active_session_id=active,
+                has_override=active != key,
+            )
+            return active
+
+        address = platform_or_address
+        typed_key = address.chat_key
+        active = self._active_sessions.get(typed_key)
+        if active is None and address.is_typed:
+            # Fallback to legacy key for backward compat with restored sessions
+            active = self._active_sessions.get(address.legacy_key)
+        if active is None:
+            active = typed_key
+
         logger.debug(
             "router.resolve_session",
-            key=key,
+            typed_key=typed_key,
             active_session_id=active,
-            has_override=key in self._active_sessions,
+            has_override=active != typed_key,
         )
         return active
 
-    def set_active_session(self, platform: str, chat_id: str, session_id: str) -> None:
-        """Switch the active session for a chat (used by /new)."""
-        key = self.make_session_id(platform, chat_id)
-        old = self._active_sessions.get(key, key)
-        self._active_sessions[key] = session_id
-        self._persist_override(key, session_id)
+    def set_active_session(
+        self,
+        platform_or_address: str | ChatAddress,
+        chat_id_or_session: str,
+        session_id: str = "",
+    ) -> None:
+        """Switch the active session for a chat (used by /new).
+
+        Accepts either ``(ChatAddress, session_id)`` or
+        legacy ``(platform, chat_id, session_id)`` arguments.
+        """
+        if isinstance(platform_or_address, ChatAddress):
+            address = platform_or_address
+            sid = chat_id_or_session
+            key = address.chat_key
+            old = self._active_sessions.get(key, self.make_session_id(address))
+        else:
+            key = self.make_session_id(platform_or_address, chat_id_or_session)
+            sid = session_id
+            old = self._active_sessions.get(key, key)
+
+        self._active_sessions[key] = sid
+        self._persist_override(key, sid)
         logger.debug(
             "router.set_active_session",
             key=key,
             old_session_id=old,
-            new_session_id=session_id,
+            new_session_id=sid,
         )
 
     async def _handle_message_received(
@@ -282,7 +324,8 @@ class MessageRouter:
     ) -> None:
         """Core dispatch logic: command first, then agent."""
         inbound: InboundMessage = event.payload.message
-        session_id = self.get_active_session_id(inbound.platform, inbound.chat_id)
+        address = _address_from_inbound(inbound)
+        session_id = self.get_active_session_id(address)
         logger.debug(
             "router.dispatch",
             platform=inbound.platform,
@@ -298,6 +341,7 @@ class MessageRouter:
             chat_id=inbound.chat_id,
             session_id=session_id,
             workspace_id=workspace_id,
+            chat_address=address,
         )
         token = current_session.set(session_ctx)
         try:
@@ -317,13 +361,15 @@ class MessageRouter:
         if not inbound.is_group:
             return
 
-        session_id = self.get_active_session_id(inbound.platform, inbound.chat_id)
+        address = _address_from_inbound(inbound)
+        session_id = self.get_active_session_id(address)
         workspace_id = self._resolve_workspace_id()
         session_ctx = SessionContext(
             platform=inbound.platform,
             chat_id=inbound.chat_id,
             session_id=session_id,
             workspace_id=workspace_id,
+            chat_address=address,
         )
         token = current_session.set(session_ctx)
         try:
@@ -366,8 +412,9 @@ class MessageRouter:
                     default_reply_to=self._default_reply_to(inbound),
                 )
                 if outbound is not None:
+                    address = _address_from_inbound(inbound)
                     active_after_command = self.get_active_session_id(
-                        inbound.platform, inbound.chat_id
+                        address,
                     )
                     logger.debug(
                         "router.command_completed",
@@ -378,8 +425,6 @@ class MessageRouter:
                     )
                     await self._send_outbound(inbound, session_id, outbound)
                 return
-
-        # Step 2: Agent loop (if configured)
         if self._stopping:
             return
         runner = self._runner
@@ -678,12 +723,35 @@ class MessageRouter:
         return metadata.workspace_id
 
     @staticmethod
-    def make_session_id(platform: str, chat_id: str) -> str:
-        """Deterministic session ID from platform + chat_id."""
-        return f"{platform}:{chat_id}"
+    def make_session_id(
+        platform_or_address: str | ChatAddress, chat_id: str = ""
+    ) -> str:
+        """Deterministic session ID from a ChatAddress or legacy platform + chat_id."""
+        if isinstance(platform_or_address, ChatAddress):
+            return str(platform_or_address)
+        return f"{platform_or_address}:{chat_id}"
 
     @staticmethod
-    def make_new_session_id(platform: str, chat_id: str) -> str:
+    def make_new_session_id(
+        platform_or_address: str | ChatAddress, chat_id: str = ""
+    ) -> str:
         """Generate a new unique session ID for /new."""
         suffix = uuid4().hex[:8]
-        return f"{platform}:{chat_id}:{suffix}"
+        if isinstance(platform_or_address, ChatAddress):
+            return f"{platform_or_address}:{suffix}"
+        return f"{platform_or_address}:{chat_id}:{suffix}"
+
+
+def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:
+    """Build a ChatAddress from an InboundMessage's metadata."""
+    chat_type = ""
+    if inbound.chat_context and inbound.chat_context.chat_type:
+        chat_type = inbound.chat_context.chat_type
+    elif inbound.message_context and inbound.message_context.chat_type:
+        chat_type = inbound.message_context.chat_type
+    return ChatAddress.from_inbound(
+        inbound.platform,
+        inbound.chat_id,
+        is_group=inbound.is_group,
+        chat_type=chat_type,
+    )

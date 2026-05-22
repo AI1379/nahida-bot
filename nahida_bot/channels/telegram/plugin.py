@@ -14,6 +14,7 @@ from nahida_bot.channels.telegram.markdown_converter import (
     split_html_message,
 )
 from nahida_bot.channels.telegram.message_converter import TelegramMessageConverter
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
 from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.router import MessageRouter
@@ -147,7 +148,14 @@ class TelegramPlugin(Plugin):
         if not decision.observe:
             return
 
-        session_id = MessageRouter.make_session_id(inbound.platform, inbound.chat_id)
+        # Telegram chat_id sign convention: negative = group/supergroup
+        chat_type = "group" if inbound.is_group else "private"
+        address = ChatAddress(
+            channel=inbound.platform,
+            target_type=chat_type,
+            target_id=inbound.chat_id,
+        )
+        session_id = MessageRouter.make_session_id(address)
         event_type = MessageReceived if decision.respond else MessageObserved
 
         await self.api.publish_event(

@@ -15,6 +15,7 @@ from nahida_bot.agent.memory.models import (
     SessionSummary,
 )
 from nahida_bot.agent.memory.store import MemoryStore
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.events import (
     EventBus,
@@ -41,6 +42,8 @@ from nahida_bot.workspace.manager import WorkspaceManager
 
 
 def _inbound(text: str = "hello", platform: str = "test") -> InboundMessage:
+    from nahida_bot.plugins.base import ChatContext
+
     return InboundMessage(
         message_id="1",
         platform=platform,
@@ -48,6 +51,7 @@ def _inbound(text: str = "hello", platform: str = "test") -> InboundMessage:
         user_id="u1",
         text=text,
         raw_event={},
+        chat_context=ChatContext(platform=platform, chat_type="private"),
     )
 
 
@@ -229,6 +233,21 @@ class TestMessageRouterSessionId:
         b = MessageRouter.make_session_id("qq", "456")
         assert a == b
 
+    def test_legacy_active_session_id_stays_legacy(self) -> None:
+        router, _, _, _ = _make_router()
+
+        assert router.get_active_session_id("telegram", "123") == "telegram:123"
+
+    def test_typed_active_session_id_uses_typed_override(self) -> None:
+        router, _, _, _ = _make_router()
+        address = ChatAddress(
+            channel="telegram", target_type="private", target_id="123"
+        )
+        router._active_sessions[str(address)] = f"{address}:abc12345"
+
+        assert router.get_active_session_id(address) == "telegram:private:123:abc12345"
+        assert router.get_active_session_id("telegram", "123") == "telegram:123"
+
 
 class TestMessageRouterCommandDispatch:
     async def test_command_match_dispatches_to_handler(self) -> None:
@@ -252,7 +271,7 @@ class TestMessageRouterCommandDispatch:
             MessageReceived(
                 payload=MessagePayload(
                     message=inbound,
-                    session_id="test:c1",
+                    session_id="test:private:c1",
                 ),
                 source="test",
             )
@@ -283,7 +302,7 @@ class TestMessageRouterCommandDispatch:
         inbound = _inbound("/echo hello world")
         await event_bus.publish(
             MessageReceived(
-                payload=MessagePayload(message=inbound, session_id="test:c1"),
+                payload=MessagePayload(message=inbound, session_id="test:private:c1"),
                 source="test",
             )
         )
@@ -476,7 +495,7 @@ class TestMessageRouterAgentDispatch:
         inbound = _inbound("what is 2+2?")
         await event_bus.publish(
             MessageReceived(
-                payload=MessagePayload(message=inbound, session_id="test:c1"),
+                payload=MessagePayload(message=inbound, session_id="test:private:c1"),
                 source="test",
             )
         )
@@ -484,7 +503,7 @@ class TestMessageRouterAgentDispatch:
 
         assert len(agent.calls) == 1
         assert agent.calls[0]["user_message"].endswith("\nwhat is 2+2?")
-        assert "[test/private | u1]" in agent.calls[0]["user_message"]
+        assert "[test/private:c1 | u1]" in agent.calls[0]["user_message"]
 
     async def test_no_agent_no_crash(self) -> None:
         router, event_bus, _, _ = _make_router(agent=None)
@@ -494,7 +513,7 @@ class TestMessageRouterAgentDispatch:
         # Should not raise
         await event_bus.publish(
             MessageReceived(
-                payload=MessagePayload(message=inbound, session_id="test:c1"),
+                payload=MessagePayload(message=inbound, session_id="test:private:c1"),
                 source="test",
             )
         )
@@ -512,7 +531,9 @@ class TestMessageRouterAgentDispatch:
                 )
 
         memory = _MockMemoryStore()
-        memory.session_meta["test:c1"] = {"runtime": {"reasoning": {"show": True}}}
+        memory.session_meta["test:private:c1"] = {
+            "runtime": {"reasoning": {"show": True}}
+        }
         agent = _ReasoningAgent(response="answer")
         router, event_bus, channel_registry, _ = _make_router(
             agent=agent,
@@ -599,9 +620,9 @@ class TestMessageRouterAgentDispatch:
 class TestMessageRouterMemory:
     async def test_history_loaded_from_memory(self) -> None:
         memory = _MockMemoryStore()
-        await memory.ensure_session("test:c1")
+        await memory.ensure_session("test:private:c1")
         await memory.append_turn(
-            "test:c1",
+            "test:private:c1",
             ConversationTurn(role="user", content="hi", source="user_input"),
         )
 
@@ -612,7 +633,7 @@ class TestMessageRouterMemory:
         inbound = _inbound("follow-up")
         await event_bus.publish(
             MessageReceived(
-                payload=MessagePayload(message=inbound, session_id="test:c1"),
+                payload=MessagePayload(message=inbound, session_id="test:private:c1"),
                 source="test",
             )
         )
@@ -625,16 +646,19 @@ class TestMessageRouterMemory:
 
     async def test_active_session_override_uses_new_session_history(self) -> None:
         memory = _MockMemoryStore()
-        await memory.ensure_session("test:c1")
+        await memory.ensure_session("test:private:c1")
         await memory.append_turn(
-            "test:c1",
+            "test:private:c1",
             ConversationTurn(role="user", content="old session", source="user_input"),
         )
-        await memory.ensure_session("test:c1:new")
+        await memory.ensure_session("test:private:c1:new")
 
         agent = _MockAgentLoop()
         router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
-        router.set_active_session("test", "c1", "test:c1:new")
+        router.set_active_session(
+            ChatAddress(channel="test", target_type="private", target_id="c1"),
+            "test:private:c1:new",
+        )
 
         await router.start()
         await event_bus.publish(
@@ -647,8 +671,8 @@ class TestMessageRouterMemory:
 
         assert len(agent.calls) == 1
         assert agent.calls[0]["history_messages"] == []
-        assert len(memory.sessions["test:c1"]) == 1
-        assert len(memory.sessions["test:c1:new"]) == 2
+        assert len(memory.sessions["test:private:c1"]) == 1
+        assert len(memory.sessions["test:private:c1:new"]) == 2
 
     async def test_memory_session_is_bound_to_active_workspace(
         self, tmp_path: Path
@@ -672,7 +696,7 @@ class TestMessageRouterMemory:
         )
         await router.stop()
 
-        assert memory.workspace_ids["test:c1"] == "default"
+        assert memory.workspace_ids["test:private:c1"] == "default"
 
     async def test_turns_persisted_after_agent_run(self) -> None:
         memory = _MockMemoryStore()
@@ -683,13 +707,13 @@ class TestMessageRouterMemory:
         inbound = _inbound("question")
         await event_bus.publish(
             MessageReceived(
-                payload=MessagePayload(message=inbound, session_id="test:c1"),
+                payload=MessagePayload(message=inbound, session_id="test:private:c1"),
                 source="test",
             )
         )
         await router.stop()
 
-        turns = memory.sessions["test:c1"]
+        turns = memory.sessions["test:private:c1"]
         assert len(turns) == 2
         assert turns[0].role == "user"
         assert turns[0].content == "question"
@@ -700,6 +724,8 @@ class TestMessageRouterMemory:
         assert turns[1].content == "answer"
 
     async def test_observed_group_message_is_persisted_without_agent_run(self) -> None:
+        from nahida_bot.plugins.base import ChatContext
+
         memory = _MockMemoryStore()
         agent = _MockAgentLoop(response="answer")
         router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
@@ -713,17 +739,18 @@ class TestMessageRouterMemory:
             text="nearby context",
             raw_event={},
             is_group=True,
+            chat_context=ChatContext(platform="test", chat_type="group"),
         )
         await event_bus.publish(
             MessageObserved(
-                payload=MessagePayload(message=inbound, session_id="test:c1"),
+                payload=MessagePayload(message=inbound, session_id="test:group:c1"),
                 source="test",
             )
         )
         await router.stop()
 
         assert agent.calls == []
-        turns = memory.sessions["test:c1"]
+        turns = memory.sessions["test:group:c1"]
         assert len(turns) == 1
         assert turns[0].source == "group_observation"
         assert turns[0].metadata is not None
@@ -746,13 +773,13 @@ class TestMessageRouterMemory:
                 mentions_bot=True,
                 mentioned_user_ids=("bot-1",),
             ),
-            session_id="test:c1",
+            session_id="test:private:c1",
             workspace_id="default",
         )
 
-        turns = memory.sessions["test:c1"]
+        turns = memory.sessions["test:private:c1"]
         assert len(turns) == 1
-        assert memory.workspace_ids["test:c1"] == "default"
+        assert memory.workspace_ids["test:private:c1"] == "default"
         assert turns[0].metadata is not None
         assert turns[0].metadata["observed_only"] is True
         assert turns[0].metadata["triggered_agent"] is False
@@ -778,7 +805,7 @@ class TestMessageRouterMemory:
                         raw_event={},
                         is_group=True,
                     ),
-                    session_id="test:c1",
+                    session_id="test:private:c1",
                 ),
                 source="test",
             )
@@ -796,7 +823,7 @@ class TestMessageRouterMemory:
                         is_group=True,
                         mentions_bot=True,
                     ),
-                    session_id="test:c1",
+                    session_id="test:private:c1",
                 ),
                 source="test",
             )
@@ -836,7 +863,7 @@ class TestMessageRouterMemory:
                         is_group=True,
                         timestamp=123.0,
                     ),
-                    session_id="test:c1",
+                    session_id="test:private:c1",
                 ),
                 source="test",
             )
@@ -855,7 +882,7 @@ class TestMessageRouterMemory:
                         timestamp=123.0,
                         mentions_bot=True,
                     ),
-                    session_id="test:c1",
+                    session_id="test:private:c1",
                 ),
                 source="test",
             )
@@ -870,36 +897,49 @@ class TestMessageRouterMemory:
         memory = _MockMemoryStore()
         router, _, _, _ = _make_router(memory=memory)
 
-        router.set_active_session("test", "c1", "test:c1:abc")
+        router.set_active_session(
+            ChatAddress(channel="test", target_type="private", target_id="c1"),
+            "test:private:c1:abc",
+        )
 
         # Fire-and-forget persistence needs a loop tick to complete
         await asyncio.sleep(0)
-        assert memory.persisted_overrides == {"test:c1": "test:c1:abc"}
+        assert memory.persisted_overrides == {"test:private:c1": "test:private:c1:abc"}
 
     async def test_active_session_restored_on_start(self) -> None:
         memory = _MockMemoryStore()
-        memory.persisted_overrides["test:c1"] = "test:c1:xyz"
+        memory.persisted_overrides["test:private:c1"] = "test:private:c1:xyz"
 
         agent = _MockAgentLoop()
         router, _event_bus, _, _ = _make_router(agent=agent, memory=memory)
 
         # Override was NOT set via set_active_session — only in persisted storage
-        assert router.get_active_session_id("test", "c1") == "test:c1"
+        assert (
+            router.get_active_session_id(
+                ChatAddress(channel="test", target_type="private", target_id="c1")
+            )
+            == "test:private:c1"
+        )
 
         await router.start()
         # After start, the persisted override should be loaded
-        assert router.get_active_session_id("test", "c1") == "test:c1:xyz"
+        assert (
+            router.get_active_session_id(
+                ChatAddress(channel="test", target_type="private", target_id="c1")
+            )
+            == "test:private:c1:xyz"
+        )
         await router.stop()
 
     async def test_restored_session_used_for_message_dispatch(self) -> None:
         memory = _MockMemoryStore()
-        await memory.ensure_session("test:c1")
+        await memory.ensure_session("test:private:c1")
         await memory.append_turn(
-            "test:c1",
+            "test:private:c1",
             ConversationTurn(role="user", content="old", source="user_input"),
         )
-        await memory.ensure_session("test:c1:restored")
-        memory.persisted_overrides["test:c1"] = "test:c1:restored"
+        await memory.ensure_session("test:private:c1:restored")
+        memory.persisted_overrides["test:private:c1"] = "test:private:c1:restored"
 
         agent = _MockAgentLoop()
         router, event_bus, _, _ = _make_router(agent=agent, memory=memory)

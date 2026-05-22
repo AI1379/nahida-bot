@@ -13,7 +13,7 @@ class CronJob:
     job_id: str
     platform: str
     chat_id: str
-    session_key: str  # "{platform}:{chat_id}" for active session lookup
+    session_key: str  # typed: "{platform}:{target_type}:{chat_id}"
     prompt: str
     mode: Literal["once", "interval", "cron"]
     fire_at: str | None  # ISO8601 UTC for "once"
@@ -30,6 +30,7 @@ class CronJob:
     failure_count: int = 0
     last_error: str | None = None
     session_mode: Literal["main", "isolated"] = "main"
+    chat_type: str = ""  # "private", "group", etc.
 
 
 @dataclass(slots=True, frozen=True)

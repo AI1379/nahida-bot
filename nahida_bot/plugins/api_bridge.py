@@ -414,9 +414,19 @@ class RealBotAPI:
             )
             return None
 
-        old_id = router.get_active_session_id(platform, chat_id)
-        new_id = MessageRouter.make_new_session_id(platform, chat_id)
-        router.set_active_session(platform, chat_id, new_id)
+        # Build address from current session context if available
+        from nahida_bot.core.context import current_session
+
+        ctx = current_session.get()
+        if ctx is not None and ctx.chat_address is not None:
+            address = ctx.chat_address
+            old_id = router.get_active_session_id(address)
+            new_id = MessageRouter.make_new_session_id(address)
+            router.set_active_session(address, new_id)
+        else:
+            old_id = router.get_active_session_id(platform, chat_id)
+            new_id = MessageRouter.make_new_session_id(platform, chat_id)
+            router.set_active_session(platform, chat_id, new_id)
         if router.memory is not None:
             await router.memory.ensure_session(new_id)
         self._logger.debug(

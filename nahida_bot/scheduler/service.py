@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import structlog
 
+from nahida_bot.core.chat_address import ChatAddress, normalize_target_type
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.core.sentinel import detect_sentinel
@@ -158,11 +159,20 @@ class SchedulerService:
         max_runs: int | None = None,
         workspace_id: str | None = None,
         session_mode: Literal["main", "isolated"] = "main",
+        chat_type: str = "",
     ) -> CronJob:
         """Create and persist a new scheduled job."""
         now = datetime.now(UTC)
         job_id = uuid4().hex[:16]
-        session_key = f"{platform}:{chat_id}"
+        if chat_type:
+            address = ChatAddress(
+                channel=platform,
+                target_type=normalize_target_type(chat_type),
+                target_id=chat_id,
+            )
+            session_key = address.chat_key
+        else:
+            session_key = f"{platform}:{chat_id}"
         self._validate_prompt(prompt)
         self._validate_max_runs(max_runs)
 
@@ -201,6 +211,7 @@ class SchedulerService:
             last_fired_at=None,
             workspace_id=workspace_id,
             session_mode=session_mode,
+            chat_type=chat_type,
         )
 
         await self._repo.insert_job_with_quota(
@@ -304,10 +315,33 @@ class SchedulerService:
         logger.info("scheduler.job_updated", job_id=job_id, mode=new_mode)
         return job
 
-    async def list_jobs(self, platform: str, chat_id: str) -> list[CronJob]:
-        """List active jobs for a specific chat."""
-        session_key = f"{platform}:{chat_id}"
-        return await self._repo.get_jobs_by_chat(session_key, active_only=True)
+    async def list_jobs(
+        self, platform: str, chat_id: str, *, chat_type: str = ""
+    ) -> list[CronJob]:
+        """List active jobs for a specific chat.
+
+        Returns typed jobs for the chat plus legacy jobs created before typed
+        chat keys existed.
+        """
+        jobs: list[CronJob] = []
+        seen: set[str] = set()
+
+        if chat_type:
+            typed_key = ChatAddress(
+                channel=platform,
+                target_type=normalize_target_type(chat_type),
+                target_id=chat_id,
+            ).chat_key
+            for job in await self._repo.get_jobs_by_chat(typed_key, active_only=True):
+                jobs.append(job)
+                seen.add(job.job_id)
+
+        # Fallback to legacy key
+        legacy_key = f"{platform}:{chat_id}"
+        for job in await self._repo.get_jobs_by_chat(legacy_key, active_only=True):
+            if job.job_id not in seen:
+                jobs.append(job)
+        return jobs
 
     async def get_job(self, job_id: str) -> CronJob | None:
         """Look up a single job by ID."""
@@ -660,17 +694,32 @@ class SchedulerService:
         else:
             session_id = job.session_key
             if self._router is not None:
-                session_id = self._router.get_active_session_id(
-                    job.platform, job.chat_id
-                )
+                if job.chat_type:
+                    session_id = self._router.get_active_session_id(
+                        ChatAddress(
+                            channel=job.platform,
+                            target_type=normalize_target_type(job.chat_type),
+                            target_id=job.chat_id,
+                        )
+                    )
+                else:
+                    session_id = self._router.get_active_session_id(
+                        job.platform, job.chat_id
+                    )
 
         # Set session context for tool handlers
+        address = ChatAddress.from_inbound(
+            job.platform,
+            job.chat_id,
+            chat_type=job.chat_type,
+        )
         ctx_token = current_session.set(
             SessionContext(
                 platform=job.platform,
                 chat_id=job.chat_id,
                 session_id=session_id,
                 workspace_id=job.workspace_id,
+                chat_address=address,
             )
         )
         try:

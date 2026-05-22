@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -19,6 +20,7 @@ from nahida_bot.agent.providers.base import (
 from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
 from nahida_bot.agent.providers.router import ModelRouter
 from nahida_bot.agent.tokenization import Tokenizer
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.plugins.base import OutboundMessage
@@ -726,6 +728,82 @@ async def test_main_cron_uses_chat_session() -> None:
 
         assert agent.calls == 1
         assert captured.get("session_id") == "telegram:c1"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_main_cron_uses_typed_active_session() -> None:
+    engine, repo = await _repo()
+    try:
+        agent = _Agent()
+        channel = _Channel()
+        runner = SessionRunner(agent_loop=cast(Any, agent))
+
+        class _Router:
+            def __init__(self) -> None:
+                self.address: ChatAddress | None = None
+
+            def get_active_session_id(
+                self, address: ChatAddress, chat_id: str = ""
+            ) -> str:
+                self.address = address
+                return "telegram:private:c1:active"
+
+        router = _Router()
+        service = SchedulerService(
+            repo,
+            runner=runner,
+            channel_registry=cast(Any, _Channels(channel)),
+            message_router=cast(Any, router),
+        )
+
+        job = replace(
+            _job(),
+            session_key="telegram:private:c1",
+            chat_type="private",
+        )
+        await repo.insert_job(job)
+
+        captured: dict[str, Any] = {}
+        original_run = cast(Any, runner.run)
+
+        async def spy_run(**kwargs: Any) -> AgentRunResult:
+            captured.update(kwargs)
+            return await original_run(**kwargs)
+
+        runner.run = cast(Any, spy_run)
+
+        await service._fire_job(job)
+
+        assert agent.calls == 1
+        assert captured.get("session_id") == "telegram:private:c1:active"
+        assert router.address == ChatAddress(
+            channel="telegram",
+            target_type="private",
+            target_id="c1",
+        )
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_returns_typed_and_legacy_jobs() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        await repo.insert_job(_job(job_id="legacy"))
+        await repo.insert_job(
+            replace(
+                _job(job_id="typed"),
+                session_key="telegram:private:c1",
+                chat_type="private",
+            )
+        )
+
+        jobs = await service.list_jobs("telegram", "c1", chat_type="private")
+
+        assert [job.job_id for job in jobs] == ["typed", "legacy"]
     finally:
         await engine.close()
 
