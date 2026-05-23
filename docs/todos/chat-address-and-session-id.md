@@ -1,7 +1,7 @@
 # ChatAddress 与 Session ID 重构 TODO
 
 > 记录时间：2026-05-21
-> 状态：Phase 0–2 已完成，Phase 3–4 待实施
+> 状态：Phase 0–3 已完成，Phase 4 待实施
 > 最后更新：2026-05-22
 > 相关文档：
 >
@@ -814,7 +814,7 @@ address = parse_chat_address_tool_args(...)
 Phase 0 (核心类型)         ✅ 已完成 (2026-05-22)
   └─→ Phase 1 (新数据写 typed key)  ✅ 已完成 (2026-05-22)
         └─→ Phase 2 (兼容读 legacy)  ✅ 已完成 (2026-05-22)
-              └─→ Phase 3 (迁移工具)  ⬜ 待实施
+              └─→ Phase 3 (迁移工具)  ✅ 已完成 (2026-05-22)
                       └─→ Phase 4 (移除 legacy)  ⬜ 待实施
 ```
 
@@ -970,9 +970,11 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 
 ---
 
-### Phase 3: 数据库迁移工具 ⬜ 待实施
+### Phase 3: 数据库迁移工具 ✅ 已完成
 
-**目标：** 提供可审计、可回滚、人工逐条批准的迁移脚本，将 legacy session key 转为 typed key。
+**完成时间：2026-05-22**
+
+**目标：** 提供可审计、可备份恢复、人工逐条批准的迁移脚本，将 legacy session key 转为 typed key。
 
 **难度：高** | **预估工期：2–3 天**
 
@@ -980,13 +982,13 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 
 | 文件 | 内容 |
 |------|------|
-| `scripts/migrate_session_keys.py` | 一次性迁移脚本：inspect / apply / rollback |
+| `scripts/migrate_session_keys.py` | 一次性迁移脚本：inspect / apply（dry-run、backup、force_rename、force_split、force_keep_legacy、disable_cron） |
 
 #### 需修改的文件（仅 minor）
 
 | 文件 | 改动 |
 |------|------|
-| `nahida_bot/db/engine.py` | 可能需要调整 migration 顺序或添加辅助索引 |
+| `nahida_bot/db/engine.py` | 无新增改动；Migration 011 已提供 `chat_type` 和 `session_key_migration_log` |
 
 #### 关键实现步骤
 
@@ -1008,9 +1010,10 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
    - 所有操作写入 `session_key_migration_log`
    - apply 前自动备份 SQLite 文件
 
-4. **rollback 命令（可选但推荐）**
-   - 根据 migration log 反向恢复
-   - 不承诺能恢复已 split 的 session（文档已说明）
+4. **恢复策略**
+   - apply 前默认备份 SQLite 主文件及 WAL/SHM sidecar
+   - 所有执行结果写入 migration log，便于人工审计
+   - split 后不承诺自动反向恢复，应优先从备份恢复
 
 #### 测试重点
 
@@ -1020,15 +1023,22 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 - 测试 apply 中途失败的回滚
 - 测试重复运行 inspect/apply 的幂等性
 
+#### 测试结果
+
+- `uv run pyright` → 0 errors, 0 warnings
+- `uv run ruff check nahida_bot tests scripts/migrate_session_keys.py` → All checks passed
+- `uv run pytest tests/test_session_key_migration_script.py` → 10 passed
+- `uv run pytest tests/test_chat_address.py tests/test_message_router.py tests/test_scheduler.py tests/test_webapi.py tests/test_builtin_commands_plugin.py tests/test_api_bridge.py tests/test_milky_plugin.py tests/test_telegram_plugin.py tests/test_session_key_migration_script.py` → 202 passed
+
 #### 验收标准
 
-- [ ] `inspect` 对每个 legacy session 输出完整建议和证据
-- [ ] `apply --dry-run` 不修改数据库但输出执行计划
-- [ ] `apply` 前自动备份 db
-- [ ] 每条迁移有独立事务，单条失败不影响后续
-- [ ] 所有迁移操作记录到 `session_key_migration_log`
-- [ ] `apply` 后跑一致性检查无 orphan 记录
-- [ ] 脚本可安全重复运行（幂等）
+- [x] `inspect` 对每个 legacy session 输出完整建议和证据
+- [x] `apply --dry-run` 不修改数据库但输出执行计划
+- [x] `apply` 前自动备份 db
+- [x] 每条迁移有独立事务，单条失败不影响后续
+- [x] 所有迁移操作记录到 `session_key_migration_log`
+- [x] `apply` 后跑一致性检查无 orphan 记录
+- [x] 脚本可安全重复运行（幂等）
 
 ---
 
@@ -1081,7 +1091,7 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 ✅ Day 1:     Phase 0 — 核心类型 + Parser + 40 个测试
 ✅ Day 1–2:   Phase 1 — Router + Channel + SessionContext + Commands + Scheduler + WebAPI
 ✅ Day 3:     Phase 2 — 兼容读 legacy 增强 + 状态可视化
-⬜ Day 3–4:   Phase 3 — 迁移脚本 inspect/apply 开发 + 测试
+✅ Day 3–4:   Phase 3 — 迁移脚本 inspect/apply 开发 + 测试
 ⬜ Day 5:     Phase 3 — 使用真实数据运行 inspect + 人工审核 + apply
 ⬜ Day 5:     Phase 4 — 清理 legacy 兼容代码 + 最终验证
 ```
