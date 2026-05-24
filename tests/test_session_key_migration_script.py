@@ -288,6 +288,42 @@ def test_inspect_marks_invalid_session_for_manual_review(tmp_path: Path) -> None
     assert entry.confidence == "low"
 
 
+def test_review_plan_interactively_applies_approvals_in_place(
+    tmp_path: Path,
+) -> None:
+    db_path = _make_db(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_session(conn, "milky:10001")
+        _insert_turn(conn, "milky:10001", chat_type="group")
+        _insert_session(conn, "milky:20001")
+        _insert_turn(conn, "milky:20001", chat_type="private")
+        _insert_turn(conn, "milky:20001", chat_type="group")
+        _insert_session(conn, "not-a-session-key")
+
+    plan = migrate.inspect_database(db_path)
+    prompts: list[str] = []
+    answers = iter(["y", "y"])
+
+    stats = migrate.review_plan_interactively(
+        plan,
+        prompt_fn=lambda prompt: prompts.append(prompt) or next(answers),
+    )
+
+    rename = _entry(plan, "milky:10001")
+    split = _entry(plan, "milky:20001")
+    manual = _entry(plan, "not-a-session-key")
+
+    assert rename.approval == "approved"
+    assert rename.status == "approved"
+    assert split.approval == "force_split"
+    assert split.status == "approved"
+    assert manual.approval == "pending"
+    assert stats == {"approved": 2, "manual_review": 1}
+    assert len(prompts) == 2
+    assert "milky:10001" in prompts[0]
+    assert "milky:20001" in prompts[1]
+
+
 def test_inspect_suggests_disable_cron_when_legacy_cron_has_no_type(
     tmp_path: Path,
 ) -> None:
@@ -300,6 +336,55 @@ def test_inspect_suggests_disable_cron_when_legacy_cron_has_no_type(
 
     assert entry.recommendation == "disable_cron"
     assert entry.affected.cron_jobs == 1
+
+
+def test_inspect_does_not_attach_parent_cron_to_subagent_session(
+    tmp_path: Path,
+) -> None:
+    db_path = _make_db(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_session(conn, "milky:10001:subagent:task-1")
+        _insert_cron(conn, session_key="milky:10001")
+
+    entry = _entry(migrate.inspect_database(db_path), "milky:10001:subagent:task-1")
+
+    assert entry.recommendation == "keep_legacy"
+    assert entry.affected.cron_jobs == 0
+
+
+def test_isolated_cron_session_uses_job_id_for_typed_evidence(
+    tmp_path: Path,
+) -> None:
+    db_path = _make_db(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_session(conn, "milky:10001:cron:job-1")
+        _insert_cron(conn, job_id="job-1", session_key="milky:10001", chat_type="group")
+
+    plan = migrate.inspect_database(db_path)
+    entry = _entry(plan, "milky:10001:cron:job-1")
+
+    assert entry.recommendation == "rename"
+    assert entry.new_session_id == "milky:group:10001:cron:job-1"
+    assert entry.affected.cron_jobs == 1
+
+    entry.approval = "approved"
+    assert migrate.apply_plan(
+        db_path=db_path,
+        plan_path=_write_plan(tmp_path, plan),
+        backup=False,
+    ) == {"renamed": 1}
+    cron = _fetch_one(
+        db_path, "SELECT session_key, chat_type FROM cron_jobs WHERE job_id = 'job-1'"
+    )
+    assert dict(cron) == {"session_key": "milky:group:10001", "chat_type": "group"}
+    assert (
+        _fetch_value(
+            db_path,
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?",
+            ("milky:group:10001:cron:job-1",),
+        )
+        == 1
+    )
 
 
 def test_inspect_suggests_split_for_conflicting_turn_addresses(

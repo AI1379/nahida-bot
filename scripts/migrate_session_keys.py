@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from nahida_bot.core.chat_address import (
     ChatAddress,
@@ -182,6 +182,34 @@ def write_plan(plan: MigrationPlan, out_path: Path) -> None:
     )
 
 
+def review_plan_interactively(
+    plan: MigrationPlan,
+    *,
+    prompt_fn: Callable[[str], str] = input,
+) -> dict[str, int]:
+    """Prompt for approvals and mutate plan entries in place."""
+    result = Counter[str]()
+    for entry in plan.entries:
+        if entry.approval != "pending":
+            continue
+        if entry.recommendation == "skip_typed":
+            continue
+        if entry.recommendation == "manual_review":
+            result["manual_review"] += 1
+            continue
+
+        prompt = _approval_prompt_for_entry(entry)
+        if _prompt_yes_no(prompt, prompt_fn=prompt_fn):
+            entry.approval = (
+                "force_split" if entry.recommendation == "split" else "approved"
+            )
+            entry.status = "approved"
+            result["approved"] += 1
+        else:
+            result["pending"] += 1
+    return dict(result)
+
+
 def print_summary(summary: dict[str, int]) -> None:
     print(f"Sessions scanned: {summary.get('total', 0)}")
     print(f"High confidence rename: {summary.get('rename_high', 0)}")
@@ -215,7 +243,7 @@ def _inspect_legacy_session(conn: sqlite3.Connection, row: sqlite3.Row) -> PlanE
     affected = _affected_rows(conn, session_id)
 
     if not evidence_by_address:
-        if affected.cron_jobs:
+        if affected.cron_jobs and _can_disable_cron_for_session(session_id):
             return PlanEntry(
                 old_session_id=session_id,
                 status="needs_approval",
@@ -282,6 +310,39 @@ def _inspect_legacy_session(conn: sqlite3.Connection, row: sqlite3.Row) -> PlanE
         notes="Multiple typed chat addresses found; split requires manual approval.",
         split_targets=split_targets,
     )
+
+
+def _approval_prompt_for_entry(entry: PlanEntry) -> str:
+    if entry.recommendation == "rename":
+        return (
+            f"Approve rename {entry.old_session_id} -> {entry.new_session_id}? [y/N]: "
+        )
+    if entry.recommendation == "split":
+        target_count = len(entry.split_targets)
+        return (
+            f"Approve split {entry.old_session_id} into {target_count} target "
+            f"session(s)? [y/N]: "
+        )
+    if entry.recommendation == "keep_legacy":
+        return f"Approve keeping {entry.old_session_id} as legacy? [y/N]: "
+    if entry.recommendation == "disable_cron":
+        cron_count = entry.affected.cron_jobs
+        label = "job" if cron_count == 1 else "jobs"
+        return (
+            f"Approve disabling {cron_count} cron {label} for "
+            f"{entry.old_session_id}? [y/N]: "
+        )
+    return f"Approve {entry.old_session_id}? [y/N]: "
+
+
+def _prompt_yes_no(prompt: str, *, prompt_fn: Callable[[str], str]) -> bool:
+    while True:
+        answer = prompt_fn(prompt).strip().lower()
+        if answer in {"y", "yes"}:
+            return True
+        if answer in {"", "n", "no"}:
+            return False
+        print("Please answer y or n.")
 
 
 def _skip_typed_entry(conn: sqlite3.Connection, session_id: str) -> PlanEntry:
@@ -367,18 +428,7 @@ def _collect_evidence(
             )
 
     if _table_exists(conn, "cron_jobs"):
-        old_chat_key = _legacy_reference_keys(session_id)[-1]
-        chat_type_expr = (
-            "chat_type" if _column_exists(conn, "cron_jobs", "chat_type") else "''"
-        )
-        for cron in conn.execute(
-            f"""
-            SELECT platform, chat_id, session_key, {chat_type_expr} AS chat_type
-            FROM cron_jobs
-            WHERE session_key = ? OR session_key = ?
-            """,
-            (session_id, old_chat_key),
-        ):
+        for cron in _cron_rows_for_session(conn, session_id):
             _add_session_key_evidence(
                 evidence,
                 "cron_jobs.session_key",
@@ -463,6 +513,98 @@ def _evidence_list(evidence_by_address: dict[str, Counter[str]]) -> list[Evidenc
     return result
 
 
+def _can_disable_cron_for_session(session_id: str) -> bool:
+    """Only base legacy chat sessions should disable ambiguous cron jobs."""
+    key = _parse_session_key_or_none(session_id)
+    return key is not None and not key.is_derived
+
+
+def _cron_rows_for_session(
+    conn: sqlite3.Connection, session_id: str
+) -> list[sqlite3.Row]:
+    if not _table_exists(conn, "cron_jobs"):
+        return []
+    chat_type_expr = (
+        "chat_type" if _column_exists(conn, "cron_jobs", "chat_type") else "''"
+    )
+    cron_job_id = _cron_job_id_from_session_id(session_id)
+    if cron_job_id is not None:
+        return conn.execute(
+            f"""
+            SELECT platform, chat_id, session_key, {chat_type_expr} AS chat_type
+            FROM cron_jobs
+            WHERE job_id = ?
+            """,
+            (cron_job_id,),
+        ).fetchall()
+
+    key = _parse_session_key_or_none(session_id)
+    if key is not None and key.is_derived:
+        return conn.execute(
+            f"""
+            SELECT platform, chat_id, session_key, {chat_type_expr} AS chat_type
+            FROM cron_jobs
+            WHERE session_key = ?
+            """,
+            (session_id,),
+        ).fetchall()
+
+    old_chat_key = _legacy_reference_keys(session_id)[-1]
+    return conn.execute(
+        f"""
+        SELECT platform, chat_id, session_key, {chat_type_expr} AS chat_type
+        FROM cron_jobs
+        WHERE session_key = ? OR session_key = ?
+        """,
+        (session_id, old_chat_key),
+    ).fetchall()
+
+
+def _count_cron_jobs_for_session(conn: sqlite3.Connection, session_id: str) -> int:
+    if not _table_exists(conn, "cron_jobs"):
+        return 0
+    cron_job_id = _cron_job_id_from_session_id(session_id)
+    if cron_job_id is not None:
+        return _count(conn, "cron_jobs", "job_id = ?", (cron_job_id,))
+
+    key = _parse_session_key_or_none(session_id)
+    if key is not None and key.is_derived:
+        return _count(conn, "cron_jobs", "session_key = ?", (session_id,))
+
+    old_chat_key = _legacy_reference_keys(session_id)[-1]
+    return _count(
+        conn,
+        "cron_jobs",
+        "session_key = ? OR session_key = ?",
+        (session_id, old_chat_key),
+    )
+
+
+def _count_stale_cron_references(conn: sqlite3.Connection, session_id: str) -> int:
+    if not _table_exists(conn, "cron_jobs"):
+        return 0
+    old_chat_key = _legacy_reference_keys(session_id)[-1]
+    cron_job_id = _cron_job_id_from_session_id(session_id)
+    if cron_job_id is not None:
+        return _count(
+            conn,
+            "cron_jobs",
+            "job_id = ? AND (session_key = ? OR session_key = ?)",
+            (cron_job_id, session_id, old_chat_key),
+        )
+
+    key = _parse_session_key_or_none(session_id)
+    if key is not None and key.is_derived:
+        return _count(conn, "cron_jobs", "session_key = ?", (session_id,))
+
+    return _count(
+        conn,
+        "cron_jobs",
+        "session_key = ? OR session_key = ?",
+        (session_id, old_chat_key),
+    )
+
+
 def _affected_rows(conn: sqlite3.Connection, session_id: str) -> AffectedRows:
     old_chat_key = _legacy_reference_keys(session_id)[-1]
     return AffectedRows(
@@ -482,12 +624,7 @@ def _affected_rows(conn: sqlite3.Connection, session_id: str) -> AffectedRows:
                 f"{old_chat_key}:%",
             ),
         ),
-        cron_jobs=_count(
-            conn,
-            "cron_jobs",
-            "session_key = ? OR session_key = ?",
-            (session_id, old_chat_key),
-        ),
+        cron_jobs=_count_cron_jobs_for_session(conn, session_id),
         background_tasks=_count(
             conn,
             "background_tasks",
@@ -689,12 +826,7 @@ def _assert_rename_consistency(
                 old_prefixes[1],
             ),
         ),
-        "cron_jobs": _count(
-            conn,
-            "cron_jobs",
-            "session_key = ? OR session_key = ?",
-            (old_session_id, old_chat_key),
-        ),
+        "cron_jobs": _count_stale_cron_references(conn, old_session_id),
         "background_tasks": _count(
             conn,
             "background_tasks",
@@ -1124,6 +1256,50 @@ def _rewrite_cron_jobs(
 ) -> None:
     if not _table_exists(conn, "cron_jobs"):
         return
+    cron_job_id = _cron_job_id_from_session_id(old_session_id)
+    if cron_job_id is not None:
+        if _column_exists(conn, "cron_jobs", "chat_type"):
+            conn.execute(
+                """
+                UPDATE cron_jobs
+                SET session_key = ?, chat_type = ?
+                WHERE job_id = ?
+                """,
+                (new_chat_key, chat_type, cron_job_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE cron_jobs
+                SET session_key = ?
+                WHERE job_id = ?
+                """,
+                (new_chat_key, cron_job_id),
+            )
+        return
+
+    key = _parse_session_key_or_none(old_session_id)
+    if key is not None and key.is_derived:
+        if _column_exists(conn, "cron_jobs", "chat_type"):
+            conn.execute(
+                """
+                UPDATE cron_jobs
+                SET session_key = ?, chat_type = ?
+                WHERE session_key = ?
+                """,
+                (new_chat_key, chat_type, old_session_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE cron_jobs
+                SET session_key = ?
+                WHERE session_key = ?
+                """,
+                (new_chat_key, old_session_id),
+            )
+        return
+
     if _column_exists(conn, "cron_jobs", "chat_type"):
         conn.execute(
             """
@@ -1149,8 +1325,6 @@ def _disable_cron_jobs(
 ) -> int:
     if dry_run or not _table_exists(conn, "cron_jobs"):
         return 0
-    keys = _legacy_reference_keys(session_id)
-    placeholders = ", ".join("?" for _ in keys)
     assignments = ["is_active = 0"]
     params: list[object] = []
     if _column_exists(conn, "cron_jobs", "claimed_at"):
@@ -1160,12 +1334,25 @@ def _disable_cron_jobs(
         params.append(
             "Disabled by session key migration because target type is unknown."
         )
-    params.extend(keys)
+    key = _parse_session_key_or_none(session_id)
+    if key is not None and key.is_derived:
+        cron_job_id = _cron_job_id_from_session_id(session_id)
+        if cron_job_id is not None:
+            where_sql = "job_id = ?"
+            params.append(cron_job_id)
+        else:
+            where_sql = "session_key = ?"
+            params.append(session_id)
+    else:
+        keys = _legacy_reference_keys(session_id)
+        placeholders = ", ".join("?" for _ in keys)
+        where_sql = f"session_key IN ({placeholders})"
+        params.extend(keys)
     cursor = conn.execute(
         f"""
         UPDATE cron_jobs
         SET {", ".join(assignments)}
-        WHERE session_key IN ({placeholders})
+        WHERE {where_sql}
         """,
         tuple(params),
     )
@@ -1181,6 +1368,27 @@ def _legacy_reference_keys(session_id: str) -> tuple[str, ...]:
     if old_chat_key == session_id:
         return (session_id,)
     return (session_id, old_chat_key)
+
+
+def _parse_session_key_or_none(session_id: str) -> SessionKey | None:
+    try:
+        return SessionKey.parse(session_id)
+    except ValueError:
+        return None
+
+
+def _cron_job_id_from_session_id(session_id: str) -> str | None:
+    """Extract the job id from isolated cron-run session ids.
+
+    The runtime shape is ``<chat_key>:cron:<job_id>``.
+    """
+    key = _parse_session_key_or_none(session_id)
+    if key is None or not key.suffix:
+        return None
+    parts = key.suffix.split(":")
+    if len(parts) >= 2 and parts[0] == "cron" and parts[1]:
+        return ":".join(parts[1:])
+    return None
 
 
 def _rewrite_session_id_for_address(
@@ -1508,6 +1716,11 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect_cmd = subcommands.add_parser("inspect", help="Generate a migration plan")
     inspect_cmd.add_argument("--db", required=True, type=Path, help="SQLite db path")
     inspect_cmd.add_argument("--out", required=True, type=Path, help="Plan JSON output")
+    inspect_cmd.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Prompt for approvals before writing the plan",
+    )
 
     apply_cmd = subcommands.add_parser("apply", help="Apply approved plan entries")
     apply_cmd.add_argument("--db", required=True, type=Path, help="SQLite db path")
@@ -1532,6 +1745,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "inspect":
         plan = inspect_database(args.db)
+        if args.interactive:
+            stats = review_plan_interactively(plan)
+            print(
+                "Interactive approvals: "
+                f"{stats.get('approved', 0)} approved, "
+                f"{stats.get('pending', 0)} left pending, "
+                f"{stats.get('manual_review', 0)} manual review"
+            )
         write_plan(plan, args.out)
         print_summary(plan.summary)
         print(f"Plan written: {args.out}")
