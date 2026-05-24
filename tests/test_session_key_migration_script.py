@@ -190,6 +190,8 @@ def _insert_cron(
     job_id: str = "job-1",
     session_key: str = "milky:10001",
     chat_type: str = "",
+    is_active: int = 1,
+    session_mode: str = "main",
 ) -> None:
     conn.execute(
         """
@@ -206,10 +208,10 @@ def _insert_cron(
             "ping",
             "ask",
             0,
-            1,
+            is_active,
             NOW,
             NOW,
-            "main",
+            session_mode,
             chat_type,
         ),
     )
@@ -648,4 +650,101 @@ def test_force_split_moves_explicit_turns_and_keeps_legacy_shell(
     assert json.loads(legacy["metadata_json"])["legacy_untyped"] is True
     assert (
         _fetch_value(db_path, "SELECT status FROM session_key_migration_log") == "split"
+    )
+
+
+def test_repair_cron_fills_chat_type_from_typed_session_key(
+    tmp_path: Path,
+) -> None:
+    db_path = _make_db(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_cron(conn, session_key="milky:private:10001", chat_type="")
+
+    assert migrate.repair_cron_sessions(db_path=db_path, backup=False) == {
+        "chat_type_filled": 1
+    }
+    cron = _fetch_one(db_path, "SELECT session_key, chat_type FROM cron_jobs")
+    assert dict(cron) == {
+        "session_key": "milky:private:10001",
+        "chat_type": "private",
+    }
+
+
+def test_repair_cron_migrates_active_isolated_history_when_enabled(
+    tmp_path: Path,
+) -> None:
+    db_path = _make_db(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_session(conn, "milky:10001:cron:job-1")
+        turn_id = _insert_turn(conn, "milky:10001:cron:job-1")
+        _insert_cron(
+            conn,
+            job_id="job-1",
+            session_key="milky:private:10001",
+            chat_type="",
+            session_mode="isolated",
+            is_active=1,
+        )
+
+    assert migrate.repair_cron_sessions(
+        db_path=db_path,
+        backup=False,
+        migrate_history="active",
+    ) == {
+        "chat_type_filled": 1,
+        "isolated_history_migrated": 1,
+    }
+    assert (
+        _fetch_value(
+            db_path,
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?",
+            ("milky:10001:cron:job-1",),
+        )
+        == 0
+    )
+    assert (
+        _fetch_value(
+            db_path,
+            "SELECT session_id FROM memory_turns WHERE id = ?",
+            (turn_id,),
+        )
+        == "milky:private:10001:cron:job-1"
+    )
+    cron = _fetch_one(db_path, "SELECT session_key, chat_type FROM cron_jobs")
+    assert dict(cron) == {
+        "session_key": "milky:private:10001",
+        "chat_type": "private",
+    }
+
+
+def test_repair_cron_leaves_inactive_isolated_history_in_active_mode(
+    tmp_path: Path,
+) -> None:
+    db_path = _make_db(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        _insert_session(conn, "milky:10001:cron:job-1")
+        _insert_turn(conn, "milky:10001:cron:job-1")
+        _insert_cron(
+            conn,
+            job_id="job-1",
+            session_key="milky:private:10001",
+            session_mode="isolated",
+            is_active=0,
+        )
+
+    assert migrate.repair_cron_sessions(
+        db_path=db_path,
+        backup=False,
+        migrate_history="active",
+    ) == {
+        "chat_type_filled": 1,
+        "isolated_history_left_legacy": 1,
+    }
+    assert (
+        _fetch_value(
+            db_path,
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?",
+            ("milky:10001:cron:job-1",),
+        )
+        == 1
     )

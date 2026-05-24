@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import structlog
 
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import (
     ChannelService,
     MemoryRef,
@@ -400,7 +401,7 @@ class RealBotAPI:
             return 0
         return await self._memory.clear_session(session_id)
 
-    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+    async def start_new_session(self, address: ChatAddress) -> str | None:
         """Switch a chat to a new active session through the message router."""
         from nahida_bot.core.router import MessageRouter
 
@@ -408,31 +409,30 @@ class RealBotAPI:
         if router is None:
             self._logger.warning(
                 "session_new_failed",
-                platform=platform,
-                chat_id=chat_id,
+                platform=address.channel,
+                chat_id=address.target_id,
                 reason="router_unavailable",
             )
             return None
 
-        # Build address from current session context if available
-        from nahida_bot.core.context import current_session
+        if not address.is_typed:
+            self._logger.warning(
+                "session_new_failed",
+                platform=address.channel,
+                chat_id=address.target_id,
+                reason="untyped_address",
+            )
+            return None
 
-        ctx = current_session.get()
-        if ctx is not None and ctx.chat_address is not None:
-            address = ctx.chat_address
-            old_id = router.get_active_session_id(address)
-            new_id = MessageRouter.make_new_session_id(address)
-            router.set_active_session(address, new_id)
-        else:
-            old_id = router.get_active_session_id(platform, chat_id)
-            new_id = MessageRouter.make_new_session_id(platform, chat_id)
-            router.set_active_session(platform, chat_id, new_id)
+        old_id = router.get_active_session_id(address)
+        new_id = MessageRouter.make_new_session_id(address)
+        router.set_active_session(address, new_id)
         if router.memory is not None:
             await router.memory.ensure_session(new_id)
         self._logger.debug(
             "session_new_created",
-            platform=platform,
-            chat_id=chat_id,
+            platform=address.channel,
+            chat_id=address.target_id,
             old_session_id=old_id,
             new_session_id=new_id,
         )

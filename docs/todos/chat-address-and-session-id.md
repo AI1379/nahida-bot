@@ -1,8 +1,8 @@
 # ChatAddress 与 Session ID 重构 TODO
 
 > 记录时间：2026-05-21
-> 状态：Phase 0–3 已完成，Phase 4 待实施
-> 最后更新：2026-05-22
+> 状态：Phase 0–4a 已完成，Phase 4b 待实施
+> 最后更新：2026-05-24
 > 相关文档：
 >
 > - [cross-session-messaging.md](cross-session-messaging.md)
@@ -245,7 +245,7 @@ OutboundMessage(extra={"chat_address": address_as_dict})
 或者：
 
 ```python
-OutboundMessage(extra={"chat_type": "group"})
+OutboundMessage(extra={"chat_address": "milky:group:20001"})
 ```
 
 Milky channel 内部负责：
@@ -255,7 +255,7 @@ private -> friend
 group -> group
 ```
 
-Telegram channel 内部可以忽略 `chat_type`，因为 Telegram `chat_id` 本身通常足以发送；但它仍可用 `chat_type` 做校验、日志和未来 thread/topic 支持。
+Telegram channel 内部可以忽略 `chat_address`，因为 Telegram `chat_id` 本身通常足以发送；但它仍可用 `chat_address` 做校验、日志和未来 thread/topic 支持。
 
 ## 5. Parser 兼容规则
 
@@ -378,13 +378,13 @@ Scheduler 的 `session_key` 必须变成 typed chat key：
 <channel>:<target_type>:<target_id>
 ```
 
-WebAPI 创建 cron/send message 的请求也应新增 `chat_type`，或接受 `target`：
+WebAPI 创建 cron/send message 的写请求只接受 typed `target`：
 
 ```json
 {"target": "milky:group:20001", "text": "hello"}
 ```
 
-兼容旧参数时，如果 `chat_type` 缺失，Telegram 可以按平台能力尝试兼容，Milky 必须报错。
+旧 `platform/chat_id` 只保留在读取/查询类接口中用于历史数据定位；写接口缺少 typed `target` 时返回 400。
 
 ## 7. 数据库迁移方案
 
@@ -746,24 +746,31 @@ Cron jobs to disable unless approved: 1
 
 目标：先让用户看见迁移影响，再由用户逐条批准，最后执行可审计的破坏性写入。
 
-### Phase 4: 移除 legacy 写入兼容
+### Phase 4a: 移除 legacy 写入兼容
 
 - 删除 `platform/chat_id` 生成 session key 的主路径。
-- WebAPI/cron/message 工具对 Milky 缺少 `chat_type` 的输入直接报错。
-- 文档中将 legacy session id 标为只支持历史查询。
+- WebAPI / cron / message 工具对 Milky 缺少 `chat_type` 的写请求直接报错。
+- 新写入不再产生 legacy session id。
 
-目标：彻底收束 session identity。
+目标：彻底收束 session identity 的写入口。
+
+### Phase 4b: 移除 legacy 读取兼容
+
+- 等历史数据与 active override 清理完毕后，再删 legacy fallback。
+- `/status`、session 列表和迁移视图逐步只显示 typed 结果。
+
+目标：最终删除所有 legacy 读取分支。
 
 ## 9. 对当前 message 工具的建议
 
 短期建议：
 
 - 保留 `target` 字符串接口，因为它对 LLM 省 token。
-- 将描述从 “canonical session-like target” 改为 “delivery target”。
+- 将 `target` 明确成 `channel:type:id` 的 delivery target。
 - 返回文案避免暗示 target 是 session id，例如：
 
 ```text
-Message sent to target milky/group/20001
+Message sent to milky:group:20001
 ```
 
 而不是：
@@ -795,7 +802,7 @@ address = parse_chat_address_tool_args(...)
 - session 派生后缀只能追加在 typed base key 之后。
 - legacy session id 不默认补 `private`。
 - 新写入路径禁止产生 legacy session id。
-- Milky 裸数字 outbound 需要显式 `chat_type`，除非 scene cache 或 session metadata 能证明类型。
+- Milky 裸数字 outbound 需要 typed `chat_address`，除非 scene cache 能证明类型。
 - 数据库迁移必须支持 dry-run、备份、审计 log 和 ambiguous 数据保留。
 - 无法确认 target type 的 cron job 应禁用或要求人工确认，不能冒险发送。
 
@@ -815,7 +822,8 @@ Phase 0 (核心类型)         ✅ 已完成 (2026-05-22)
   └─→ Phase 1 (新数据写 typed key)  ✅ 已完成 (2026-05-22)
         └─→ Phase 2 (兼容读 legacy)  ✅ 已完成 (2026-05-22)
               └─→ Phase 3 (迁移工具)  ✅ 已完成 (2026-05-22)
-                      └─→ Phase 4 (移除 legacy)  ⬜ 待实施
+                      └─→ Phase 4a (移除 legacy 写入)  ✅ 已完成
+                                └─→ Phase 4b (移除 legacy 读取)  ⬜ 待实施
 ```
 
 Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移脚本开发可与兼容读实现同时进行），但 Phase 3 的 apply 必须在 Phase 2 完成后才能对真实数据执行。
@@ -874,22 +882,22 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 | 文件 | 实际改动 |
 |------|----------|
 | `nahida_bot/core/context.py` | `SessionContext` 新增 `chat_address: ChatAddress | None` 字段 |
-| `nahida_bot/core/router.py` | `make_session_id` / `make_new_session_id` 接受 `str \| ChatAddress`；`get/set_active_session` 接受 `str \| ChatAddress`；新增 `_address_from_inbound()` helper；入站路径构建 `ChatAddress` 并传入 `SessionContext`；`get_active_session_id` typed key 优先、legacy key fallback |
-| `nahida_bot/channels/milky/plugin.py` | `handle_inbound_event` 从 `message_scene` 构建 `ChatAddress`（`group`→`"group"`，`friend`→`"private"`，无 scene→`"unknown"`）；`make_session_id(address)` 生成 typed session id |
+| `nahida_bot/core/router.py` | `make_session_id` / `make_new_session_id` / `set_active_session` 只接受 typed `ChatAddress`；新增 `_address_from_inbound()` helper；入站路径构建 `ChatAddress` 并传入 `SessionContext`；`get_active_session_id` typed key 优先、legacy key 只读 fallback |
+| `nahida_bot/channels/milky/plugin.py` | `handle_inbound_event` 从 `message_scene` 构建 `ChatAddress`（`group`→`"group"`，`friend`→`"private"`）；无 scene 不再生成 session id |
 | `nahida_bot/channels/telegram/plugin.py` | `handle_inbound_event` 从 `is_group` 构建 `ChatAddress`（`True`→`"group"`，`False`→`"private"`）；`make_session_id(address)` 生成 typed session id |
-| `nahida_bot/plugins/api_bridge.py` | `start_new_session` 从 `current_session.chat_address` 获取 `ChatAddress`，用 typed key 调用 router |
-| `nahida_bot/plugins/builtin/commands.py` | Message 工具新增 `target` 参数（`milky:group:20001`），解析为 `ChatAddress`；`record` 用 typed session id；cron create 从 `ctx.chat_address` 提取 `chat_type` 传给 scheduler |
+| `nahida_bot/plugins/api_bridge.py` | `start_new_session` 接受 typed `ChatAddress`，用 typed key 调用 router |
+| `nahida_bot/plugins/builtin/commands.py` | Message 工具只接受 `target` 参数（`milky:group:20001`），解析为 `ChatAddress`；`record` 用 typed session id；cron create 将 `ChatAddress` 传给 scheduler |
 | `nahida_bot/scheduler/models.py` | `CronJob` 新增 `chat_type: str = ""` 字段 |
-| `nahida_bot/scheduler/service.py` | `create_job` 接受 `chat_type` 参数，有 `chat_type` 时生成 typed `session_key`；`list_jobs` 先查 typed key 再 fallback legacy；`_execute_fire` 构建 `ChatAddress` 传入 `SessionContext` |
+| `nahida_bot/scheduler/service.py` | `create_job` / `list_jobs` 接受 `ChatAddress`；新 job 只生成 typed `session_key`；`list_jobs` 保留 legacy 只读 fallback；`_execute_fire` 构建 `ChatAddress` 传入 `SessionContext` |
 | `nahida_bot/scheduler/repository.py` | SQL insert/update 包含 `chat_type` 列；`_row_to_job` 安全读取 `chat_type`（兼容旧 schema） |
 | `nahida_bot/db/engine.py` | Migration 011：`ALTER TABLE cron_jobs ADD COLUMN chat_type`；`CREATE TABLE session_key_migration_log` |
-| `nahida_bot/gateway/schemas.py` | `SendMessageRequest` / `CreateCronRequest` 新增可选 `target` 字段 |
-| `nahida_bot/gateway/routes/messages.py` | 优先解析 `target`→`ChatAddress`，fallback 到 `platform+chat_id` |
-| `nahida_bot/gateway/routes/cron.py` | 优先解析 `target`→`ChatAddress`，提取 `chat_type` 传给 scheduler |
+| `nahida_bot/gateway/schemas.py` | 写入 schema 只保留 `target` 字段 |
+| `nahida_bot/gateway/routes/messages.py` | `POST /api/send` 要求 typed `target` |
+| `nahida_bot/gateway/routes/cron.py` | `POST /api/cron` 要求 typed `target`；list 端点保留 legacy 查询 fallback |
 
 #### 关键设计决策
 
-1. **Router 方法签名兼容**：`make_session_id` / `get_active_session_id` / `set_active_session` 同时接受 `ChatAddress` 和 legacy `(str, str)` 参数，通过 `isinstance` 分支处理。未改动的调用方继续工作。
+1. **Router 写入方法 typed-only**：`make_session_id` / `make_new_session_id` / `set_active_session` 只接受 typed `ChatAddress`。
 
 2. **Active session fallback**：`get_active_session_id(address)` 先查 typed key，找不到时查 legacy key。这让从 DB 恢复的旧 session override 仍能命中。
 
@@ -898,9 +906,9 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
    - Telegram：从 `is_group` 推断（`True`→group，`False`→private）
    - Router 入站：从 `chat_context.chat_type` > `message_context.chat_type` > `is_group` 逐级 fallback
 
-4. **Message 工具 `target` 参数**：新增为可选参数，与 `platform+chat_id` 二选一。`target` 解析为 `ChatAddress` 后用于 `record` 的 session id 生成。
+4. **Message 工具 `target` 参数**：`target` 是必填 delivery target，解析为 `ChatAddress` 后用于发送和 `record` 的 session id 生成。
 
-5. **Scheduler `chat_type`**：新增为 `create_job` 的可选参数。有 `chat_type` 时生成 typed `session_key`（如 `milky:group:20001`），无时 fallback 到 legacy（如 `milky:20001`）。
+5. **Scheduler typed address**：`create_job` 要求 typed `ChatAddress` 并生成 typed `session_key`；legacy job 只通过 `list_jobs` / firing 路径只读兼容。
 
 #### 测试结果
 
@@ -982,7 +990,7 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 
 | 文件 | 内容 |
 |------|------|
-| `scripts/migrate_session_keys.py` | 一次性迁移脚本：inspect / apply（dry-run、backup、force_rename、force_split、force_keep_legacy、disable_cron） |
+| `scripts/migrate_session_keys.py` | 一次性迁移脚本：inspect / apply / repair-cron（dry-run、backup、force_rename、force_split、force_keep_legacy、disable_cron、migrate_history） |
 
 #### 需修改的文件（仅 minor）
 
@@ -1030,6 +1038,15 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 - `uv run pytest tests/test_session_key_migration_script.py` → 10 passed
 - `uv run pytest tests/test_chat_address.py tests/test_message_router.py tests/test_scheduler.py tests/test_webapi.py tests/test_builtin_commands_plugin.py tests/test_api_bridge.py tests/test_milky_plugin.py tests/test_telegram_plugin.py tests/test_session_key_migration_script.py` → 202 passed
 
+#### 真实数据库验证
+
+- 已在服务器导出的 `nahida.db` 上执行 `repair-cron`
+- `cron_jobs.chat_type` 已补齐
+- 2 条 active 的孤立 cron 历史已迁移到 typed cron session
+- 4 条 legacy 孤立 cron session 保留为 inactive 历史
+- `PRAGMA foreign_key_check` 结果为 0
+- 备份文件：`nahida.db.session-key-migration.20260524092215.bak`
+
 #### 验收标准
 
 - [x] `inspect` 对每个 legacy session 输出完整建议和证据
@@ -1042,36 +1059,56 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 
 ---
 
-### Phase 4: 移除 Legacy 兼容 ⬜ 待实施
+### Phase 4a: 移除 Legacy 写入兼容 ✅ 已完成
 
-**目标：** 清理所有 legacy 写入路径，删除兼容代码。
+**目标：** 所有新写入都必须使用 typed `ChatAddress`，legacy 只保留只读回退。
 
 **难度：低中** | **预估工期：0.5–1 天**
 
-#### 需修改的文件
+#### 已修改的文件
 
 | 文件 | 改动 |
 |------|------|
-| `nahida_bot/core/router.py` | 删除 `make_session_id` / `get_active_session_id` / `set_active_session` 的 legacy `(str, str)` 分支 |
-| `nahida_bot/plugins/builtin/commands.py` | 移除 `platform/chat_id` 旧参数的兼容处理，只接受 `target` |
-| `nahida_bot/gateway/schemas.py` | 移除旧 `platform/chat_id` schema，只保留 `target` |
-| `nahida_bot/scheduler/service.py` | 移除 legacy `session_key` 构造（`f"{platform}:{chat_id}"`） |
-| `nahida_bot/channels/milky/segment_converter.py` | 移除 default-to-friend fallback |
+| `nahida_bot/core/router.py` | `make_session_id` / `make_new_session_id` / `set_active_session` 只接受 typed `ChatAddress`；`get_active_session_id` 保留 legacy 只读回退 |
+| `nahida_bot/plugins/builtin/commands.py` | `message` 工具只接受 `target`；cron 创建与会话切换只使用 typed 地址；cron 修改/删除按 typed 地址核对归属 |
+| `nahida_bot/gateway/schemas.py` | 写入 schema 移除旧 `platform/chat_id` 字段，只保留 `target` |
+| `nahida_bot/gateway/routes/messages.py` | `POST /api/send` 只接受 typed `target` |
+| `nahida_bot/gateway/routes/cron.py` | `POST /api/cron` 只接受 typed `target` |
+| `nahida_bot/scheduler/service.py` | `create_job` / `list_jobs` 改为接收 `ChatAddress`，新 job 只写 typed `session_key` |
+| `nahida_bot/channels/milky/segment_converter.py` | 移除 default-to-friend fallback，必须有 typed 地址或已知 scene |
+| `nahida_bot/channels/milky/plugin.py` | 无 scene 时不再生成 session id，直接跳过 |
+| `nahida_bot/plugins/api_bridge.py` | `/new` 只接受 typed 地址 |
 
 #### 关键实现步骤
 
-1. 删除 Router 的 legacy `isinstance(str)` 分支
-2. Message 工具要求必须传 `target`（含 target_type）
-3. WebAPI 要求 `target` 或 `chat_type`，缺少时报错
-4. Milky outbound 不再 default-to-friend，无 chat_type 时报错
-5. 更新相关文档
+1. 写入入口全部改为 typed `ChatAddress`
+2. message / cron / WebAPI 对 Milky 缺少 `chat_type` 的写请求直接报错
+3. Milky outbound 不再 default-to-friend
+4. 保留 legacy 只读回退，等待历史数据进一步清理
+5. 更新相关参考文档
 
 #### 验收标准
 
-- [ ] 代码中无 `platform:chat_id` 的手动拼接（grep 验证）
-- [ ] 所有 session id 生成均通过 `ChatAddress` / `SessionKey`
-- [ ] Milky 缺少 target_type 时发送报错而非 fallback to friend
-- [ ] WebAPI 缺少 chat_type 时返回 400
+- [x] 代码中无新写入路径的 `platform:chat_id` 手动拼接
+- [x] 所有 session id 写入均通过 `ChatAddress` / `SessionKey`
+- [x] Milky 缺少 target_type 时发送报错而非 fallback to friend
+- [x] WebAPI 缺少 target 时返回 400
+
+#### 测试结果
+
+- `uv run pyright` → 0 errors, 0 warnings
+- `uv run ruff check nahida_bot tests scripts/migrate_session_keys.py` → All checks passed
+- `uv run pytest tests/test_message_router.py tests/test_scheduler.py tests/test_webapi.py tests/test_builtin_commands_plugin.py tests/test_milky_segment_converter.py tests/test_milky_plugin.py tests/test_session_key_migration_script.py` → 133 passed
+
+### Phase 4b: 移除 Legacy 读兼容 ⬜ 待实施
+
+**目标：** 在历史数据清理完毕后，删除剩余 legacy 读取回退与显示逻辑。
+
+#### 待处理方向
+
+- `get_active_session_id` 的 legacy fallback
+- `/status` 与 session 列表里的 legacy 标识
+- 迁移完成后再移除 legacy session 的显示/兼容分支
 
 ---
 
@@ -1093,5 +1130,6 @@ Phase 0 和 Phase 1 之间无并行空间。Phase 2/3 可部分并行（迁移�
 ✅ Day 3:     Phase 2 — 兼容读 legacy 增强 + 状态可视化
 ✅ Day 3–4:   Phase 3 — 迁移脚本 inspect/apply 开发 + 测试
 ⬜ Day 5:     Phase 3 — 使用真实数据运行 inspect + 人工审核 + apply
-⬜ Day 5:     Phase 4 — 清理 legacy 兼容代码 + 最终验证
+✅ Day 5:     Phase 4a — 清理 legacy 写入兼容 + 最终验证
+⬜ Day 5:     Phase 4b — 清理 legacy 读取兼容
 ```

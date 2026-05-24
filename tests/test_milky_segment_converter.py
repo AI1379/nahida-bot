@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from nahida_bot.channels.milky.config import parse_milky_config
 from nahida_bot.channels.milky.segment_converter import (
     MilkyTargetError,
@@ -139,6 +141,18 @@ def test_resolve_target_prefix_and_scene_memory() -> None:
     assert resolve_target(
         "20001", OutboundMessage(text="hi"), scene_by_peer={"20001": "group"}
     ) == ("group", 20001)
+
+
+def test_resolve_target_uses_chat_address_metadata() -> None:
+    assert resolve_target(
+        "20001",
+        OutboundMessage(text="hi", extra={"chat_address": "milky:group:20001"}),
+    ) == ("group", 20001)
+
+
+def test_resolve_target_requires_scene_without_metadata() -> None:
+    with pytest.raises(MilkyTargetError, match="requires explicit chat type"):
+        resolve_target("20001", OutboundMessage(text="hi"))
 
 
 def test_message_seq_from_send_result() -> None:

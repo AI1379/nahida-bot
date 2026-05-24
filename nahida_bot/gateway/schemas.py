@@ -1,5 +1,7 @@
 """Pydantic request and response schemas for the WebAPI."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -46,9 +48,7 @@ class SessionHistoryResponse(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    target: str | None = None
-    platform: str = ""
-    chat_id: str = ""
+    target: str = ""
     text: str
     session_id: str | None = None
 
@@ -78,16 +78,14 @@ class CronListResponse(BaseModel):
 
 
 class CreateCronRequest(BaseModel):
-    target: str | None = None
-    platform: str = ""
-    chat_id: str = ""
+    target: str = ""
     prompt: str
-    mode: str
+    mode: Literal["once", "interval", "cron"]
     fire_at: str | None = None
     interval_seconds: int | None = None
     cron_expression: str | None = None
     max_runs: int | None = None
-    session_mode: str = "main"
+    session_mode: Literal["main", "isolated"] = "main"
 
 
 class CreateCronResponse(BaseModel):
@@ -97,7 +95,7 @@ class CreateCronResponse(BaseModel):
 
 class UpdateCronRequest(BaseModel):
     prompt: str | None = None
-    mode: str | None = None
+    mode: Literal["once", "interval", "cron"] | None = None
     fire_at: str | None = None
     interval_seconds: int | None = None
     cron_expression: str | None = None

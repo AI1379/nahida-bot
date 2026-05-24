@@ -1,7 +1,8 @@
 # 跨会话消息发送设计
 
 > 记录时间：2026-05-20
-> 状态：规划中
+> 最近更新：2026-05-24
+> 状态：部分实现，target 已统一为 typed ChatAddress
 > 相关文档：
 >
 > - [ROADMAP.md §3.6 — message 工具](../ROADMAP.md)
@@ -14,8 +15,8 @@
 nahida-bot 当前所有 LLM 工具都绑定在 `current_session` 上下文中，Agent 无法在对话中主动向其他会话/平台发送消息。但底层管道已经打通：
 
 - `ChannelRegistry` 可按 platform 名查找任意通道服务
-- `BotAPI.send_message(target, message, channel=...)` 支持指定任意 platform + chat_id
-- `POST /api/send` 已实现跨 session 发送（仅纯文本）
+- `BotAPI.send_message(target, message, channel=...)` 支持指定 channel + typed target
+- `POST /api/send` 已实现跨 session 发送（仅纯文本，要求 `channel:type:id` target）
 - `OrchestrationPolicy.can_send_session()` 存根已存在
 
 需要补齐的是 **LLM 面向的工具链** 和 **WebAPI 的富消息能力**。
@@ -50,7 +51,7 @@ nahida-bot 当前所有 LLM 工具都绑定在 `current_session` 上下文中，
 | 调用方 | LLM Agent | LLM Agent | 外部脚本/CLI |
 | 消息形式 | OutboundMessage（完整） | agent/system 事件 | HTTP request |
 | 是否触发目标 run | 否（直接投递） | record_only: 否, enqueue: 是 | 否（直接投递） |
-| 前置条件 | sessions_list 发现目标 | sessions_list 发现目标 | 知道 platform + chat_id |
+| 前置条件 | sessions_list 发现目标 | sessions_list 发现目标 | 知道 typed target |
 
 ## 3. 已有基础设施
 
@@ -77,10 +78,9 @@ nahida-bot 当前所有 LLM 工具都绑定在 `current_session` 上下文中，
 
 ```json
 {
-  "platform": "string, required — 目标平台（telegram / milky / ...）",
-  "chat_id": "string, required — 目标聊天 ID",
+  "target": "string, required — channel:type:id，例如 milky:group:20001",
   "text": "string, required — 消息文本",
-  "reply_to": "string, optional — 引用的消息 ID",
+  "delivery": "notify | record, optional — 默认 notify",
   "attachments": [
     {
       "type": "photo | document | audio | video",
@@ -94,20 +94,21 @@ nahida-bot 当前所有 LLM 工具都绑定在 `current_session` 上下文中，
 **实现要点**：
 
 - 在 `plugins/builtin/commands.py` 注册 `message` 工具
-- 调用 `ctx.bot_api.send_message(chat_id, OutboundMessage(...), channel=platform)`
+- `target` 解析为 `ChatAddress`
+- 调用 `ctx.bot_api.send_message(address.target_id, OutboundMessage(..., extra={"chat_address": address.chat_key}), channel=address.channel)`
 - `reply_signals` 的 `NO_REPLY` 与本工具协同：Agent 用 `message` 工具已发送回复后，主回复可用 `NO_REPLY` 避免重复
 - 附件路径必须在 workspace sandbox 内，防止路径穿越
 - 需要权限检查：`check_network_outbound` 已在 `BotAPI.send_message` 中存在
 
 **路由**：
 
-- Agent 不需要知道 channel 的具体实现，只需提供 `platform` + `chat_id`
+- Agent 不需要知道 channel 的具体实现，只需提供 typed `target`
 - `BotAPI.send_message` 从 `ChannelRegistry` 查找对应 ChannelService 并委托投递
-- 不存在的 platform 返回错误，不存在的 chat_id 由 channel 层报错
+- 不存在的 channel 返回错误，不存在的 target id 由 channel 层报错
 
 **安全**：
 
-- `OrchestrationPolicy` 增加 `can_send_message(requester_session_id, platform, chat_id)` 检查
+- `OrchestrationPolicy` 增加 `can_send_message(requester_session_id, target)` 检查
 - 子 Agent 默认禁用 `message` 工具（加入 denylist）
 - 附件路径必须在 workspace 内（复用 workspace sandbox 校验）
 
@@ -169,7 +170,8 @@ A2A 最小跨会话事件接口，用于 Agent 间结构化通信。
 {
   "sessions": [
     {
-      "session_id": "telegram:12345",
+      "session_id": "telegram:private:12345",
+      "target": "telegram:private:12345",
       "platform": "telegram",
       "chat_id": "12345",
       "has_active_run": false,
@@ -232,11 +234,10 @@ A2A 最小跨会话事件接口，用于 Agent 间结构化通信。
 
 ```python
 class SendMessageRequest(BaseModel):
-    platform: str
-    chat_id: str
+    target: str          # channel:type:id
     text: str
     session_id: str | None = None
-    # 新增字段
+    # 未来增强字段
     reply_to: str = ""
     attachments: list[AttachmentSchema] = Field(default_factory=list)
 
@@ -251,16 +252,16 @@ class AttachmentSchema(BaseModel):
 
 - 构造完整的 `OutboundMessage` 而非只传 text
 - 附件路径需要安全校验：限制在 workspace 或指定目录内
-- 向后兼容：新字段全部可选，现有调用不受影响
+- `platform/chat_id` 不再作为写入 schema；旧格式只用于历史查询类接口
 
 ### 4.5 Cron 工具跨 session 参数
 
-当前 `_tool_cron_create` 固定读取 `ctx.platform` / `ctx.chat_id`。增加可选参数让 cron job 可以指定其他投递目标。
+当前 `_tool_cron_create` 读取当前 session 的 typed `ChatAddress`。如果后续要支持跨 session cron，应增加 typed `target` 参数。
 
 **增强**：
 
-- `cron_create` 工具增加可选参数 `target_platform` 和 `target_chat_id`
-- 不提供时默认使用当前 session 的 platform / chat_id（向后兼容）
+- `cron_create` 工具增加可选参数 `target`
+- 不提供时默认使用当前 session 的 typed `ChatAddress`
 - 底层 `SchedulerService` 已支持，只需工具层透传
 
 ## 5. 实施路线
@@ -274,7 +275,7 @@ class AttachmentSchema(BaseModel):
 - [ ] `OrchestrationPolicy` 增加 `can_send_message` 权限检查
 - [ ] 子 Agent denylist 增加 `message`
 - [ ] workspace sandbox 校验附件路径
-- [ ] 测试：同平台发送、跨平台发送、不存在的 platform 报错
+- [ ] 测试：同平台发送、跨平台发送、不存在的 channel 报错
 
 ### Phase 2：Session 发现工具
 
@@ -306,7 +307,7 @@ A2A 最小事件接口。
 
 ### Phase 5：Cron 跨 session（可选）
 
-- [ ] `cron_create` 工具增加 `target_platform` / `target_chat_id` 可选参数
+- [ ] `cron_create` 工具增加 typed `target` 可选参数
 - [ ] 底层透传到 `SchedulerService`（已支持）
 
 ## 6. 不做的事

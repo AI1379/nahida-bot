@@ -13,6 +13,8 @@ from typing import (
     runtime_checkable,
 )
 
+from nahida_bot.core.chat_address import ChatAddress
+
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import ChatProvider
     from nahida_bot.plugins.commands import CommandHandlerResult, CommandInfo
@@ -304,7 +306,7 @@ class BotAPI(Protocol):
         """Delete all turns for a session and return the number removed."""
         ...
 
-    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+    async def start_new_session(self, address: ChatAddress) -> str | None:
         """Switch the active chat to a new session and return its id."""
         ...
 

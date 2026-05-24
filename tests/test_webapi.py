@@ -202,7 +202,7 @@ async def test_sessions_returns_list(client_no_auth: AsyncClient) -> None:
 async def test_send_returns_503_when_no_router(client_no_auth: AsyncClient) -> None:
     resp = await client_no_auth.post(
         "/api/send",
-        json={"platform": "telegram", "chat_id": "123", "text": "hello"},
+        json={"target": "telegram:private:123", "text": "hello"},
     )
     assert resp.status_code == 503
 
@@ -212,12 +212,12 @@ async def test_send_returns_404_when_channel_not_found(
 ) -> None:
     mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
     mock_router = MagicMock()
-    mock_router.get_active_session_id.return_value = "telegram:123"
+    mock_router.get_active_session_id.return_value = "telegram:private:123"
     mock_app.message_router = mock_router
 
     resp = await client_no_auth.post(
         "/api/send",
-        json={"platform": "telegram", "chat_id": "123", "text": "hello"},
+        json={"target": "telegram:private:123", "text": "hello"},
     )
     assert resp.status_code == 404
     assert "telegram" in resp.json()["detail"]
@@ -227,7 +227,7 @@ async def test_send_success(client_no_auth: AsyncClient) -> None:
     mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
 
     mock_router = MagicMock()
-    mock_router.get_active_session_id.return_value = "telegram:123"
+    mock_router.get_active_session_id.return_value = "telegram:private:123:abc"
     mock_app.message_router = mock_router
 
     mock_channel = AsyncMock()
@@ -236,13 +236,16 @@ async def test_send_success(client_no_auth: AsyncClient) -> None:
 
     resp = await client_no_auth.post(
         "/api/send",
-        json={"platform": "telegram", "chat_id": "123", "text": "hello"},
+        json={"target": "telegram:private:123", "text": "hello"},
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "sent"
-    assert data["session_id"] == "telegram:123"
+    assert data["session_id"] == "telegram:private:123:abc"
     mock_channel.send_message.assert_called_once()
+    sent_target, sent_message = mock_channel.send_message.call_args.args
+    assert sent_target == "123"
+    assert sent_message.extra["chat_address"] == "telegram:private:123"
 
 
 async def test_send_with_typed_target_resolves_typed_session(
@@ -272,6 +275,24 @@ async def test_send_with_typed_target_resolves_typed_session(
     assert address.target_type == "private"
     assert address.target_id == "123"
     mock_channel.send_message.assert_called_once()
+    sent_target, sent_message = mock_channel.send_message.call_args.args
+    assert sent_target == "123"
+    assert sent_message.extra["chat_address"] == "telegram:private:123"
+
+
+async def test_send_rejects_legacy_platform_chat_id_payload(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_router = MagicMock()
+    mock_router.get_active_session_id.return_value = "telegram:private:123"
+    mock_app.message_router = mock_router
+
+    resp = await client_no_auth.post(
+        "/api/send",
+        json={"platform": "telegram", "chat_id": "123", "text": "hello"},
+    )
+    assert resp.status_code == 400
 
 
 # -- Cron -----------------------------------------------------------------
@@ -294,7 +315,7 @@ async def test_cron_list_returns_jobs(client_no_auth: AsyncClient) -> None:
             job_id="abc123",
             platform="telegram",
             chat_id="123",
-            session_key="telegram:123",
+            session_key="telegram:private:123",
             prompt="check news",
             mode="interval",
             fire_at=None,
@@ -311,6 +332,7 @@ async def test_cron_list_returns_jobs(client_no_auth: AsyncClient) -> None:
             failure_count=0,
             last_error=None,
             session_mode="main",
+            chat_type="private",
         )
     ]
     mock_app.scheduler_service = mock_scheduler
@@ -333,11 +355,10 @@ async def test_cron_list_with_typed_target_passes_chat_type(
 
     resp = await client_no_auth.get("/api/cron?target=telegram:private:123")
     assert resp.status_code == 200
-    mock_scheduler.list_jobs.assert_awaited_once_with(
-        "telegram",
-        "123",
-        chat_type="private",
-    )
+    address = mock_scheduler.list_jobs.call_args.args[0]
+    assert address.channel == "telegram"
+    assert address.target_type == "private"
+    assert address.target_id == "123"
 
 
 async def test_cron_create_success(client_no_auth: AsyncClient) -> None:
@@ -349,7 +370,7 @@ async def test_cron_create_success(client_no_auth: AsyncClient) -> None:
         job_id="new-job-1",
         platform="telegram",
         chat_id="123",
-        session_key="telegram:123",
+        session_key="telegram:private:123",
         prompt="hello",
         mode="once",
         fire_at="2026-06-01T00:00:00",
@@ -366,14 +387,14 @@ async def test_cron_create_success(client_no_auth: AsyncClient) -> None:
         failure_count=0,
         last_error=None,
         session_mode="main",
+        chat_type="private",
     )
     mock_app.scheduler_service = mock_scheduler
 
     resp = await client_no_auth.post(
         "/api/cron",
         json={
-            "platform": "telegram",
-            "chat_id": "123",
+            "target": "telegram:private:123",
             "prompt": "hello",
             "mode": "once",
             "fire_at": "2026-06-01T00:00:00",
@@ -394,8 +415,7 @@ async def test_cron_create_validation_error(client_no_auth: AsyncClient) -> None
     resp = await client_no_auth.post(
         "/api/cron",
         json={
-            "platform": "telegram",
-            "chat_id": "123",
+            "target": "telegram:private:123",
             "prompt": "hello",
             "mode": "cron",
             "cron_expression": "bad",
@@ -403,6 +423,26 @@ async def test_cron_create_validation_error(client_no_auth: AsyncClient) -> None
     )
     assert resp.status_code == 400
     assert "Invalid cron" in resp.json()["detail"]
+
+
+async def test_cron_create_rejects_legacy_platform_chat_id_payload(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_scheduler = AsyncMock()
+    mock_app.scheduler_service = mock_scheduler
+
+    resp = await client_no_auth.post(
+        "/api/cron",
+        json={
+            "platform": "telegram",
+            "chat_id": "123",
+            "prompt": "hello",
+            "mode": "once",
+            "fire_at": "2026-06-01T00:00:00",
+        },
+    )
+    assert resp.status_code == 400
 
 
 # -- CORS -----------------------------------------------------------------

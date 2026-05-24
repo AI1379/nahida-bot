@@ -17,6 +17,7 @@ from nahida_bot.channels.milky.segments import (
     OutgoingTextSegment,
     OutgoingVideoSegment,
 )
+from nahida_bot.core.chat_address import ChatAddress, normalize_target_type
 from nahida_bot.plugins.base import Attachment, OutboundMessage
 
 MessageScene = Literal["friend", "group"]
@@ -96,6 +97,14 @@ def resolve_target(
     if extra_scene in {"friend", "group"} and extra_peer is not None:
         return cast(MessageScene, extra_scene), _parse_peer_id(extra_peer)
 
+    extra_address = _chat_address_from_extra(message.extra.get("chat_address"))
+    if extra_address is not None:
+        return _scene_and_peer_from_address(extra_address)
+
+    target_address = _chat_address_from_target(target)
+    if target_address is not None:
+        return _scene_and_peer_from_address(target_address)
+
     if ":" in target:
         prefix, value = target.split(":", 1)
         if prefix in {"friend", "group"}:
@@ -108,7 +117,9 @@ def resolve_target(
     if extra_scene in {"friend", "group"}:
         return cast(MessageScene, extra_scene), _parse_peer_id(target)
 
-    return "friend", _parse_peer_id(target)
+    raise MilkyTargetError(
+        f"Milky target requires explicit chat type or cached scene: {target!r}"
+    )
 
 
 def message_seq_from_send_result(result: dict[str, object]) -> str:
@@ -164,6 +175,57 @@ def _parse_peer_id(value: object) -> int:
         return int(str(value))
     except ValueError as exc:
         raise MilkyTargetError(f"Invalid Milky target peer id: {value!r}") from exc
+
+
+def _chat_address_from_extra(raw: object) -> ChatAddress | None:
+    if raw is None:
+        return None
+    if isinstance(raw, ChatAddress):
+        return raw
+    if isinstance(raw, str):
+        if not raw:
+            return None
+        try:
+            return ChatAddress.parse(raw)
+        except ValueError as exc:
+            raise MilkyTargetError(f"Invalid chat_address metadata: {raw!r}") from exc
+    if isinstance(raw, dict):
+        channel = str(raw.get("channel") or "")
+        target_type = str(raw.get("target_type") or raw.get("chat_type") or "")
+        target_id = str(raw.get("target_id") or raw.get("chat_id") or "")
+        if not (channel and target_type and target_id):
+            return None
+        try:
+            return ChatAddress(
+                channel=channel,
+                target_type=normalize_target_type(target_type),
+                target_id=target_id,
+            )
+        except ValueError as exc:
+            raise MilkyTargetError(f"Invalid chat_address metadata: {raw!r}") from exc
+    return None
+
+
+def _chat_address_from_target(target: str) -> ChatAddress | None:
+    if target.count(":") < 2:
+        return None
+    try:
+        address = ChatAddress.parse(target)
+    except ValueError as exc:
+        raise MilkyTargetError(f"Invalid Milky target address: {target!r}") from exc
+    return address if address.is_typed else None
+
+
+def _scene_and_peer_from_address(address: ChatAddress) -> tuple[MessageScene, int]:
+    if address.channel != "milky":
+        raise MilkyTargetError(f"Milky cannot send to channel {address.channel!r}")
+    if address.target_type == "private":
+        return "friend", _parse_peer_id(address.target_id)
+    if address.target_type == "group":
+        return "group", _parse_peer_id(address.target_id)
+    raise MilkyTargetError(
+        f"Milky target type must be private or group, got {address.target_type!r}"
+    )
 
 
 def _extra_segments(extra: dict[str, object]) -> list[OutgoingSegment]:

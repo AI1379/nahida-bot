@@ -30,7 +30,6 @@ from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage,
 
 from nahida_bot.core.chat_address import (
     ChatAddress,
-    VALID_TARGET_TYPES,
     classify_session_key,
 )
 from nahida_bot.core.context import current_session
@@ -1102,19 +1101,8 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "string",
                         "description": (
                             "Delivery target as 'platform:type:id' "
-                            "(e.g. 'milky:group:20001', 'telegram:private:123456'). "
-                            "Preferred over platform+chat_id."
+                            "(e.g. 'milky:group:20001', 'telegram:private:123456')."
                         ),
-                    },
-                    "platform": {
-                        "type": "string",
-                        "description": "Target platform name (e.g. telegram, milky). "
-                        "Ignored when 'target' is provided.",
-                    },
-                    "chat_id": {
-                        "type": "string",
-                        "description": "Target chat ID on the specified platform. "
-                        "Ignored when 'target' is provided.",
                     },
                     "text": {
                         "type": "string",
@@ -1166,7 +1154,7 @@ class BuiltinCommandsPlugin(Plugin):
                         "description": "Optional files to send alongside the message.",
                     },
                 },
-                "required": ["text"],
+                "required": ["target", "text"],
                 "additionalProperties": False,
             },
             self._tool_message,
@@ -1176,8 +1164,6 @@ class BuiltinCommandsPlugin(Plugin):
         self,
         text: str,
         target: str = "",
-        platform: str = "",
-        chat_id: str = "",
         delivery: str = "notify",
         attachments: list[dict[str, Any]] | None = None,
     ) -> str:
@@ -1188,19 +1174,14 @@ class BuiltinCommandsPlugin(Plugin):
         if delivery not in ("notify", "record"):
             return "Error: delivery must be 'notify' or 'record'."
 
-        # Resolve target ChatAddress
-        address: ChatAddress | None = None
-        target_is_canonical = False
-        if target:
-            try:
-                address = ChatAddress.parse(target)
-            except ValueError as exc:
-                return f"Error: Invalid target format: {exc}"
-            platform = address.channel
-            chat_id = address.target_id
-            target_is_canonical = _is_canonical_target(target)
-        elif not platform or not chat_id:
-            return "Error: Provide 'target' or both 'platform' and 'chat_id'."
+        if not target:
+            return "Error: Provide a typed 'target' such as 'milky:group:20001'."
+        try:
+            address = ChatAddress.parse(target)
+        except ValueError as exc:
+            return f"Error: Invalid target format: {exc}"
+        if not address.is_typed:
+            return "Error: target must include a chat type, such as private or group."
 
         # Resolve attachments
         resolved_attachments: list[Attachment] = []
@@ -1241,20 +1222,19 @@ class BuiltinCommandsPlugin(Plugin):
                     )
                 )
 
-        outbound = OutboundMessage(text=text, attachments=resolved_attachments)
+        outbound = OutboundMessage(
+            text=text,
+            extra={"chat_address": address.chat_key},
+            attachments=resolved_attachments,
+        )
         message_id = await self.api.send_message(
-            chat_id,
+            address.target_id,
             outbound,
-            channel=platform,
+            channel=address.channel,
         )
 
         # Record in target session history if requested
         if delivery == "record":
-            target_session_id = (
-                str(address)
-                if address is not None and target_is_canonical
-                else f"{platform}:{chat_id}"
-            )
             metadata: dict[str, Any] = {
                 "from_session": ctx.session_id,
                 "from_platform": ctx.platform,
@@ -1263,13 +1243,13 @@ class BuiltinCommandsPlugin(Plugin):
             if resolved_attachments:
                 metadata["attachment_count"] = len(resolved_attachments)
             await self.api.record_session_event(
-                target_session_id,
+                address.chat_key,
                 text,
                 source="cross_session_message",
                 metadata=metadata,
             )
 
-        display = target or f"{platform}:{chat_id}"
+        display = address.chat_key
         parts = [f"Message sent to {display}"]
         if delivery == "record":
             parts.append("(recorded in target session history)")
@@ -1319,14 +1299,12 @@ class BuiltinCommandsPlugin(Plugin):
             return f"Error: Invalid mode '{mode}'. Use 'once', 'interval', or 'cron'."
 
         try:
-            # Derive chat_type from session context's ChatAddress
-            chat_type = ""
-            if ctx.chat_address is not None and ctx.chat_address.is_typed:
-                chat_type = ctx.chat_address.target_type
+            address = _typed_address_from_session_context(ctx)
+            if address is None:
+                return "Error: Current chat does not have a typed delivery target."
 
             job = await scheduler.create_job(
-                platform=ctx.platform,
-                chat_id=ctx.chat_id,
+                address=address,
                 prompt=prompt,
                 mode=mode,
                 fire_at=fire_at if mode == "once" else None,
@@ -1335,7 +1313,6 @@ class BuiltinCommandsPlugin(Plugin):
                 max_runs=max_runs,
                 workspace_id=ctx.workspace_id,
                 session_mode=session_mode,
-                chat_type=chat_type,
             )
         except Exception as e:
             return f"Error creating scheduled task: {e}"
@@ -1370,11 +1347,7 @@ class BuiltinCommandsPlugin(Plugin):
         if scheduler is None:
             return "Error: Scheduler is not available."
 
-        jobs = await scheduler.list_jobs(
-            ctx.platform,
-            ctx.chat_id,
-            chat_type=_chat_type_from_session_context(ctx),
-        )
+        jobs = await scheduler.list_jobs(_address_from_session_context(ctx))
         if not jobs:
             return "No active scheduled tasks for this chat."
 
@@ -1410,7 +1383,8 @@ class BuiltinCommandsPlugin(Plugin):
         job = await scheduler.get_job(job_id)
         if job is None:
             return f"Error: Job '{job_id}' not found."
-        if job.platform != ctx.platform or job.chat_id != ctx.chat_id:
+        address = _typed_address_from_session_context(ctx)
+        if address is None or not _job_matches_address(job, address):
             return f"Error: Job '{job_id}' does not belong to this chat."
 
         cancelled = await scheduler.cancel_job(job_id)
@@ -1439,7 +1413,8 @@ class BuiltinCommandsPlugin(Plugin):
         job = await scheduler.get_job(job_id)
         if job is None:
             return f"Error: Job '{job_id}' not found."
-        if job.platform != ctx.platform or job.chat_id != ctx.chat_id:
+        address = _typed_address_from_session_context(ctx)
+        if address is None or not _job_matches_address(job, address):
             return f"Error: Job '{job_id}' does not belong to this chat."
 
         if mode is not None and mode not in {"once", "interval", "cron"}:
@@ -1493,7 +1468,8 @@ class BuiltinCommandsPlugin(Plugin):
         job = await scheduler.get_job(job_id)
         if job is None:
             return f"Error: Job '{job_id}' not found."
-        if job.platform != ctx.platform or job.chat_id != ctx.chat_id:
+        address = _typed_address_from_session_context(ctx)
+        if address is None or not _job_matches_address(job, address):
             return f"Error: Job '{job_id}' does not belong to this chat."
 
         deleted = await scheduler.delete_job(job_id)
@@ -1527,11 +1503,7 @@ class BuiltinCommandsPlugin(Plugin):
         scheduler = self._get_scheduler()
         if scheduler is None:
             return "Scheduler is not available."
-        jobs = await scheduler.list_jobs(
-            inbound.platform,
-            inbound.chat_id,
-            chat_type=_chat_type_from_inbound(inbound),
-        )
+        jobs = await scheduler.list_jobs(_address_from_inbound(inbound))
         if not jobs:
             return "No scheduled tasks for this chat."
         lines = []
@@ -1552,10 +1524,11 @@ class BuiltinCommandsPlugin(Plugin):
         if scheduler is None:
             return "Scheduler is not available."
         job = await scheduler.get_job(job_id)
+        address = _address_from_inbound(inbound)
         if (
             job is None
-            or job.platform != inbound.platform
-            or job.chat_id != inbound.chat_id
+            or not address.is_typed
+            or not _job_matches_address(job, address)
         ):
             return f"Task '{job_id}' not found."
         cancelled = await scheduler.cancel_job(job_id)
@@ -1570,10 +1543,11 @@ class BuiltinCommandsPlugin(Plugin):
         if scheduler is None:
             return "Scheduler is not available."
         job = await scheduler.get_job(job_id)
+        address = _address_from_inbound(inbound)
         if (
             job is None
-            or job.platform != inbound.platform
-            or job.chat_id != inbound.chat_id
+            or not address.is_typed
+            or not _job_matches_address(job, address)
         ):
             return f"Task '{job_id}' not found."
         deleted = await scheduler.delete_job(job_id)
@@ -1604,7 +1578,15 @@ class BuiltinCommandsPlugin(Plugin):
             chat_id=inbound.chat_id,
         )
 
-        new_id = await self.api.start_new_session(inbound.platform, inbound.chat_id)
+        ctx = current_session.get()
+        address = _typed_address_from_session_context(ctx) if ctx is not None else None
+        if address is None:
+            inbound_address = _address_from_inbound(inbound)
+            address = inbound_address if inbound_address.is_typed else None
+        if address is None:
+            return "Failed to create new session: current chat type is unavailable."
+
+        new_id = await self.api.start_new_session(address)
         if new_id is not None:
             _logger.debug("cmd.new.success", new_session_id=new_id)
             return f"New session started: {new_id}"
@@ -1999,10 +1981,15 @@ class BuiltinCommandsPlugin(Plugin):
             if attachment_type == "auto"
             else attachment_type
         )
+        extra: dict[str, Any] = {}
+        address = _typed_address_from_session_context(ctx)
+        if address is not None:
+            extra["chat_address"] = address.chat_key
         message_id = await self.api.send_message(
             ctx.chat_id,
             OutboundMessage(
                 text="",
+                extra=extra,
                 attachments=[
                     Attachment(
                         type=selected_type,
@@ -2072,11 +2059,6 @@ class BuiltinCommandsPlugin(Plugin):
         return "document"
 
 
-def _is_canonical_target(value: str) -> bool:
-    parts = value.split(":")
-    return len(parts) >= 3 and parts[1] in VALID_TARGET_TYPES
-
-
 def _format_session_key_kind(kind: str) -> str:
     if kind == "typed":
         return "typed"
@@ -2090,22 +2072,48 @@ def _format_session_key_kind(kind: str) -> str:
 
 
 def _chat_type_from_session_context(ctx: Any) -> str:
-    address = getattr(ctx, "chat_address", None)
-    if address is not None and address.is_typed:
-        return address.target_type
-    return ""
+    address = _typed_address_from_session_context(ctx)
+    return address.target_type if address is not None else ""
 
 
 def _chat_type_from_inbound(inbound: InboundMessage) -> str:
+    address = _address_from_inbound(inbound)
+    return address.target_type if address.is_typed else ""
+
+
+def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:
     chat_type = ""
     if inbound.chat_context and inbound.chat_context.chat_type:
         chat_type = inbound.chat_context.chat_type
     elif inbound.message_context and inbound.message_context.chat_type:
         chat_type = inbound.message_context.chat_type
-    address = ChatAddress.from_inbound(
+    return ChatAddress.from_inbound(
         inbound.platform,
         inbound.chat_id,
         is_group=inbound.is_group,
         chat_type=chat_type,
     )
-    return address.target_type if address.is_typed else ""
+
+
+def _address_from_session_context(ctx: Any) -> ChatAddress:
+    address = getattr(ctx, "chat_address", None)
+    if isinstance(address, ChatAddress):
+        return address
+    return ChatAddress.from_inbound(
+        str(getattr(ctx, "platform", "")),
+        str(getattr(ctx, "chat_id", "")),
+    )
+
+
+def _typed_address_from_session_context(ctx: Any) -> ChatAddress | None:
+    address = _address_from_session_context(ctx)
+    return address if address.is_typed else None
+
+
+def _job_matches_address(job: Any, address: ChatAddress) -> bool:
+    return (
+        address.is_typed
+        and job.platform == address.channel
+        and job.chat_id == address.target_id
+        and job.chat_type == address.target_type
+    )

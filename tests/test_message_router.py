@@ -226,17 +226,27 @@ def _make_router(
 
 class TestMessageRouterSessionId:
     def test_session_id_format(self) -> None:
-        assert MessageRouter.make_session_id("telegram", "123") == "telegram:123"
+        address = ChatAddress(
+            channel="telegram", target_type="private", target_id="123"
+        )
+        assert MessageRouter.make_session_id(address) == "telegram:private:123"
 
     def test_session_id_deterministic(self) -> None:
-        a = MessageRouter.make_session_id("qq", "456")
-        b = MessageRouter.make_session_id("qq", "456")
+        address = ChatAddress(channel="qq", target_type="group", target_id="456")
+        a = MessageRouter.make_session_id(address)
+        b = MessageRouter.make_session_id(address)
         assert a == b
 
-    def test_legacy_active_session_id_stays_legacy(self) -> None:
+    def test_legacy_active_session_id_falls_back_to_legacy_override(self) -> None:
         router, _, _, _ = _make_router()
+        router._active_sessions["telegram:123"] = "telegram:123:override"
 
-        assert router.get_active_session_id("telegram", "123") == "telegram:123"
+        assert (
+            router.get_active_session_id(
+                ChatAddress(channel="telegram", target_type="unknown", target_id="123")
+            )
+            == "telegram:123:override"
+        )
 
     def test_typed_active_session_id_uses_typed_override(self) -> None:
         router, _, _, _ = _make_router()
@@ -246,7 +256,12 @@ class TestMessageRouterSessionId:
         router._active_sessions[str(address)] = f"{address}:abc12345"
 
         assert router.get_active_session_id(address) == "telegram:private:123:abc12345"
-        assert router.get_active_session_id("telegram", "123") == "telegram:123"
+        assert (
+            router.get_active_session_id(
+                ChatAddress(channel="telegram", target_type="unknown", target_id="123")
+            )
+            == "telegram:123"
+        )
 
 
 class TestMessageRouterCommandDispatch:

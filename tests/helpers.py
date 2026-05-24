@@ -3,6 +3,8 @@
 from typing import Any, Awaitable, Callable
 from unittest.mock import MagicMock
 
+from nahida_bot.core.chat_address import ChatAddress
+
 
 class MockBotAPI:
     """Minimal no-op BotAPI stub for testing.
@@ -72,7 +74,7 @@ class MockBotAPI:
     async def clear_session(self, session_id: str) -> int:
         return 0
 
-    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
+    async def start_new_session(self, address: ChatAddress) -> str | None:
         return None
 
     async def get_session_info(self, session_id: str) -> dict[str, Any]:

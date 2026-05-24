@@ -260,74 +260,50 @@ class MessageRouter:
         except Exception:
             logger.warning("router.restore_sessions_failed", exc_info=True)
 
-    def get_active_session_id(
-        self, platform_or_address: str | ChatAddress, chat_id: str = ""
-    ) -> str:
+    def get_active_session_id(self, address: ChatAddress) -> str:
         """Return the active session ID for a chat.
 
-        Accepts either a ``ChatAddress`` or legacy ``(platform, chat_id)`` pair.
-        If ``/new`` was used, returns the switched session id.
-        Otherwise returns the deterministic chat key.
+        Typed addresses prefer typed session overrides. Unknown addresses are
+        accepted only for historical lookups and resolve through their legacy
+        key without creating new state.
         """
-        # TODO: Currently we make a lot of redundant calls to keep the legacy
-        # platform+chat_id interface working. Refactor to unify on ChatAddress
-        # and eliminate the legacy form.
-        if not isinstance(platform_or_address, ChatAddress):
-            key = self.make_session_id(platform_or_address, chat_id)
-            active = self._active_sessions.get(key, key)
-            logger.debug(
-                "router.resolve_session",
-                key=key,
-                active_session_id=active,
-                has_override=active != key,
-            )
-            return active
-
-        address = platform_or_address
         typed_key = address.chat_key
         active = self._active_sessions.get(typed_key)
-        if active is None and address.is_typed:
-            # Fallback to legacy key for backward compat with restored sessions
+        if active is None:
+            # Historical overrides are read-only compatibility data.
             active = self._active_sessions.get(address.legacy_key)
         if active is None:
-            active = typed_key
+            active = typed_key if address.is_typed else address.legacy_key
+        has_override = (
+            typed_key in self._active_sessions
+            or address.legacy_key in self._active_sessions
+        )
 
         logger.debug(
             "router.resolve_session",
             typed_key=typed_key,
             active_session_id=active,
-            has_override=active != typed_key,
+            has_override=has_override,
         )
         return active
 
-    def set_active_session(
-        self,
-        platform_or_address: str | ChatAddress,
-        chat_id_or_session: str,
-        session_id: str = "",
-    ) -> None:
+    def set_active_session(self, address: ChatAddress, session_id: str) -> None:
         """Switch the active session for a chat (used by /new).
 
-        Accepts either ``(ChatAddress, session_id)`` or
-        legacy ``(platform, chat_id, session_id)`` arguments.
+        New overrides must be keyed by an explicitly typed address.
         """
-        if isinstance(platform_or_address, ChatAddress):
-            address = platform_or_address
-            sid = chat_id_or_session
-            key = address.chat_key
-            old = self._active_sessions.get(key, self.make_session_id(address))
-        else:
-            key = self.make_session_id(platform_or_address, chat_id_or_session)
-            sid = session_id
-            old = self._active_sessions.get(key, key)
+        if not address.is_typed:
+            raise ValueError("Cannot set an active session for an untyped address")
+        key = address.chat_key
+        old = self._active_sessions.get(key, self.make_session_id(address))
 
-        self._active_sessions[key] = sid
-        self._persist_override(key, sid)
+        self._active_sessions[key] = session_id
+        self._persist_override(key, session_id)
         logger.debug(
             "router.set_active_session",
             key=key,
             old_session_id=old,
-            new_session_id=sid,
+            new_session_id=session_id,
         )
 
     async def _handle_message_received(
@@ -662,8 +638,14 @@ class MessageRouter:
             )
         )
 
-        # Send via channel
-        msg_id = await channel.send_message(inbound.chat_id, outbound)
+        outbound_message = (
+            _with_chat_address(outbound, _address_from_inbound(inbound))
+            if inbound.platform == "milky"
+            else outbound
+        )
+
+        # Send via channel.
+        msg_id = await channel.send_message(inbound.chat_id, outbound_message)
 
         # Publish MessageSent event
         await self._event_bus.publish(
@@ -734,23 +716,19 @@ class MessageRouter:
         return metadata.workspace_id
 
     @staticmethod
-    def make_session_id(
-        platform_or_address: str | ChatAddress, chat_id: str = ""
-    ) -> str:
-        """Deterministic session ID from a ChatAddress or legacy platform + chat_id."""
-        if isinstance(platform_or_address, ChatAddress):
-            return str(platform_or_address)
-        return f"{platform_or_address}:{chat_id}"
+    def make_session_id(address: ChatAddress) -> str:
+        """Return a deterministic typed session ID."""
+        if not address.is_typed:
+            raise ValueError("Cannot create a session ID for an untyped address")
+        return address.chat_key
 
     @staticmethod
-    def make_new_session_id(
-        platform_or_address: str | ChatAddress, chat_id: str = ""
-    ) -> str:
-        """Generate a new unique session ID for /new."""
+    def make_new_session_id(address: ChatAddress) -> str:
+        """Generate a new typed session ID for /new."""
+        if not address.is_typed:
+            raise ValueError("Cannot create a new session for an untyped address")
         suffix = uuid4().hex[:8]
-        if isinstance(platform_or_address, ChatAddress):
-            return f"{platform_or_address}:{suffix}"
-        return f"{platform_or_address}:{chat_id}:{suffix}"
+        return f"{address.chat_key}:{suffix}"
 
 
 def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:
@@ -765,4 +743,20 @@ def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:
         inbound.chat_id,
         is_group=inbound.is_group,
         chat_type=chat_type,
+    )
+
+
+def _with_chat_address(
+    outbound: OutboundMessage, address: ChatAddress
+) -> OutboundMessage:
+    if "chat_address" in outbound.extra:
+        return outbound
+    extra = dict(outbound.extra)
+    extra["chat_address"] = str(address)
+    return OutboundMessage(
+        text=outbound.text,
+        reply_to=outbound.reply_to,
+        reasoning=outbound.reasoning,
+        extra=extra,
+        attachments=outbound.attachments,
     )

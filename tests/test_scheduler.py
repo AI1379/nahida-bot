@@ -41,7 +41,7 @@ def _job(*, job_id: str = "job1", next_fire_at: str | None = None) -> CronJob:
         job_id=job_id,
         platform="telegram",
         chat_id="c1",
-        session_key="telegram:c1",
+        session_key="telegram:private:c1",
         prompt="say hi",
         mode="once",
         fire_at=next_fire_at or now,
@@ -54,7 +54,12 @@ def _job(*, job_id: str = "job1", next_fire_at: str | None = None) -> CronJob:
         next_fire_at=next_fire_at or now,
         last_fired_at=None,
         workspace_id=None,
+        chat_type="private",
     )
+
+
+def _address() -> ChatAddress:
+    return ChatAddress(channel="telegram", target_type="private", target_id="c1")
 
 
 class _Agent:
@@ -319,8 +324,7 @@ async def test_update_and_delete_job() -> None:
         service = _make_service(engine, repo)
         fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         job = await service.create_job(
-            platform="telegram",
-            chat_id="c1",
+            address=_address(),
             prompt="old",
             mode="once",
             fire_at=fire_at,
@@ -377,8 +381,7 @@ async def test_cron_mode_creates_and_fires() -> None:
         service = _make_service(engine, repo)
         # "every minute" expression — next fire is within a minute
         job = await service.create_job(
-            platform="telegram",
-            chat_id="c1",
+            address=_address(),
             prompt="cron test",
             mode="cron",
             cron_expression="* * * * *",
@@ -420,8 +423,7 @@ async def test_cron_mode_update_and_invalid_expression() -> None:
     try:
         service = _make_service(engine, repo)
         job = await service.create_job(
-            platform="telegram",
-            chat_id="c1",
+            address=_address(),
             prompt="cron test",
             mode="cron",
             cron_expression="0 9 * * *",
@@ -438,8 +440,7 @@ async def test_cron_mode_update_and_invalid_expression() -> None:
         # Invalid cron expression should raise
         with pytest.raises(ValueError, match="Invalid cron expression"):
             await service.create_job(
-                platform="telegram",
-                chat_id="c1",
+                address=_address(),
                 prompt="bad cron",
                 mode="cron",
                 cron_expression="not-a-cron",
@@ -448,16 +449,14 @@ async def test_cron_mode_update_and_invalid_expression() -> None:
         # Missing cron_expression should raise
         with pytest.raises(ValueError, match="cron_expression is required"):
             await service.create_job(
-                platform="telegram",
-                chat_id="c1",
+                address=_address(),
                 prompt="no expr",
                 mode="cron",
             )
 
         with pytest.raises(ValueError, match="standard 5-field syntax"):
             await service.create_job(
-                platform="telegram",
-                chat_id="c1",
+                address=_address(),
                 prompt="six fields",
                 mode="cron",
                 cron_expression="* * * * * *",
@@ -478,8 +477,7 @@ async def test_cron_mode_respects_min_interval_config() -> None:
 
         with pytest.raises(ValueError, match="interval must be >= 120 seconds"):
             await service.create_job(
-                platform="telegram",
-                chat_id="c1",
+                address=_address(),
                 prompt="too often",
                 mode="cron",
                 cron_expression="* * * * *",
@@ -497,16 +495,15 @@ async def test_quota_enforced_atomically() -> None:
 
         fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         await service.create_job(
-            platform="telegram", chat_id="c1", prompt="j1", mode="once", fire_at=fire_at
+            address=_address(), prompt="j1", mode="once", fire_at=fire_at
         )
         await service.create_job(
-            platform="telegram", chat_id="c1", prompt="j2", mode="once", fire_at=fire_at
+            address=_address(), prompt="j2", mode="once", fire_at=fire_at
         )
 
         with pytest.raises(ValueError, match="limit reached"):
             await service.create_job(
-                platform="telegram",
-                chat_id="c1",
+                address=_address(),
                 prompt="j3",
                 mode="once",
                 fire_at=fire_at,
@@ -616,8 +613,7 @@ async def test_create_job_defaults_to_main_session_mode() -> None:
         service = _make_service(engine, repo)
         fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         job = await service.create_job(
-            platform="telegram",
-            chat_id="c1",
+            address=_address(),
             prompt="test",
             mode="once",
             fire_at=fire_at,
@@ -634,8 +630,7 @@ async def test_create_job_isolated_session_mode() -> None:
         service = _make_service(engine, repo)
         fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         job = await service.create_job(
-            platform="telegram",
-            chat_id="c1",
+            address=_address(),
             prompt="test",
             mode="once",
             fire_at=fire_at,
@@ -694,7 +689,7 @@ async def test_isolated_cron_uses_dedicated_session_id() -> None:
         await service._fire_job(job)
 
         assert agent.calls == 1
-        assert captured.get("session_id") == "telegram:c1:cron:job1"
+        assert captured.get("session_id") == "telegram:private:c1:cron:job1"
     finally:
         await engine.close()
 
@@ -727,7 +722,7 @@ async def test_main_cron_uses_chat_session() -> None:
         await service._fire_job(job)
 
         assert agent.calls == 1
-        assert captured.get("session_id") == "telegram:c1"
+        assert captured.get("session_id") == "telegram:private:c1"
     finally:
         await engine.close()
 
@@ -744,9 +739,7 @@ async def test_main_cron_uses_typed_active_session() -> None:
             def __init__(self) -> None:
                 self.address: ChatAddress | None = None
 
-            def get_active_session_id(
-                self, address: ChatAddress, chat_id: str = ""
-            ) -> str:
+            def get_active_session_id(self, address: ChatAddress) -> str:
                 self.address = address
                 return "telegram:private:c1:active"
 
@@ -792,7 +785,13 @@ async def test_list_jobs_returns_typed_and_legacy_jobs() -> None:
     engine, repo = await _repo()
     try:
         service = _make_service(engine, repo)
-        await repo.insert_job(_job(job_id="legacy"))
+        await repo.insert_job(
+            replace(
+                _job(job_id="legacy"),
+                session_key="telegram:c1",
+                chat_type="",
+            )
+        )
         await repo.insert_job(
             replace(
                 _job(job_id="typed"),
@@ -801,7 +800,7 @@ async def test_list_jobs_returns_typed_and_legacy_jobs() -> None:
             )
         )
 
-        jobs = await service.list_jobs("telegram", "c1", chat_type="private")
+        jobs = await service.list_jobs(_address())
 
         assert [job.job_id for job in jobs] == ["typed", "legacy"]
     finally:

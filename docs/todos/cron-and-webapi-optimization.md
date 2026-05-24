@@ -1,7 +1,7 @@
 # Cron 系统优化与 WebAPI 架构规划
 
 > 记录时间：2026-05-16
-> 最近更新：2026-05-17
+> 最近更新：2026-05-24
 > 状态：进行中
 > 相关文档：
 >
@@ -56,7 +56,7 @@
 **nahida-bot 最小 API 集**：
 
 ```
-POST /api/send              — 发消息到指定 session
+POST /api/send              — 发消息到指定 typed target
 GET  /api/sessions          — 列出 sessions
 GET  /api/sessions/{id}     — 获取 session 历史
 GET  /api/health            — 健康检查
@@ -128,7 +128,7 @@ OpenClaw 有 4 种 session target 模式：
 
 ### 3.4 CLI `send` 命令（低优先级）
 
-**目标**：提供 `nahida send --platform telegram --chat 12345 "hello"` 形式的 CLI 命令，供脚本直接调用。
+**目标**：提供 `nahida send --target telegram:private:12345 "hello"` 形式的 CLI 命令，供脚本直接调用。
 
 **OpenClaw 参考**：`openclaw message send` 直接 import 渠道插件发消息，不需要 Gateway 运行。
 

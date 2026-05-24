@@ -7,9 +7,15 @@ from typing import Any
 
 import pytest
 
+from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.runtime_settings import merge_runtime_meta
-from nahida_bot.plugins.base import InboundMessage, MemoryRef, OutboundMessage
+from nahida_bot.plugins.base import (
+    ChatContext,
+    InboundMessage,
+    MemoryRef,
+    OutboundMessage,
+)
 from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
 from nahida_bot.plugins.commands import CommandEntry, CommandRegistry
 from nahida_bot.plugins.manifest import PluginManifest
@@ -34,6 +40,11 @@ def _inbound() -> InboundMessage:
         user_id="u1",
         text="/help",
         raw_event={},
+        chat_context=ChatContext(
+            platform="telegram",
+            chat_type="private",
+            platform_chat_id="c1",
+        ),
     )
 
 
@@ -43,7 +54,7 @@ class _FakeAPI:
         self.tools: dict[str, Any] = {}
         self.files: dict[str, str] = {}
         self.cleared: list[str] = []
-        self.new_sessions: list[tuple[str, str]] = []
+        self.new_sessions: list[str] = []
         self.session_meta: dict[str, Any] = {}
         self.models = [
             {"provider_id": "p1", "model": "model-a"},
@@ -141,9 +152,9 @@ class _FakeAPI:
         self.cleared.append(session_id)
         return 2
 
-    async def start_new_session(self, platform: str, chat_id: str) -> str | None:
-        self.new_sessions.append((platform, chat_id))
-        return f"{platform}:{chat_id}:abc12345"
+    async def start_new_session(self, address: ChatAddress) -> str | None:
+        self.new_sessions.append(address.chat_key)
+        return f"{address.chat_key}:abc12345"
 
     def get_session_run_status(self, session_id: str) -> dict[str, Any]:
         return {"active": False, "state": "idle", "pending_messages": 0}
@@ -198,6 +209,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         api.commands
     )
     assert {
+        "message",
         "workspace_read",
         "workspace_write",
         "send_local_attachment",
@@ -214,7 +226,9 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "path",
         "content",
     ]
+    message_params = api.tools["message"]["parameters"]
     assert api.tools["send_local_attachment"]["parameters"]["required"] == ["path"]
+    assert message_params["required"] == ["target", "text"]
     assert api.tools["memory_read"]["parameters"]["required"] == []
     assert api.tools["memory_write"]["parameters"]["required"] == ["content"]
     create_params = api.tools["cron_create"]["parameters"]
@@ -244,7 +258,14 @@ async def test_send_local_attachment_sends_in_current_session(tmp_path: Path) ->
     image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
     token = current_session.set(
-        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
     )
     try:
         result = await plugin._tool_send_local_attachment(
@@ -259,6 +280,7 @@ async def test_send_local_attachment_sends_in_current_session(tmp_path: Path) ->
     assert target == "c1"
     assert channel == "telegram"
     assert outbound.text == ""
+    assert outbound.extra["chat_address"] == "telegram:private:c1"
     assert len(outbound.attachments) == 1
     attachment = outbound.attachments[0]
     assert attachment.type == "photo"
@@ -275,7 +297,14 @@ async def test_send_local_attachment_supports_document_type(tmp_path: Path) -> N
     doc_path.write_bytes(b"data")
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
     token = current_session.set(
-        SessionContext(platform="milky", chat_id="20001", session_id="milky:20001")
+        SessionContext(
+            platform="milky",
+            chat_id="20001",
+            session_id="milky:group:20001",
+            chat_address=ChatAddress(
+                channel="milky", target_type="group", target_id="20001"
+            ),
+        )
     )
     try:
         result = await plugin._tool_send_local_attachment(
@@ -290,6 +319,7 @@ async def test_send_local_attachment_supports_document_type(tmp_path: Path) -> N
     assert channel == "milky"
     assert outbound.attachments[0].type == "document"
     assert outbound.attachments[0].filename == "report.dat"
+    assert outbound.extra["chat_address"] == "milky:group:20001"
 
 
 @pytest.mark.asyncio
@@ -310,7 +340,14 @@ async def test_send_local_attachment_rejects_missing_file(tmp_path: Path) -> Non
     api.workspace_root = tmp_path
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
     token = current_session.set(
-        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
     )
     try:
         result = await plugin._tool_send_local_attachment("missing.png")
@@ -330,7 +367,14 @@ async def test_send_local_attachment_rejects_absolute_path_by_default(
     file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
     token = current_session.set(
-        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
     )
     try:
         result = await plugin._tool_send_local_attachment(str(file_path))
@@ -353,7 +397,14 @@ async def test_send_local_attachment_allows_absolute_path_when_configured(
         manifest=_manifest({"allow_external_attachment_paths": True}),
     )
     token = current_session.set(
-        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
     )
     try:
         result = await plugin._tool_send_local_attachment(str(file_path))
@@ -387,7 +438,14 @@ async def test_send_local_attachment_enforces_external_root_allowlist(
         ),
     )
     token = current_session.set(
-        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
     )
     try:
         rejected = await plugin._tool_send_local_attachment(str(outside_file))
@@ -579,8 +637,8 @@ async def test_new_command_switches_router_session() -> None:
 
     result = await plugin._cmd_new(args="", inbound=_inbound(), session_id="old")
 
-    assert result == "New session started: telegram:c1:abc12345"
-    assert api.new_sessions == [("telegram", "c1")]
+    assert result == "New session started: telegram:private:c1:abc12345"
+    assert api.new_sessions == ["telegram:private:c1"]
 
 
 def _cron_job(job_id: str = "job1", *, prompt: str = "old") -> CronJob:
@@ -588,7 +646,7 @@ def _cron_job(job_id: str = "job1", *, prompt: str = "old") -> CronJob:
         job_id=job_id,
         platform="telegram",
         chat_id="c1",
-        session_key="telegram:c1",
+        session_key="telegram:private:c1",
         prompt=prompt,
         mode="interval",
         fire_at=None,
@@ -601,6 +659,7 @@ def _cron_job(job_id: str = "job1", *, prompt: str = "old") -> CronJob:
         next_fire_at="2026-01-01T00:02:00+00:00",
         last_fired_at=None,
         workspace_id=None,
+        chat_type="private",
     )
 
 
@@ -613,13 +672,14 @@ class _FakeScheduler:
     async def get_job(self, job_id: str) -> CronJob | None:
         return self.jobs.get(job_id)
 
-    async def list_jobs(
-        self, platform: str, chat_id: str, *, chat_type: str = ""
-    ) -> list[CronJob]:
+    async def list_jobs(self, address: ChatAddress) -> list[CronJob]:
         return [
             job
             for job in self.jobs.values()
-            if job.platform == platform and job.chat_id == chat_id and job.is_active
+            if job.platform == address.channel
+            and job.chat_id == address.target_id
+            and job.chat_type == address.target_type
+            and job.is_active
         ]
 
     async def update_job(self, job_id: str, **kwargs: Any) -> CronJob:
@@ -639,7 +699,14 @@ async def test_cron_update_and_delete_tools_use_scheduler_api() -> None:
     api.scheduler_service = _FakeScheduler()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
     token = current_session.set(
-        SessionContext(platform="telegram", chat_id="c1", session_id="telegram:c1")
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
     )
     try:
         updated = await plugin._tool_cron_update(

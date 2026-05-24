@@ -8,21 +8,42 @@ executes explicitly approved entries and does not auto-apply split plans.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 import sqlite3
+import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
 
-from nahida_bot.core.chat_address import (
-    ChatAddress,
-    SessionKey,
-    classify_session_key,
-    is_valid_target_type,
-)
+try:
+    from nahida_bot.core.chat_address import (
+        ChatAddress,
+        SessionKey,
+        classify_session_key,
+        is_valid_target_type,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name not in {"nahida_bot", "structlog"}:
+        raise
+    _CHAT_ADDRESS_PATH = (
+        Path(__file__).resolve().parents[1] / "nahida_bot" / "core" / "chat_address.py"
+    )
+    _SPEC = importlib.util.spec_from_file_location(
+        "_nahida_migration_chat_address", _CHAT_ADDRESS_PATH
+    )
+    if _SPEC is None or _SPEC.loader is None:
+        raise
+    _chat_address = importlib.util.module_from_spec(_SPEC)
+    sys.modules[_SPEC.name] = _chat_address
+    _SPEC.loader.exec_module(_chat_address)
+    ChatAddress = _chat_address.ChatAddress
+    SessionKey = _chat_address.SessionKey
+    classify_session_key = _chat_address.classify_session_key
+    is_valid_target_type = _chat_address.is_valid_target_type
 
 PLAN_VERSION = 1
 
@@ -43,6 +64,7 @@ Approval = Literal[
     "force_rename",
     "force_split",
 ]
+CronHistoryMode = Literal["none", "active", "all"]
 
 
 @dataclass(slots=True)
@@ -175,6 +197,81 @@ def apply_plan(
         conn.close()
 
 
+def repair_cron_sessions(
+    *,
+    db_path: Path,
+    dry_run: bool = False,
+    backup: bool = True,
+    migrate_history: CronHistoryMode = "none",
+) -> dict[str, int]:
+    """Repair cron chat_type/session_key rows after session-key migration.
+
+    This is intentionally separate from plan/apply. It handles post-migration
+    cron rows whose base session_key is typed but chat_type was left empty,
+    and can optionally move legacy isolated cron history to the typed runtime
+    session id.
+    """
+    if migrate_history not in {"none", "active", "all"}:
+        raise ValueError("migrate_history must be one of: none, active, all")
+    if not dry_run and backup and str(db_path) != ":memory:":
+        backup_path = _backup_database(db_path)
+        print(f"Backup written: {backup_path}")
+
+    conn = _connect(db_path, read_only=False)
+    try:
+        results = Counter[str]()
+        if not _table_exists(conn, "cron_jobs"):
+            return {"cron_table_missing": 1}
+
+        if not dry_run:
+            conn.execute("BEGIN")
+        _ensure_migration_log(conn)
+        has_chat_type = _column_exists(conn, "cron_jobs", "chat_type")
+        for row in _iter_cron_repair_rows(conn):
+            address = _cron_row_address(row)
+            if address is None:
+                results["cron_untyped"] += 1
+                continue
+
+            current_session_key = str(row["session_key"])
+            if current_session_key != address.chat_key:
+                _repair_cron_session_key(conn, row, address, has_chat_type)
+                results["session_key_repaired"] += 1
+            elif has_chat_type:
+                existing_chat_type = str(row["chat_type"] or "")
+                if not existing_chat_type:
+                    conn.execute(
+                        "UPDATE cron_jobs SET chat_type = ? WHERE job_id = ?",
+                        (address.target_type, row["job_id"]),
+                    )
+                    results["chat_type_filled"] += 1
+                elif existing_chat_type != address.target_type:
+                    results["chat_type_conflict"] += 1
+
+            if str(row["session_mode"] or "main") != "isolated":
+                continue
+            history_action = _repair_isolated_cron_history(
+                conn,
+                row=row,
+                address=address,
+                migrate_history=migrate_history,
+                dry_run=dry_run,
+            )
+            results[history_action] += 1
+
+        if dry_run:
+            conn.rollback()
+        else:
+            _assert_no_foreign_key_errors(conn, dry_run=False)
+            conn.commit()
+        return dict(results)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def write_plan(plan: MigrationPlan, out_path: Path) -> None:
     out_path.write_text(
         json.dumps(_plan_to_dict(plan), ensure_ascii=False, indent=2) + "\n",
@@ -233,6 +330,24 @@ def print_apply_summary(summary: dict[str, int]) -> None:
     }
     total = sum(summary.values())
     print(f"Plan entries considered: {total}")
+    for key, label in labels.items():
+        print(f"{label}: {summary.get(key, 0)}")
+
+
+def print_cron_repair_summary(summary: dict[str, int]) -> None:
+    labels = {
+        "chat_type_filled": "Chat type filled",
+        "session_key_repaired": "Session key repaired",
+        "chat_type_conflict": "Chat type conflicts",
+        "cron_untyped": "Cron rows without typed evidence",
+        "isolated_history_migrated": "Isolated history migrated",
+        "isolated_history_left_legacy": "Isolated history left legacy",
+        "isolated_history_already_typed": "Isolated history already typed",
+        "isolated_history_missing": "Isolated history missing",
+        "cron_table_missing": "Cron table missing",
+    }
+    total = sum(summary.values())
+    print(f"Cron rows/actions considered: {total}")
     for key, label in labels.items():
         print(f"{label}: {summary.get(key, 0)}")
 
@@ -558,6 +673,129 @@ def _cron_rows_for_session(
         """,
         (session_id, old_chat_key),
     ).fetchall()
+
+
+def _iter_cron_repair_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    chat_type_expr = (
+        "chat_type" if _column_exists(conn, "cron_jobs", "chat_type") else "''"
+    )
+    session_mode_expr = (
+        "session_mode"
+        if _column_exists(conn, "cron_jobs", "session_mode")
+        else "'main'"
+    )
+    return conn.execute(
+        f"""
+        SELECT
+            job_id, platform, chat_id, session_key, is_active,
+            {session_mode_expr} AS session_mode,
+            {chat_type_expr} AS chat_type
+        FROM cron_jobs
+        ORDER BY job_id
+        """
+    ).fetchall()
+
+
+def _cron_row_address(row: sqlite3.Row) -> ChatAddress | None:
+    key = _parse_session_key_or_none(str(row["session_key"]))
+    if key is not None and key.address.is_typed:
+        return key.address
+
+    chat_type = str(row["chat_type"] or "").strip()
+    if not chat_type or chat_type == "unknown":
+        return None
+    if not is_valid_target_type(chat_type):
+        return None
+    address = ChatAddress(
+        channel=str(row["platform"]),
+        target_type=chat_type,
+        target_id=str(row["chat_id"]),
+    )
+    return address if address.is_typed else None
+
+
+def _repair_cron_session_key(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    address: ChatAddress,
+    has_chat_type: bool,
+) -> None:
+    if has_chat_type:
+        conn.execute(
+            """
+            UPDATE cron_jobs
+            SET session_key = ?, chat_type = ?
+            WHERE job_id = ?
+            """,
+            (address.chat_key, address.target_type, row["job_id"]),
+        )
+        return
+    conn.execute(
+        "UPDATE cron_jobs SET session_key = ? WHERE job_id = ?",
+        (address.chat_key, row["job_id"]),
+    )
+
+
+def _repair_isolated_cron_history(
+    conn: sqlite3.Connection,
+    *,
+    row: sqlite3.Row,
+    address: ChatAddress,
+    migrate_history: CronHistoryMode,
+    dry_run: bool,
+) -> str:
+    expected_session_id = f"{address.chat_key}:cron:{row['job_id']}"
+    old_session_id = _existing_legacy_cron_session_id(conn, row, address)
+    expected_exists = (
+        _count(conn, "sessions", "session_id = ?", (expected_session_id,)) > 0
+    )
+
+    if old_session_id is None:
+        return (
+            "isolated_history_already_typed"
+            if expected_exists
+            else "isolated_history_missing"
+        )
+    if migrate_history == "none":
+        return "isolated_history_left_legacy"
+    if migrate_history == "active" and not bool(row["is_active"]):
+        return "isolated_history_left_legacy"
+
+    _rename_session(
+        conn,
+        old_session_id=old_session_id,
+        new_session_id=expected_session_id,
+        dry_run=dry_run,
+    )
+    _record_log(
+        conn,
+        old_session_id=old_session_id,
+        new_session_id=expected_session_id,
+        status="cron_history_migrated",
+        reason="Cron repair migrated isolated cron history.",
+        dry_run=dry_run,
+    )
+    return "isolated_history_migrated"
+
+
+def _existing_legacy_cron_session_id(
+    conn: sqlite3.Connection, row: sqlite3.Row, address: ChatAddress
+) -> str | None:
+    expected_session_id = f"{address.chat_key}:cron:{row['job_id']}"
+    candidates = [
+        f"{row['session_key']}:cron:{row['job_id']}",
+        f"{address.legacy_key}:cron:{row['job_id']}",
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate == expected_session_id:
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if _count(conn, "sessions", "session_id = ?", (candidate,)) > 0:
+            return candidate
+    return None
 
 
 def _count_cron_jobs_for_session(conn: sqlite3.Connection, session_id: str) -> int:
@@ -1738,6 +1976,31 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stop after the first failed plan entry",
     )
+
+    repair_cron_cmd = subcommands.add_parser(
+        "repair-cron",
+        help="Repair cron chat_type/session_key rows after migration",
+    )
+    repair_cron_cmd.add_argument(
+        "--db", required=True, type=Path, help="SQLite db path"
+    )
+    repair_cron_cmd.add_argument(
+        "--dry-run", action="store_true", help="Do not write changes"
+    )
+    repair_cron_cmd.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Do not create a backup before modifying the database",
+    )
+    repair_cron_cmd.add_argument(
+        "--migrate-history",
+        choices=("none", "active", "all"),
+        default="none",
+        help=(
+            "Move legacy isolated cron history to typed cron sessions: "
+            "none (default), active jobs only, or all jobs"
+        ),
+    )
     return parser
 
 
@@ -1766,6 +2029,15 @@ def main(argv: list[str] | None = None) -> int:
             stop_on_error=args.stop_on_error,
         )
         print_apply_summary(summary)
+        return 0
+    if args.command == "repair-cron":
+        summary = repair_cron_sessions(
+            db_path=args.db,
+            dry_run=args.dry_run,
+            backup=not args.no_backup,
+            migrate_history=cast(CronHistoryMode, args.migrate_history),
+        )
+        print_cron_repair_summary(summary)
         return 0
     raise AssertionError(f"Unhandled command: {args.command}")
 

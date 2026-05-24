@@ -159,6 +159,13 @@ class MilkyPlugin(Plugin):
             target_type=chat_type,
             target_id=inbound.chat_id,
         )
+        if not address.is_typed:
+            logger.warning(
+                "milky.message_scene_missing",
+                peer_id=inbound.chat_id,
+                channel=self.channel_id,
+            )
+            return
         session_id = MessageRouter.make_session_id(address)
         event_type = MessageReceived if decision.respond else MessageObserved
         await self.api.publish_event(
