@@ -58,7 +58,7 @@ def start(
         )
     console.print(f"Listening on {settings.host}:{settings.port}")
 
-    app_instance = Application(settings=settings)
+    app_instance = Application(settings=settings, config_yaml_path=config_yaml)
 
     try:
         asyncio.run(app_instance.run())

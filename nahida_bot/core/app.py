@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import signal
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -46,13 +47,21 @@ logger = structlog.get_logger(__name__)
 class Application:
     """Main application container and lifecycle manager."""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        config_yaml_path: str | None = None,
+    ) -> None:
         """Initialize the application.
 
         Args:
             settings: Application settings. If None, will be loaded automatically.
+            config_yaml_path: Path to the YAML config file the settings were loaded
+                from. Used by the config service to read/write the correct file.
         """
         self.settings = settings or load_settings()
+        self._config_yaml_path = config_yaml_path
         configure_logging(
             debug=self.settings.debug,
             log_level=self.settings.log_level,
@@ -63,6 +72,7 @@ class Application:
         )
         self._initialized = False
         self._started = False
+        self._started_at: datetime | None = None
         self._shutdown_event: asyncio.Event | None = None
         self.event_bus = EventBus(
             EventContext(app=self, settings=self.settings, logger=logger)
@@ -83,6 +93,7 @@ class Application:
         self.scheduler_service: SchedulerService | None = None
         self.orchestration_service: AgentOrchestrator | None = None
         self.webapi_service: WebAPIApp | None = None
+        self._usage_ledger: Any | None = None
 
         logger.debug(
             "application.instance_created",
@@ -575,6 +586,7 @@ class Application:
     def _init_webapi(self) -> None:
         """Create the WebAPI service."""
         from nahida_bot.gateway.app import WebAPIApp
+        from nahida_bot.gateway.services.usage_ledger import InMemoryUsageLedger
 
         cfg = self.settings.webapi
         if not cfg.enabled:
@@ -591,6 +603,8 @@ class Application:
                 _msg="WebAPI is exposed on a non-loopback interface without auth_token. "
                 "Set webapi.auth_token to restrict access.",
             )
+
+        self._usage_ledger = InMemoryUsageLedger()
 
         self.webapi_service = WebAPIApp(
             application=self,
@@ -744,6 +758,7 @@ class Application:
                     f"Lifecycle handler(s) failed during start: {details}"
                 )
             self._started = True
+            self._started_at = datetime.now(UTC)
             logger.info(
                 "application.started",
                 app_name=self.settings.app_name,
@@ -880,6 +895,21 @@ class Application:
     def is_started(self) -> bool:
         """Check if application is started."""
         return self._started
+
+    @property
+    def started_at(self) -> datetime | None:
+        """Return UTC datetime when the application was started, or None."""
+        return self._started_at
+
+    @property
+    def version(self) -> str:
+        """Return the application version from package metadata."""
+        try:
+            from importlib.metadata import version as pkg_version
+
+            return pkg_version("nahida-bot")
+        except Exception:
+            return "0.0.0"
 
 
 def _model_capabilities_from_config(raw: dict[str, Any]) -> "ModelCapabilities":
