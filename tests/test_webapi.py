@@ -445,6 +445,65 @@ async def test_cron_create_rejects_legacy_platform_chat_id_payload(
     assert resp.status_code == 400
 
 
+async def test_cron_create_named_session_rejects_invalid_name(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.scheduler_service = AsyncMock()
+
+    resp = await client_no_auth.post(
+        "/api/cron",
+        json={
+            "target": "telegram:private:123",
+            "prompt": "hello",
+            "mode": "once",
+            "fire_at": "2026-06-01T00:00:00",
+            "session_mode": "named",
+            "session_name": "bad name!",
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_cron_create_named_session_rejects_missing_name(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.scheduler_service = AsyncMock()
+
+    resp = await client_no_auth.post(
+        "/api/cron",
+        json={
+            "target": "telegram:private:123",
+            "prompt": "hello",
+            "mode": "once",
+            "fire_at": "2026-06-01T00:00:00",
+            "session_mode": "named",
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_cron_create_rejects_session_name_for_non_named_mode(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.scheduler_service = AsyncMock()
+
+    resp = await client_no_auth.post(
+        "/api/cron",
+        json={
+            "target": "telegram:private:123",
+            "prompt": "hello",
+            "mode": "once",
+            "fire_at": "2026-06-01T00:00:00",
+            "session_mode": "main",
+            "session_name": "oops",
+        },
+    )
+    assert resp.status_code == 422
+
+
 # -- CORS -----------------------------------------------------------------
 
 

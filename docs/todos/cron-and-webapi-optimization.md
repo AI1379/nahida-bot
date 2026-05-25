@@ -1,7 +1,7 @@
 # Cron 系统优化与 WebAPI 架构规划
 
 > 记录时间：2026-05-16
-> 最近更新：2026-05-24
+> 最近更新：2026-05-25
 > 状态：进行中
 > 相关文档：
 >
@@ -94,16 +94,19 @@ OpenClaw 有 4 种 session target 模式：
 |-------|------|------|
 | Phase 1 | `main` | ✅ 已实现（2026-05-18），`session_mode="main"` 显式化 |
 | Phase 2 | `isolated` | ✅ 已实现（2026-05-18），session 为 `{session_key}:cron:{job_id}`，与主 chat 历史隔离 |
-| Phase 3 | `session:<id>` | 🔜 待实现，持久命名 session，跨 run 积累上下文 |
+| Phase 3 | `named` | ✅ 已实现（2026-05-25），`session_mode="named"` + `session_name` 字段，session 为 `{session_key}:cron:{session_name}` |
 
 **设计细节**：
 
-- `CronJob.session_mode: Literal["main", "isolated"]`（默认 `"main"`，向后兼容）
+- `CronJob.session_mode: Literal["main", "isolated", "named"]`（默认 `"main"`，向后兼容）
+- `CronJob.session_name: str | None`（`session_mode="named"` 时必填，仅允许 `[a-zA-Z0-9_-]`）
 - `main` 模式：复用 `router.get_active_session_id()` → 注入 chat 历史，turn 持久化到主 session
 - `isolated` 模式：session_id = `f"{session_key}:cron:{job_id}"`，独立的 session 不加载 chat 历史，agent turn 持久化到 cron session
-- 两种模式的响应都通过 `Channel.send_message()` 投递到原 chat（除非被哨兵值抑制）
-- `session_mode` 仅在创建时设置，不可通过 `update_job()` 修改
-- 数据库迁移：`ALTER TABLE cron_jobs ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'main'`
+- `named` 模式：session_id = `f"{session_key}:cron:{session_name}"`，用户命名的持久 session，同一 chat 的多个 job 可共享同一个 session_name（如 `"daily-digest"`），跨 run 积累上下文
+- 三种模式的响应都通过 `Channel.send_message()` 投递到原 chat（除非被哨兵值抑制）
+- `session_mode` 和 `session_name` 仅在创建时设置，不可通过 `update_job()` 修改
+- 数据库迁移 010：`ALTER TABLE cron_jobs ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'main'`
+- 数据库迁移 012：`ALTER TABLE cron_jobs ADD COLUMN session_name TEXT DEFAULT NULL`
 
 ### 3.3 哨兵值 / 回复信号协议（高优先级）
 
@@ -233,21 +236,21 @@ async def _dispatch_interval_batch(self, platform, chat_id):
 
 ### 3.1 WebAPI 统一投递接口
 
-- [ ] 搭建 HTTP 服务器（FastAPI / aiohttp）
-- [ ] `POST /api/send` — 发消息到指定 session
-- [ ] `GET /api/sessions` — 列出 sessions
-- [ ] `GET /api/sessions/{id}` — 获取 session 历史
-- [ ] `GET /api/health` — 健康检查
-- [ ] `GET /api/cron` — 列出 cron jobs
-- [ ] `POST /api/cron` — 创建 cron job
-- [ ] token-based 认证（header + query param）
-- [ ] 投递接口复用 `Channel.send_message()`
+- [x] 搭建 HTTP 服务器（FastAPI / aiohttp）
+- [x] `POST /api/send` — 发消息到指定 session
+- [x] `GET /api/sessions` — 列出 sessions
+- [x] `GET /api/sessions/{id}` — 获取 session 历史
+- [x] `GET /api/health` — 健康检查
+- [x] `GET /api/cron` — 列出 cron jobs
+- [x] `POST /api/cron` — 创建 cron job
+- [x] token-based 认证（header + query param）
+- [x] 投递接口复用 `Channel.send_message()`
 
 ### 3.2 Agent Cron 增强
 
 - [x] Phase 1：优化 cron turn 的 system prompt 隔离
 - [x] Phase 2：增加 `isolated` 模式，cron turn 用临时 session
-- [ ] Phase 3：增加 `session:<id>` 模式，支持跨 run 上下文累积
+- [x] Phase 3：增加 `named` 模式，`session_mode="named"` + `session_name` 字段，支持跨 run 上下文累积
 
 ### 3.3 哨兵值 / 回复信号协议
 

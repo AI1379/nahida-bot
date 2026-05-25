@@ -29,7 +29,8 @@ class CronJob:
     claimed_at: str | None = None
     failure_count: int = 0
     last_error: str | None = None
-    session_mode: Literal["main", "isolated"] = "main"
+    session_mode: Literal["main", "isolated", "named"] = "main"
+    session_name: str | None = None  # required when session_mode="named"
     chat_type: str = ""  # "private", "group", etc.
 
 

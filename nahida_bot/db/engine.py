@@ -201,6 +201,10 @@ _SCHEMA_MIGRATIONS = [
         created_at TEXT NOT NULL
     );
     """,
+    # Migration 012: session_name column for named cron session mode
+    """
+    ALTER TABLE cron_jobs ADD COLUMN session_name TEXT DEFAULT NULL;
+    """,
 ]
 
 

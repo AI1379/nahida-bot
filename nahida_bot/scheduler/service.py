@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -157,11 +158,18 @@ class SchedulerService:
         cron_expression: str | None = None,
         max_runs: int | None = None,
         workspace_id: str | None = None,
-        session_mode: Literal["main", "isolated"] = "main",
+        session_mode: Literal["main", "isolated", "named"] = "main",
+        session_name: str | None = None,
     ) -> CronJob:
         """Create and persist a new scheduled job at a typed address."""
         if not address.is_typed:
             raise ValueError("Cron jobs require a typed chat target")
+        if session_mode == "named":
+            if not session_name or not re.match(r"^[a-zA-Z0-9_-]+$", session_name):
+                raise ValueError(
+                    "session_name is required for session_mode='named' "
+                    "and must contain only letters, digits, hyphens, and underscores"
+                )
         now = datetime.now(UTC)
         job_id = uuid4().hex[:16]
         self._validate_prompt(prompt)
@@ -202,6 +210,7 @@ class SchedulerService:
             last_fired_at=None,
             workspace_id=workspace_id,
             session_mode=session_mode,
+            session_name=session_name if session_mode == "named" else None,
             chat_type=address.target_type,
         )
 
@@ -684,6 +693,8 @@ class SchedulerService:
         # Resolve session_id based on session_mode
         if job.session_mode == "isolated":
             session_id = f"{job.session_key}:cron:{job.job_id}"
+        elif job.session_mode == "named":
+            session_id = f"{job.session_key}:cron:{job.session_name}"
         else:
             session_id = job.session_key
             if self._router is not None:

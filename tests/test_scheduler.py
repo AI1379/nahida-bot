@@ -844,3 +844,158 @@ async def test_isolated_session_roundtrip_from_repo() -> None:
         assert claimed[0].session_mode == "isolated"
     finally:
         await engine.close()
+
+
+# ── Named session mode tests ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_job_named_session_mode() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        job = await service.create_job(
+            address=_address(),
+            prompt="test",
+            mode="once",
+            fire_at=fire_at,
+            session_mode="named",
+            session_name="news-monitor",
+        )
+        assert job.session_mode == "named"
+        assert job.session_name == "news-monitor"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_named_cron_uses_named_session_id() -> None:
+    engine, repo = await _repo()
+    try:
+        agent = _Agent()
+        channel = _Channel()
+        runner = SessionRunner(agent_loop=cast(Any, agent))
+        service = SchedulerService(
+            repo,
+            runner=runner,
+            channel_registry=cast(Any, _Channels(channel)),
+        )
+
+        job = _job()
+        job = CronJob(
+            job_id=job.job_id,
+            platform=job.platform,
+            chat_id=job.chat_id,
+            session_key=job.session_key,
+            prompt=job.prompt,
+            mode=job.mode,
+            fire_at=job.fire_at,
+            interval_seconds=job.interval_seconds,
+            cron_expression=job.cron_expression,
+            max_runs=job.max_runs,
+            run_count=job.run_count,
+            is_active=job.is_active,
+            created_at=job.created_at,
+            next_fire_at=job.next_fire_at,
+            last_fired_at=job.last_fired_at,
+            workspace_id=job.workspace_id,
+            session_mode="named",
+            session_name="news-monitor",
+        )
+        await repo.insert_job(job)
+
+        captured: dict[str, Any] = {}
+        original_run = cast(Any, runner.run)
+
+        async def spy_run(**kwargs: Any) -> AgentRunResult:
+            captured.update(kwargs)
+            return await original_run(**kwargs)
+
+        runner.run = cast(Any, spy_run)
+
+        await service._fire_job(job)
+
+        assert agent.calls == 1
+        assert captured.get("session_id") == "telegram:private:c1:cron:news-monitor"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_named_session_without_name_raises() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        with pytest.raises(ValueError, match="session_name is required"):
+            await service.create_job(
+                address=_address(),
+                prompt="test",
+                mode="once",
+                fire_at=fire_at,
+                session_mode="named",
+            )
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_named_session_invalid_name_raises() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        with pytest.raises(ValueError, match="must contain only letters"):
+            await service.create_job(
+                address=_address(),
+                prompt="test",
+                mode="once",
+                fire_at=fire_at,
+                session_mode="named",
+                session_name="bad name!",
+            )
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_named_session_roundtrip_from_repo() -> None:
+    engine, repo = await _repo()
+    try:
+        job = _job()
+        job = CronJob(
+            job_id=job.job_id,
+            platform=job.platform,
+            chat_id=job.chat_id,
+            session_key=job.session_key,
+            prompt=job.prompt,
+            mode=job.mode,
+            fire_at=job.fire_at,
+            interval_seconds=job.interval_seconds,
+            cron_expression=job.cron_expression,
+            max_runs=job.max_runs,
+            run_count=job.run_count,
+            is_active=job.is_active,
+            created_at=job.created_at,
+            next_fire_at=job.next_fire_at,
+            last_fired_at=job.last_fired_at,
+            workspace_id=job.workspace_id,
+            session_mode="named",
+            session_name="daily-digest",
+        )
+        await repo.insert_job(job)
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.session_mode == "named"
+        assert stored.session_name == "daily-digest"
+
+        claimed = await repo.claim_due_jobs(
+            (datetime.now(UTC) + timedelta(hours=1)).isoformat(), limit=1
+        )
+        assert len(claimed) == 1
+        assert claimed[0].session_mode == "named"
+        assert claimed[0].session_name == "daily-digest"
+    finally:
+        await engine.close()

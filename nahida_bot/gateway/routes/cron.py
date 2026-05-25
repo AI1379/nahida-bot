@@ -78,6 +78,7 @@ async def create_cron_job(
             cron_expression=body.cron_expression,
             max_runs=body.max_runs,
             session_mode=body.session_mode,
+            session_name=body.session_name,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -157,6 +158,8 @@ def _job_to_response(job: CronJob) -> CronJobResponse:
         next_fire_at=job.next_fire_at,
         run_count=job.run_count,
         created_at=job.created_at,
+        session_mode=job.session_mode,
+        session_name=job.session_name,
     )
 
 

@@ -1,8 +1,9 @@
 """Pydantic request and response schemas for the WebAPI."""
 
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # -- Health ---------------------------------------------------------------
@@ -71,6 +72,8 @@ class CronJobResponse(BaseModel):
     next_fire_at: str
     run_count: int
     created_at: str
+    session_mode: str = "main"
+    session_name: str | None = None
 
 
 class CronListResponse(BaseModel):
@@ -85,7 +88,23 @@ class CreateCronRequest(BaseModel):
     interval_seconds: int | None = None
     cron_expression: str | None = None
     max_runs: int | None = None
-    session_mode: Literal["main", "isolated"] = "main"
+    session_mode: Literal["main", "isolated", "named"] = "main"
+    session_name: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_session(self) -> "CreateCronRequest":
+        if self.session_mode == "named":
+            if not self.session_name:
+                raise ValueError(
+                    "session_name is required when session_mode is 'named'"
+                )
+            if not re.match(r"^[a-zA-Z0-9_-]+$", self.session_name):
+                raise ValueError(
+                    "session_name must contain only letters, digits, hyphens, and underscores"
+                )
+        elif self.session_name:
+            raise ValueError("session_name is only valid when session_mode is 'named'")
+        return self
 
 
 class CreateCronResponse(BaseModel):

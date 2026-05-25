@@ -39,6 +39,7 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         failure_count=r["failure_count"],
         last_error=r["last_error"],
         session_mode=r["session_mode"] if "session_mode" in keys else "main",
+        session_name=r["session_name"] if "session_name" in keys else None,
         chat_type=r["chat_type"] if "chat_type" in keys else "",
     )
 
@@ -58,8 +59,8 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error, session_mode, chat_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode, session_name, chat_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -82,6 +83,7 @@ class CronRepository:
                     job.failure_count,
                     job.last_error,
                     job.session_mode,
+                    job.session_name,
                     job.chat_type,
                 ),
             )
@@ -356,8 +358,8 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error, session_mode, chat_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode, session_name, chat_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -380,6 +382,7 @@ class CronRepository:
                     job.failure_count,
                     job.last_error,
                     job.session_mode,
+                    job.session_name,
                     job.chat_type,
                 ),
             )
