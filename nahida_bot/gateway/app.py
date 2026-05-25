@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from nahida_bot.gateway.auth import require_token
 from nahida_bot.gateway.errors import register_error_handlers
@@ -17,6 +20,12 @@ if TYPE_CHECKING:
     from nahida_bot.core.app import Application
 
 logger = structlog.get_logger(__name__)
+
+# Search webui/dist relative to the project root (cwd), not inside the package.
+_WEBUI_SEARCH_PATHS = [
+    Path.cwd() / "webui" / "dist",
+    Path(__file__).resolve().parents[2] / "webui" / "dist",
+]
 
 
 class WebAPIApp:
@@ -87,7 +96,40 @@ class WebAPIApp:
         app.include_router(cron_router, dependencies=[Depends(require_token)])
         app.include_router(files_router, dependencies=[Depends(require_token)])
 
+        # Mount WebUI static assets if build output exists
+        self._mount_webui(app)
+
         return app
+
+    def _mount_webui(self, app: FastAPI) -> None:
+        webui_dir: Path | None = None
+        for p in _WEBUI_SEARCH_PATHS:
+            if (p / "index.html").exists():
+                webui_dir = p
+                break
+
+        if webui_dir is None:
+            return
+
+        assets_dir = webui_dir / "assets"
+        if assets_dir.is_dir():
+            app.mount(
+                "/ui/assets",
+                StaticFiles(directory=str(assets_dir)),
+                name="webui-assets",
+            )
+
+        index_html = webui_dir / "index.html"
+
+        @app.get("/ui/{path:path}")
+        async def webui_spa(request: Request, path: str = "") -> FileResponse:
+            return FileResponse(str(index_html))
+
+        @app.get("/ui")
+        async def webui_index() -> FileResponse:
+            return FileResponse(str(index_html))
+
+        logger.info("webui.mounted", path=str(webui_dir))
 
     async def start(self) -> None:
         config = uvicorn.Config(

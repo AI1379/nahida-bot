@@ -1,0 +1,32 @@
+@import "./tokens.css";
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family:
+      system-ui,
+      -apple-system,
+      "Segoe UI",
+      Roboto,
+      sans-serif;
+    background: var(--color-background);
+    color: var(--color-foreground);
+    line-height: 1.5;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :root {
+    font-size: 14px;
+  }
+
+  code,
+  pre {
+    font-family: var(--font-mono);
+  }
+}

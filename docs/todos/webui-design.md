@@ -924,16 +924,16 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 
 ### Phase 1：前端壳和只读页面
 
-- [ ] 初始化 `webui/`：Vue 3 + TS + Vite。
-- [ ] 建立 API client、auth store、query client、router。
-- [ ] 建立 shadcn-vue + Reka UI 基础组件层和 `tokens.css`。
-- [ ] 建立首批 `Button/Input/Select/Dialog/Tabs/Tooltip/Badge/Table/FormField`。
-- [ ] AppShell / nav / topbar。
-- [ ] 首页状态面板。
-- [ ] 配置页只读 schema + YAML preview + validation。
-- [ ] CRON 只读表格。
-- [ ] Session 分组只读列表和 history viewer。
-- [ ] 文件树只读和 Markdown preview。
+- [x] 初始化 `webui/`：Vue 3 + TS + Vite。
+- [x] 建立 API client、auth store、query client、router。
+- [x] 建立 shadcn-vue + Reka UI 基础组件层和 `tokens.css`。
+- [x] 建立首批 `Button/Input/Select/Dialog/Tabs/Tooltip/Badge/Table/FormField`。
+- [x] AppShell / nav / topbar。
+- [x] 首页状态面板。
+- [x] 配置页只读 schema + YAML preview + validation。
+- [x] CRON 只读表格。
+- [x] Session 分组只读列表和 history viewer。
+- [x] 文件树只读和 Markdown preview。
 
 ### Phase 2：写操作
 
