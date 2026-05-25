@@ -1,7 +1,7 @@
 """Pydantic request and response schemas for the WebAPI."""
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -13,6 +13,79 @@ class HealthResponse(BaseModel):
     status: str
     app_name: str
     started: bool
+
+
+# -- Status ---------------------------------------------------------------
+
+
+class StatusResponse(BaseModel):
+    app: dict[str, Any]
+    resources: dict[str, Any]
+    services: dict[str, Any]
+    usage: dict[str, Any]
+
+
+# -- Bootstrap ------------------------------------------------------------
+
+
+class BootstrapResponse(BaseModel):
+    app_name: str
+    version: str
+    api_base: str
+    webui_base: str
+    auth: dict[str, Any]
+    features: list[dict[str, str]]
+    server_time: str
+
+
+# -- System Actions -------------------------------------------------------
+
+
+class SystemActionRequest(BaseModel):
+    confirm: bool = False
+    reason: str = ""
+
+
+class SystemActionResponse(BaseModel):
+    accepted: bool
+    action: str
+    mode: str
+    message: str
+
+
+# -- Config ---------------------------------------------------------------
+
+
+class ConfigCurrentResponse(BaseModel):
+    content: str
+    checksum: str
+    path: str
+    mtime: str
+
+
+class ConfigSchemaResponse(BaseModel):
+    entries: list[dict[str, str]]
+
+
+class ConfigValidateResponse(BaseModel):
+    errors: int
+    warnings: int
+    ok: bool
+    issues: list[dict[str, str]]
+
+
+class ConfigSaveRequest(BaseModel):
+    content: str
+    expected_checksum: str
+    format: str = "yaml"
+
+
+class ConfigSaveResponse(BaseModel):
+    saved: bool
+    backup_path: str | None = None
+    checksum: str = ""
+    restart_required: bool = True
+    validation: dict[str, Any]
 
 
 # -- Sessions -------------------------------------------------------------
@@ -74,6 +147,18 @@ class CronJobResponse(BaseModel):
     created_at: str
     session_mode: str = "main"
     session_name: str | None = None
+    # Extended fields for WebUI
+    session_key: str = ""
+    chat_type: str = ""
+    last_fired_at: str | None = None
+    failure_count: int = 0
+    last_error: str | None = None
+    claimed_at: str | None = None
+    workspace_id: str | None = None
+    fire_at: str | None = None
+    interval_seconds: int | None = None
+    cron_expression: str | None = None
+    max_runs: int | None = None
 
 
 class CronListResponse(BaseModel):

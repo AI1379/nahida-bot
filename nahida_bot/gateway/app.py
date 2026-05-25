@@ -56,21 +56,36 @@ class WebAPIApp:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=cors_origins,
-            allow_methods=["GET", "POST"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["*"],
         )
 
         register_error_handlers(app)
 
+        from nahida_bot.gateway.routes.config import router as config_router
         from nahida_bot.gateway.routes.cron import router as cron_router
+        from nahida_bot.gateway.routes.files import router as files_router
         from nahida_bot.gateway.routes.health import router as health_router
         from nahida_bot.gateway.routes.messages import router as messages_router
         from nahida_bot.gateway.routes.sessions import router as sessions_router
+        from nahida_bot.gateway.routes.status import router as status_router
+        from nahida_bot.gateway.routes.webui import (
+            bootstrap_router,
+            system_router as webui_system_router,
+        )
 
+        # Unauthenticated routes
         app.include_router(health_router)
+        app.include_router(bootstrap_router)
+
+        # Authenticated routes
+        app.include_router(webui_system_router, dependencies=[Depends(require_token)])
+        app.include_router(status_router, dependencies=[Depends(require_token)])
+        app.include_router(config_router, dependencies=[Depends(require_token)])
         app.include_router(sessions_router, dependencies=[Depends(require_token)])
         app.include_router(messages_router, dependencies=[Depends(require_token)])
         app.include_router(cron_router, dependencies=[Depends(require_token)])
+        app.include_router(files_router, dependencies=[Depends(require_token)])
 
         return app
 
