@@ -357,6 +357,24 @@ class SchedulerService:
             logger.info("scheduler.job_deleted", job_id=job_id)
         return deleted
 
+    async def list_all_jobs(
+        self,
+        *,
+        active: str = "all",
+        limit: int = 100,
+    ) -> list[CronJob]:
+        """List all jobs across all chats.
+
+        Unlike list_jobs(address), this returns every job in the system,
+        useful for the admin WebUI.
+
+        Args:
+            active: "true" = active only, "false" = inactive only,
+                    "all" = everything.
+            limit: Maximum number of jobs to return.
+        """
+        return await self._repo.list_all_jobs(active=active, limit=limit)
+
     # ── Internal ──────────────────────────────────────────
 
     async def _poll_loop(self) -> None:

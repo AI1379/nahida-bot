@@ -26,6 +26,22 @@ def _require_scheduler(app):
     return app.scheduler_service
 
 
+@router.get("/api/cron/jobs", response_model=CronListResponse)
+async def list_all_cron_jobs(
+    active: str = Query("all"),
+    limit: int = Query(100, ge=1, le=500),
+    app=Depends(get_application),
+) -> CronListResponse:
+    """Global cron list for admin WebUI — all jobs across all chats.
+
+    Query param ``active``: ``true`` = active only, ``false`` = inactive only,
+    ``all`` (default) = everything.
+    """
+    svc = _require_scheduler(app)
+    jobs = await svc.list_all_jobs(active=active, limit=limit)
+    return CronListResponse(jobs=[_job_to_response(j) for j in jobs])
+
+
 @router.get("/api/cron", response_model=CronListResponse)
 async def list_cron_jobs(
     target: str | None = Query(None),
@@ -160,6 +176,18 @@ def _job_to_response(job: CronJob) -> CronJobResponse:
         created_at=job.created_at,
         session_mode=job.session_mode,
         session_name=job.session_name,
+        # Extended fields
+        session_key=job.session_key,
+        chat_type=job.chat_type,
+        last_fired_at=job.last_fired_at,
+        failure_count=job.failure_count,
+        last_error=job.last_error,
+        claimed_at=job.claimed_at,
+        workspace_id=job.workspace_id,
+        fire_at=job.fire_at,
+        interval_seconds=job.interval_seconds,
+        cron_expression=job.cron_expression,
+        max_runs=job.max_runs,
     )
 
 

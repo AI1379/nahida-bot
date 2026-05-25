@@ -393,3 +393,32 @@ class CronRepository:
             "SELECT * FROM cron_jobs WHERE is_active = 1 ORDER BY next_fire_at"
         )
         return [_row_to_job(r) for r in rows]
+
+    async def list_all_jobs(
+        self,
+        *,
+        active: str = "all",
+        limit: int = 100,
+    ) -> list[CronJob]:
+        """List all jobs, optionally filtered by active status.
+
+        Args:
+            active: "true" = active only, "false" = inactive only, "all" = everything.
+            limit: Maximum rows.
+        """
+        if active == "true":
+            rows = await self._engine.fetch_all(
+                "SELECT * FROM cron_jobs WHERE is_active = 1 ORDER BY next_fire_at LIMIT ?",
+                (limit,),
+            )
+        elif active == "false":
+            rows = await self._engine.fetch_all(
+                "SELECT * FROM cron_jobs WHERE is_active = 0 ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        else:
+            rows = await self._engine.fetch_all(
+                "SELECT * FROM cron_jobs ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [_row_to_job(r) for r in rows]
