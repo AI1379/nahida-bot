@@ -8,7 +8,8 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from nahida_bot.cli import app
-from nahida_bot.cli.config_commands import _build_schema, _validate
+from nahida_bot.core.config_schema import build_config_schema
+from nahida_bot.core.config_validation import validate_settings
 from nahida_bot.core.config import (
     MemoryConfig,
     MemoryEmbeddingConfig,
@@ -72,7 +73,7 @@ def test_schema_json_preserves_generic_types() -> None:
 
 
 def test_schema_reads_pydantic_v2_constraints() -> None:
-    entry = _build_schema("agent.max_steps", show_providers=False)[0]
+    entry = build_config_schema("agent.max_steps", show_providers=False)[0]
 
     assert entry.constraints == ">=1"
 
@@ -80,7 +81,7 @@ def test_schema_reads_pydantic_v2_constraints() -> None:
 def test_schema_includes_builtin_plugin_config_defaults() -> None:
     entries = {
         entry.path: entry
-        for entry in _build_schema("builtin-commands", show_providers=False)
+        for entry in build_config_schema("builtin-commands", show_providers=False)
     }
 
     assert entries["builtin-commands.allow_external_attachment_paths"].type_ == "bool"
@@ -125,7 +126,7 @@ config_schema:
 
     entries = {
         entry.path: entry
-        for entry in _build_schema(
+        for entry in build_config_schema(
             "demo",
             show_providers=False,
             config_yaml=str(config_path),
@@ -144,7 +145,7 @@ def test_validate_accepts_vision_tag_fallback() -> None:
         multimodal=MultimodalConfig(image_fallback_mode="auto"),
     )
 
-    report = _validate(settings)
+    report = validate_settings(settings)
 
     assert not any(i.path == "multimodal.image_fallback_model" for i in report.issues)
 
@@ -160,7 +161,7 @@ def test_validate_reports_unresolved_embedding_spec() -> None:
         )
     )
 
-    report = _validate(settings)
+    report = validate_settings(settings)
 
     assert report.errors == 1
     assert report.issues[0].path == "memory.embedding.model"
@@ -182,6 +183,6 @@ def test_validate_warns_for_sqlite_vec_without_dimensions() -> None:
         ),
     )
 
-    report = _validate(settings)
+    report = validate_settings(settings)
 
     assert any(i.path == "memory.embedding.dimensions" for i in report.issues)
