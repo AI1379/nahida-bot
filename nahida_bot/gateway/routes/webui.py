@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from nahida_bot.gateway.deps import get_application
@@ -17,6 +18,8 @@ from nahida_bot.gateway.schemas import (
     SystemActionResponse,
 )
 from nahida_bot.gateway.services import audit_log
+
+logger = structlog.get_logger(__name__)
 
 # Public: no auth required
 bootstrap_router = APIRouter()
@@ -31,7 +34,7 @@ async def get_bootstrap(app=Depends(get_application)) -> BootstrapResponse:
         app_name=app.settings.app_name,
         version=app.version,
         api_base="/api",
-        webui_base="/ui",
+        webui_base="/",
         auth={
             "required": bool(app.settings.webapi.auth_token),
             "mode": "bearer",
@@ -74,6 +77,7 @@ async def system_restart(
         )
 
     audit_log.audit("system.restart_requested", detail=body.reason)
+    logger.warning("webapi.restart_requested", reason=body.reason)
 
     # Request shutdown; external supervisor must restart.
     app.request_shutdown()
@@ -98,6 +102,7 @@ async def system_shutdown(
         )
 
     audit_log.audit("system.shutdown_requested", detail=body.reason)
+    logger.warning("webapi.shutdown_requested", reason=body.reason)
 
     app.request_shutdown()
 

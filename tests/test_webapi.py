@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import nahida_bot.gateway.app as gateway_app_module
 from nahida_bot.core.config import Settings, WebAPIConfigModel
 from nahida_bot.gateway.app import WebAPIApp
 
@@ -27,15 +28,18 @@ def _make_mock_app(
     mock = MagicMock(
         spec=[
             "settings",
+            "version",
             "is_started",
             "is_initialized",
             "memory_store",
             "message_router",
             "channel_registry",
             "scheduler_service",
+            "request_shutdown",
         ]
     )
     mock.settings = settings
+    mock.version = "0.1-test"
     mock.is_started = is_started
     mock.is_initialized = True
     mock.memory_store = None
@@ -43,6 +47,7 @@ def _make_mock_app(
     mock.channel_registry = MagicMock()
     mock.channel_registry.get.return_value = None
     mock.scheduler_service = None
+    mock.request_shutdown = MagicMock()
     return mock
 
 
@@ -152,6 +157,57 @@ async def test_no_auth_means_open(client_no_auth: AsyncClient) -> None:
     resp = await client_no_auth.get("/api/sessions")
     # 503 = auth passed (no token needed), but memory_store not initialized
     assert resp.status_code == 503
+
+
+# -- WebUI ----------------------------------------------------------------
+
+
+async def test_webui_bootstrap_reports_root_base(
+    client_with_auth: AsyncClient,
+) -> None:
+    resp = await client_with_auth.get("/api/webui/bootstrap")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["api_base"] == "/api"
+    assert data["webui_base"] == "/"
+    assert data["auth"]["required"] is True
+
+
+async def test_webui_root_mount_serves_spa_without_masking_api(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    webui_dist = tmp_path / "webui-dist"
+    webui_dist.mkdir()
+    (webui_dist / "index.html").write_text(
+        "<!doctype html><html><body>root webui</body></html>",
+        encoding="utf-8",
+    )
+    (webui_dist / "favicon.svg").write_text(
+        "<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(gateway_app_module, "_WEBUI_SEARCH_PATHS", [webui_dist])
+    webapi = WebAPIApp(application=_make_mock_app(), host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        root = await client.get("/")
+        assert root.status_code == 200
+        assert "root webui" in root.text
+
+        spa = await client.get("/config")
+        assert spa.status_code == 200
+        assert "root webui" in spa.text
+
+        asset = await client.get("/favicon.svg")
+        assert asset.status_code == 200
+        assert asset.text.startswith("<svg")
+
+        missing_api = await client.get("/api/not-found")
+        assert missing_api.status_code == 404
+        assert missing_api.headers["content-type"].startswith("application/json")
 
 
 # -- Sessions ------------------------------------------------------------

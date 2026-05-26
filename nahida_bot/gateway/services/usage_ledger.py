@@ -83,7 +83,9 @@ class InMemoryUsageLedger:
 
         self._events.append(event)
         if len(self._events) > self._max_events:
+            dropped = len(self._events) - self._max_events
             self._events = self._events[-self._max_events :]
+            logger.debug("usage_ledger.trimmed", dropped=dropped)
 
         # Update running totals
         t = self._totals

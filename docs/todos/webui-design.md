@@ -201,15 +201,15 @@ nahida_bot/gateway/
 构建策略：
 
 - 开发：`webui` 使用 Vite dev server，代理 `/api` 到 `http://127.0.0.1:6185`。
-- 生产/本地运行：`pnpm build` 输出到 `nahida_bot/gateway/static/webui` 或 `webui/dist`，FastAPI 挂载 `/ui`。
-- `GET /ui/*` 做 SPA fallback 到 `index.html`；`/api/*` 永远由 API routes 处理。
+- 生产/本地运行：`pnpm build` 输出到 `nahida_bot/gateway/static/webui` 或 `webui/dist`，FastAPI 挂载 `/`。
+- `GET /*` 做 SPA fallback 到 `index.html`；`/api/*` 永远由 API routes 处理。
 
 配置建议：
 
 ```python
 class WebUIConfigModel(BaseModel):
     enabled: bool = True
-    base_path: str = "/ui"
+    base_path: str = "/"
     static_dir: str = ""
     require_auth: bool = True
 ```
@@ -492,7 +492,7 @@ GET /api/webui/bootstrap
   "app_name": "Nahida Bot",
   "version": "0.1.0",
   "api_base": "/api",
-  "webui_base": "/ui",
+  "webui_base": "/",
   "auth": {
     "required": true,
     "mode": "bearer"
@@ -934,6 +934,7 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - [x] CRON 只读表格。
 - [x] Session 分组只读列表和 history viewer。
 - [x] 文件树只读和 Markdown preview。
+- [ ] log 页面显示和筛选当前日志。
 
 ### Phase 2：写操作
 
@@ -990,7 +991,7 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 
 端到端：
 
-- 启动 Gateway + built WebUI，访问 `/ui` 可加载 SPA。
+- 启动 Gateway + built WebUI，访问 `/` 可加载 SPA。
 - 使用 token 登录后能访问 status。
 - 修改配置保存，确认备份文件存在。
 - 创建一个 interval cron，CRON 页能看到。

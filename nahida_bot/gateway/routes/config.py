@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from nahida_bot.gateway.deps import get_application
@@ -21,6 +22,8 @@ from nahida_bot.gateway.services.config_service import (
     validate_config_text,
 )
 from nahida_bot.core.config_schema import build_config_schema
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -88,6 +91,11 @@ async def validate_config(
             detail="Missing 'content' field",
         )
     report = validate_config_text(content)
+    logger.info(
+        "webapi.config_validated",
+        errors=report.errors,
+        warnings=report.warnings,
+    )
     return ConfigValidateResponse(
         errors=report.errors,
         warnings=report.warnings,
@@ -130,6 +138,12 @@ async def save_current_config(
         )
 
     audit_log.audit("config.saved", detail=f"backup={result.backup_path}")
+    logger.info(
+        "webapi.config_saved",
+        saved=result.saved,
+        backup=result.backup_path,
+        restart_required=result.restart_required,
+    )
     return ConfigSaveResponse(
         saved=result.saved,
         backup_path=result.backup_path,

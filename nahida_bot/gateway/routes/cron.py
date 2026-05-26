@@ -1,5 +1,8 @@
 """Cron job endpoints."""
 
+from __future__ import annotations
+
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from nahida_bot.core.chat_address import ChatAddress
@@ -13,6 +16,8 @@ from nahida_bot.gateway.schemas import (
     UpdateCronRequest,
 )
 from nahida_bot.scheduler.models import CronJob
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -101,6 +106,13 @@ async def create_cron_job(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
+    logger.info(
+        "webapi.cron_created",
+        job_id=job.job_id,
+        target=body.target,
+        mode=body.mode,
+    )
+
     return CreateCronResponse(job_id=job.job_id, status="created")
 
 
@@ -130,6 +142,8 @@ async def update_cron_job(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
 
+    logger.info("webapi.cron_updated", job_id=job_id)
+
     return _job_to_response(job)
 
 
@@ -145,6 +159,7 @@ async def cancel_cron_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found or already inactive",
         )
+    logger.info("webapi.cron_cancelled", job_id=job_id)
     return CronActionResponse(job_id=job_id, status="cancelled")
 
 
@@ -160,6 +175,7 @@ async def delete_cron_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found",
         )
+    logger.info("webapi.cron_deleted", job_id=job_id)
     return CronActionResponse(job_id=job_id, status="deleted")
 
 

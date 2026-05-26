@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
@@ -16,6 +17,8 @@ from nahida_bot.gateway.services.file_service import (
     write_file,
 )
 from nahida_bot.workspace.exceptions import WorkspaceError, WorkspacePathError
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -145,6 +148,7 @@ async def write_file_content(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     audit_log.audit("file.written", detail=body.path)
+    logger.info("webapi.file_written", path=body.path, size=result.size)
     return {
         "path": result.path,
         "size": result.size,
@@ -175,6 +179,7 @@ async def create_file_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     audit_log.audit("file.created", detail=body.path)
+    logger.info("webapi.file_created", path=body.path)
     return {
         "path": result.path,
         "size": result.size,
@@ -206,6 +211,7 @@ async def rename_file_endpoint(
         )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     audit_log.audit("file.renamed", detail=f"{body.path} -> {new_path}")
+    logger.info("webapi.file_renamed", old_path=body.path, new_path=new_path)
     return {"path": new_path}
 
 
@@ -231,4 +237,5 @@ async def delete_file_endpoint(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
     audit_log.audit("file.deleted", detail=f"{body.path} -> {trash_path}")
+    logger.info("webapi.file_deleted", path=body.path, trash_path=trash_path)
     return {"status": "deleted", "trash_path": trash_path}

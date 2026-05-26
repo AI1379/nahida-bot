@@ -116,6 +116,7 @@ def write_file(
         raise ValueError(f"Content too large (max {MAX_FILE_SIZE} bytes)")
 
     sandbox.write_text(relative_path, content)
+    logger.debug("file_service.write", path=relative_path)
     stat = sandbox.resolve_safe_path(relative_path).stat()
     return FileContent(
         path=relative_path,
@@ -182,6 +183,7 @@ def rename_entry(
         raise FileExistsError(f"Target already exists: {new_name}")
 
     old_target.rename(new_target)
+    logger.debug("file_service.rename", old=old_path, new=new_name)
     return str(new_target.relative_to(sandbox.root))
 
 
@@ -204,6 +206,7 @@ def soft_delete(
     trash_name = f"{target.name}.{timestamp}.deleted"
     trash_path = trash_dir / trash_name
     shutil.move(str(target), str(trash_path))
+    logger.debug("file_service.soft_delete", path=relative_path, trash=trash_name)
 
     return str(trash_path.relative_to(sandbox.root))
 

@@ -6,12 +6,15 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import time
+
 import structlog
 import uvicorn
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from nahida_bot.gateway.auth import require_token
 from nahida_bot.gateway.errors import register_error_handlers
@@ -26,6 +29,26 @@ _WEBUI_SEARCH_PATHS = [
     Path.cwd() / "webui" / "dist",
     Path(__file__).resolve().parents[2] / "webui" / "dist",
 ]
+
+
+class _RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Log every HTTP request with method, path, status, and duration."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        start = time.monotonic()
+        response = await call_next(request)
+        elapsed_ms = round((time.monotonic() - start) * 1000)
+
+        logger.info(
+            "webapi.request",
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            elapsed_ms=elapsed_ms,
+        )
+        return response
 
 
 class WebAPIApp:
@@ -68,6 +91,8 @@ class WebAPIApp:
             allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["*"],
         )
+
+        app.add_middleware(_RequestLoggingMiddleware)
 
         register_error_handlers(app)
 
@@ -114,19 +139,38 @@ class WebAPIApp:
         assets_dir = webui_dir / "assets"
         if assets_dir.is_dir():
             app.mount(
-                "/ui/assets",
+                "/assets",
                 StaticFiles(directory=str(assets_dir)),
                 name="webui-assets",
             )
 
         index_html = webui_dir / "index.html"
+        webui_root = webui_dir.resolve()
 
-        @app.get("/ui/{path:path}")
-        async def webui_spa(request: Request, path: str = "") -> FileResponse:
+        @app.get("/")
+        async def webui_index() -> FileResponse:
             return FileResponse(str(index_html))
 
-        @app.get("/ui")
-        async def webui_index() -> FileResponse:
+        @app.get("/{path:path}")
+        async def webui_spa(path: str) -> FileResponse:
+            if path == "api" or path.startswith("api/"):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="API route not found",
+                )
+
+            candidate = (webui_dir / path).resolve()
+            try:
+                candidate.relative_to(webui_root)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Static asset not found",
+                ) from None
+
+            if candidate.is_file():
+                return FileResponse(str(candidate))
+
             return FileResponse(str(index_html))
 
         logger.info("webui.mounted", path=str(webui_dir))

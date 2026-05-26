@@ -1,5 +1,8 @@
 """Session listing and history endpoints."""
 
+from __future__ import annotations
+
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from nahida_bot.core.chat_address import classify_session_key
@@ -10,6 +13,8 @@ from nahida_bot.gateway.schemas import (
     SessionSummaryResponse,
     TurnResponse,
 )
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 

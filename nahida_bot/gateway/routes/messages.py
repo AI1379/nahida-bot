@@ -1,11 +1,14 @@
 """Send message endpoint."""
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import SendMessageRequest, SendMessageResponse
 from nahida_bot.plugins.base import OutboundMessage
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -53,6 +56,13 @@ async def send_message(
     await channel.send_message(
         address.target_id,
         OutboundMessage(text=body.text, extra={"chat_address": address.chat_key}),
+    )
+
+    logger.info(
+        "webapi.message_sent",
+        target=body.target,
+        session_id=session_id,
+        text_len=len(body.text),
     )
 
     return SendMessageResponse(status="sent", session_id=session_id)

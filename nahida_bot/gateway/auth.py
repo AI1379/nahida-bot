@@ -1,6 +1,9 @@
 """Token-based authentication for the WebAPI."""
 
+import structlog
 from fastapi import HTTPException, Request, status
+
+logger = structlog.get_logger(__name__)
 
 
 def _extract_token(request: Request) -> str | None:
@@ -16,6 +19,11 @@ def require_token(request: Request) -> None:
         return
     provided = _extract_token(request)
     if provided != configured:
+        logger.warning(
+            "webapi.auth_failed",
+            path=request.url.path,
+            has_token=provided is not None,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing token",
