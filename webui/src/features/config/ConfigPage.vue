@@ -83,7 +83,7 @@ const validationVariant = computed(() => {
               {{ issue.severity }}
             </Badge>
             <span>{{ issue.message }}</span>
-            <code v-if="issue.field" class="issue-field">{{ issue.field }}</code>
+            <code v-if="issue.path" class="issue-field">{{ issue.path }}</code>
           </div>
         </div>
       </Card>
@@ -99,18 +99,18 @@ const validationVariant = computed(() => {
               <th>Key</th>
               <th>Type</th>
               <th>Default</th>
-              <th>Description</th>
+              <th>Constraints</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="entry in schemaData.entries" :key="entry.key">
-              <td><code>{{ entry.key }}</code></td>
+            <tr v-for="entry in schemaData.entries" :key="entry.path">
+              <td><code>{{ entry.path }}</code></td>
               <td>{{ entry.type }}</td>
               <td>
-                <code v-if="entry.default_value">{{ entry.default_value }}</code>
+                <code v-if="entry.default">{{ entry.default }}</code>
                 <span v-else class="muted">-</span>
               </td>
-              <td>{{ entry.description }}</td>
+              <td>{{ entry.constraints }}</td>
             </tr>
           </tbody>
         </table>

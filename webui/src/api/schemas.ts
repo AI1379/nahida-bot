@@ -52,14 +52,14 @@ export interface ConfigCurrentResponse {
 }
 
 export interface ConfigSchemaResponse {
-  entries: { key: string; type: string; default_value: string; description: string }[];
+  entries: { path: string; type: string; default: string; constraints: string }[];
 }
 
 export interface ConfigValidateResponse {
   errors: number;
   warnings: number;
   ok: boolean;
-  issues: { severity: string; message: string; field: string }[];
+  issues: { severity: string; message: string; path: string }[];
 }
 
 export interface CronJob {
