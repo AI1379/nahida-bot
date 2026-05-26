@@ -6,6 +6,7 @@ import {
   Clock,
   MessageSquare,
   FolderOpen,
+  ScrollText,
 } from "lucide-vue-next";
 import { computed, type Component } from "vue";
 
@@ -24,6 +25,7 @@ const items: NavItem[] = [
   { name: "cron", icon: Clock, to: "/cron", label: "CRON" },
   { name: "sessions", icon: MessageSquare, to: "/sessions", label: "Sessions" },
   { name: "files", icon: FolderOpen, to: "/files", label: "Files" },
+  { name: "logs", icon: ScrollText, to: "/logs", label: "Logs" },
 ];
 
 const activeName = computed(() => {

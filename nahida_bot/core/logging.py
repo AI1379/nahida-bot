@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections import deque
 from pathlib import Path
 from typing import Any, cast
 
@@ -52,6 +54,33 @@ def _remove_existing_handlers(root_logger: logging.Logger) -> None:
             continue
         root_logger.removeHandler(handler)
         handler.close()
+
+
+class InMemoryLogCapture(logging.Handler):
+    """Bounded in-memory handler that stores structured JSON log entries."""
+
+    def __init__(self, max_entries: int = 2000) -> None:
+        super().__init__()
+        self._entries: deque[dict[str, Any]] = deque(maxlen=max_entries)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            raw = self.format(record)
+            entry = json.loads(raw)
+            entry["logger"] = record.name
+            self._entries.append(entry)
+        except Exception:
+            pass
+
+    def get_entries(self) -> list[dict[str, Any]]:
+        return list(self._entries)
+
+
+_capture_handler: InMemoryLogCapture | None = None
+
+
+def get_log_capture() -> InMemoryLogCapture | None:
+    return _capture_handler
 
 
 def configure_logging(
@@ -135,6 +164,14 @@ def configure_logging(
         file_handler.setFormatter(formatter(render_json=log_file_json, colors=False))
         setattr(file_handler, _HANDLER_ATTR, True)
         root_logger.addHandler(file_handler)
+
+    # In-memory log capture for the web UI log viewer
+    global _capture_handler
+    _capture_handler = InMemoryLogCapture(max_entries=2000)
+    _capture_handler.setLevel(producer_level)
+    _capture_handler.setFormatter(formatter(render_json=True, colors=False))
+    setattr(_capture_handler, _HANDLER_ATTR, True)
+    root_logger.addHandler(_capture_handler)
 
     logging.getLogger("sqlite3").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)

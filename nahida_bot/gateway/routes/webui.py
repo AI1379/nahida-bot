@@ -60,6 +60,12 @@ async def get_bootstrap(app=Depends(get_application)) -> BootstrapResponse:
                 "label": "Files",
                 "scope": "operator.read",
             },
+            {
+                "id": "logs",
+                "route": "/logs",
+                "label": "Logs",
+                "scope": "operator.read",
+            },
         ],
         server_time=datetime.now(UTC).isoformat(),
     )

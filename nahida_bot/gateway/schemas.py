@@ -209,3 +209,18 @@ class UpdateCronRequest(BaseModel):
 class CronActionResponse(BaseModel):
     job_id: str
     status: str
+
+
+# -- Logs -----------------------------------------------------------------
+
+
+class LogEntry(BaseModel):
+    timestamp: str = ""
+    level: str = ""
+    logger: str = ""
+    event: str = ""
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class LogsResponse(BaseModel):
+    entries: list[LogEntry]

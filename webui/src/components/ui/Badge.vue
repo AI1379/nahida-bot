@@ -36,11 +36,11 @@ const classes = computed(() => cn("badge", `badge-${props.variant}`));
   color: var(--color-success);
 }
 .badge-warning {
-  background: color-mix(in srgb, var(--color-warning) 15%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 25%, transparent);
   color: var(--color-warning);
 }
 .badge-destructive {
-  background: color-mix(in srgb, var(--color-destructive) 15%, transparent);
+  background: color-mix(in srgb, var(--color-destructive) 25%, transparent);
   color: var(--color-destructive);
 }
 .badge-secondary {

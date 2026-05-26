@@ -8,6 +8,7 @@ import type {
   CronListResponse,
   FileContentResponse,
   FileListResponse,
+  LogsResponse,
   SessionHistoryResponse,
   SessionListResponse,
   StatusResponse,
@@ -109,5 +110,24 @@ export function useFileContent(
       return api.get(`/files/content?${params}`);
     },
     enabled: computed(() => !!path.value),
+  });
+}
+
+export function useLogs(
+  params: Ref<{ level: string; logger: string; search: string }>,
+  paused: Ref<boolean>,
+) {
+  return useQuery<LogsResponse>({
+    queryKey: computed(() => ["logs", params.value]),
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (params.value.level && params.value.level !== "ALL")
+        p.set("level", params.value.level);
+      if (params.value.logger) p.set("logger", params.value.logger);
+      if (params.value.search) p.set("search", params.value.search);
+      p.set("limit", "500");
+      return api.get(`/logs?${p}`);
+    },
+    refetchInterval: computed(() => (paused.value ? false : 3000)),
   });
 }

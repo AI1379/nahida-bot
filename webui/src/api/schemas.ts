@@ -149,3 +149,15 @@ export interface WorkspaceListResponse {
   workspaces: WorkspaceInfo[];
   active: string;
 }
+
+export interface LogEntry {
+  timestamp: string;
+  level: string;
+  logger: string;
+  event: string;
+  fields: Record<string, unknown>;
+}
+
+export interface LogsResponse {
+  entries: LogEntry[];
+}

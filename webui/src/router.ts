@@ -39,6 +39,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/features/files/FilesPage.vue"),
         meta: { label: "Files", icon: "FolderOpen" },
       },
+      {
+        path: "logs",
+        name: "logs",
+        component: () => import("@/features/logs/LogsPage.vue"),
+        meta: { label: "Logs", icon: "ScrollText" },
+      },
     ],
   },
 ];

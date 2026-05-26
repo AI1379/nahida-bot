@@ -100,6 +100,7 @@ class WebAPIApp:
         from nahida_bot.gateway.routes.cron import router as cron_router
         from nahida_bot.gateway.routes.files import router as files_router
         from nahida_bot.gateway.routes.health import router as health_router
+        from nahida_bot.gateway.routes.logs import router as logs_router
         from nahida_bot.gateway.routes.messages import router as messages_router
         from nahida_bot.gateway.routes.sessions import router as sessions_router
         from nahida_bot.gateway.routes.status import router as status_router
@@ -120,6 +121,7 @@ class WebAPIApp:
         app.include_router(messages_router, dependencies=[Depends(require_token)])
         app.include_router(cron_router, dependencies=[Depends(require_token)])
         app.include_router(files_router, dependencies=[Depends(require_token)])
+        app.include_router(logs_router, dependencies=[Depends(require_token)])
 
         # Mount WebUI static assets if build output exists
         self._mount_webui(app)
