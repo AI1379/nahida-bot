@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.gateway.deps import get_application
@@ -82,6 +82,7 @@ async def get_cron_job(
     "/api/cron", response_model=CreateCronResponse, status_code=status.HTTP_201_CREATED
 )
 async def create_cron_job(
+    request: Request,
     body: CreateCronRequest,
     app=Depends(get_application),
 ) -> CreateCronResponse:
@@ -112,12 +113,14 @@ async def create_cron_job(
         target=body.target,
         mode=body.mode,
     )
+    _notify_cron_updated(request, job.job_id, "created")
 
     return CreateCronResponse(job_id=job.job_id, status="created")
 
 
 @router.patch("/api/cron/{job_id}", response_model=CronJobResponse)
 async def update_cron_job(
+    request: Request,
     job_id: str,
     body: UpdateCronRequest,
     app=Depends(get_application),
@@ -143,12 +146,14 @@ async def update_cron_job(
         ) from exc
 
     logger.info("webapi.cron_updated", job_id=job_id)
+    _notify_cron_updated(request, job_id, "updated")
 
     return _job_to_response(job)
 
 
 @router.post("/api/cron/{job_id}/cancel", response_model=CronActionResponse)
 async def cancel_cron_job(
+    request: Request,
     job_id: str,
     app=Depends(get_application),
 ) -> CronActionResponse:
@@ -160,11 +165,13 @@ async def cancel_cron_job(
             detail="Job not found or already inactive",
         )
     logger.info("webapi.cron_cancelled", job_id=job_id)
+    _notify_cron_updated(request, job_id, "cancelled")
     return CronActionResponse(job_id=job_id, status="cancelled")
 
 
 @router.delete("/api/cron/{job_id}", response_model=CronActionResponse)
 async def delete_cron_job(
+    request: Request,
     job_id: str,
     app=Depends(get_application),
 ) -> CronActionResponse:
@@ -176,7 +183,14 @@ async def delete_cron_job(
             detail="Job not found",
         )
     logger.info("webapi.cron_deleted", job_id=job_id)
+    _notify_cron_updated(request, job_id, "deleted")
     return CronActionResponse(job_id=job_id, status="deleted")
+
+
+def _notify_cron_updated(request: Request, job_id: str, action: str) -> None:
+    broadcaster = getattr(request.app.state, "event_broadcaster", None)
+    if broadcaster is not None:
+        broadcaster.notify_cron_updated(job_id, action)
 
 
 def _job_to_response(job: CronJob) -> CronJobResponse:

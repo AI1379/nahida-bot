@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { RouterView } from "vue-router";
+import { useQueryClient } from "@tanstack/vue-query";
 import NavRail from "./NavRail.vue";
 import TopBar from "./TopBar.vue";
 import ToastContainer from "@/components/ui/ToastContainer.vue";
 import Alert from "@/components/ui/Alert.vue";
 import Button from "@/components/ui/Button.vue";
 import { useAppStore } from "@/stores/app";
+import { useEventStream } from "@/api/events";
 
 const app = useAppStore();
+const qc = useQueryClient();
+useEventStream(qc);
 </script>
 
 <template>

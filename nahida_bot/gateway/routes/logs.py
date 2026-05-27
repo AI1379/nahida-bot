@@ -7,7 +7,8 @@ import json
 from fastapi import APIRouter, Query
 
 from nahida_bot.core.logging import get_log_capture
-from nahida_bot.gateway.schemas import LogEntry, LogsResponse
+from nahida_bot.gateway.schemas import LogsResponse
+from nahida_bot.gateway.services.log_redaction import to_log_entry
 
 router = APIRouter()
 
@@ -19,19 +20,6 @@ _LEVEL_ORDER = {
     "error": 40,
     "critical": 50,
 }
-
-_KNOWN_KEYS = {"timestamp", "level", "logger", "event"}
-
-
-def _to_entry(raw: dict) -> LogEntry:
-    fields = {k: v for k, v in raw.items() if k not in _KNOWN_KEYS}
-    return LogEntry(
-        timestamp=str(raw.get("timestamp", "")),
-        level=str(raw.get("level", "")).lower(),
-        logger=str(raw.get("logger", "")),
-        event=str(raw.get("event", "")),
-        fields=fields,
-    )
 
 
 @router.get("/api/logs", response_model=LogsResponse)
@@ -68,4 +56,4 @@ async def get_logs(
         ]
 
     entries = entries[-limit:]
-    return LogsResponse(entries=[_to_entry(e) for e in entries])
+    return LogsResponse(entries=[to_log_entry(e) for e in entries])

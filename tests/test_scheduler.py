@@ -251,6 +251,65 @@ async def test_fire_job_failure_releases_claim_for_retry_without_counting_run() 
 
 
 @pytest.mark.asyncio
+async def test_fire_job_emits_fired_event_after_success() -> None:
+    engine, repo = await _repo()
+    try:
+        await repo.insert_job(_job())
+        claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+        service = _make_service(
+            engine,
+            repo,
+            agent=_Agent(),
+            channel=_Channel(),
+            config=SchedulerConfig(job_timeout_seconds=1),
+        )
+        events: list[tuple[str, str, dict[str, Any]]] = []
+
+        async def on_job_event(event_type: str, job_id: str, **kwargs: Any) -> None:
+            events.append((event_type, job_id, kwargs))
+
+        service.on_job_event = on_job_event
+
+        await service._fire_job(claimed[0])
+
+        assert events == [("fired", "job1", {"success": True})]
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fire_job_emits_failed_event_after_failure() -> None:
+    engine, repo = await _repo()
+    try:
+        await repo.insert_job(_job())
+        claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+        service = _make_service(
+            engine,
+            repo,
+            agent=_Agent(fail=True),
+            channel=_Channel(),
+            config=SchedulerConfig(job_timeout_seconds=1),
+        )
+        events: list[tuple[str, str, dict[str, Any]]] = []
+
+        async def on_job_event(event_type: str, job_id: str, **kwargs: Any) -> None:
+            events.append((event_type, job_id, kwargs))
+
+        service.on_job_event = on_job_event
+
+        await service._fire_job(claimed[0])
+
+        assert len(events) == 1
+        event_type, job_id, kwargs = events[0]
+        assert event_type == "failed"
+        assert job_id == "job1"
+        assert kwargs["success"] is False
+        assert kwargs["error"] == "boom"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_runs_memory_dreaming_as_internal_periodic_job() -> None:
     engine = DatabaseEngine(":memory:")
     await engine.initialize()

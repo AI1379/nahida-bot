@@ -22,6 +22,8 @@ class MediaCache:
     def __init__(self, cache_dir: str | Path, *, ttl_seconds: int = 3600) -> None:
         self._dir = Path(cache_dir)
         self._ttl = ttl_seconds
+        # TODO(capacity): add scheduled cleanup and a max total cache size so
+        # high-cardinality media URLs cannot grow the disk cache indefinitely.
 
     async def ensure_dir(self) -> None:
         """Create cache directory if it does not exist."""

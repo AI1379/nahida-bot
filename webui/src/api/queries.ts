@@ -40,11 +40,11 @@ export function useBootstrap() {
   });
 }
 
-export function useStatus(pollMs: number = 10_000) {
+export function useStatus(pollMs: number = 0) {
   return useQuery<StatusResponse>({
     queryKey: ["status"],
     queryFn: () => api.get("/status"),
-    refetchInterval: pollMs,
+    refetchInterval: pollMs || undefined,
   });
 }
 
@@ -145,7 +145,7 @@ export function useLogs(
       p.set("limit", "500");
       return api.get(`/logs?${p}`);
     },
-    refetchInterval: computed(() => (paused.value ? false : 3000)),
+    refetchInterval: computed(() => (paused.value ? false : 10_000)),
   });
 }
 

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { useRoute } from "vue-router";
 import { computed } from "vue";
-import { Wifi, WifiOff, LogOut } from "lucide-vue-next";
+import { Wifi, WifiOff, LogOut, Radio } from "lucide-vue-next";
 import { useAuthStore } from "@/stores/auth";
 import { useBootstrap } from "@/api/queries";
+import { connected } from "@/api/events";
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -21,6 +22,13 @@ const pageTitle = computed(() => {
     <div class="topbar-right">
       <span v-if="bootstrap" class="topbar-version">
         {{ bootstrap.version }}
+      </span>
+      <span
+        class="topbar-sse"
+        :class="connected ? 'on' : 'off'"
+        :title="connected ? 'Live updates connected' : 'Live updates disconnected'"
+      >
+        <Radio :size="12" />
       </span>
       <span class="topbar-status" :class="auth.authenticated ? 'ok' : 'off'">
         <Wifi v-if="auth.authenticated" :size="14" />
@@ -64,6 +72,20 @@ const pageTitle = computed(() => {
 
 .topbar-version {
   font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+}
+
+.topbar-sse {
+  display: flex;
+  align-items: center;
+  transition: color 0.3s;
+}
+
+.topbar-sse.on {
+  color: var(--color-success);
+}
+
+.topbar-sse.off {
   color: var(--color-muted-foreground);
 }
 

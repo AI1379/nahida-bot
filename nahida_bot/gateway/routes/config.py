@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import (
@@ -113,6 +113,7 @@ async def validate_config(
 
 @router.put("/api/config/current", response_model=ConfigSaveResponse)
 async def save_current_config(
+    request: Request,
     body: ConfigSaveRequest,
     app=Depends(get_application),
 ) -> ConfigSaveResponse:
@@ -138,6 +139,12 @@ async def save_current_config(
         )
 
     audit_log.audit("config.saved", detail=f"backup={result.backup_path}")
+
+    # Notify SSE clients
+    broadcaster = getattr(request.app.state, "event_broadcaster", None)
+    if broadcaster is not None and result.saved:
+        broadcaster.notify_config_saved(result.backup_path, result.restart_required)
+
     logger.info(
         "webapi.config_saved",
         saved=result.saved,

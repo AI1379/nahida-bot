@@ -462,6 +462,73 @@ async def test_cron_create_success(client_no_auth: AsyncClient) -> None:
     assert data["status"] == "created"
 
 
+async def test_cron_mutations_notify_event_broadcaster(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.scheduler.models import CronJob
+
+    class _Broadcaster:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, str]] = []
+
+        def notify_cron_updated(self, job_id: str, action: str) -> None:
+            self.events.append((job_id, action))
+
+    job = CronJob(
+        job_id="job-1",
+        platform="telegram",
+        chat_id="123",
+        session_key="telegram:private:123",
+        prompt="hello",
+        mode="once",
+        fire_at="2026-06-01T00:00:00",
+        interval_seconds=None,
+        cron_expression=None,
+        max_runs=1,
+        run_count=0,
+        is_active=True,
+        created_at="2026-01-01T00:00:00",
+        next_fire_at="2026-06-01T00:00:00",
+        last_fired_at=None,
+        workspace_id=None,
+        claimed_at=None,
+        failure_count=0,
+        last_error=None,
+        session_mode="main",
+        chat_type="private",
+    )
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_scheduler = AsyncMock()
+    mock_scheduler.create_job.return_value = job
+    mock_scheduler.update_job.return_value = job
+    mock_scheduler.cancel_job.return_value = True
+    mock_scheduler.delete_job.return_value = True
+    mock_app.scheduler_service = mock_scheduler
+
+    broadcaster = _Broadcaster()
+    client_no_auth._transport.app.state.event_broadcaster = broadcaster  # type: ignore[attr-defined]
+
+    await client_no_auth.post(
+        "/api/cron",
+        json={
+            "target": "telegram:private:123",
+            "prompt": "hello",
+            "mode": "once",
+            "fire_at": "2026-06-01T00:00:00",
+        },
+    )
+    await client_no_auth.patch("/api/cron/job-1", json={"prompt": "updated"})
+    await client_no_auth.post("/api/cron/job-1/cancel")
+    await client_no_auth.delete("/api/cron/job-1")
+
+    assert broadcaster.events == [
+        ("job-1", "created"),
+        ("job-1", "updated"),
+        ("job-1", "cancelled"),
+        ("job-1", "deleted"),
+    ]
+
+
 async def test_cron_create_validation_error(client_no_auth: AsyncClient) -> None:
     mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
     mock_scheduler = AsyncMock()

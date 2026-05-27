@@ -938,20 +938,20 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 
 ### Phase 2：写操作
 
-- [ ] 配置编辑、保存、自动备份、restart required 状态。
-- [ ] 重启/停止危险操作。
-- [ ] CRON 创建/编辑/cancel/delete。
-- [ ] 文件创建/编辑/重命名/软删除。
-- [ ] Audit log 结构化记录。
-- [ ] 前端 mutation 错误处理和并发 checksum 冲突处理。
+- [x] 配置编辑、保存、自动备份、restart required 状态。
+- [x] 重启/停止危险操作。
+- [x] CRON 创建/编辑/cancel/delete。
+- [x] 文件创建/编辑/重命名/软删除。
+- [x] Audit log 结构化记录。
+- [x] 前端 mutation 错误处理和并发 checksum 冲突处理。
 
 ### Phase 3：实时和可观测性
 
-- [ ] SSE `/api/events/stream`。
-- [ ] 首页资源和 token 低频实时刷新。
-- [ ] CRON fired / failed 实时更新。
-- [ ] Session updated 事件。
-- [ ] 日志 tail viewer（需脱敏）。
+- [x] SSE `/api/events/stream`。
+- [x] 首页资源和 token 低频实时刷新。
+- [x] CRON fired / failed 实时更新。
+- [x] Session updated 事件。
+- [x] 日志 tail viewer（需脱敏）。
 
 ### Phase 4：权限、插件页面、节点
 

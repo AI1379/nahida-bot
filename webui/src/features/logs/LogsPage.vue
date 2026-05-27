@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from "vue";
 import {
   DialogRoot,
   DialogPortal,
@@ -11,6 +11,7 @@ import {
   DialogClose,
 } from "reka-ui";
 import { useLogs } from "@/api/queries";
+import { setLogEntryHandler } from "@/api/events";
 import type { LogEntry } from "@/api/schemas";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -28,7 +29,41 @@ const params = computed(() => ({
   search: searchFilter.value,
 }));
 
+// SSE-driven incremental entries (appended in real time)
+const liveEntries = ref<LogEntry[]>([]);
+const MAX_LIVE = 500;
+
+function onSseLogEntry(entry: LogEntry) {
+  if (paused.value) return;
+  liveEntries.value.push(entry);
+  if (liveEntries.value.length > MAX_LIVE) {
+    liveEntries.value = liveEntries.value.slice(-MAX_LIVE);
+  }
+}
+
+onMounted(() => {
+  setLogEntryHandler(onSseLogEntry);
+});
+onUnmounted(() => {
+  setLogEntryHandler(null);
+});
+
+// Polling fetch (used as initial load and fallback when SSE disconnected)
 const { data, isLoading } = useLogs(params, paused);
+
+// Merged entries: polled data first, then live SSE entries appended
+const entries = computed(() => {
+  const base = data.value?.entries ?? [];
+  return [...base, ...liveEntries.value];
+});
+
+// Clear live buffer when polled data refreshes (avoid duplicates)
+watch(
+  () => data.value?.entries.length,
+  () => {
+    liveEntries.value = [];
+  },
+);
 
 function levelVariant(level: string) {
   switch (level) {
@@ -75,7 +110,7 @@ function formatFieldValue(v: unknown) {
 const scrollContainer = ref<HTMLElement | null>(null);
 
 watch(
-  () => data.value?.entries.length,
+  () => entries.value.length,
   async () => {
     if (paused.value) return;
     await nextTick();
@@ -131,20 +166,20 @@ function selectDetail(entry: LogEntry) {
         {{ paused ? "Resume" : "Pause" }}
       </Button>
       <span class="entry-count">
-        {{ data?.entries.length ?? 0 }} entries
+        {{ entries.length }} entries
       </span>
     </div>
 
-    <Card v-if="isLoading && !data" class="loading">Loading...</Card>
+    <Card v-if="isLoading && !entries.length" class="loading">Loading...</Card>
 
     <DialogRoot v-model:open="detailOpen">
       <div
-        v-if="data"
+        v-if="entries.length"
         ref="scrollContainer"
         class="log-entries"
       >
         <DialogTrigger
-          v-for="(entry, i) in data.entries"
+          v-for="(entry, i) in entries"
           :key="i"
           as-child
         >

@@ -59,6 +59,9 @@ class SchedulerService:
         self._app_name = app_name
         self._config = config or SchedulerConfig()
         self._enable_silent_reply = enable_silent_reply
+        # Optional callback: on_job_event("fired" | "failed", job_id, **kwargs)
+        # Set by EventBroadcaster to push SSE events when jobs fire/fail.
+        self.on_job_event: Any = None
 
         self._poll_task: asyncio.Task[None] | None = None
         self._memory_dream_task: asyncio.Task[None] | None = None
@@ -644,20 +647,34 @@ class SchedulerService:
             )
             await self._mark_failed(job, "timeout")
             await self._send_error(job, "Scheduled task timed out.")
+            if self.on_job_event is not None:
+                await self.on_job_event(
+                    "failed", job.job_id, success=False, error="timeout"
+                )
         except asyncio.CancelledError:
             logger.info("scheduler.fire_cancelled", job_id=job.job_id)
             await self._mark_failed(job, "cancelled")
+            if self.on_job_event is not None:
+                await self.on_job_event(
+                    "failed", job.job_id, success=False, error="cancelled"
+                )
             raise
         except Exception as exc:
             logger.exception("scheduler.fire_error", job_id=job.job_id)
             await self._mark_failed(job, f"{type(exc).__name__}: {exc}")
             await self._send_error(job, "Scheduled task failed.")
+            if self.on_job_event is not None:
+                await self.on_job_event(
+                    "failed", job.job_id, success=False, error=str(exc)
+                )
         else:
             fired_at = datetime.now(UTC).isoformat()
             next_fire = self._compute_next_fire(job, fired_at)
             await self._repo.complete_fire(
                 job.job_id, next_fire_at=next_fire, fired_at=fired_at
             )
+            if self.on_job_event is not None:
+                await self.on_job_event("fired", job.job_id, success=True)
 
     def _compute_next_fire(self, job: CronJob, now_iso: str) -> str | None:
         """Compute the next fire time after marking fired. None = done."""

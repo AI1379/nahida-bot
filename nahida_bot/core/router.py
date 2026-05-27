@@ -96,8 +96,12 @@ class MessageRouter:
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
         # Maps deterministic session key → active session id (for /new)
+        # TODO(capacity): bound or page restored active-session overrides if
+        # untrusted traffic can create many distinct chat keys.
         self._active_sessions: dict[str, str] = {}
         # Per-session queues for messages arriving while agent is busy
+        # TODO(backpressure): add a per-session pending-message limit and a
+        # defined drop/reject policy for bursts during long-running agent runs.
         self._pending: dict[str, list[tuple[InboundMessage, str, str | None]]] = {}
         self._stopping = False
 
