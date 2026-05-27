@@ -1,6 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from "vue";
+import {
+  DialogRoot,
+  DialogPortal,
+  DialogOverlay,
+  DialogContent,
+  DialogTrigger,
+  DialogTitle,
+  DialogDescription,
+  DialogClose,
+} from "reka-ui";
 import { useLogs } from "@/api/queries";
+import type { LogEntry } from "@/api/schemas";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -37,7 +48,6 @@ function levelVariant(level: string) {
 
 function formatTime(ts: string) {
   if (!ts) return "";
-  // Keep only HH:MM:SS.mmm
   const idx = ts.indexOf("T");
   if (idx === -1) return ts;
   return ts.slice(idx + 1, idx + 12);
@@ -56,6 +66,12 @@ function formatFields(fields: Record<string, unknown>) {
     .join("  ");
 }
 
+function formatFieldValue(v: unknown) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  return JSON.stringify(v, null, 2);
+}
+
 const scrollContainer = ref<HTMLElement | null>(null);
 
 watch(
@@ -65,7 +81,6 @@ watch(
     await nextTick();
     const el = scrollContainer.value;
     if (!el) return;
-    // Only auto-scroll when near the bottom
     const nearBottom =
       el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     if (nearBottom) {
@@ -73,6 +88,13 @@ watch(
     }
   },
 );
+
+const detailOpen = ref(false);
+const selected = ref<LogEntry | null>(null);
+
+function selectDetail(entry: LogEntry) {
+  selected.value = entry;
+}
 </script>
 
 <template>
@@ -115,28 +137,79 @@ watch(
 
     <Card v-if="isLoading && !data" class="loading">Loading...</Card>
 
-    <div
-      v-if="data"
-      ref="scrollContainer"
-      class="log-entries"
-    >
+    <DialogRoot v-model:open="detailOpen">
       <div
-        v-for="(entry, i) in data.entries"
-        :key="i"
-        class="log-entry"
-        :class="entry.level"
+        v-if="data"
+        ref="scrollContainer"
+        class="log-entries"
       >
-        <span class="log-time">{{ formatTime(entry.timestamp) }}</span>
-        <Badge :variant="levelVariant(entry.level)" size="sm">
-          {{ entry.level }}
-        </Badge>
-        <span class="log-logger" :title="entry.logger">{{ entry.logger }}</span>
-        <span class="log-event">{{ entry.event }}</span>
-        <span v-if="Object.keys(entry.fields).length" class="log-fields">
-          {{ formatFields(entry.fields) }}
-        </span>
+        <DialogTrigger
+          v-for="(entry, i) in data.entries"
+          :key="i"
+          as-child
+        >
+          <button
+            type="button"
+            class="log-entry"
+            :class="entry.level"
+            @click="selectDetail(entry)"
+          >
+            <span class="log-time">{{ formatTime(entry.timestamp) }}</span>
+            <Badge :variant="levelVariant(entry.level)" size="sm">
+              {{ entry.level }}
+            </Badge>
+            <span class="log-logger" :title="entry.logger">{{ entry.logger }}</span>
+            <span class="log-event">{{ entry.event }}</span>
+            <span v-if="Object.keys(entry.fields).length" class="log-fields">
+              {{ formatFields(entry.fields) }}
+            </span>
+          </button>
+        </DialogTrigger>
       </div>
-    </div>
+
+      <DialogPortal>
+        <DialogOverlay class="dialog-overlay" />
+        <DialogContent class="dialog-content">
+          <template v-if="selected">
+            <div class="detail-header">
+              <div class="detail-title">
+                <Badge :variant="levelVariant(selected.level)" size="sm">
+                  {{ selected.level }}
+                </Badge>
+                <DialogTitle class="detail-event">{{ selected.event }}</DialogTitle>
+                <DialogDescription class="sr-only">
+                  Full details for the selected log entry.
+                </DialogDescription>
+              </div>
+              <DialogClose as-child>
+                <button class="detail-close" aria-label="Close">&times;</button>
+              </DialogClose>
+            </div>
+            <div class="detail-body">
+              <div class="detail-row">
+                <span class="detail-label">Time</span>
+                <code>{{ selected.timestamp }}</code>
+              </div>
+              <div class="detail-row">
+                <span class="detail-label">Logger</span>
+                <code>{{ selected.logger }}</code>
+              </div>
+              <div v-if="Object.keys(selected.fields).length" class="detail-fields">
+                <div
+                  v-for="(val, key) in selected.fields"
+                  :key="key"
+                  class="detail-field"
+                >
+                  <span class="detail-label">{{ key }}</span>
+                  <pre class="detail-value">{{ formatFieldValue(val) }}</pre>
+                </div>
+              </div>
+              <div v-else class="detail-empty">No additional fields.</div>
+            </div>
+          </template>
+        </DialogContent>
+      </DialogPortal>
+    </DialogRoot>
   </div>
 </template>
 
@@ -199,11 +272,30 @@ watch(
 }
 
 .log-entry {
+  appearance: none;
+  width: 100%;
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
   padding: 0.25rem 0.75rem;
+  border: 0;
   border-bottom: 1px solid var(--color-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.log-entry:hover,
+.log-entry:focus-visible {
+  background: var(--color-accent);
+}
+
+.log-entry:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
 }
 
 .log-entry:last-child {
@@ -238,4 +330,148 @@ watch(
   white-space: nowrap;
 }
 
+/* Dialog */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: oklch(0 0 0 / 0.4);
+  animation: overlay-in 0.15s ease-out;
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 51;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  width: min(560px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px oklch(0 0 0 / 0.2);
+  animation: content-in 0.15s ease-out;
+}
+
+@keyframes content-in {
+  from { opacity: 0; transform: translate(-50%, -48%); }
+  to { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+.dialog-content:focus {
+  outline: none;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.detail-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.detail-event {
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.detail-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  cursor: pointer;
+  color: var(--color-muted-foreground);
+  padding: 0 0.25rem;
+  line-height: 1;
+}
+
+.detail-close:hover {
+  color: var(--color-foreground);
+}
+
+.detail-body {
+  padding: 0.75rem 1rem;
+  overflow-y: auto;
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+}
+
+.detail-row {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.375rem 0;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.detail-row code {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.detail-label {
+  color: var(--color-muted-foreground);
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.detail-fields {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.detail-field {
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.5rem;
+}
+
+.detail-value {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--color-muted);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+}
+
+.detail-empty {
+  color: var(--color-muted-foreground);
+  font-style: italic;
+  padding-top: 0.5rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 </style>
