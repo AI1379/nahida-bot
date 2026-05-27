@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, watchEffect } from "vue";
-import { useConfigCurrent, useConfigSchema } from "@/api/queries";
+import { useConfigCurrent, useConfigSchema, useConfigSave } from "@/api/queries";
 import Card from "@/components/ui/Card.vue";
 import Tabs from "@/components/ui/Tabs.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Alert from "@/components/ui/Alert.vue";
+import Button from "@/components/ui/Button.vue";
+import Spinner from "@/components/ui/Spinner.vue";
+import Textarea from "@/components/ui/Textarea.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import { api } from "@/api/client";
 import type { ConfigValidateResponse } from "@/api/schemas";
 
@@ -19,6 +23,13 @@ const { data: schemaData, isLoading: schemaLoading } = useConfigSchema();
 
 const validation = ref<ConfigValidateResponse | null>(null);
 const validating = ref(false);
+
+const isEditing = ref(false);
+const editContent = ref("");
+const baseChecksum = ref("");
+const showSaveDialog = ref(false);
+
+const saveMutation = useConfigSave();
 
 watchEffect(async () => {
   if (configData.value && !validation.value) {
@@ -42,6 +53,40 @@ const validationVariant = computed(() => {
   if (validation.value.warnings > 0) return "warning";
   return "success";
 });
+
+function startEditing() {
+  if (!configData.value) return;
+  editContent.value = configData.value.content;
+  baseChecksum.value = configData.value.checksum;
+  isEditing.value = true;
+}
+
+function cancelEditing() {
+  isEditing.value = false;
+  editContent.value = "";
+}
+
+function requestSave() {
+  showSaveDialog.value = true;
+}
+
+function confirmSave() {
+  showSaveDialog.value = false;
+  saveMutation.mutate(
+    {
+      content: editContent.value,
+      expected_checksum: baseChecksum.value,
+      format: "yaml",
+    },
+    {
+      onSuccess: () => {
+        isEditing.value = false;
+        // Re-validate after save
+        validation.value = null;
+      },
+    },
+  );
+}
 </script>
 
 <template>
@@ -118,9 +163,38 @@ const validationVariant = computed(() => {
 
       <!-- YAML view -->
       <div v-if="activeTab === 'yaml'" class="yaml-view">
-        <pre class="yaml-pre">{{ configData.content }}</pre>
+        <div class="yaml-toolbar">
+          <template v-if="!isEditing">
+            <Button size="sm" @click="startEditing">Edit</Button>
+          </template>
+          <template v-else>
+            <Button size="sm" :disabled="saveMutation.isPending.value" @click="requestSave">
+              <Spinner v-if="saveMutation.isPending.value" size="sm" />
+              Save
+            </Button>
+            <Button size="sm" variant="outline" :disabled="saveMutation.isPending.value" @click="cancelEditing">
+              Reset
+            </Button>
+          </template>
+        </div>
+        <div v-if="!isEditing" class="yaml-pre">{{ configData.content }}</div>
+        <Textarea
+          v-else
+          v-model="editContent"
+          :rows="30"
+          class="yaml-editor"
+        />
       </div>
     </template>
+
+    <ConfirmDialog
+      v-model:open="showSaveDialog"
+      title="Save Configuration"
+      description="This will overwrite config.yaml with your changes. A restart is required for changes to take effect."
+      confirm-label="Save"
+      :loading="saveMutation.isPending.value"
+      @confirm="confirmSave"
+    />
   </div>
 </template>
 
@@ -222,6 +296,12 @@ const validationVariant = computed(() => {
   margin-top: 0.5rem;
 }
 
+.yaml-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
 .yaml-pre {
   background: var(--color-card);
   border: 1px solid var(--color-border);
@@ -232,6 +312,16 @@ const validationVariant = computed(() => {
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  margin: 0;
+  font-family: var(--font-mono);
+}
+
+.yaml-editor {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 400px;
 }
 
 .muted {

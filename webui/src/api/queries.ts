@@ -1,17 +1,34 @@
-import { useQuery } from "@tanstack/vue-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
 import { computed, type Ref } from "vue";
-import { api } from "./client";
+import { api, toApiError } from "./client";
+import { useToastStore } from "@/stores/toast";
+import { useAppStore } from "@/stores/app";
 import type {
   BootstrapResponse,
   ConfigCurrentResponse,
   ConfigSchemaResponse,
+  ConfigSaveRequest,
+  ConfigSaveResponse,
   CronListResponse,
+  CreateCronRequest,
+  CreateCronResponse,
+  CronActionResponse,
   FileContentResponse,
+  FileCreateRequest,
+  FileDeleteRequest,
+  FileDeleteResponse,
   FileListResponse,
+  FileRenameRequest,
+  FileRenameResponse,
+  FileWriteRequest,
+  FileWriteResponse,
   LogsResponse,
   SessionHistoryResponse,
   SessionListResponse,
   StatusResponse,
+  SystemActionRequest,
+  SystemActionResponse,
+  UpdateCronRequest,
   WorkspaceListResponse,
 } from "./schemas";
 
@@ -129,5 +146,215 @@ export function useLogs(
       return api.get(`/logs?${p}`);
     },
     refetchInterval: computed(() => (paused.value ? false : 3000)),
+  });
+}
+
+// -- Mutations --
+
+export function useConfigSave() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  const app = useAppStore();
+
+  return useMutation<ConfigSaveResponse, Error, ConfigSaveRequest>({
+    mutationFn: (body) => api.put<ConfigSaveResponse>("/config/current", body),
+    onSuccess(data) {
+      qc.invalidateQueries({ queryKey: ["config", "current"] });
+      if (data.restart_required) {
+        app.setRestartRequired(data.backup_path);
+      }
+      toast.add("Configuration saved." + (data.backup_path ? ` Backup: ${data.backup_path}` : ""), "success");
+    },
+    onError(err) {
+      const apiErr = toApiError(err);
+      if (apiErr.status === 409) {
+        toast.add("Config was modified externally. Re-reading...", "warning");
+        qc.invalidateQueries({ queryKey: ["config", "current"] });
+      } else {
+        toast.add(`Save failed: ${apiErr.detail}`, "error");
+      }
+    },
+  });
+}
+
+export function useSystemRestart() {
+  const toast = useToastStore();
+
+  return useMutation<SystemActionResponse, Error, string>({
+    mutationFn: (reason: string) =>
+      api.post<SystemActionResponse>("/system/actions/restart", {
+        confirm: true,
+        reason,
+      } satisfies SystemActionRequest),
+    onSuccess(data) {
+      toast.add(data.message || "Restart requested. Server will shut down.", "success");
+    },
+    onError(err) {
+      toast.add(`Restart failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useSystemShutdown() {
+  const toast = useToastStore();
+
+  return useMutation<SystemActionResponse, Error, string>({
+    mutationFn: (reason: string) =>
+      api.post<SystemActionResponse>("/system/actions/shutdown", {
+        confirm: true,
+        reason,
+      } satisfies SystemActionRequest),
+    onSuccess(data) {
+      toast.add(data.message || "Shutdown requested. Process will exit.", "success");
+    },
+    onError(err) {
+      toast.add(`Shutdown failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useCronCreate() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<CreateCronResponse, Error, CreateCronRequest>({
+    mutationFn: (body) => api.post<CreateCronResponse>("/cron", body),
+    onSuccess() {
+      qc.invalidateQueries({ queryKey: ["cron", "list"] });
+      toast.add("CRON job created.", "success");
+    },
+    onError(err) {
+      toast.add(`Create failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useCronUpdate() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<
+    { jobId: string; data: UpdateCronRequest },
+    Error,
+    { jobId: string; data: UpdateCronRequest }
+  >({
+    mutationFn: ({ jobId, data }) =>
+      api.patch(`/cron/${jobId}`, data),
+    onSuccess() {
+      qc.invalidateQueries({ queryKey: ["cron", "list"] });
+      toast.add("CRON job updated.", "success");
+    },
+    onError(err) {
+      toast.add(`Update failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useCronCancel() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<CronActionResponse, Error, string>({
+    mutationFn: (jobId) =>
+      api.post<CronActionResponse>(`/cron/${jobId}/cancel`),
+    onSuccess() {
+      qc.invalidateQueries({ queryKey: ["cron", "list"] });
+      toast.add("CRON job cancelled.", "success");
+    },
+    onError(err) {
+      toast.add(`Cancel failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useCronDelete() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<CronActionResponse, Error, string>({
+    mutationFn: (jobId) =>
+      api.del<CronActionResponse>(`/cron/${jobId}`),
+    onSuccess() {
+      qc.invalidateQueries({ queryKey: ["cron", "list"] });
+      toast.add("CRON job deleted.", "success");
+    },
+    onError(err) {
+      toast.add(`Delete failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useFileSave() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<FileWriteResponse, Error, FileWriteRequest>({
+    mutationFn: (body) => api.put<FileWriteResponse>("/files/content", body),
+    onSuccess(_data, variables) {
+      qc.invalidateQueries({
+        queryKey: ["files", "content", variables.workspace_id ?? "default", variables.path],
+      });
+      qc.invalidateQueries({
+        queryKey: ["files", variables.workspace_id ?? "default"],
+      });
+      toast.add("File saved.", "success");
+    },
+    onError(err) {
+      toast.add(`Save failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useFileCreate() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<FileWriteResponse, Error, FileCreateRequest>({
+    mutationFn: (body) => api.post<FileWriteResponse>("/files/create", body),
+    onSuccess(_data, variables) {
+      qc.invalidateQueries({
+        queryKey: ["files", variables.workspace_id ?? "default"],
+      });
+      toast.add("File created.", "success");
+    },
+    onError(err) {
+      toast.add(`Create failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useFileRename() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<FileRenameResponse, Error, FileRenameRequest>({
+    mutationFn: (body) => api.post<FileRenameResponse>("/files/rename", body),
+    onSuccess(_data, variables) {
+      const ws = variables.workspace_id ?? "default";
+      qc.invalidateQueries({ queryKey: ["files", ws] });
+      qc.invalidateQueries({ queryKey: ["files", "content", ws] });
+      toast.add("File renamed.", "success");
+    },
+    onError(err) {
+      toast.add(`Rename failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useFileDelete() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<FileDeleteResponse, Error, FileDeleteRequest>({
+    mutationFn: (body) => api.post<FileDeleteResponse>("/files/delete", body),
+    onSuccess(_data, variables) {
+      const ws = variables.workspace_id ?? "default";
+      qc.invalidateQueries({ queryKey: ["files", ws] });
+      qc.invalidateQueries({ queryKey: ["files", "content", ws] });
+      toast.add("File deleted.", "success");
+    },
+    onError(err) {
+      toast.add(`Delete failed: ${toApiError(err).detail}`, "error");
+    },
   });
 }

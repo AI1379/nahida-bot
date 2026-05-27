@@ -161,3 +161,104 @@ export interface LogEntry {
 export interface LogsResponse {
   entries: LogEntry[];
 }
+
+// -- Request / mutation types --
+
+export interface ConfigSaveRequest {
+  content: string;
+  expected_checksum: string;
+  format: string;
+}
+
+export interface ConfigSaveResponse {
+  saved: boolean;
+  backup_path: string | null;
+  checksum: string;
+  restart_required: boolean;
+  validation: {
+    errors: number;
+    warnings: number;
+    issues: { severity: string; message: string; path: string }[];
+  };
+}
+
+export interface SystemActionRequest {
+  confirm: boolean;
+  reason: string;
+}
+
+export interface SystemActionResponse {
+  accepted: boolean;
+  action: string;
+  mode: string;
+  message: string;
+}
+
+export interface CreateCronRequest {
+  target: string;
+  prompt: string;
+  mode: "once" | "interval" | "cron";
+  fire_at?: string | null;
+  interval_seconds?: number | null;
+  cron_expression?: string | null;
+  max_runs?: number | null;
+  session_mode: "main" | "isolated" | "named";
+  session_name?: string | null;
+}
+
+export interface CreateCronResponse {
+  job_id: string;
+  status: string;
+}
+
+export interface UpdateCronRequest {
+  prompt?: string | null;
+  mode?: "once" | "interval" | "cron" | null;
+  fire_at?: string | null;
+  interval_seconds?: number | null;
+  cron_expression?: string | null;
+  max_runs?: number | null;
+}
+
+export interface CronActionResponse {
+  job_id: string;
+  status: string;
+}
+
+export interface FileWriteRequest {
+  path: string;
+  content: string;
+  workspace_id?: string | null;
+}
+
+export interface FileWriteResponse {
+  path: string;
+  size: number;
+  mtime: string;
+}
+
+export interface FileCreateRequest {
+  path: string;
+  content: string;
+  workspace_id?: string | null;
+}
+
+export interface FileRenameRequest {
+  path: string;
+  new_name: string;
+  workspace_id?: string | null;
+}
+
+export interface FileRenameResponse {
+  path: string;
+}
+
+export interface FileDeleteRequest {
+  path: string;
+  workspace_id?: string | null;
+}
+
+export interface FileDeleteResponse {
+  status: string;
+  trash_path: string;
+}

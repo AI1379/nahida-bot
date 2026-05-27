@@ -934,7 +934,7 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - [x] CRON 只读表格。
 - [x] Session 分组只读列表和 history viewer。
 - [x] 文件树只读和 Markdown preview。
-- [ ] log 页面显示和筛选当前日志。
+- [x] log 页面显示和筛选当前日志。
 
 ### Phase 2：写操作
 

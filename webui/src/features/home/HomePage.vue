@@ -1,11 +1,43 @@
 <script setup lang="ts">
-import { useStatus } from "@/api/queries";
+import { ref } from "vue";
+import { useStatus, useSystemRestart, useSystemShutdown } from "@/api/queries";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Alert from "@/components/ui/Alert.vue";
+import Button from "@/components/ui/Button.vue";
+import Textarea from "@/components/ui/Textarea.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import { formatBytes, formatDuration, formatNumber } from "@/lib/utils";
 
 const { data: status, isLoading, error } = useStatus();
+
+const showRestartDialog = ref(false);
+const showShutdownDialog = ref(false);
+const actionReason = ref("");
+const actionRequested = ref(false);
+
+const restartMutation = useSystemRestart();
+const shutdownMutation = useSystemShutdown();
+
+function handleRestart() {
+  restartMutation.mutate(actionReason.value, {
+    onSettled: () => {
+      actionRequested.value = true;
+      showRestartDialog.value = false;
+      actionReason.value = "";
+    },
+  });
+}
+
+function handleShutdown() {
+  shutdownMutation.mutate(actionReason.value, {
+    onSettled: () => {
+      actionRequested.value = true;
+      showShutdownDialog.value = false;
+      actionReason.value = "";
+    },
+  });
+}
 </script>
 
 <template>
@@ -112,7 +144,71 @@ const { data: status, isLoading, error } = useStatus();
           </Card>
         </div>
       </section>
+
+      <!-- System Actions -->
+      <section class="section">
+        <h2 class="section-title">System Actions</h2>
+        <Card>
+          <div class="actions-row">
+            <div class="actions-info">
+              <span>Restart or shut down the server. An external supervisor must restart the process.</span>
+            </div>
+            <div class="actions-buttons">
+              <Button
+                variant="destructive"
+                size="sm"
+                :disabled="actionRequested"
+                @click="showRestartDialog = true"
+              >
+                Restart
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                :disabled="actionRequested"
+                @click="showShutdownDialog = true"
+              >
+                Shutdown
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </section>
     </template>
+
+    <ConfirmDialog
+      v-model:open="showRestartDialog"
+      title="Restart Server"
+      description="This will shut down the server. Your supervisor must restart the process."
+      variant="destructive"
+      confirm-label="Restart"
+      :loading="restartMutation.isPending.value"
+      @confirm="handleRestart"
+    >
+      <Textarea
+        v-model="actionReason"
+        placeholder="Reason (optional)"
+        :rows="2"
+        class="reason-input"
+      />
+    </ConfirmDialog>
+
+    <ConfirmDialog
+      v-model:open="showShutdownDialog"
+      title="Shut Down Server"
+      description="This will shut down the server. The process will exit."
+      variant="destructive"
+      confirm-label="Shut Down"
+      :loading="shutdownMutation.isPending.value"
+      @confirm="handleShutdown"
+    >
+      <Textarea
+        v-model="actionReason"
+        placeholder="Reason (optional)"
+        :rows="2"
+        class="reason-input"
+      />
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -199,5 +295,27 @@ const { data: status, isLoading, error } = useStatus();
 .service-name {
   font-size: 0.8125rem;
   font-weight: 500;
+}
+
+.actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.actions-info {
+  font-size: 0.8125rem;
+  color: var(--color-muted-foreground);
+}
+
+.actions-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.reason-input {
+  margin-top: 0.75rem;
 }
 </style>
