@@ -1140,6 +1140,7 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - [ ] sandboxed plugin surface。
 - [ ] node registry、heartbeat、approval flow。
 - [ ] node control 页面。
+- [ ] memory 页面。
 
 ---
 
