@@ -8,7 +8,7 @@ import json
 import mimetypes
 import socket
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, cast
 
 import httpx
 import structlog
@@ -1246,7 +1246,10 @@ class BuiltinCommandsPlugin(Plugin):
             delivery_metadata["from_chat_address"] = ctx.chat_address.chat_key
         if resolved_attachments:
             delivery_metadata["attachment_count"] = len(resolved_attachments)
-        record_delivery = getattr(self.api, "record_message_delivery", None)
+        record_delivery = cast(
+            Callable[..., Awaitable[Any]],
+            getattr(self.api, "record_message_delivery", None),
+        )
         if callable(record_delivery):
             await record_delivery(
                 target=address,

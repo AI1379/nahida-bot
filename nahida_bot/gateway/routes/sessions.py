@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Awaitable, Callable, cast
+
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -73,7 +75,10 @@ async def search_sessions(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Memory store not initialized",
             )
-        search_turns = getattr(app.memory_store, "search_turns", None)
+        search_turns = cast(
+            Callable[..., Awaitable[Any]],
+            getattr(app.memory_store, "search_turns", None),
+        )
         if not callable(search_turns):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
