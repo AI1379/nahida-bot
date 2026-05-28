@@ -5,16 +5,17 @@ from __future__ import annotations
 import json
 from collections import OrderedDict
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from nahida_bot.channels.milky._parsing import as_mapping, coerce_int, coerce_str
 from nahida_bot.channels.milky.client import (
     MilkyClient,
     MilkyClientError,
     OutgoingSegmentPayload,
 )
-from nahida_bot.channels.milky._parsing import coerce_int
 from nahida_bot.channels.milky.config import MilkyPluginConfig, parse_milky_config
 from nahida_bot.channels.milky.event_stream import MilkyEventStream
 from nahida_bot.channels.milky.message_converter import MilkyMessageConverter
@@ -30,8 +31,18 @@ from nahida_bot.channels.milky.segments import OutgoingTextSegment
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
 from nahida_bot.core.group_policy import GroupInteractionPolicy
+from nahida_bot.core.message_context import (
+    chat_context_from_values,
+    context_from_inbound,
+    sender_context_from_values,
+)
 from nahida_bot.core.router import MessageRouter
-from nahida_bot.plugins.base import OutboundMessage, Plugin
+from nahida_bot.plugins.base import (
+    InboundAttachment,
+    InboundMessage,
+    OutboundMessage,
+    Plugin,
+)
 
 if TYPE_CHECKING:
     from nahida_bot.plugins.base import BotAPI as BotAPIProtocol
@@ -119,10 +130,15 @@ class MilkyPlugin(Plugin):
 
     async def handle_inbound_event(self, event: dict[str, Any]) -> None:
         """Normalize one Milky event and publish a bot event."""
-        if event.get("event_type") != "message_receive":
+        event_type = str(event.get("event_type") or "")
+        if event_type in {"friend_file_upload", "group_file_upload"}:
+            await self._handle_file_upload_event(event_type, event)
+            return
+
+        if event_type != "message_receive":
             logger.debug(
                 "milky.event_ignored",
-                event_type=event.get("event_type"),
+                event_type=event_type,
                 channel=self.channel_id,
             )
             return
@@ -174,6 +190,189 @@ class MilkyPlugin(Plugin):
                 source="milky",
             )
         )
+
+    async def _handle_file_upload_event(
+        self, event_type: str, event: dict[str, Any]
+    ) -> None:
+        """Convert Milky file upload events into the normal inbound pipeline."""
+        data = event.get("data")
+        if not isinstance(data, dict):
+            logger.warning(
+                "milky.file_upload_event_invalid",
+                event_type=event_type,
+                channel=self.channel_id,
+            )
+            return
+
+        inbound = self._file_upload_to_inbound(
+            event_type,
+            data,
+            raw_event=event,
+        )
+        if inbound is None:
+            logger.warning(
+                "milky.file_upload_event_invalid",
+                event_type=event_type,
+                channel=self.channel_id,
+            )
+            return
+
+        decision = GroupInteractionPolicy(
+            mode=self.config.group_trigger_mode,
+            observe_untriggered=self.config.group_context_capture,
+        ).decide(inbound)
+        if not decision.observe:
+            return
+
+        scene = "group" if inbound.is_group else "friend"
+        self._remember_scene(inbound.chat_id, scene)
+        address = ChatAddress(
+            channel=inbound.platform,
+            target_type="group" if inbound.is_group else "private",
+            target_id=inbound.chat_id,
+        )
+        session_id = MessageRouter.make_session_id(address)
+        emitted_event = MessageReceived if decision.respond else MessageObserved
+        await self.api.publish_event(
+            emitted_event(
+                payload=MessagePayload(message=inbound, session_id=session_id),
+                source="milky",
+            )
+        )
+
+    def _file_upload_to_inbound(
+        self,
+        event_type: str,
+        data: dict[str, Any],
+        *,
+        raw_event: dict[str, Any],
+    ) -> InboundMessage | None:
+        is_group = event_type == "group_file_upload"
+        group = as_mapping(data.get("group"))
+        user = as_mapping(data.get("user"))
+        file_data = as_mapping(data.get("file"))
+
+        group_id = coerce_str(
+            data.get("group_id")
+            or data.get("peer_id")
+            or group.get("group_id")
+            or group.get("id")
+        )
+        user_id = coerce_str(
+            data.get("user_id")
+            or data.get("sender_id")
+            or user.get("user_id")
+            or user.get("id")
+        )
+        chat_id = group_id if is_group else user_id
+        if not chat_id:
+            return None
+
+        file_id = coerce_str(
+            data.get("file_id") or file_data.get("file_id") or file_data.get("id")
+        )
+        file_name = coerce_str(
+            data.get("file_name")
+            or data.get("name")
+            or file_data.get("file_name")
+            or file_data.get("name")
+        )
+        file_size = coerce_int(
+            data.get("file_size")
+            or data.get("size")
+            or file_data.get("file_size")
+            or file_data.get("size")
+        )
+        file_hash = coerce_str(
+            data.get("file_hash")
+            or data.get("hash")
+            or file_data.get("file_hash")
+            or file_data.get("hash")
+        )
+        download_url = coerce_str(
+            data.get("download_url")
+            or data.get("url")
+            or file_data.get("download_url")
+            or file_data.get("url")
+        )
+        if not file_id and not file_name:
+            return None
+
+        attachment_metadata: dict[str, object] = {
+            "file_name": file_name,
+            "file_size": file_size,
+            "file_hash": file_hash,
+            "milky_event_type": event_type,
+        }
+        if is_group:
+            attachment_metadata["group_id"] = group_id
+        else:
+            attachment_metadata["user_id"] = user_id
+
+        text = _render_file_upload_text(
+            file_name=file_name,
+            file_id=file_id,
+            file_size=file_size,
+        )
+        # TODO(milky-media-cache): If file content access is needed, use
+        # get_private_file_download_url/get_group_file_download_url to download
+        # the file into config.media_download_dir before the URL expires, then
+        # persist the stable local path on this attachment.
+        attachment = InboundAttachment(
+            kind="file",
+            platform_id=file_id,
+            url=download_url,
+            file_size=file_size,
+            metadata=attachment_metadata,
+        )
+        sender_context = sender_context_from_values(
+            display_name=coerce_str(
+                data.get("sender_name")
+                or data.get("nickname")
+                or user.get("nickname")
+                or user.get("name")
+            ),
+            platform_user_id=user_id or "0",
+            is_self=self._self_id > 0 and user_id == str(self._self_id),
+        )
+        chat_context = chat_context_from_values(
+            platform="milky",
+            chat_type="group" if is_group else "private",
+            platform_chat_id=chat_id,
+            display_name=coerce_str(
+                data.get("group_name")
+                or data.get("peer_name")
+                or data.get("friend_name")
+                or group.get("group_name")
+                or group.get("name")
+                or user.get("nickname")
+                or user.get("name")
+            ),
+        )
+
+        inbound = InboundMessage(
+            message_id=coerce_str(
+                data.get("message_seq")
+                or data.get("event_id")
+                or data.get("time")
+                or file_id
+                or file_name
+            ),
+            platform="milky",
+            chat_id=chat_id,
+            user_id=user_id or "0",
+            text=text,
+            raw_event=raw_event,
+            is_group=is_group,
+            timestamp=float(coerce_int(data.get("time"))),
+            command_prefix=self.config.command_prefix,
+            attachments=[attachment],
+            sender_context=sender_context,
+            chat_context=chat_context,
+            mentions_bot=False,
+            mentioned_user_ids=(),
+        )
+        return replace(inbound, message_context=context_from_inbound(inbound))
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
         """Send one normalized outbound message to Milky.
@@ -312,3 +511,13 @@ def _pick_int(mapping: dict[str, Any], *keys: str) -> int:
             if parsed:
                 return parsed
     return 0
+
+
+def _render_file_upload_text(
+    *,
+    file_name: str,
+    file_id: str,
+    file_size: int,
+) -> str:
+    name = file_name or "<unknown>"
+    return f"[File: name={name}, file_id={file_id}, size={file_size}]"

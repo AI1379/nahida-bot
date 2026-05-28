@@ -161,6 +161,97 @@ async def test_handle_inbound_event_observes_untriggered_group_context() -> None
     assert inbound.mentions_bot is False
 
 
+async def test_handle_friend_file_upload_publishes_message_received() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "friend_file_upload",
+            "data": {
+                "user_id": 10001,
+                "time": 1700000000,
+                "file_id": "file-1",
+                "file_name": "report.pdf",
+                "file_size": 1024,
+                "file_hash": "abc",
+            },
+        }
+    )
+
+    assert len(api.published_events) == 1
+    event = api.published_events[0]
+    assert isinstance(event, MessageReceived)
+    assert event.payload.session_id == "milky:private:10001"
+    inbound = event.payload.message
+    assert inbound.text == "[File: name=report.pdf, file_id=file-1, size=1024]"
+    assert len(inbound.attachments) == 1
+    attachment = inbound.attachments[0]
+    assert attachment.kind == "file"
+    assert attachment.platform_id == "file-1"
+    assert attachment.file_size == 1024
+    assert attachment.metadata["file_name"] == "report.pdf"
+    assert attachment.metadata["file_hash"] == "abc"
+
+
+async def test_handle_group_file_upload_observes_when_capture_enabled() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(group_context_capture=True, group_trigger_mode="mention"),
+    )
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "group_file_upload",
+            "data": {
+                "group_id": 20001,
+                "user_id": 10001,
+                "time": 1700000000,
+                "file": {
+                    "file_id": "group-file-1",
+                    "file_name": "slides.pptx",
+                    "file_size": 2048,
+                },
+            },
+        }
+    )
+
+    assert len(api.published_events) == 1
+    event = api.published_events[0]
+    assert isinstance(event, MessageObserved)
+    assert event.payload.session_id == "milky:group:20001"
+    inbound = event.payload.message
+    assert inbound.is_group is True
+    assert inbound.text == "[File: name=slides.pptx, file_id=group-file-1, size=2048]"
+    assert inbound.attachments[0].metadata["group_id"] == "20001"
+
+
+async def test_handle_group_file_upload_responds_in_always_mode() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(group_trigger_mode="always"))
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "group_file_upload",
+            "data": {
+                "group_id": 20001,
+                "user_id": 10001,
+                "file_id": "group-file-1",
+                "file_name": "slides.pptx",
+            },
+        }
+    )
+
+    assert isinstance(api.published_events[0], MessageReceived)
+
+
 async def test_handle_inbound_ignores_non_message_event() -> None:
     api = RecordingMockBotAPI()
     plugin = MilkyPlugin(api=api, manifest=_manifest())
