@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { computed } from "vue";
 import { Wifi, WifiOff, LogOut, Radio } from "lucide-vue-next";
 import { useAuthStore } from "@/stores/auth";
 import { useBootstrap } from "@/api/queries";
-import { connected } from "@/api/events";
+import { api } from "@/api/client";
+import { connected, disconnectEventStream } from "@/api/events";
 
 const route = useRoute();
+const router = useRouter();
 const auth = useAuthStore();
 const { data: bootstrap } = useBootstrap();
 
@@ -14,6 +16,21 @@ const pageTitle = computed(() => {
   const matched = route.matched[route.matched.length - 1];
   return (matched?.meta?.label as string) ?? "Nahida Bot";
 });
+
+async function logout() {
+  if (bootstrap.value?.auth.mode === "password") {
+    try {
+      await api.post("/auth/logout");
+    } catch {
+      /* local auth state is cleared below */
+    }
+  }
+  auth.clear();
+  disconnectEventStream();
+  if (bootstrap.value?.auth.required) {
+    router.push({ path: "/login", query: { redirect: route.fullPath } });
+  }
+}
 </script>
 
 <template>
@@ -38,7 +55,7 @@ const pageTitle = computed(() => {
         v-if="auth.authenticated"
         class="topbar-logout"
         title="Logout"
-        @click="auth.clear()"
+        @click="logout"
       >
         <LogOut :size="14" />
       </button>

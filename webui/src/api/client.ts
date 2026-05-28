@@ -32,7 +32,7 @@ async function request<T>(
   const headers = new Headers(opts.headers);
 
   const auth = useAuthStore();
-  if (auth.token) {
+  if (auth.token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${auth.token}`);
   }
 
@@ -40,7 +40,7 @@ async function request<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(url, { ...opts, headers });
+  const res = await fetch(url, { credentials: "same-origin", ...opts, headers });
 
   if (res.status === 401) {
     auth.clear();
@@ -62,6 +62,16 @@ async function request<T>(
 
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+async function requestWithToken<T>(
+  path: string,
+  token: string,
+  opts: RequestInit = {},
+): Promise<T> {
+  const headers = new Headers(opts.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  return request<T>(path, { ...opts, headers });
 }
 
 export const api = {
@@ -87,6 +97,9 @@ export const api = {
 
   del: <T>(path: string) =>
     request<T>(path, { method: "DELETE" }),
+
+  getWithToken: <T>(path: string, token: string) =>
+    requestWithToken<T>(path, token),
 };
 
 export { toApiError };

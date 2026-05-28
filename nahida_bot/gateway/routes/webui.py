@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import (
@@ -29,15 +29,24 @@ system_router = APIRouter()
 
 
 @bootstrap_router.get("/api/webui/bootstrap", response_model=BootstrapResponse)
-async def get_bootstrap(app=Depends(get_application)) -> BootstrapResponse:
+async def get_bootstrap(
+    request: Request,
+    app=Depends(get_application),
+) -> BootstrapResponse:
+    webui_auth = getattr(request.app.state, "webui_auth", None)
+    password_auth = bool(webui_auth is not None and webui_auth.password_configured)
+    api_token = bool(app.settings.webapi.auth_token)
+    auth_mode = "password" if password_auth else "bearer" if api_token else "none"
     return BootstrapResponse(
         app_name=app.settings.app_name,
         version=app.version,
         api_base="/api",
         webui_base="/",
         auth={
-            "required": bool(app.settings.webapi.auth_token),
-            "mode": "bearer",
+            "required": password_auth or api_token,
+            "mode": auth_mode,
+            "api_token_supported": api_token,
+            "session_cookie": password_auth,
         },
         features=[
             {"id": "home", "route": "/", "label": "Overview", "scope": "operator.read"},

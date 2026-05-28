@@ -10,9 +10,31 @@ export interface BootstrapResponse {
   version: string;
   api_base: string;
   webui_base: string;
-  auth: { required: boolean; mode: string };
+  auth: {
+    required: boolean;
+    mode: "none" | "password" | "bearer";
+    api_token_supported?: boolean;
+    session_cookie?: boolean;
+  };
   features: { id: string; route: string; label: string; scope: string }[];
   server_time: string;
+}
+
+export interface AuthSessionResponse {
+  authenticated: boolean;
+  auth_required: boolean;
+  mode: "none" | "password" | "bearer";
+  expires_at: string;
+}
+
+export interface AuthLoginRequest {
+  password: string;
+}
+
+export interface AuthLoginResponse {
+  authenticated: boolean;
+  mode: "password";
+  expires_at: string;
 }
 
 export interface StatusResponse {

@@ -3,19 +3,35 @@ import { ref, computed } from "vue";
 
 export const useAuthStore = defineStore("auth", () => {
   const token = ref<string>("");
-  const authenticated = computed(() => !!token.value);
+  const sessionAuthenticated = ref(false);
+  const authenticated = computed(() => sessionAuthenticated.value || !!token.value);
 
   function set(newToken: string) {
     token.value = newToken;
+    sessionAuthenticated.value = false;
     try {
+      // Legacy bearer-token fallback for script/API-token deployments.
       sessionStorage.setItem("nahida-bot:token", newToken);
     } catch {
       /* storage unavailable */
     }
   }
 
+  function setSessionAuthenticated(value: boolean) {
+    sessionAuthenticated.value = value;
+    if (value) {
+      token.value = "";
+      try {
+        sessionStorage.removeItem("nahida-bot:token");
+      } catch {
+        /* storage unavailable */
+      }
+    }
+  }
+
   function clear() {
     token.value = "";
+    sessionAuthenticated.value = false;
     try {
       sessionStorage.removeItem("nahida-bot:token");
     } catch {
@@ -32,5 +48,13 @@ export const useAuthStore = defineStore("auth", () => {
     }
   }
 
-  return { token, authenticated, set, clear, restore };
+  return {
+    token,
+    sessionAuthenticated,
+    authenticated,
+    set,
+    setSessionAuthenticated,
+    clear,
+    restore,
+  };
 });

@@ -7,13 +7,22 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import nahida_bot.gateway.app as gateway_app_module
-from nahida_bot.core.config import Settings, WebAPIConfigModel
+from nahida_bot.core.config import (
+    Settings,
+    WebAPIConfigModel,
+    WebUIAuthConfigModel,
+    WebUIConfigModel,
+)
 from nahida_bot.gateway.app import WebAPIApp
 
 
 def _make_mock_app(
     *,
     auth_token: str = "",
+    webui_password: str = "",
+    webui_password_hash: str = "",
+    login_rate_per_minute: int = 5,
+    bind_session_to_ip: bool = True,
     is_started: bool = True,
     debug: bool = True,
 ) -> MagicMock:
@@ -24,6 +33,14 @@ def _make_mock_app(
         plugin_paths=[],
         discover_builtin_channels=False,
         webapi=WebAPIConfigModel(auth_token=auth_token),
+        webui=WebUIConfigModel(
+            auth=WebUIAuthConfigModel(
+                admin_password=webui_password,
+                admin_password_hash=webui_password_hash,
+                login_rate_per_minute=login_rate_per_minute,
+                bind_session_to_ip=bind_session_to_ip,
+            ),
+        ),
     )
     mock = MagicMock(
         spec=[
@@ -35,6 +52,12 @@ def _make_mock_app(
             "message_router",
             "channel_registry",
             "scheduler_service",
+            "webapi_service",
+            "workspace_manager",
+            "plugin_manager",
+            "_provider_manager",
+            "_usage_ledger",
+            "started_at",
             "request_shutdown",
         ]
     )
@@ -46,7 +69,14 @@ def _make_mock_app(
     mock.message_router = None
     mock.channel_registry = MagicMock()
     mock.channel_registry.get.return_value = None
+    mock.channel_registry._channels = {}
     mock.scheduler_service = None
+    mock.webapi_service = None
+    mock.workspace_manager = None
+    mock.plugin_manager = None
+    mock._provider_manager = None
+    mock._usage_ledger = None
+    mock.started_at = None
     mock.request_shutdown = MagicMock()
     return mock
 
@@ -71,6 +101,15 @@ def webapi_with_auth() -> WebAPIApp:
 
 
 @pytest.fixture
+def webapi_with_webui_password() -> WebAPIApp:
+    return WebAPIApp(
+        application=_make_mock_app(webui_password="admin-pass"),
+        host="127.0.0.1",
+        port=6185,
+    )
+
+
+@pytest.fixture
 async def client_no_auth(webapi_no_auth) -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=webapi_no_auth.fastapi_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -80,6 +119,15 @@ async def client_no_auth(webapi_no_auth) -> AsyncGenerator[AsyncClient, None]:
 @pytest.fixture
 async def client_with_auth(webapi_with_auth) -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=webapi_with_auth.fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture
+async def client_with_webui_password(
+    webapi_with_webui_password,
+) -> AsyncGenerator[AsyncClient, None]:
+    transport = ASGITransport(app=webapi_with_webui_password.fastapi_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
@@ -132,6 +180,141 @@ async def test_sessions_query_param_auth(client_with_auth: AsyncClient) -> None:
     assert resp.status_code == 503  # auth passed, memory_store not initialized
 
 
+async def test_webui_password_auth_flow(
+    client_with_webui_password: AsyncClient,
+) -> None:
+    unauthenticated = await client_with_webui_password.get("/api/status")
+    assert unauthenticated.status_code == 401
+
+    bad_login = await client_with_webui_password.post(
+        "/api/auth/login",
+        json={"password": "wrong"},
+    )
+    assert bad_login.status_code == 401
+
+    login = await client_with_webui_password.post(
+        "/api/auth/login",
+        json={"password": "admin-pass"},
+    )
+    assert login.status_code == 200
+    assert login.json()["authenticated"] is True
+
+    session = await client_with_webui_password.get("/api/auth/session")
+    assert session.status_code == 200
+    assert session.json()["authenticated"] is True
+
+    authed = await client_with_webui_password.get("/api/status")
+    assert authed.status_code == 200
+
+    logout = await client_with_webui_password.post("/api/auth/logout")
+    assert logout.status_code == 200
+
+    after_logout = await client_with_webui_password.get("/api/status")
+    assert after_logout.status_code == 401
+
+
+async def test_webui_login_is_rate_limited() -> None:
+    webapi = WebAPIApp(
+        application=_make_mock_app(
+            webui_password="admin-pass",
+            login_rate_per_minute=2,
+        ),
+        host="127.0.0.1",
+        port=6185,
+    )
+    transport = ASGITransport(app=webapi.fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post("/api/auth/login", json={"password": "wrong"})
+        second = await client.post("/api/auth/login", json={"password": "wrong"})
+        third = await client.post("/api/auth/login", json={"password": "admin-pass"})
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert third.status_code == 429
+
+
+async def test_webui_password_hash_auth_flow() -> None:
+    from nahida_bot.gateway.services.webui_auth import hash_password_pbkdf2
+
+    webapi = WebAPIApp(
+        application=_make_mock_app(
+            webui_password_hash=hash_password_pbkdf2(
+                "admin-pass",
+                salt="test-salt",
+                iterations=1_000,
+            ),
+        ),
+        host="127.0.0.1",
+        port=6185,
+    )
+    transport = ASGITransport(app=webapi.fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        login = await client.post(
+            "/api/auth/login",
+            json={"password": "admin-pass"},
+        )
+        authed = await client.get("/api/status")
+
+    assert login.status_code == 200
+    assert authed.status_code == 200
+
+
+async def test_webui_session_is_bound_to_client_ip() -> None:
+    webapi = WebAPIApp(
+        application=_make_mock_app(webui_password="admin-pass"),
+        host="127.0.0.1",
+        port=6185,
+    )
+    first_transport = ASGITransport(
+        app=webapi.fastapi_app,
+        client=("198.51.100.10", 12345),
+    )
+    second_transport = ASGITransport(
+        app=webapi.fastapi_app,
+        client=("198.51.100.11", 12345),
+    )
+
+    async with AsyncClient(
+        transport=first_transport,
+        base_url="http://test",
+    ) as first_client:
+        login = await first_client.post(
+            "/api/auth/login",
+            json={"password": "admin-pass"},
+        )
+        cookies = first_client.cookies
+
+    async with AsyncClient(
+        transport=second_transport,
+        base_url="http://test",
+        cookies=cookies,
+    ) as second_client:
+        resp = await second_client.get("/api/status")
+
+    assert login.status_code == 200
+    assert resp.status_code == 401
+
+
+async def test_bearer_token_still_works_when_webui_password_is_configured() -> None:
+    webapi = WebAPIApp(
+        application=_make_mock_app(
+            auth_token="script-token",
+            webui_password="admin-pass",
+        ),
+        host="127.0.0.1",
+        port=6185,
+        auth_token="script-token",
+    )
+    transport = ASGITransport(app=webapi.fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/api/status",
+            headers={"Authorization": "Bearer script-token"},
+        )
+
+    assert resp.status_code == 200
+
+
 async def test_send_requires_auth(client_with_auth: AsyncClient) -> None:
     resp = await client_with_auth.post(
         "/api/send",
@@ -171,6 +354,18 @@ async def test_webui_bootstrap_reports_root_base(
     assert data["api_base"] == "/api"
     assert data["webui_base"] == "/"
     assert data["auth"]["required"] is True
+    assert data["auth"]["mode"] == "bearer"
+
+
+async def test_webui_bootstrap_reports_password_mode(
+    client_with_webui_password: AsyncClient,
+) -> None:
+    resp = await client_with_webui_password.get("/api/webui/bootstrap")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["auth"]["required"] is True
+    assert data["auth"]["mode"] == "password"
+    assert data["auth"]["session_cookie"] is True
 
 
 async def test_webui_root_mount_serves_spa_without_masking_api(

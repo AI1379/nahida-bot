@@ -1,17 +1,39 @@
 <script setup lang="ts">
 import { RouterView } from "vue-router";
 import { useQueryClient } from "@tanstack/vue-query";
+import { watchEffect } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import NavRail from "./NavRail.vue";
 import TopBar from "./TopBar.vue";
 import ToastContainer from "@/components/ui/ToastContainer.vue";
 import Alert from "@/components/ui/Alert.vue";
 import Button from "@/components/ui/Button.vue";
 import { useAppStore } from "@/stores/app";
+import { useAuthStore } from "@/stores/auth";
+import { useBootstrap } from "@/api/queries";
 import { useEventStream } from "@/api/events";
 
 const app = useAppStore();
+const auth = useAuthStore();
+const route = useRoute();
+const router = useRouter();
 const qc = useQueryClient();
+const { data: bootstrap } = useBootstrap();
 useEventStream(qc);
+
+watchEffect(() => {
+  if (
+    bootstrap.value?.auth.mode === "password" &&
+    !auth.sessionAuthenticated
+  ) {
+    router.replace({ path: "/login", query: { redirect: route.fullPath } });
+  } else if (
+    bootstrap.value?.auth.mode === "bearer" &&
+    !auth.authenticated
+  ) {
+    router.replace({ path: "/login", query: { redirect: route.fullPath } });
+  }
+});
 </script>
 
 <template>

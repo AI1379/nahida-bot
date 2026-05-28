@@ -18,6 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 
 from nahida_bot.gateway.auth import require_token
 from nahida_bot.gateway.errors import register_error_handlers
+from nahida_bot.gateway.services.webui_auth import WebUIAuthService
 
 if TYPE_CHECKING:
     from nahida_bot.core.app import Application
@@ -84,6 +85,7 @@ class WebAPIApp:
 
         app.state.application = self._application
         app.state.auth_token = self._auth_token
+        app.state.webui_auth = WebUIAuthService(self._application.settings.webui.auth)
 
         app.add_middleware(
             CORSMiddleware,
@@ -96,6 +98,7 @@ class WebAPIApp:
 
         register_error_handlers(app)
 
+        from nahida_bot.gateway.routes.auth import router as auth_router
         from nahida_bot.gateway.routes.config import router as config_router
         from nahida_bot.gateway.routes.cron import router as cron_router
         from nahida_bot.gateway.routes.events import router as events_router
@@ -113,6 +116,7 @@ class WebAPIApp:
         # Unauthenticated routes
         app.include_router(health_router)
         app.include_router(bootstrap_router)
+        app.include_router(auth_router)
 
         # Authenticated routes
         app.include_router(webui_system_router, dependencies=[Depends(require_token)])

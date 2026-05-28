@@ -11,6 +11,9 @@ const app = createApp(App);
 const pinia = createPinia();
 
 app.use(pinia);
+const auth = useAuthStore();
+auth.restore();
+
 app.use(VueQueryPlugin, {
   queryClientConfig: {
     defaultOptions: {
@@ -22,8 +25,5 @@ app.use(VueQueryPlugin, {
   },
 });
 app.use(router);
-
-const auth = useAuthStore();
-auth.restore();
 
 app.mount("#app");

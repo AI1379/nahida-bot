@@ -26,6 +26,12 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 _CLIENT_QUEUE_MAXSIZE = 512
+_LOG_BRIDGE_IGNORED_LOGGERS = ("sse_starlette",)
+
+
+def _should_bridge_log_record(record: logging.LogRecord) -> bool:
+    """Return whether a stdlib log record should be streamed to WebUI clients."""
+    return not record.name.startswith(_LOG_BRIDGE_IGNORED_LOGGERS)
 
 
 class _LogBridgeHandler(logging.Handler):
@@ -36,6 +42,8 @@ class _LogBridgeHandler(logging.Handler):
         self._broadcaster = broadcaster
 
     def emit(self, record: logging.LogRecord) -> None:
+        if not _should_bridge_log_record(record):
+            return
         try:
             raw = self.format(record)
             entry = json.loads(raw)

@@ -126,6 +126,28 @@ class WebAPIConfigModel(BaseModel):
     port: int = 0
 
 
+class WebUIAuthConfigModel(BaseModel):
+    """Browser WebUI authentication configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = True
+    admin_password: str = ""
+    admin_password_hash: str = ""
+    session_ttl_seconds: int = Field(default=3600, ge=60)
+    login_rate_per_minute: int = Field(default=5, ge=0)
+    bind_session_to_ip: bool = True
+
+
+class WebUIConfigModel(BaseModel):
+    """Browser WebUI configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = True
+    auth: WebUIAuthConfigModel = WebUIAuthConfigModel()
+
+
 class MemoryRetrievalConfig(BaseModel):
     """Durable memory retrieval configuration."""
 
@@ -245,6 +267,7 @@ class Settings(BaseModel):
     scheduler: SchedulerConfigModel = SchedulerConfigModel()
     router: RouterConfigModel = RouterConfigModel()
     webapi: WebAPIConfigModel = WebAPIConfigModel()
+    webui: WebUIConfigModel = WebUIConfigModel()
     model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
     memory: MemoryConfig = MemoryConfig()
 

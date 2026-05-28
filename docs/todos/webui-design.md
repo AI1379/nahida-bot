@@ -2,6 +2,7 @@
 
 > 状态：设计草案
 > 日期：2026-05-25
+> 最近更新：2026-05-27
 > 目标：为 nahida-bot 增加一个面向本地/私有部署的可视化运维 WebUI，覆盖系统状态、配置管理、CRON、Session、Workspace 文件和未来扩展页面。
 > 相关文档：
 >
@@ -101,7 +102,7 @@ WebUI 所需但当前缺失：
 | Framework | Vue 3 + TypeScript | 运维后台的表单和状态面板更省代码 |
 | Routing | Vue Router | 页面级路由清晰，后续 extension registry 易接入 |
 | Server state | TanStack Query for Vue | 轮询、缓存、mutation invalidation、错误状态统一 |
-| Local state | Pinia | 仅存 UI 偏好、token/sessionStorage bridge、侧边栏状态 |
+| Local state | Pinia | 仅存 UI 偏好、当前认证状态、侧边栏状态；session 凭证由 `HttpOnly` cookie 持有 |
 | UI components | shadcn-vue + Reka UI | shadcn-vue 提供可修改的组件代码和默认审美，Reka UI 提供无样式、可访问 primitive；适合做有 nahida-bot 自己味道的 UI |
 | Icons | lucide-vue-next | tree-shakable，和工具按钮/导航适配 |
 | Tables | TanStack Table for Vue | CRON/session 表格会需要排序、过滤、分页；表格逻辑不自己写 |
@@ -216,6 +217,24 @@ class WebUIConfigModel(BaseModel):
 
 可以挂到 `Settings.webapi` 下，也可以独立 `Settings.webui`。更推荐独立 `webui`，避免把 API 开关和 UI 开关混在一起。
 
+认证配置建议：
+
+```python
+class WebUIAuthConfigModel(BaseModel):
+    enabled: bool = True
+    admin_password_hash: str = ""
+    trusted_chat_address: str = ""
+    require_chat_otp: Literal["never", "http_emergency", "always"] = "http_emergency"
+    allow_http_emergency: bool = False
+    session_ttl_seconds: int = 3600
+    emergency_session_ttl_seconds: int = 1800
+    otp_ttl_seconds: int = 300
+    otp_cooldown_seconds: int = 60
+    login_rate_per_minute: int = 5
+```
+
+浏览器 WebUI 使用 session cookie；`webapi.auth_token` 继续保留为脚本/API token，不与管理员登录密码混用。
+
 ---
 
 ## 5. 页面设计
@@ -293,7 +312,12 @@ data/config_backups/
 
 脱敏规则：
 
-- 字段名包含 `api_key`、`token`、`secret`、`password`、`private_key` 默认脱敏。
+- 脱敏是 WebUI 的防泄漏 guardrail，不作为完整安全边界。
+- 配置 schema 支持 `sensitive: true` 元数据；配置 UI/API 优先按源头标记脱敏，例如 `admin_password_hash` 和 provider/channel credential。
+- 对日志等没有 schema 的结构化数据使用低误伤 fallback：只对规范化后的敏感字段名做精确匹配，例如 `api_key`、`access_token`、`refresh_token`、`auth_token`、`api_token`、`bot_token`、`secret`、`client_secret`、`password`、`password_hash`、`private_key`、`authorization`、`cookie`。
+- 保留正常调试字段，例如 `input_tokens`、`output_tokens`、`cached_tokens`、`reasoning_tokens`、`token_usage`、`session_key`。
+- 值模式只覆盖少量高置信格式，例如 PEM private key、`Bearer ...`、`sk-...`、GitHub token、Telegram bot token。
+- 不做宽泛 substring 规则，例如所有包含 `token` 或 `key` 的字段都脱敏；误脱敏会降低配置排错效率。
 - 原始 YAML 中 `${ENV_VAR}` 不展开显示为真实值。
 - 保存时不把脱敏值写回文件；表单视图如果编辑秘密字段，必须明确输入新值。
 
@@ -495,7 +519,11 @@ GET /api/webui/bootstrap
   "webui_base": "/",
   "auth": {
     "required": true,
-    "mode": "bearer"
+    "mode": "session",
+    "deployment_mode": "loopback",
+    "http_emergency_enabled": false,
+    "otp_available": false,
+    "api_token_supported": true
   },
   "features": [
     {"id": "home", "route": "/", "label": "Overview", "scope": "operator.read"},
@@ -730,7 +758,8 @@ WebSocket 留给 gateway/node 远控协议，不急着和 UI metrics 混在一�
 `webui/src/api/client.ts`：
 
 - 统一 base URL。
-- Bearer token 注入。
+- 浏览器优先使用 same-origin session cookie；`fetch`/query client 默认 `credentials: "same-origin"`。
+- Bearer token 保留给脚本和旧 WebAPI 兼容，不作为 WebUI 浏览器会话的长期形态。
 - JSON parse 和错误归一。
 - 401 触发 auth state。
 - mutation 后 invalidation 由 feature query module 控制。
@@ -824,21 +853,157 @@ export interface WebuiFeatureManifest {
 
 ## 8. 权限与安全
 
-### 8.1 MVP 权限
+### 8.1 安全定位
 
-沿用现有 token-based auth：
+WebUI 是自部署 bot 的本地/私有运维面板，不按公网 SaaS 或企业 IAM 的强度设计。安全目标是：
 
-- `GET /api/health` 可继续无认证。
-- WebUI 读操作需要 token，除非本地 loopback 且未配置 token。
-- config save、system action、file write、cron mutation 视为 admin mutation。
+1. 默认状态不裸奔，非 loopback 暴露时必须有认证。
+2. 把风险限制在用户能理解、能显式开启、能恢复的范围内。
+3. 优先实现便宜但收益高的保护：强密码 hash、短会话、登录限速、chat OTP、日志脱敏、审计。
+4. 不为了“纯 HTTP 下理论抗监听”重造 TLS，也不把前端 hash 密码宣传成抗监听方案。
 
-UI token 存储：
+需要明确承认：
 
-- 默认 `sessionStorage`。
-- 不默认写 `localStorage`。
-- 支持“仅当前标签页记住”。
+- 没有 HTTPS/SSH/VPN 时，HTTP 请求、OTP 和 session 都可能被被动监听者看到。
+- 主动 MITM 可以替换前端 JS 或代理完整登录流程。
+- chat OTP 只能降低静态密码泄露、爆破和随机扫描风险，不能提供完整的 MITM 防护。
 
-### 8.2 Scope 预留
+### 8.2 部署模式
+
+按安全强度从高到低支持以下模式：
+
+| 模式 | 入口 | 会话 | 定位 |
+|---|---|---|---|
+| `loopback` | WebUI 只监听 `127.0.0.1` / `::1`，用户通过本机或 SSH tunnel 访问 | 可用非 `Secure` cookie | 默认推荐；不需要域名和证书 |
+| `private_network` | Tailscale/WireGuard/内网访问 | 有 HTTPS 时用 `Secure` cookie；否则按 HTTP 降级 | 适合多设备私有管理 |
+| `https` | 可信证书、自签 CA、IP 证书或反代 TLS | `HttpOnly; Secure; SameSite=Strict` cookie | 公网推荐路径 |
+| `http_emergency` | 公网 HTTP，显式开启 | 短会话 + chat OTP + 强 warning | 临时救急，不宣传为安全公网部署 |
+
+启动规则：
+
+- 监听非 loopback 且未配置认证时，启动应拒绝或至少强 warning；WebUI 默认不可进入。
+- `http_emergency` 必须显式配置，例如 `webui.auth.allow_http_emergency=true`。
+- 在 HTTP 模式下，UI 登录页和 bootstrap 都要显示当前是 weaker/emergency 模式。
+
+### 8.3 当前 API 认证实现与缺口
+
+当前已实现的是简单 shared API token，适合脚本和自动化继续保留：
+
+- 后端读取 `webapi.auth_token`。
+- 如果 token 为空，受保护 API 直接放行。
+- 如果 token 非空，请求必须提供 `Authorization: Bearer <token>`，或用 `?token=<token>`。
+- `GET /api/health` 和 `GET /api/webui/bootstrap` 不需要认证。
+- 其它 WebUI/API router 当前统一挂 `require_token()`。
+
+脚本推荐使用：
+
+```bash
+curl -H "Authorization: Bearer $NAHIDA_TOKEN" \
+  http://127.0.0.1:6185/api/status
+```
+
+浏览器 WebUI 当前仍是临时 token bridge：
+
+- `webui/src/api/client.ts` 从 Pinia auth store 读取 token，并发送 `Authorization: Bearer ...`。
+- `webui/src/stores/auth.ts` 把 token 存在 `sessionStorage["nahida-bot:token"]`。
+- 目前还没有正式 token 输入页或登录页；调试时需要手动写入 sessionStorage。
+- SSE 因为原生 `EventSource` 不能设置 header，目前使用 `/api/events/stream?token=...`。
+
+已知 gap：
+
+- 如果后端没有配置 `webapi.auth_token`，REST API 会放行，但前端 SSE 当前因为本地 auth store 没有 token 而不会连接；应改为读取 bootstrap 的 `auth.required`。
+- query token 容易出现在 URL、日志、浏览器历史或代理日志中；它只是当前 bearer/SSE 的临时兼容方案。
+- 正式登录/session 方案落地前，应至少补一个临时 token 输入页，避免要求用户手动操作 DevTools。
+
+长期策略：
+
+- API token 继续保持 `Authorization: Bearer <token>`，用于脚本和外部自动化。
+- 浏览器 WebUI 迁移到登录页 + 服务端 session cookie。
+- SSE 在浏览器模式下改用 same-origin cookie；如仍需脚本订阅 SSE，可保留 `?token=` 或提供支持 header 的客户端说明。
+
+### 8.4 认证实现路径
+
+不要把当前 bearer token 输入框简单包装成登录页。推荐演进为单管理员密码 + 服务端 session：
+
+1. 配置中保存 `admin_password_hash`，使用 Argon2id。
+2. 提供 CLI 命令生成或修改密码 hash，避免在 WebUI 未认证状态下首次绑定管理员。
+3. 新增认证端点：
+   - `POST /api/auth/login`
+   - `POST /api/auth/otp/request`
+   - `POST /api/auth/otp/verify`
+   - `POST /api/auth/logout`
+   - `GET /api/auth/session`
+4. 密码正确后，如果启用了 chat OTP，进入 pending login；否则直接签发 session。
+5. session id 使用服务端随机值，服务端保存 session metadata，不把长期 secret 放到前端存储。
+6. SSE 使用 same-origin cookie 鉴权，移除 URL query token。
+7. 旧 `webapi.auth_token` 保留给脚本/API 调用，浏览器 WebUI 不再依赖 `sessionStorage` bearer token。
+
+密码传输：
+
+- 有 HTTPS/SSH/VPN 时，密码直接通过加密通道提交。
+- HTTP emergency 模式下可以接受密码请求被监听的残余风险，因为其定位是临时救急；不要用前端 SHA256 当作安全承诺。
+- 如果未来要做更强的 HTTP 密码协议，优先调研成熟 PAKE/OPAQUE 实现，但它仍不能保护后续 HTTP session 和前端 JS 完整性，因此不列入近期计划。
+
+NapCat 可参考其登录 UI、登录限速、可选 SSL/Passkey 等产品形态；其浏览器端 hash 登录和 bearer credential 在 HTTP 链路中仍可被重放，因此不作为本项目抗监听设计基线。
+
+### 8.5 Chat OTP
+
+chat OTP 是 HTTP emergency 和高风险登录的第二因素，使用现有 channel 向可信 `ChatAddress` 发送一次性验证码。
+
+配置建议：
+
+```yaml
+webui:
+  auth:
+    mode: "password"
+    admin_password_hash: "$argon2id$..."
+    trusted_chat_address: "milky:private:123456"
+    require_chat_otp: "http_emergency"   # never / http_emergency / always
+    otp_ttl_seconds: 300
+    otp_cooldown_seconds: 60
+    session_ttl_seconds: 1800
+    allow_http_emergency: false
+```
+
+规则：
+
+- `trusted_chat_address` 只能从本地配置或 CLI 设置，不能在未认证 WebUI 中首次绑定。
+- OTP 只保存 hash，单次使用，短 TTL，验证后立即删除。
+- pending login 绑定 client fingerprint 的弱标识，例如 IP、UA hash、创建时间；不把它当成强安全边界。
+- OTP 请求、密码验证、OTP 验证都要分别限速。
+- 发送给 chat 的消息只包含验证码、请求时间、来源 IP/UA 摘要和过期时间，不包含登录链接或 session。
+- HTTP emergency 登录成功后的 session TTL 要短，建议 10-30 分钟。
+
+### 8.6 限速与滥用防护
+
+登录相关限速分三层：
+
+- per-IP：限制单个来源的密码和 OTP 尝试。
+- per-account/global：限制全局 Argon2id 校验频率，避免 CPU 被拖死。
+- per-chat OTP：限制验证码发送频率，避免刷消息。
+
+行为：
+
+- 登录失败返回统一错误，不区分密码错、OTP 错、pending login 不存在。
+- 不做永久锁定；单管理员场景下永久锁定容易造成自我 DoS。
+- 可做渐进延迟和短时封禁。
+- 对 `X-Forwarded-For` 只在显式配置 trusted proxy 时信任。
+
+### 8.7 Session 与 CSRF
+
+Cookie 策略：
+
+- HTTPS 模式：`__Host-nahida_session=<id>; Path=/; Secure; HttpOnly; SameSite=Strict`。
+- loopback HTTP 模式：允许不带 `Secure` 的开发/本地 cookie，但仍使用 `HttpOnly; SameSite=Strict`。
+- public HTTP emergency：短 TTL session；UI 明确提示当前会话可被网络监听者窃取。
+
+使用 cookie 后，mutation API 需要 CSRF 防护：
+
+- state-changing requests 校验 `Origin` 或 `Referer`。
+- 同源 SPA mutation 携带 CSRF token header。
+- `SameSite=Strict` 作为基础保护，但不单独依赖它。
+
+### 8.8 Scope 预留
 
 后续权限模型建议：
 
@@ -853,7 +1018,7 @@ UI token 存储：
 
 `require_token` 后续升级为 `require_scope(scope)`，当前 token 没 scope 时视为 admin token 以保持兼容。
 
-### 8.3 Audit log
+### 8.9 Audit log
 
 需要审计的操作：
 
@@ -953,7 +1118,21 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - [x] Session updated 事件。
 - [x] 日志 tail viewer（需脱敏）。
 
-### Phase 4：权限、插件页面、节点
+### Phase 4：登录与安全基线
+
+- [x] 在完整 session 登录页前，补一个临时 bearer token 输入页，避免手动写 `sessionStorage`。
+- [ ] 新增 Argon2id 管理员密码 hash 配置和 CLI 设置命令。
+- [x] 新增 `/api/auth/login`、`/api/auth/logout`、`/api/auth/session`。
+- [x] 用服务端 session cookie 替换浏览器 `sessionStorage` bearer token。
+- [x] 浏览器 password 模式 SSE 改用 same-origin cookie 鉴权；bearer 兼容模式暂保留 query token。
+- [x] SSE 启动逻辑读取 bootstrap `auth.required`，允许无认证 WebAPI 模式正常连接。
+- [x] 新增登录 per-IP 限速和统一失败响应。
+- [ ] 新增全局 hash 校验限速。
+- [ ] 新增 chat OTP pending login 流程。
+- [ ] 明确 `loopback`、`https`、`private_network`、`http_emergency` 部署模式和启动 warning。
+- [ ] 对 cookie mutation 增加 Origin/Referer 校验和 CSRF token。
+
+### Phase 5：权限、插件页面、节点
 
 - [ ] `require_scope()`。
 - [ ] token/scope 管理页。
@@ -977,6 +1156,11 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - session group 能正确识别 typed main session、cron isolated、cron named。
 - file API 拒绝绝对路径和 `..` 逃逸。
 - file API 拒绝非允许扩展和超大文件。
+- auth login 使用 Argon2id hash 校验，不把管理员密码写入日志。
+- HTTP emergency 未显式开启时拒绝公网 HTTP 登录。
+- chat OTP 短 TTL、单次使用、失败限速和发送冷却生效。
+- session cookie 具备预期属性；HTTPS 模式包含 `Secure`，loopback HTTP 模式不强制 `Secure`。
+- mutation API 在 cookie auth 下校验 Origin/Referer 和 CSRF token。
 
 前端：
 
@@ -988,6 +1172,10 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - Session history 长文本折叠。
 - 文件编辑 checksum 冲突处理。
 - 路由 guard 按 feature/scope 隐藏页面。
+- bearer token 输入页能把 token 写入 auth store，并让后续 API 请求带 `Authorization` header。
+- `auth.required=false` 时 SSE 能无 token 连接。
+- 登录页能展示当前部署模式和 HTTP emergency warning。
+- 401 后清理前端 auth state 并回到登录页。
 
 端到端：
 
@@ -1010,6 +1198,11 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 | restart 语义不可靠 | 明确“请求 shutdown，supervisor 负责拉起”；UI 展示 mode |
 | 文件管理变成危险服务器文件浏览器 | 默认只管 workspace；额外 roots 必须显式配置 |
 | token 费用显示不准 | 没有 pricing 时只显示 token；价格由 config 提供 |
+| 纯 HTTP 登录被监听或 MITM | 不宣传为安全模式；公网 HTTP 只能作为显式 emergency；短 session + chat OTP + warning |
+| 前端 hash 密码被误认为抗监听 | 不采用 NapCat 式客户端 hash 作为安全承诺；有加密通道时直接提交密码，HTTP emergency 接受残余风险 |
+| OTP 被刷屏或爆破 | OTP 请求、验证和全局登录流程分别限速；OTP 短 TTL、单次使用、只存 hash |
+| Cookie session 引入 CSRF | `SameSite=Strict`、Origin/Referer 校验、CSRF token header |
+| 反代后 IP 限速被绕过或误伤 | 只在配置 trusted proxy 后信任 `X-Forwarded-For` |
 | 前端依赖过重 | Vue + Vite + shadcn-vue/Reka 小组件集起步，表格/表单/编辑器只引入明确需要的库 |
 | 自定义 UI 耗时失控 | 限定首批组件范围；复杂逻辑交给 TanStack Table、TanStack Query、VeeValidate/Zod 和 CodeMirror |
 | 插件页面注入主应用导致 XSS | 插件 surface 使用 sandbox iframe/scoped token，不动态执行任意插件 JS |
@@ -1032,3 +1225,10 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - OpenClaw Control UI: <https://docs.openclaw.ai/web/control-ui>
 - OpenClaw Gateway protocol: <https://github.com/openclaw/openclaw/blob/main/docs/gateway/protocol.md>
 - OpenClaw session management deep dive: <https://github.com/openclaw/openclaw/blob/main/docs/reference/session-management-compaction.md>
+- OWASP Authentication Cheat Sheet: <https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html>
+- OWASP Session Management Cheat Sheet: <https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html>
+- OWASP CSRF Prevention Cheat Sheet: <https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html>
+- OWASP ASVS: <https://owasp.org/www-project-application-security-verification-standard/>
+- NIST SP 800-63: <https://www.nist.gov/special-publication-800-63>
+- Tailscale HTTPS certificates: <https://tailscale.com/docs/how-to/set-up-https-certificates>
+- NapCat WebUI authentication reference: <https://github.com/NapNeko/NapCatQQ/tree/main/packages/napcat-webui-backend>

@@ -175,5 +175,6 @@ def configure_logging(
 
     logging.getLogger("sqlite3").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("sse_starlette").setLevel(logging.WARNING)
 
     _configured = True

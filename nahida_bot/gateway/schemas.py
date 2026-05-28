@@ -38,6 +38,26 @@ class BootstrapResponse(BaseModel):
     server_time: str
 
 
+# -- Auth -----------------------------------------------------------------
+
+
+class AuthLoginRequest(BaseModel):
+    password: str
+
+
+class AuthLoginResponse(BaseModel):
+    authenticated: bool
+    mode: str = "password"
+    expires_at: str = ""
+
+
+class AuthSessionResponse(BaseModel):
+    authenticated: bool
+    auth_required: bool
+    mode: str
+    expires_at: str = ""
+
+
 # -- System Actions -------------------------------------------------------
 
 

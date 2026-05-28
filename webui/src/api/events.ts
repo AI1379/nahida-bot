@@ -1,7 +1,8 @@
 import { ref, onScopeDispose } from "vue";
 import type { QueryClient } from "@tanstack/vue-query";
 import { useAuthStore } from "@/stores/auth";
-import type { LogEntry } from "./schemas";
+import { api } from "./client";
+import type { BootstrapResponse, LogEntry } from "./schemas";
 
 export type SseEventType =
   | "status.updated"
@@ -57,13 +58,30 @@ function invalidateOnEvent(eventType: string) {
   }
 }
 
-function startConnection() {
+async function loadBootstrap() {
+  if (!queryClient) return api.get<BootstrapResponse>("/webui/bootstrap");
+  return queryClient.fetchQuery<BootstrapResponse>({
+    queryKey: ["bootstrap"],
+    queryFn: () => api.get("/webui/bootstrap"),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+async function startConnection() {
   stopConnection();
 
   const auth = useAuthStore();
-  if (!auth.token) return;
+  const bootstrap = await loadBootstrap();
+  const requiresAuth = bootstrap.auth.required;
+  const usesBearer = bootstrap.auth.mode === "bearer";
+  if (requiresAuth && usesBearer && !auth.token) return;
+  if (requiresAuth && !usesBearer && !auth.sessionAuthenticated) return;
 
-  const url = `/api/events/stream?token=${encodeURIComponent(auth.token)}`;
+  // EventSource cannot send Authorization headers. Bearer mode is retained for
+  // scripts and legacy setups; browser password login uses the session cookie.
+  const url = requiresAuth && usesBearer
+    ? `/api/events/stream?token=${encodeURIComponent(auth.token)}`
+    : "/api/events/stream";
   es = new EventSource(url);
 
   es.onopen = () => {
@@ -78,7 +96,7 @@ function startConnection() {
 
     reconnectTimer = setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
-      startConnection();
+      void startConnection();
     }, reconnectDelay);
   };
 
@@ -111,7 +129,7 @@ function startConnection() {
 
 export function useEventStream(qc: QueryClient) {
   queryClient = qc;
-  startConnection();
+  void startConnection();
 
   onScopeDispose(() => {
     // Keep connection alive — this is an app-wide singleton.
@@ -123,6 +141,10 @@ export function useEventStream(qc: QueryClient) {
 
 export function setLogEntryHandler(handler: LogEntryHandler | null) {
   logEntryHandler = handler;
+}
+
+export function disconnectEventStream() {
+  stopConnection();
 }
 
 export { connected };

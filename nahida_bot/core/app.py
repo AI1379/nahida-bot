@@ -596,12 +596,20 @@ class Application:
         host = cfg.host or self.settings.host
         port = cfg.port or self.settings.port
 
-        if not cfg.auth_token and host not in ("127.0.0.1", "localhost", "::1"):
+        webui_password_configured = bool(
+            self.settings.webui.auth.admin_password
+            or self.settings.webui.auth.admin_password_hash
+        )
+        if (
+            not cfg.auth_token
+            and not webui_password_configured
+            and host not in ("127.0.0.1", "localhost", "::1")
+        ):
             logger.warning(
                 "application.webapi_no_auth_on_public_interface",
                 host=host,
-                _msg="WebAPI is exposed on a non-loopback interface without auth_token. "
-                "Set webapi.auth_token to restrict access.",
+                _msg="WebAPI is exposed on a non-loopback interface without "
+                "webui.auth.admin_password or webapi.auth_token.",
             )
 
         self._usage_ledger = InMemoryUsageLedger()
