@@ -403,6 +403,110 @@ class TestPersistTurnsMetadata:
         assert user_meta["attachments"][0]["url"] == ""
         assert user_meta["attachments"][0]["path"] == "/tmp/cached.jpg"
 
+    async def test_stores_generated_image_description(self) -> None:
+        from nahida_bot.agent.memory.models import ConversationTurn
+        from nahida_bot.plugins.base import InboundAttachment
+
+        persisted: list[ConversationTurn] = []
+
+        class _FakeMemory:
+            async def ensure_session(self, *a: Any, **kw: Any) -> None:
+                pass
+
+            async def append_turn(self, sid: str, turn: ConversationTurn) -> int:
+                persisted.append(turn)
+                return len(persisted)
+
+            async def get_recent(self, *a: Any, **kw: Any) -> list:
+                return []
+
+            async def get_session_meta(self, *a: Any, **kw: Any) -> dict:
+                return {}
+
+        runner = SessionRunner(memory_store=cast(MemoryStore, _FakeMemory()))
+
+        class _FakeResult:
+            final_response = "ok"
+            assistant_messages: list[Any] = []
+            tool_messages: list[Any] = []
+
+        await runner._persist_turns(
+            "session_1",
+            "look",
+            _FakeResult(),
+            attachments=[InboundAttachment(kind="image", platform_id="img_1")],
+            image_descriptions={"img_1": "visible appointment details"},
+            source_tag="user_input",
+        )
+
+        user_meta = persisted[0].metadata
+        assert user_meta is not None
+        assert user_meta["attachments"][0]["description"] == (
+            "visible appointment details"
+        )
+
+    async def test_stores_intermediate_visible_assistant_replies(self) -> None:
+        from nahida_bot.agent.memory.models import ConversationTurn
+
+        persisted: list[ConversationTurn] = []
+
+        class _FakeMemory:
+            async def ensure_session(self, *a: Any, **kw: Any) -> None:
+                pass
+
+            async def append_turn(self, sid: str, turn: ConversationTurn) -> int:
+                persisted.append(turn)
+                return len(persisted)
+
+            async def get_recent(self, *a: Any, **kw: Any) -> list:
+                return []
+
+            async def get_session_meta(self, *a: Any, **kw: Any) -> dict:
+                return {}
+
+        runner = SessionRunner(memory_store=cast(MemoryStore, _FakeMemory()))
+
+        class _FakeResult:
+            final_response = "recorded"
+            assistant_messages = [
+                ContextMessage(
+                    role="assistant",
+                    content="recognized appointment details",
+                    source="provider_response",
+                    metadata={
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "name": "remember",
+                                "arguments": {"text": "appointment"},
+                            }
+                        ]
+                    },
+                ),
+                ContextMessage(
+                    role="assistant",
+                    content="recorded",
+                    source="provider_response",
+                ),
+            ]
+            tool_messages: list[Any] = []
+
+        await runner._persist_turns(
+            "session_1",
+            "save this",
+            _FakeResult(),
+            attachments=[],
+            source_tag="user_input",
+        )
+
+        assert [turn.content for turn in persisted] == [
+            "save this",
+            "recognized appointment details",
+            "recorded",
+        ]
+        assert persisted[1].metadata is None
+        assert persisted[2].metadata is None
+
     async def test_stores_assistant_reasoning(self, tmp_path: Any) -> None:
         from nahida_bot.agent.memory.models import ConversationTurn
 

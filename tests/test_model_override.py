@@ -22,7 +22,7 @@ from nahida_bot.agent.providers.base import (
 )
 from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
 from nahida_bot.agent.tokenization import Tokenizer
-from nahida_bot.core.config import ContextConfig
+from nahida_bot.core.config import ContextConfig, MultimodalConfig
 from nahida_bot.core.runtime_settings import current_runtime_settings
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.plugins.base import InboundAttachment
@@ -461,6 +461,54 @@ class TestSessionRunnerEndToEnd:
         )
 
         assert spy_loop.captured_user_parts is None
+
+    @pytest.mark.asyncio
+    async def test_run_persists_auto_fallback_image_description(self) -> None:
+        text_slot = ProviderSlot(
+            id="text",
+            provider=_RecordingProvider(default_model="text-model"),
+            context_builder=ContextBuilder(),
+            default_model="text-model",
+            available_models=["text-model"],
+            capabilities_by_model={"text-model": ModelCapabilities(image_input=False)},
+        )
+        vision_slot = ProviderSlot(
+            id="vision",
+            provider=_RecordingProvider(default_model="vision-model"),
+            context_builder=ContextBuilder(),
+            default_model="vision-model",
+            available_models=["vision-model"],
+            capabilities_by_model={"vision-model": ModelCapabilities(image_input=True)},
+        )
+        pm = ProviderManager([text_slot, vision_slot], default_id="text")
+        memory = _RecordingMemoryStore()
+
+        runner = SessionRunner(
+            agent_loop=cast(Any, _SpyAgentLoop()),
+            memory_store=cast(Any, memory),
+            provider_manager=pm,
+            multimodal_config=MultimodalConfig(
+                image_fallback_mode="auto",
+                image_fallback_model="vision/vision-model",
+            ),
+        )
+
+        await runner.run(
+            user_message="look",
+            session_id="s1",
+            system_prompt="sys",
+            attachments=[
+                InboundAttachment(
+                    kind="image",
+                    platform_id="img_1",
+                    url="https://example.com/img.jpg",
+                )
+            ],
+        )
+
+        user_turn = memory.turns[0]
+        assert user_turn.metadata is not None
+        assert user_turn.metadata["attachments"][0]["description"] == "ok"
 
 
 class TestBuildUserPartsEdgeCases:

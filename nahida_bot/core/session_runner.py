@@ -493,6 +493,15 @@ class SessionRunner:
                 list(attachments_for_turn),
                 capabilities=capabilities,
             )
+            persisted_image_descriptions: dict[str, str] = {}
+            if (
+                not bool(capabilities and capabilities.image_input)
+                and self._multimodal_config is not None
+                and self._multimodal_config.image_fallback_mode == "auto"
+            ):
+                persisted_image_descriptions = self._image_descriptions_from_parts(
+                    user_parts
+                )
             logger.debug(
                 "session_runner.context_inputs_ready",
                 session_id=session_id,
@@ -573,6 +582,7 @@ class SessionRunner:
                 if done_data
                 else AgentRunResult(final_response=""),
                 attachments=list(attachments_for_turn),
+                image_descriptions=persisted_image_descriptions,
                 message_context=message_context,
                 source_tag=source_tag,
                 workspace_id=workspace_id,
@@ -2091,6 +2101,7 @@ class SessionRunner:
         self,
         *,
         attachments: list[InboundAttachment],
+        image_descriptions: dict[str, str] | None = None,
         message_context: MessageContext | None,
     ) -> dict[str, Any] | None:
         metadata: dict[str, Any] | None = None
@@ -2113,6 +2124,9 @@ class SessionRunner:
                     "metadata": att.metadata,
                 }
                 if att.kind == "image":
+                    generated_description = (image_descriptions or {}).get(
+                        att.platform_id, ""
+                    )
                     resolved = await self._resolve_attachment(att)
                     persisted.update(
                         {
@@ -2121,7 +2135,11 @@ class SessionRunner:
                             "file_size": resolved.file_size or att.file_size,
                             "width": resolved.width or att.width,
                             "height": resolved.height or att.height,
-                            "description": resolved.description or att.alt_text,
+                            "description": (
+                                generated_description
+                                or resolved.description
+                                or att.alt_text
+                            ),
                         }
                     )
                 persisted_attachments.append(persisted)
@@ -2129,6 +2147,91 @@ class SessionRunner:
                 metadata = {}
             metadata["attachments"] = persisted_attachments
         return metadata
+
+    @staticmethod
+    def _image_descriptions_from_parts(parts: list[ContextPart]) -> dict[str, str]:
+        """Extract stable generated image descriptions from current-turn parts."""
+        descriptions: dict[str, str] = {}
+        for part in parts:
+            if part.type != "image_description" or not part.media_id or not part.text:
+                continue
+            descriptions[part.media_id] = part.text
+        return descriptions
+
+    def _assistant_visible_turns(
+        self,
+        result: Any,
+        *,
+        include_message_context: bool,
+    ) -> list[ConversationTurn]:
+        """Project loop output to cache-friendly visible assistant history.
+
+        Tool-call metadata is intentionally not persisted here. A visible
+        assistant answer that also requested tools should be replayed as normal
+        natural-language history, not as an unfinished provider tool transcript.
+        """
+        raw_messages = getattr(result, "assistant_messages", None)
+        assistant_messages = raw_messages if isinstance(raw_messages, list) else []
+        visible: list[tuple[str, Any | None]] = []
+        seen: set[str] = set()
+
+        for message in assistant_messages:
+            content = str(getattr(message, "content", "") or "")
+            if not content or content in seen:
+                continue
+            visible.append((content, message))
+            seen.add(content)
+
+        final_response = str(getattr(result, "final_response", "") or "")
+        fallback_metadata_source = (
+            assistant_messages[-1] if assistant_messages else None
+        )
+        if final_response and final_response not in seen:
+            visible.append((final_response, fallback_metadata_source))
+
+        if not visible:
+            return []
+
+        assistant_context_metadata = message_context_to_metadata(
+            assistant_context() if include_message_context else None
+        )
+        last_index = len(visible) - 1
+        turns: list[ConversationTurn] = []
+        for index, (content, source_message) in enumerate(visible):
+            turns.append(
+                ConversationTurn(
+                    role="assistant",
+                    content=content,
+                    source="agent_response",
+                    metadata=self._assistant_turn_metadata(
+                        source_message,
+                        message_context_metadata=(
+                            assistant_context_metadata if index == last_index else None
+                        ),
+                    ),
+                )
+            )
+        return turns
+
+    @staticmethod
+    def _assistant_turn_metadata(
+        message: Any | None,
+        *,
+        message_context_metadata: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        metadata: dict[str, Any] = {}
+        if message is not None:
+            reasoning = getattr(message, "reasoning", None)
+            if isinstance(reasoning, str) and reasoning:
+                metadata["reasoning"] = reasoning
+            reasoning_signature = getattr(message, "reasoning_signature", None)
+            if isinstance(reasoning_signature, str) and reasoning_signature:
+                metadata["reasoning_signature"] = reasoning_signature
+            if getattr(message, "has_redacted_thinking", False) is True:
+                metadata["has_redacted_thinking"] = True
+        if message_context_metadata is not None:
+            metadata["message_context"] = message_context_metadata
+        return metadata or None
 
     async def persist_observed_message(
         self,
@@ -2143,6 +2246,7 @@ class SessionRunner:
         await self._memory.ensure_session(session_id, workspace_id=workspace_id)
         metadata = await self._build_user_turn_metadata(
             attachments=inbound.attachments,
+            image_descriptions=None,
             message_context=inbound.message_context or context_from_inbound(inbound),
         )
         if metadata is None:
@@ -2170,6 +2274,7 @@ class SessionRunner:
         result: Any,
         *,
         attachments: list[InboundAttachment],
+        image_descriptions: dict[str, str] | None = None,
         message_context: MessageContext | None = None,
         source_tag: str,
         workspace_id: str | None = None,
@@ -2179,6 +2284,7 @@ class SessionRunner:
             return
         metadata = await self._build_user_turn_metadata(
             attachments=attachments,
+            image_descriptions=image_descriptions,
             message_context=message_context,
         )
         user_turn = ConversationTurn(
@@ -2186,21 +2292,25 @@ class SessionRunner:
         )
         await self._memory.append_turn(session_id, user_turn)
 
-        # Persist assistant turn with reasoning metadata
-        if result.final_response:
-            assistant_metadata: dict[str, Any] | None = None
+        assistant_turns = self._assistant_visible_turns(
+            result,
+            include_message_context=message_context is not None,
+        )
+        if assistant_turns:
             assistant_messages = getattr(result, "assistant_messages", None)
             tool_messages = getattr(result, "tool_messages", None)
+            final_response = str(getattr(result, "final_response", "") or "")
             logger.debug(
                 "session_runner.persist_agent_result",
                 session_id=session_id,
-                final_response_chars=len(result.final_response),
-                final_response_preview=result.final_response[:200],
+                final_response_chars=len(final_response),
+                final_response_preview=final_response[:200],
                 assistant_message_count=(
                     len(assistant_messages)
                     if isinstance(assistant_messages, list)
                     else 0
                 ),
+                persisted_assistant_turn_count=len(assistant_turns),
                 tool_message_count=(
                     len(tool_messages) if isinstance(tool_messages, list) else 0
                 ),
@@ -2224,37 +2334,13 @@ class SessionRunner:
                 if isinstance(tool_messages, list)
                 else [],
             )
-            if isinstance(assistant_messages, list) and assistant_messages:
-                last = assistant_messages[-1]
-                parts: dict[str, Any] = {}
-                if last.reasoning:
-                    parts["reasoning"] = last.reasoning
-                if last.reasoning_signature:
-                    parts["reasoning_signature"] = last.reasoning_signature
-                if last.has_redacted_thinking:
-                    parts["has_redacted_thinking"] = True
-                if parts:
-                    assistant_metadata = parts
-            assistant_context_metadata = message_context_to_metadata(
-                assistant_context() if message_context is not None else None
-            )
-            if assistant_context_metadata is not None:
-                if assistant_metadata is None:
-                    assistant_metadata = {}
-                assistant_metadata["message_context"] = assistant_context_metadata
-
-            assistant_turn = ConversationTurn(
-                role="assistant",
-                content=result.final_response,
-                source="agent_response",
-                metadata=assistant_metadata,
-            )
-            await self._memory.append_turn(session_id, assistant_turn)
+            for assistant_turn in assistant_turns:
+                await self._memory.append_turn(session_id, assistant_turn)
 
         await self._consolidate_memory_after_turn(
             session_id=session_id,
             user_message=user_message,
-            assistant_message=str(getattr(result, "final_response", "") or ""),
+            assistant_message="\n\n".join(turn.content for turn in assistant_turns),
             workspace_id=workspace_id,
             workspace_root=workspace_root,
         )
