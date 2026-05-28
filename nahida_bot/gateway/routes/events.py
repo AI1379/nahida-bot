@@ -16,7 +16,7 @@ async def event_stream(request: Request, app=Depends(get_application)):
 
     broadcaster = getattr(request.app.state, "event_broadcaster", None)
     if broadcaster is None:
-        from sse_starlette.sse import ServerSentEvent
+        from sse_starlette.event import ServerSentEvent
 
         async def _no_broadcaster():
             yield ServerSentEvent(
