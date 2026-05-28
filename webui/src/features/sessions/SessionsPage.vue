@@ -5,7 +5,7 @@ import Badge from "@/components/ui/Badge.vue";
 import Alert from "@/components/ui/Alert.vue";
 import type { SessionSummary } from "@/api/schemas";
 
-const { data: sessionData, isLoading, error } = useSessionList();
+const { data: sessionData, isLoading, isFetching, error, refetch } = useSessionList();
 const selectedId = ref("");
 
 const historyQuery = useSessionHistory(selectedId);
@@ -20,7 +20,12 @@ const groups = computed<SessionGroup[]>(() => {
   const map = new Map<string, typeof sessionData.value.sessions>();
   for (const s of sessionData.value.sessions) {
     const parts = s.session_id.split(":");
-    const groupKey = parts.length >= 2 ? `${parts[0]}:${parts[1]}` : s.session_id;
+    // Use 3 segments for typed sessions (channel:target_type:target_id)
+    // so each chat address gets its own group. Fall back to 2 for legacy.
+    const groupKey =
+      parts.length >= 3 ? `${parts[0]}:${parts[1]}:${parts[2]}`
+      : parts.length >= 2 ? `${parts[0]}:${parts[1]}`
+      : s.session_id;
     let list = map.get(groupKey);
     if (!list) {
       list = [];
@@ -43,6 +48,20 @@ function roleVariant(role: string) {
     default: return "outline";
   }
 }
+
+function relativeTime(iso: string): string {
+  const date = new Date(iso);
+  const diff = Date.now() - date.getTime();
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days <= 7) return `${days}d ago`;
+  return date.toLocaleDateString();
+}
 </script>
 
 <template>
@@ -56,6 +75,16 @@ function roleVariant(role: string) {
     <div v-if="sessionData" class="sessions-layout">
       <!-- Session list -->
       <div class="session-list">
+        <div class="session-list-header">
+          <span class="session-list-title">Sessions</span>
+          <button
+            class="refresh-btn"
+            :disabled="isFetching"
+            @click="refetch()"
+          >
+            {{ isFetching ? "Refreshing..." : "Refresh" }}
+          </button>
+        </div>
         <div v-if="!groups.length" class="empty">No sessions found.</div>
         <div
           v-for="group in groups"
@@ -73,6 +102,8 @@ function roleVariant(role: string) {
             <div class="session-id">{{ s.session_id }}</div>
             <div class="session-meta">
               <span>{{ s.turn_count }} turns</span>
+              <span>&middot;</span>
+              <span>{{ relativeTime(s.last_active_at) }}</span>
               <span>&middot;</span>
               <span>{{ s.workspace_id ?? "default" }}</span>
             </div>
@@ -146,6 +177,38 @@ function roleVariant(role: string) {
   gap: 0.5rem;
   overflow-y: auto;
   max-height: calc(100vh - 140px);
+}
+
+.session-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.25rem;
+}
+
+.session-list-title {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.refresh-btn {
+  font-size: 0.6875rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-muted);
+  color: var(--color-foreground);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  background: var(--color-accent);
+}
+
+.refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .group-header {
