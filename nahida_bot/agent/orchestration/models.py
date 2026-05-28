@@ -86,6 +86,8 @@ class AgentRun:
 class BackgroundTask:
     """Persistent task ledger entry."""
 
+    # TODO(subagent-observability): Add a durable stream/event model for live
+    # subagent progress, partial output, tool calls, and final result inspection.
     task_id: str
     runtime: TaskRuntime
     status: AgentRunStatus

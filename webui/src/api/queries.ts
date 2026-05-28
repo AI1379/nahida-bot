@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
-import { computed, type Ref } from "vue";
+import { computed, type ComputedRef, type Ref } from "vue";
 import { api, toApiError } from "./client";
 import { useToastStore } from "@/stores/toast";
 import { useAppStore } from "@/stores/app";
@@ -23,8 +23,11 @@ import type {
   FileWriteRequest,
   FileWriteResponse,
   LogsResponse,
+  MessageDeliveriesResponse,
+  MessageDeliveryGroupsResponse,
   SessionHistoryResponse,
   SessionListResponse,
+  SessionSearchResponse,
   StatusResponse,
   SystemActionRequest,
   SystemActionResponse,
@@ -82,11 +85,50 @@ export function useSessionList() {
   });
 }
 
-export function useSessionHistory(sessionId: Ref<string>) {
+type ReadableRef<T> = Ref<T> | ComputedRef<T>;
+
+export function useSessionHistory(sessionId: ReadableRef<string>) {
   return useQuery<SessionHistoryResponse>({
     queryKey: computed(() => ["sessions", sessionId.value]),
     queryFn: () => api.get(`/sessions/${sessionId.value}?limit=200`),
     enabled: computed(() => !!sessionId.value),
+  });
+}
+
+export function useDeliveryGroups() {
+  return useQuery<MessageDeliveryGroupsResponse>({
+    queryKey: ["sessions", "delivery-groups"],
+    queryFn: () => api.get("/sessions/delivery-groups?limit=500"),
+  });
+}
+
+export function useMessageDeliveries(target: ReadableRef<string>) {
+  return useQuery<MessageDeliveriesResponse>({
+    queryKey: computed(() => ["sessions", "deliveries", target.value]),
+    queryFn: () => {
+      const params = new URLSearchParams({ target: target.value, limit: "200" });
+      return api.get(`/sessions/deliveries?${params}`);
+    },
+    enabled: computed(() => !!target.value),
+  });
+}
+
+export function useSessionSearch(
+  params: ReadableRef<{ q: string; chat_address: string; source: string; role: string }>,
+  enabled: ReadableRef<boolean>,
+) {
+  return useQuery<SessionSearchResponse>({
+    queryKey: computed(() => ["sessions", "search", params.value]),
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (params.value.q) p.set("q", params.value.q);
+      if (params.value.chat_address) p.set("chat_address", params.value.chat_address);
+      if (params.value.source) p.set("source", params.value.source);
+      if (params.value.role) p.set("role", params.value.role);
+      p.set("limit", "200");
+      return api.get(`/sessions/search?${p}`);
+    },
+    enabled,
   });
 }
 

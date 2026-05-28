@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     from nahida_bot.agent.providers.router import ModelRouter
     from nahida_bot.core.session_runner import SessionRunner
     from nahida_bot.db.engine import DatabaseEngine
+    from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
+        SQLiteMessageDeliveryStore,
+    )
     from nahida_bot.plugins.manager import PluginManager
     from nahida_bot.scheduler.service import SchedulerService
     from nahida_bot.workspace.manager import WorkspaceManager
@@ -84,6 +87,7 @@ class Application:
         self.memory_store: MemoryStore | None = None
         self.workspace_manager: WorkspaceManager | None = None
         self._db_engine: DatabaseEngine | None = None
+        self.message_delivery_store: SQLiteMessageDeliveryStore | None = None
         self._provider_manager: ProviderManager | None = None
         self._model_router: ModelRouter | None = None
         self._memory_embedding_provider: Any | None = None
@@ -156,6 +160,7 @@ class Application:
             self.plugin_manager.set_runtime_services(
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
+                message_delivery_store=self.message_delivery_store,
                 provider_manager=self._provider_manager,
                 orchestration_service=self.orchestration_service,
             )
@@ -169,6 +174,7 @@ class Application:
             self.plugin_manager.set_runtime_services(
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
+                message_delivery_store=self.message_delivery_store,
                 provider_manager=self._provider_manager,
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
@@ -194,6 +200,9 @@ class Application:
         from nahida_bot.agent.providers import create_provider
         from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
         from nahida_bot.db.engine import DatabaseEngine
+        from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
+            SQLiteMessageDeliveryStore,
+        )
 
         # Database + Memory
         db_path = self.settings.db_path
@@ -201,6 +210,7 @@ class Application:
         await engine.initialize()
         self._db_engine = engine
         self.memory_store = SQLiteMemoryStore(engine)
+        self.message_delivery_store = SQLiteMessageDeliveryStore(engine)
         logger.info("application.memory_initialized", db_path=db_path)
 
         # Build providers from config
@@ -543,6 +553,7 @@ class Application:
             repo,
             runner=self.session_runner,
             channel_registry=self.channel_registry,
+            message_delivery_store=self.message_delivery_store,
             system_prompt=self.settings.system_prompt,
             app_name=self.settings.app_name,
             config=SchedulerConfig(
@@ -577,6 +588,7 @@ class Application:
             self.plugin_manager.set_runtime_services(
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
+                message_delivery_store=self.message_delivery_store,
                 provider_manager=self._provider_manager,
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
@@ -742,6 +754,7 @@ class Application:
                     )
                 self.scheduler_service.wire_runtime(
                     message_router=self.message_router,
+                    message_delivery_store=self.message_delivery_store,
                 )
                 await self.scheduler_service.start()
 

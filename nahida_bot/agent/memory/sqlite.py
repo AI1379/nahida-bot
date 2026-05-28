@@ -287,6 +287,25 @@ class SQLiteMemoryStore(MemoryStore):
         kw_map = await self._repo.get_keywords_for_turns(turn_ids)
         return [_row_to_record(row, keywords=kw_map.get(row["id"], [])) for row in rows]
 
+    async def search_turns(
+        self,
+        query: str = "",
+        *,
+        chat_address: str = "",
+        source: str = "",
+        role: str = "",
+        limit: int = 100,
+    ) -> list[MemoryRecord]:
+        """Search persisted turns across sessions for admin/debug views."""
+        rows = await self._repo.search_turns(
+            query,
+            chat_address=chat_address,
+            source=source,
+            role=role,
+            limit=limit,
+        )
+        return [_row_to_record(row) for row in rows]
+
     async def evict_before(self, cutoff: datetime) -> int:
         """Delete turns older than cutoff datetime."""
         return await self._repo.delete_turns_before(cutoff)

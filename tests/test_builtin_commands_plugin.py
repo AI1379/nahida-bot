@@ -65,6 +65,8 @@ class _FakeAPI:
         self.stored_memories: list[tuple[str, str, dict[str, Any] | None]] = []
         self.workspace_root = Path("fake-workspace")
         self.sent_messages: list[tuple[str, OutboundMessage, str]] = []
+        self.recorded_events: list[tuple[str, str, str, dict[str, Any] | None]] = []
+        self.recorded_deliveries: list[dict[str, Any]] = []
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -83,7 +85,11 @@ class _FakeAPI:
         source: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        pass
+        self.recorded_events.append((session_id, content, source, metadata))
+
+    async def record_message_delivery(self, **kwargs: Any) -> str:
+        self.recorded_deliveries.append(kwargs)
+        return "delivery-1"
 
     def on_event(self, event_type: type) -> Any:
         return lambda handler: handler
@@ -234,9 +240,93 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     create_params = api.tools["cron_create"]["parameters"]
     update_params = api.tools["cron_update"]["parameters"]
     assert create_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
+    assert create_params["properties"]["session_mode"]["enum"] == [
+        "main",
+        "isolated",
+        "fresh",
+    ]
     assert "cron_expression" in create_params["properties"]
     assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
     assert "cron_expression" in update_params["properties"]
+
+
+@pytest.mark.asyncio
+async def test_message_tool_notify_records_delivery_audit_only() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+            user_id="u1",
+        )
+    )
+    try:
+        result = await plugin._tool_message(
+            text="hello",
+            target="telegram:private:c2",
+            delivery="notify",
+        )
+    finally:
+        current_session.reset(token)
+
+    assert "Message sent to telegram:private:c2" in result
+    assert api.sent_messages[0][0] == "c2"
+    assert api.sent_messages[0][1].extra["chat_address"] == "telegram:private:c2"
+    assert api.recorded_events == []
+    assert len(api.recorded_deliveries) == 1
+    delivery = api.recorded_deliveries[0]
+    assert delivery["target"].chat_key == "telegram:private:c2"
+    assert delivery["source"] == "message_tool"
+    assert delivery["delivery_mode"] == "notify"
+    assert delivery["metadata"]["from_user_id"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_message_tool_record_keeps_cross_session_turn_and_audit() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+            user_id="u1",
+        )
+    )
+    try:
+        result = await plugin._tool_message(
+            text="hello",
+            target="telegram:private:c2",
+            delivery="record",
+        )
+    finally:
+        current_session.reset(token)
+
+    assert "recorded in target session history" in result
+    assert len(api.recorded_deliveries) == 1
+    assert api.recorded_deliveries[0]["delivery_mode"] == "record"
+    assert api.recorded_events == [
+        (
+            "telegram:private:c2",
+            "hello",
+            "cross_session_message",
+            {
+                "from_session": "telegram:private:c1",
+                "from_platform": "telegram",
+                "from_chat_id": "c1",
+                "from_user_id": "u1",
+                "from_chat_address": "telegram:private:c1",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -641,7 +731,12 @@ async def test_new_command_switches_router_session() -> None:
     assert api.new_sessions == ["telegram:private:c1"]
 
 
-def _cron_job(job_id: str = "job1", *, prompt: str = "old") -> CronJob:
+def _cron_job(
+    job_id: str = "job1",
+    *,
+    prompt: str = "old",
+    created_by_user_id: str = "",
+) -> CronJob:
     return CronJob(
         job_id=job_id,
         platform="telegram",
@@ -660,6 +755,9 @@ def _cron_job(job_id: str = "job1", *, prompt: str = "old") -> CronJob:
         last_fired_at=None,
         workspace_id=None,
         chat_type="private",
+        created_by_user_id=created_by_user_id,
+        created_from_session_id="telegram:private:c1",
+        created_from_chat_address="telegram:private:c1",
     )
 
 
@@ -668,6 +766,13 @@ class _FakeScheduler:
         self.jobs = {"job1": _cron_job()}
         self.updated: dict[str, Any] = {}
         self.deleted: list[str] = []
+        self.created: dict[str, Any] = {}
+
+    async def create_job(self, **kwargs: Any) -> CronJob:
+        self.created = dict(kwargs)
+        job = _cron_job("job-created", prompt=kwargs["prompt"])
+        self.jobs[job.job_id] = job
+        return job
 
     async def get_job(self, job_id: str) -> CronJob | None:
         return self.jobs.get(job_id)
@@ -731,3 +836,67 @@ async def test_cron_update_and_delete_tools_use_scheduler_api() -> None:
     }
     assert deleted == "Deleted task job1."
     assert api.scheduler_service.deleted == ["job1"]
+
+
+@pytest.mark.asyncio
+async def test_cron_create_records_creator_and_source_session() -> None:
+    api = _FakeAPI()
+    api.scheduler_service = _FakeScheduler()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1:abc",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+            user_id="u1",
+        )
+    )
+    try:
+        result = await plugin._tool_cron_create(
+            prompt="ping",
+            mode="interval",
+            interval_seconds=120,
+        )
+    finally:
+        current_session.reset(token)
+
+    assert "Scheduled task created" in result
+    assert api.scheduler_service.created["created_by_user_id"] == "u1"
+    assert api.scheduler_service.created["created_from_session_id"] == (
+        "telegram:private:c1:abc"
+    )
+    assert api.scheduler_service.created["created_from_chat_address"] == (
+        "telegram:private:c1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cron_tools_hide_jobs_owned_by_other_user() -> None:
+    api = _FakeAPI()
+    scheduler = _FakeScheduler()
+    scheduler.jobs["job1"] = _cron_job(created_by_user_id="u2")
+    api.scheduler_service = scheduler
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+            user_id="u1",
+        )
+    )
+    try:
+        listed = await plugin._tool_cron_list()
+        deleted = await plugin._tool_cron_delete("job1")
+    finally:
+        current_session.reset(token)
+
+    assert listed == "No active scheduled tasks for this chat."
+    assert deleted == "Error: Job 'job1' does not belong to this chat."
+    assert scheduler.deleted == []

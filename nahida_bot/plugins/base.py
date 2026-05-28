@@ -235,6 +235,24 @@ class BotAPI(Protocol):
         """Write a system turn into a session's history without triggering a run."""
         ...
 
+    async def record_message_delivery(
+        self,
+        *,
+        target: ChatAddress | str,
+        text: str,
+        source: str,
+        delivery_mode: str = "",
+        status: str = "sent",
+        message_id: str = "",
+        error: str = "",
+        metadata: dict[str, Any] | None = None,
+        source_session_id: str = "",
+        source_chat_address: str = "",
+        source_user_id: str = "",
+    ) -> str:
+        """Write an outbound delivery audit record without affecting memory."""
+        ...
+
     # ── Event System ───────────────────────────────────
 
     def on_event(self, event_type: type) -> Callable:

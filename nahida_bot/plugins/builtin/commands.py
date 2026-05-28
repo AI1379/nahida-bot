@@ -752,8 +752,12 @@ class BuiltinCommandsPlugin(Plugin):
                     },
                     "session_mode": {
                         "type": "string",
-                        "enum": ["main", "isolated"],
-                        "description": "'main' (default) injects the cron turn into the active chat session. 'isolated' uses a separate session so the task's internal turns don't pollute the chat history.",
+                        "enum": ["main", "isolated", "fresh"],
+                        "description": (
+                            "'main' (default) uses the chat session. "
+                            "'isolated' reuses one private session per cron job. "
+                            "'fresh' creates a new session for each fire."
+                        ),
                     },
                 },
                 "required": ["prompt", "mode"],
@@ -1232,6 +1236,27 @@ class BuiltinCommandsPlugin(Plugin):
             outbound,
             channel=address.channel,
         )
+        delivery_metadata: dict[str, Any] = {
+            "from_session": ctx.session_id,
+            "from_platform": ctx.platform,
+            "from_chat_id": ctx.chat_id,
+            "from_user_id": ctx.user_id,
+        }
+        if ctx.chat_address is not None:
+            delivery_metadata["from_chat_address"] = ctx.chat_address.chat_key
+        if resolved_attachments:
+            delivery_metadata["attachment_count"] = len(resolved_attachments)
+        record_delivery = getattr(self.api, "record_message_delivery", None)
+        if callable(record_delivery):
+            await record_delivery(
+                target=address,
+                text=text,
+                source="message_tool",
+                delivery_mode=delivery,
+                status="sent",
+                message_id=message_id,
+                metadata=delivery_metadata,
+            )
 
         # Record in target session history if requested
         if delivery == "record":
@@ -1239,7 +1264,10 @@ class BuiltinCommandsPlugin(Plugin):
                 "from_session": ctx.session_id,
                 "from_platform": ctx.platform,
                 "from_chat_id": ctx.chat_id,
+                "from_user_id": ctx.user_id,
             }
+            if ctx.chat_address is not None:
+                metadata["from_chat_address"] = ctx.chat_address.chat_key
             if resolved_attachments:
                 metadata["attachment_count"] = len(resolved_attachments)
             await self.api.record_session_event(
@@ -1313,6 +1341,9 @@ class BuiltinCommandsPlugin(Plugin):
                 max_runs=max_runs,
                 workspace_id=ctx.workspace_id,
                 session_mode=session_mode,
+                created_by_user_id=ctx.user_id,
+                created_from_session_id=ctx.session_id,
+                created_from_chat_address=address.chat_key,
             )
         except Exception as e:
             return f"Error creating scheduled task: {e}"
@@ -1347,7 +1378,12 @@ class BuiltinCommandsPlugin(Plugin):
         if scheduler is None:
             return "Error: Scheduler is not available."
 
-        jobs = await scheduler.list_jobs(_address_from_session_context(ctx))
+        address = _address_from_session_context(ctx)
+        jobs = [
+            job
+            for job in await scheduler.list_jobs(address)
+            if _job_visible_to_user(job, address, ctx.user_id)
+        ]
         if not jobs:
             return "No active scheduled tasks for this chat."
 
@@ -1384,7 +1420,7 @@ class BuiltinCommandsPlugin(Plugin):
         if job is None:
             return f"Error: Job '{job_id}' not found."
         address = _typed_address_from_session_context(ctx)
-        if address is None or not _job_matches_address(job, address):
+        if address is None or not _job_visible_to_user(job, address, ctx.user_id):
             return f"Error: Job '{job_id}' does not belong to this chat."
 
         cancelled = await scheduler.cancel_job(job_id)
@@ -1414,7 +1450,7 @@ class BuiltinCommandsPlugin(Plugin):
         if job is None:
             return f"Error: Job '{job_id}' not found."
         address = _typed_address_from_session_context(ctx)
-        if address is None or not _job_matches_address(job, address):
+        if address is None or not _job_visible_to_user(job, address, ctx.user_id):
             return f"Error: Job '{job_id}' does not belong to this chat."
 
         if mode is not None and mode not in {"once", "interval", "cron"}:
@@ -1469,7 +1505,7 @@ class BuiltinCommandsPlugin(Plugin):
         if job is None:
             return f"Error: Job '{job_id}' not found."
         address = _typed_address_from_session_context(ctx)
-        if address is None or not _job_matches_address(job, address):
+        if address is None or not _job_visible_to_user(job, address, ctx.user_id):
             return f"Error: Job '{job_id}' does not belong to this chat."
 
         deleted = await scheduler.delete_job(job_id)
@@ -1503,7 +1539,12 @@ class BuiltinCommandsPlugin(Plugin):
         scheduler = self._get_scheduler()
         if scheduler is None:
             return "Scheduler is not available."
-        jobs = await scheduler.list_jobs(_address_from_inbound(inbound))
+        address = _address_from_inbound(inbound)
+        jobs = [
+            job
+            for job in await scheduler.list_jobs(address)
+            if _job_visible_to_user(job, address, inbound.user_id)
+        ]
         if not jobs:
             return "No scheduled tasks for this chat."
         lines = []
@@ -1528,7 +1569,7 @@ class BuiltinCommandsPlugin(Plugin):
         if (
             job is None
             or not address.is_typed
-            or not _job_matches_address(job, address)
+            or not _job_visible_to_user(job, address, inbound.user_id)
         ):
             return f"Task '{job_id}' not found."
         cancelled = await scheduler.cancel_job(job_id)
@@ -1547,7 +1588,7 @@ class BuiltinCommandsPlugin(Plugin):
         if (
             job is None
             or not address.is_typed
-            or not _job_matches_address(job, address)
+            or not _job_visible_to_user(job, address, inbound.user_id)
         ):
             return f"Task '{job_id}' not found."
         deleted = await scheduler.delete_job(job_id)
@@ -2117,3 +2158,15 @@ def _job_matches_address(job: Any, address: ChatAddress) -> bool:
         and job.chat_id == address.target_id
         and job.chat_type == address.target_type
     )
+
+
+def _job_visible_to_user(job: Any, address: ChatAddress, user_id: str) -> bool:
+    if not _job_matches_address(job, address):
+        return False
+    # TODO(cron-group-management): Revisit group-chat ownership UX. Per-creator
+    # filtering prevents accidental edits, but group admins may need a controlled
+    # way to list or manage all jobs in the group.
+    owner = str(getattr(job, "created_by_user_id", "") or "")
+    if not owner:
+        return True
+    return bool(user_id) and owner == user_id

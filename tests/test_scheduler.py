@@ -158,12 +158,14 @@ def _make_service(
     agent: Any = None,
     channel: _Channel | None = None,
     config: SchedulerConfig | None = None,
+    message_delivery_store: Any = None,
 ) -> SchedulerService:
     runner = SessionRunner(agent_loop=cast(Any, agent))
     return SchedulerService(
         repo,
         runner=runner,
         channel_registry=cast(Any, _Channels(channel)) if channel else None,
+        message_delivery_store=message_delivery_store,
         config=config,
     )
 
@@ -211,6 +213,85 @@ async def test_fire_job_completes_once_job_after_success() -> None:
         assert stored.claimed_at is None
         assert stored.run_count == 1
         assert channel.sent[0][1].text == "done"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fire_job_sends_typed_chat_address_and_records_delivery() -> None:
+    from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
+        SQLiteMessageDeliveryStore,
+    )
+
+    engine, repo = await _repo()
+    try:
+        store = SQLiteMessageDeliveryStore(engine)
+        agent = _Agent()
+        channel = _Channel()
+        job = replace(
+            _job(),
+            created_by_user_id="u1",
+            created_from_session_id="telegram:private:c1:abc",
+            created_from_chat_address="telegram:private:c1",
+        )
+        service = _make_service(
+            engine,
+            repo,
+            agent=agent,
+            channel=channel,
+            config=SchedulerConfig(job_timeout_seconds=1),
+            message_delivery_store=store,
+        )
+
+        await service._fire_job(job)
+
+        assert channel.sent[0][0] == "c1"
+        assert channel.sent[0][1].extra["chat_address"] == "telegram:private:c1"
+        visible_user_message = str(agent.last_kwargs["user_message"])
+        assert "cron_trigger" in visible_user_message
+        assert "u1" in visible_user_message
+        deliveries = await store.list_for_target("telegram:private:c1")
+        assert len(deliveries) == 1
+        assert deliveries[0].source == "scheduler_cron"
+        assert deliveries[0].source_session_id == "telegram:private:c1:abc"
+        assert deliveries[0].metadata["job_id"] == "job1"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_main_cron_prefers_created_from_session_id_over_active_session() -> None:
+    class _Runner:
+        has_agent = True
+
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        async def run(self, **kwargs: Any) -> AgentRunResult:
+            self.kwargs = kwargs
+            return AgentRunResult(final_response="")
+
+    class _Router:
+        def get_active_session_id(self, address: ChatAddress) -> str:
+            return "telegram:private:c1:active"
+
+    engine, repo = await _repo()
+    try:
+        runner = _Runner()
+        service = SchedulerService(
+            repo,
+            runner=cast(Any, runner),
+            message_router=cast(Any, _Router()),
+            config=SchedulerConfig(job_timeout_seconds=1),
+        )
+        job = replace(
+            _job(),
+            created_from_session_id="telegram:private:c1:creator-session",
+        )
+
+        await service._execute_fire(job)
+
+        assert runner.kwargs["session_id"] == "telegram:private:c1:creator-session"
     finally:
         await engine.close()
 
@@ -701,6 +782,24 @@ async def test_create_job_isolated_session_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_job_fresh_session_mode() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        fire_at = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+        job = await service.create_job(
+            address=_address(),
+            prompt="test",
+            mode="once",
+            fire_at=fire_at,
+            session_mode="fresh",
+        )
+        assert job.session_mode == "fresh"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_isolated_cron_uses_dedicated_session_id() -> None:
     engine, repo = await _repo()
     try:
@@ -749,6 +848,39 @@ async def test_isolated_cron_uses_dedicated_session_id() -> None:
 
         assert agent.calls == 1
         assert captured.get("session_id") == "telegram:private:c1:cron:job1"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_cron_uses_per_fire_session_id() -> None:
+    engine, repo = await _repo()
+    try:
+        agent = _Agent()
+        channel = _Channel()
+        runner = SessionRunner(agent_loop=cast(Any, agent))
+        service = SchedulerService(
+            repo,
+            runner=runner,
+            channel_registry=cast(Any, _Channels(channel)),
+        )
+
+        job = replace(_job(), session_mode="fresh", run_count=4)
+        await repo.insert_job(job)
+
+        captured: dict[str, Any] = {}
+        original_run = cast(Any, runner.run)
+
+        async def spy_run(**kwargs: Any) -> AgentRunResult:
+            captured.update(kwargs)
+            return await original_run(**kwargs)
+
+        runner.run = cast(Any, spy_run)
+
+        await service._fire_job(job)
+
+        assert agent.calls == 1
+        assert captured.get("session_id") == "telegram:private:c1:cron:job1:fire:5"
     finally:
         await engine.close()
 
@@ -901,6 +1033,26 @@ async def test_isolated_session_roundtrip_from_repo() -> None:
         )
         assert len(claimed) == 1
         assert claimed[0].session_mode == "isolated"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_session_roundtrip_from_repo() -> None:
+    engine, repo = await _repo()
+    try:
+        job = replace(_job(), session_mode="fresh")
+        await repo.insert_job(job)
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.session_mode == "fresh"
+
+        claimed = await repo.claim_due_jobs(
+            (datetime.now(UTC) + timedelta(hours=1)).isoformat(), limit=1
+        )
+        assert len(claimed) == 1
+        assert claimed[0].session_mode == "fresh"
     finally:
         await engine.close()
 

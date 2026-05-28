@@ -28,10 +28,32 @@ export function formatNumber(n: number): string {
 }
 
 export function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const s = Math.floor(diff / 1000);
+  const date = new Date(iso);
+  const timestamp = date.getTime();
+  if (!Number.isFinite(timestamp)) return "-";
+  const diff = timestamp - Date.now();
+  const future = diff > 0;
+  const s = Math.floor(Math.abs(diff) / 1000);
   if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+  if (s < 3600) {
+    const value = `${Math.floor(s / 60)}m`;
+    return future ? `in ${value}` : `${value} ago`;
+  }
+  if (s < 86400) {
+    const value = `${Math.floor(s / 3600)}h`;
+    return future ? `in ${value}` : `${value} ago`;
+  }
+  const days = Math.floor(s / 86400);
+  if (days <= 7) {
+    const value = `${days}d`;
+    return future ? `in ${value}` : `${value} ago`;
+  }
+  return formatDateTime(iso);
+}
+
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  const timestamp = date.getTime();
+  if (!Number.isFinite(timestamp)) return "-";
+  return date.toLocaleString();
 }

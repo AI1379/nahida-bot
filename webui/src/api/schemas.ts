@@ -106,6 +106,9 @@ export interface CronJob {
   interval_seconds: number | null;
   cron_expression: string | null;
   max_runs: number | null;
+  created_by_user_id: string;
+  created_from_session_id: string;
+  created_from_chat_address: string;
 }
 
 export interface CronListResponse {
@@ -132,11 +135,75 @@ export interface Turn {
   content: string;
   source: string;
   created_at: string;
+  metadata: Record<string, unknown>;
+  sentinel_action: string | null;
+  sentinel_suppressed: boolean;
 }
 
 export interface SessionHistoryResponse {
   session_id: string;
   turns: Turn[];
+}
+
+export interface MessageDelivery {
+  delivery_id: string;
+  target_chat_address: string;
+  platform: string;
+  target_type: string;
+  target_id: string;
+  source_session_id: string;
+  source_chat_address: string;
+  source_user_id: string;
+  source: string;
+  delivery_mode: string;
+  status: string;
+  message_id: string;
+  text: string;
+  error: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  sentinel_action: string | null;
+  sentinel_suppressed: boolean;
+}
+
+export interface MessageDeliveryGroup {
+  target_chat_address: string;
+  platform: string;
+  target_type: string;
+  target_id: string;
+  count: number;
+  last_created_at: string;
+  last_source: string;
+}
+
+export interface MessageDeliveryGroupsResponse {
+  groups: MessageDeliveryGroup[];
+}
+
+export interface MessageDeliveriesResponse {
+  target_chat_address: string;
+  deliveries: MessageDelivery[];
+}
+
+export interface SessionSearchResult {
+  result_type: "turn" | "delivery";
+  id: string;
+  session_id: string;
+  target_chat_address: string;
+  role: string;
+  source: string;
+  content: string;
+  created_at: string;
+  metadata: Record<string, unknown>;
+  sentinel_action: string | null;
+  sentinel_suppressed: boolean;
+  delivery_mode: string;
+  status: string;
+  message_id: string;
+}
+
+export interface SessionSearchResponse {
+  results: SessionSearchResult[];
 }
 
 export interface FileEntry {
@@ -224,7 +291,7 @@ export interface CreateCronRequest {
   interval_seconds?: number | null;
   cron_expression?: string | null;
   max_runs?: number | null;
-  session_mode: "main" | "isolated" | "named";
+  session_mode: "main" | "isolated" | "fresh" | "named";
   session_name?: string | null;
 }
 

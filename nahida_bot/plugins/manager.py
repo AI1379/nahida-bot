@@ -21,6 +21,9 @@ from nahida_bot.plugins.registry import HandlerRegistry, ToolRegistry
 if TYPE_CHECKING:
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.core.events import EventBus
+    from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
+        SQLiteMessageDeliveryStore,
+    )
     from nahida_bot.plugins.base import Plugin
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -68,6 +71,7 @@ class PluginManager:
         event_bus: EventBus,
         workspace_manager: WorkspaceManager | None = None,
         memory_store: MemoryStore | None = None,
+        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         channel_registry: Any | None = None,
         provider_manager: Any | None = None,
         scheduler_service: Any | None = None,
@@ -76,6 +80,7 @@ class PluginManager:
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
+        self._message_delivery_store = message_delivery_store
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
         self._scheduler_service = scheduler_service
@@ -91,6 +96,7 @@ class PluginManager:
         *,
         workspace_manager: WorkspaceManager | None = None,
         memory_store: MemoryStore | None = None,
+        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         provider_manager: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
@@ -98,6 +104,7 @@ class PluginManager:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
         self._memory = memory_store
+        self._message_delivery_store = message_delivery_store
         self._provider_manager = provider_manager
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
@@ -106,6 +113,7 @@ class PluginManager:
                 record.api_bridge.set_runtime_services(
                     workspace_manager=workspace_manager,
                     memory_store=memory_store,
+                    message_delivery_store=message_delivery_store,
                     provider_manager=provider_manager,
                     scheduler_service=scheduler_service,
                     orchestration_service=orchestration_service,
@@ -191,6 +199,7 @@ class PluginManager:
             event_bus=self._event_bus,
             workspace_manager=self._workspace,
             memory_store=self._memory,
+            message_delivery_store=self._message_delivery_store,
             permission_checker=checker,
             tool_registry=self._tool_registry,
             handler_registry=self._handler_registry,

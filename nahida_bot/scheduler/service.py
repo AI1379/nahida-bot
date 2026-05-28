@@ -16,7 +16,7 @@ from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.core.sentinel import detect_sentinel
-from nahida_bot.plugins.base import OutboundMessage
+from nahida_bot.plugins.base import MessageContext, OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
 
@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from nahida_bot.core.channel_registry import ChannelRegistry
     from nahida_bot.core.router import MessageRouter
     from nahida_bot.core.session_runner import SessionRunner
+    from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
+        SQLiteMessageDeliveryStore,
+    )
 
 logger = structlog.get_logger(__name__)
 
@@ -45,6 +48,7 @@ class SchedulerService:
         *,
         runner: SessionRunner | None = None,
         channel_registry: ChannelRegistry | None = None,
+        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         message_router: MessageRouter | None = None,
         system_prompt: str = "You are a helpful assistant.",
         app_name: str = "the assistant",
@@ -54,6 +58,7 @@ class SchedulerService:
         self._repo = repo
         self._runner = runner
         self._channels = channel_registry
+        self._message_delivery_store = message_delivery_store
         self._router = message_router
         self._system_prompt = system_prompt
         self._app_name = app_name
@@ -73,10 +78,13 @@ class SchedulerService:
         self,
         *,
         message_router: MessageRouter | None = None,
+        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
     ) -> None:
         """Wire late-bound runtime dependencies (called after plugins load)."""
         if message_router is not None:
             self._router = message_router
+        if message_delivery_store is not None:
+            self._message_delivery_store = message_delivery_store
 
     # ── Lifecycle ─────────────────────────────────────────
 
@@ -161,12 +169,19 @@ class SchedulerService:
         cron_expression: str | None = None,
         max_runs: int | None = None,
         workspace_id: str | None = None,
-        session_mode: Literal["main", "isolated", "named"] = "main",
+        session_mode: Literal["main", "isolated", "fresh", "named"] = "main",
         session_name: str | None = None,
+        created_by_user_id: str = "",
+        created_from_session_id: str = "",
+        created_from_chat_address: str = "",
     ) -> CronJob:
         """Create and persist a new scheduled job at a typed address."""
         if not address.is_typed:
             raise ValueError("Cron jobs require a typed chat target")
+        if session_mode not in {"main", "isolated", "fresh", "named"}:
+            raise ValueError(
+                "session_mode must be one of: main, isolated, fresh, named"
+            )
         if session_mode == "named":
             if not session_name or not re.match(r"^[a-zA-Z0-9_-]+$", session_name):
                 raise ValueError(
@@ -215,6 +230,9 @@ class SchedulerService:
             session_mode=session_mode,
             session_name=session_name if session_mode == "named" else None,
             chat_type=address.target_type,
+            created_by_user_id=created_by_user_id,
+            created_from_session_id=created_from_session_id,
+            created_from_chat_address=created_from_chat_address,
         )
 
         await self._repo.insert_job_with_quota(
@@ -728,12 +746,28 @@ class SchedulerService:
         # Resolve session_id based on session_mode
         if job.session_mode == "isolated":
             session_id = f"{job.session_key}:cron:{job.job_id}"
+        elif job.session_mode == "fresh":
+            session_id = f"{job.session_key}:cron:{job.job_id}:fire:{job.run_count + 1}"
         elif job.session_mode == "named":
             session_id = f"{job.session_key}:cron:{job.session_name}"
         else:
-            session_id = job.session_key
-            if self._router is not None:
-                session_id = self._router.get_active_session_id(address)
+            if job.created_from_session_id:
+                session_id = job.created_from_session_id
+            else:
+                session_id = job.session_key
+                if self._router is not None:
+                    session_id = self._router.get_active_session_id(address)
+
+        message_context = MessageContext(
+            timestamp=datetime.now(UTC).timestamp(),
+            channel=address.channel,
+            chat_type=address.target_type,
+            chat_id=address.target_id,
+            sender_id=job.created_by_user_id or "scheduler",
+            sender_display_name=job.created_by_user_id or "scheduler",
+            sender_role_tags=("cron",),
+            extra_tags=("cron_trigger", job.job_id),
+        )
 
         # Set session context for tool handlers
         ctx_token = current_session.set(
@@ -743,14 +777,22 @@ class SchedulerService:
                 session_id=session_id,
                 workspace_id=job.workspace_id,
                 chat_address=address,
+                user_id=job.created_by_user_id,
+                sender_display_name=job.created_by_user_id or "scheduler",
             )
         )
         try:
-            await self._do_fire(job, session_id)
+            await self._do_fire(job, session_id, address, message_context)
         finally:
             current_session.reset(ctx_token)
 
-    async def _do_fire(self, job: CronJob, session_id: str) -> None:
+    async def _do_fire(
+        self,
+        job: CronJob,
+        session_id: str,
+        address: ChatAddress,
+        message_context: MessageContext,
+    ) -> None:
         """The actual agent execution + response delivery."""
         assert self._runner is not None  # guarded by _execute_fire
         result = await self._runner.run(
@@ -758,16 +800,21 @@ class SchedulerService:
             session_id=session_id,
             system_prompt=self._system_prompt,
             workspace_id=job.workspace_id,
+            message_context=message_context,
             tool_filter=_CRON_TOOL_NAMES,
             source_tag="cron_trigger",
         )
 
         # Send response via channel
         response_text = result.final_response
+        sentinel_action: str | None = None
+        sentinel_suppressed = False
         if self._enable_silent_reply and response_text:
             sr = detect_sentinel(response_text)
             if sr.action is not None:
+                sentinel_action = sr.action
                 response_text = sr.text
+                sentinel_suppressed = not bool(response_text)
                 logger.debug(
                     "scheduler.sentinel_detected",
                     job_id=job.job_id,
@@ -778,9 +825,28 @@ class SchedulerService:
         if response_text and self._channels is not None:
             channel = self._channels.get(job.platform)
             if channel is not None:
-                await channel.send_message(
-                    job.chat_id,
-                    OutboundMessage(text=response_text),
+                message_id = await channel.send_message(
+                    address.target_id,
+                    OutboundMessage(
+                        text=response_text,
+                        extra={"chat_address": address.chat_key},
+                    ),
+                )
+                await self._record_delivery(
+                    job=job,
+                    address=address,
+                    session_id=session_id,
+                    text=response_text,
+                    source="scheduler_cron",
+                    delivery_mode="cron_final",
+                    message_id=message_id,
+                    metadata={
+                        "job_id": job.job_id,
+                        "session_id": session_id,
+                        "session_mode": job.session_mode,
+                        "sentinel_action": sentinel_action,
+                        "sentinel_suppressed": sentinel_suppressed,
+                    },
                 )
             else:
                 logger.warning(
@@ -800,15 +866,76 @@ class SchedulerService:
         """Send a brief error message to the originating chat."""
         if self._channels is None:
             return
+        address = ChatAddress.from_inbound(
+            job.platform,
+            job.chat_id,
+            chat_type=job.chat_type,
+        )
         channel = self._channels.get(job.platform)
         if channel is not None:
             try:
-                await channel.send_message(
-                    job.chat_id,
-                    OutboundMessage(text=f"[Scheduler] {message}"),
+                text = f"[Scheduler] {message}"
+                message_id = await channel.send_message(
+                    address.target_id,
+                    OutboundMessage(
+                        text=text,
+                        extra={"chat_address": address.chat_key},
+                    ),
+                )
+                await self._record_delivery(
+                    job=job,
+                    address=address,
+                    session_id=job.created_from_session_id,
+                    text=text,
+                    source="scheduler_cron",
+                    delivery_mode="cron_error",
+                    message_id=message_id,
+                    metadata={
+                        "job_id": job.job_id,
+                        "session_id": job.created_from_session_id,
+                        "session_mode": job.session_mode,
+                    },
                 )
             except Exception:
                 logger.exception("scheduler.send_error_failed", job_id=job.job_id)
+
+    async def _record_delivery(
+        self,
+        *,
+        job: CronJob,
+        address: ChatAddress,
+        session_id: str,
+        text: str,
+        source: str,
+        delivery_mode: str,
+        message_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if self._message_delivery_store is None:
+            return
+        try:
+            await self._message_delivery_store.record(
+                target_chat_address=address.chat_key,
+                platform=address.channel,
+                target_type=address.target_type,
+                target_id=address.target_id,
+                source_session_id=session_id,
+                source_chat_address=job.created_from_chat_address or address.chat_key,
+                source_user_id=job.created_by_user_id,
+                source=source,
+                delivery_mode=delivery_mode,
+                status="sent",
+                message_id=message_id,
+                text=text,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.warning(
+                "scheduler.delivery_audit_failed",
+                job_id=job.job_id,
+                message_id=message_id,
+                exc_info=True,
+            )
 
     # ── Validators ────────────────────────────────────────
 

@@ -53,10 +53,27 @@ async def send_message(
             detail=f"Channel '{address.channel}' not found or not connected",
         )
 
-    await channel.send_message(
+    message_id = await channel.send_message(
         address.target_id,
         OutboundMessage(text=body.text, extra={"chat_address": address.chat_key}),
     )
+    delivery_store = getattr(app, "message_delivery_store", None)
+    if delivery_store is not None:
+        await delivery_store.record(
+            target_chat_address=address.chat_key,
+            platform=address.channel,
+            target_type=address.target_type,
+            target_id=address.target_id,
+            source_session_id=session_id,
+            source_chat_address=address.chat_key,
+            source_user_id="webapi",
+            source="webapi_send",
+            delivery_mode="notify",
+            status="sent",
+            message_id=message_id,
+            text=body.text,
+            metadata={"requested_session_id": body.session_id or ""},
+        )
 
     logger.info(
         "webapi.message_sent",

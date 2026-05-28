@@ -20,6 +20,8 @@ class SessionContext:
     )
     workspace_id: str | None = None
     chat_address: ChatAddress | None = None
+    user_id: str = ""
+    sender_display_name: str = ""
 
 
 @dataclass(slots=True, frozen=True)

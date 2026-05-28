@@ -1,43 +1,151 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
-import { useSessionList, useSessionHistory } from "@/api/queries";
-import Badge from "@/components/ui/Badge.vue";
+import { computed, ref } from "vue";
+import {
+  useDeliveryGroups,
+  useMessageDeliveries,
+  useSessionHistory,
+  useSessionList,
+  useSessionSearch,
+} from "@/api/queries";
 import Alert from "@/components/ui/Alert.vue";
-import type { SessionSummary } from "@/api/schemas";
+import Badge from "@/components/ui/Badge.vue";
+import { formatDateTime, relativeTime } from "@/lib/utils";
+import type { SessionSearchResult, SessionSummary } from "@/api/schemas";
 
-const { data: sessionData, isLoading, isFetching, error, refetch } = useSessionList();
-const selectedId = ref("");
+type ViewMode = "history" | "search";
+type ItemType = "session" | "delivery";
 
-const historyQuery = useSessionHistory(selectedId);
+interface DisplayItem {
+  id: string;
+  label: string;
+  type: ItemType;
+  count: number;
+  lastActiveAt: string;
+  workspaceId: string;
+  kind: string;
+  source: string;
+}
 
 interface SessionGroup {
   key: string;
-  sessions: SessionSummary[];
+  items: DisplayItem[];
 }
 
+const { data: sessionData, isLoading, isFetching, error, refetch } = useSessionList();
+const deliveryGroupsQuery = useDeliveryGroups();
+const selectedId = ref("");
+const activeView = ref<ViewMode>("history");
+
+const selectedType = computed<ItemType>(() =>
+  selectedId.value.startsWith("delivery:") ? "delivery" : "session",
+);
+const selectedSessionId = computed(() =>
+  selectedType.value === "session" ? selectedId.value : "",
+);
+const selectedDeliveryTarget = computed(() =>
+  selectedType.value === "delivery" ? selectedId.value.slice("delivery:".length) : "",
+);
+
+const historyQuery = useSessionHistory(selectedSessionId);
+const deliveriesQuery = useMessageDeliveries(selectedDeliveryTarget);
+
+const searchText = ref("");
+const searchChatAddress = ref("");
+const searchSource = ref("");
+const searchRole = ref("");
+const searchParams = computed(() => ({
+  q: searchText.value.trim(),
+  chat_address: searchChatAddress.value.trim(),
+  source: searchSource.value.trim(),
+  role: searchRole.value,
+}));
+const searchEnabled = computed(() => activeView.value === "search");
+const searchQuery = useSessionSearch(searchParams, searchEnabled);
+
 const groups = computed<SessionGroup[]>(() => {
-  if (!sessionData.value) return [];
-  const map = new Map<string, typeof sessionData.value.sessions>();
-  for (const s of sessionData.value.sessions) {
-    const parts = s.session_id.split(":");
-    // Use 3 segments for typed sessions (channel:target_type:target_id)
-    // so each chat address gets its own group. Fall back to 2 for legacy.
-    const groupKey =
-      parts.length >= 3 ? `${parts[0]}:${parts[1]}:${parts[2]}`
-      : parts.length >= 2 ? `${parts[0]}:${parts[1]}`
-      : s.session_id;
-    let list = map.get(groupKey);
-    if (!list) {
-      list = [];
-      map.set(groupKey, list);
-    }
-    list.push(s);
+  const map = new Map<string, DisplayItem[]>();
+  const sessions = sessionData.value?.sessions ?? [];
+  for (const session of sessions) {
+    const key = chatGroupKey(session.session_id);
+    const list = ensureGroup(map, key);
+    list.push(sessionItem(session));
   }
-  return Array.from(map.entries()).map(([key, sessions]) => ({ key, sessions }));
+
+  for (const group of deliveryGroupsQuery.data.value?.groups ?? []) {
+    const key = group.target_chat_address;
+    const list = ensureGroup(map, key);
+    list.unshift({
+      id: `delivery:${group.target_chat_address}`,
+      label: "Message deliveries",
+      type: "delivery",
+      count: group.count,
+      lastActiveAt: group.last_created_at,
+      workspaceId: "",
+      kind: "delivery",
+      source: group.last_source,
+    });
+  }
+
+  return Array.from(map.entries())
+    .map(([key, items]) => ({
+      key,
+      items: items.sort(sortDisplayItems),
+    }))
+    .sort((a, b) => latestTime(b.items) - latestTime(a.items));
 });
 
-function selectSession(id: string) {
-  selectedId.value = id;
+function ensureGroup(map: Map<string, DisplayItem[]>, key: string) {
+  let list = map.get(key);
+  if (!list) {
+    list = [];
+    map.set(key, list);
+  }
+  return list;
+}
+
+function sessionItem(session: SessionSummary): DisplayItem {
+  return {
+    id: session.session_id,
+    label: session.session_id,
+    type: "session",
+    count: session.turn_count,
+    lastActiveAt: session.last_active_at,
+    workspaceId: session.workspace_id ?? "default",
+    kind: session.session_key_kind,
+    source: "",
+  };
+}
+
+function sortDisplayItems(a: DisplayItem, b: DisplayItem) {
+  if (a.type !== b.type) return a.type === "delivery" ? -1 : 1;
+  return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
+}
+
+function latestTime(items: DisplayItem[]) {
+  return Math.max(0, ...items.map((item) => new Date(item.lastActiveAt).getTime() || 0));
+}
+
+function chatGroupKey(sessionId: string): string {
+  const parts = sessionId.split(":");
+  const typed = ["private", "group", "channel", "thread", "unknown"];
+  if (parts.length >= 3 && typed.includes(parts[1])) return `${parts[0]}:${parts[1]}:${parts[2]}`;
+  if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
+  return sessionId;
+}
+
+function selectItem(item: DisplayItem) {
+  selectedId.value = item.id;
+  activeView.value = "history";
+  if (item.type === "delivery") searchChatAddress.value = item.id.slice("delivery:".length);
+}
+
+function selectSearchResult(result: SessionSearchResult) {
+  if (result.result_type === "delivery") {
+    selectedId.value = `delivery:${result.target_chat_address}`;
+  } else {
+    selectedId.value = result.session_id;
+  }
+  activeView.value = "history";
 }
 
 function roleVariant(role: string) {
@@ -45,22 +153,32 @@ function roleVariant(role: string) {
     case "user": return "default";
     case "assistant": return "success";
     case "system": return "secondary";
+    case "delivery": return "warning";
     default: return "outline";
   }
 }
 
-function relativeTime(iso: string): string {
-  const date = new Date(iso);
-  const diff = Date.now() - date.getTime();
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const days = Math.floor(hr / 24);
-  if (days <= 7) return `${days}d ago`;
-  return date.toLocaleDateString();
+function sourceBadgeVariant(source: string) {
+  if (source === "cron_trigger" || source === "scheduler_cron") return "warning";
+  if (source === "cross_session_message" || source === "message_tool") return "secondary";
+  if (source === "webapi_send") return "outline";
+  return "outline";
+}
+
+function shortMeta(item: DisplayItem) {
+  if (item.type === "delivery") return `${item.count} deliveries`;
+  return `${item.count} turns`;
+}
+
+function resultTitle(result: SessionSearchResult) {
+  return result.result_type === "delivery"
+    ? result.target_chat_address
+    : result.session_id;
+}
+
+function resultSource(result: SessionSearchResult) {
+  const parts = [result.source, result.delivery_mode, result.status].filter(Boolean);
+  return parts.join(" / ");
 }
 </script>
 
@@ -69,72 +187,143 @@ function relativeTime(iso: string): string {
     <Alert v-if="error" variant="destructive">
       Failed to load sessions: {{ error.message }}
     </Alert>
+    <Alert v-if="deliveryGroupsQuery.error.value" variant="destructive">
+      Failed to load delivery groups: {{ deliveryGroupsQuery.error.value.message }}
+    </Alert>
 
     <div v-if="isLoading" class="loading">Loading...</div>
 
     <div v-if="sessionData" class="sessions-layout">
-      <!-- Session list -->
-      <div class="session-list">
+      <aside class="session-list">
         <div class="session-list-header">
           <span class="session-list-title">Sessions</span>
-          <button
-            class="refresh-btn"
-            :disabled="isFetching"
-            @click="refetch()"
-          >
+          <button class="refresh-btn" :disabled="isFetching" @click="refetch()">
             {{ isFetching ? "Refreshing..." : "Refresh" }}
           </button>
         </div>
         <div v-if="!groups.length" class="empty">No sessions found.</div>
-        <div
-          v-for="group in groups"
-          :key="group.key"
-          class="session-group"
-        >
+        <div v-for="group in groups" :key="group.key" class="session-group">
           <div class="group-header">{{ group.key }}</div>
-          <div
-            v-for="s in group.sessions"
-            :key="s.session_id"
+          <button
+            v-for="item in group.items"
+            :key="item.id"
+            type="button"
             class="session-item"
-            :class="{ selected: selectedId === s.session_id }"
-            @click="selectSession(s.session_id)"
+            :class="{ selected: selectedId === item.id, delivery: item.type === 'delivery' }"
+            @click="selectItem(item)"
           >
-            <div class="session-id">{{ s.session_id }}</div>
+            <div class="session-id">{{ item.label }}</div>
             <div class="session-meta">
-              <span>{{ s.turn_count }} turns</span>
-              <span>&middot;</span>
-              <span>{{ relativeTime(s.last_active_at) }}</span>
-              <span>&middot;</span>
-              <span>{{ s.workspace_id ?? "default" }}</span>
+              <span>{{ shortMeta(item) }}</span>
+              <span>|</span>
+              <span :title="formatDateTime(item.lastActiveAt)">{{ relativeTime(item.lastActiveAt) }}</span>
+              <span v-if="item.workspaceId">|</span>
+              <span v-if="item.workspaceId">{{ item.workspaceId }}</span>
             </div>
-          </div>
+          </button>
         </div>
-      </div>
+      </aside>
 
-      <!-- History viewer -->
-      <div class="history-viewer">
-        <div v-if="!selectedId" class="empty">Select a session to view history.</div>
-        <div v-else-if="historyQuery.isLoading.value" class="loading">Loading history...</div>
-        <template v-else-if="historyQuery.data.value">
-          <div class="history-header">
-            <code>{{ selectedId }}</code>
-            <span class="turn-count">{{ historyQuery.data.value.turns.length }} turns</span>
-          </div>
-          <div class="history-turns">
-            <div
-              v-for="turn in historyQuery.data.value.turns"
-              :key="turn.turn_id"
-              class="turn"
-            >
-              <div class="turn-header">
-                <Badge :variant="roleVariant(turn.role)">{{ turn.role }}</Badge>
-                <span v-if="turn.source" class="turn-source">{{ turn.source }}</span>
+      <main class="history-viewer">
+        <div class="view-tabs">
+          <button :class="{ active: activeView === 'history' }" type="button" @click="activeView = 'history'">
+            History
+          </button>
+          <button :class="{ active: activeView === 'search' }" type="button" @click="activeView = 'search'">
+            Search
+          </button>
+        </div>
+
+        <section v-if="activeView === 'history'" class="view-pane">
+          <div v-if="!selectedId" class="empty">Select a session to view history.</div>
+
+          <template v-else-if="selectedType === 'session'">
+            <div v-if="historyQuery.isLoading.value" class="loading">Loading history...</div>
+            <template v-else-if="historyQuery.data.value">
+              <div class="history-header">
+                <code>{{ selectedSessionId }}</code>
+                <span class="turn-count">{{ historyQuery.data.value.turns.length }} turns</span>
               </div>
-              <pre class="turn-content">{{ turn.content }}</pre>
-            </div>
+              <div class="history-turns">
+                <article v-for="turn in historyQuery.data.value.turns" :key="turn.turn_id" class="turn">
+                  <div class="turn-header">
+                    <Badge :variant="roleVariant(turn.role)">{{ turn.role }}</Badge>
+                    <Badge v-if="turn.source" :variant="sourceBadgeVariant(turn.source)">{{ turn.source }}</Badge>
+                    <Badge v-if="turn.sentinel_action" variant="destructive">{{ turn.sentinel_action }}</Badge>
+                    <span class="turn-time" :title="formatDateTime(turn.created_at)">
+                      {{ relativeTime(turn.created_at) }}
+                    </span>
+                  </div>
+                  <pre class="turn-content">{{ turn.content }}</pre>
+                </article>
+              </div>
+            </template>
+          </template>
+
+          <template v-else>
+            <div v-if="deliveriesQuery.isLoading.value" class="loading">Loading deliveries...</div>
+            <template v-else-if="deliveriesQuery.data.value">
+              <div class="history-header">
+                <code>{{ selectedDeliveryTarget }}</code>
+                <span class="turn-count">{{ deliveriesQuery.data.value.deliveries.length }} deliveries</span>
+              </div>
+              <div class="history-turns">
+                <article
+                  v-for="delivery in deliveriesQuery.data.value.deliveries"
+                  :key="delivery.delivery_id"
+                  class="turn"
+                >
+                  <div class="turn-header">
+                    <Badge variant="warning">delivery</Badge>
+                    <Badge v-if="delivery.source" :variant="sourceBadgeVariant(delivery.source)">{{ delivery.source }}</Badge>
+                    <Badge v-if="delivery.delivery_mode" variant="outline">{{ delivery.delivery_mode }}</Badge>
+                    <Badge v-if="delivery.sentinel_action" variant="destructive">{{ delivery.sentinel_action }}</Badge>
+                    <span class="turn-time" :title="formatDateTime(delivery.created_at)">
+                      {{ relativeTime(delivery.created_at) }}
+                    </span>
+                  </div>
+                  <pre class="turn-content">{{ delivery.text }}</pre>
+                  <div v-if="delivery.error" class="delivery-error">{{ delivery.error }}</div>
+                </article>
+              </div>
+            </template>
+          </template>
+        </section>
+
+        <section v-else class="view-pane">
+          <div class="search-controls">
+            <input v-model="searchText" type="search" placeholder="Search text" />
+            <input v-model="searchChatAddress" type="search" placeholder="Chat address" />
+            <input v-model="searchSource" type="search" placeholder="Source" />
+            <select v-model="searchRole">
+              <option value="">Any role</option>
+              <option value="user">User</option>
+              <option value="assistant">Assistant</option>
+              <option value="system">System</option>
+              <option value="delivery">Delivery</option>
+            </select>
           </div>
-        </template>
-      </div>
+
+          <div v-if="searchQuery.isLoading.value" class="loading">Searching...</div>
+          <div v-else-if="searchQuery.data.value && !searchQuery.data.value.results.length" class="empty">
+            No matching records.
+          </div>
+          <div v-else-if="searchQuery.data.value" class="history-turns">
+            <article v-for="result in searchQuery.data.value.results" :key="`${result.result_type}:${result.id}`" class="turn">
+              <div class="turn-header">
+                <Badge :variant="roleVariant(result.role)">{{ result.role }}</Badge>
+                <Badge v-if="result.source" :variant="sourceBadgeVariant(result.source)">{{ result.source }}</Badge>
+                <Badge v-if="result.sentinel_action" variant="destructive">{{ result.sentinel_action }}</Badge>
+                <span class="turn-time" :title="formatDateTime(result.created_at)">{{ relativeTime(result.created_at) }}</span>
+                <button class="jump-btn" type="button" @click="selectSearchResult(result)">Open</button>
+              </div>
+              <div class="search-target">{{ resultTitle(result) }}</div>
+              <div v-if="resultSource(result)" class="turn-source">{{ resultSource(result) }}</div>
+              <pre class="turn-content">{{ result.content }}</pre>
+            </article>
+          </div>
+        </section>
+      </main>
     </div>
   </div>
 </template>
@@ -154,13 +343,13 @@ function relativeTime(iso: string): string {
 .empty {
   color: var(--color-muted-foreground);
   font-size: 0.8125rem;
-  text-align: center;
   padding: 2rem;
+  text-align: center;
 }
 
 .sessions-layout {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: minmax(260px, 320px) 1fr;
   gap: 1rem;
   min-height: 0;
 }
@@ -175,8 +364,8 @@ function relativeTime(iso: string): string {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  overflow-y: auto;
   max-height: calc(100vh - 140px);
+  overflow-y: auto;
 }
 
 .session-list-header {
@@ -191,69 +380,102 @@ function relativeTime(iso: string): string {
   font-weight: 600;
 }
 
-.refresh-btn {
-  font-size: 0.6875rem;
-  padding: 0.2rem 0.5rem;
+.refresh-btn,
+.jump-btn,
+.view-tabs button {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-muted);
   color: var(--color-foreground);
   cursor: pointer;
-  transition: background 0.15s;
 }
 
-.refresh-btn:hover:not(:disabled) {
+.refresh-btn {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.6875rem;
+}
+
+.refresh-btn:hover:not(:disabled),
+.jump-btn:hover,
+.view-tabs button:hover {
   background: var(--color-accent);
 }
 
 .refresh-btn:disabled {
-  opacity: 0.5;
   cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .group-header {
+  padding: 0.25rem 0;
+  color: var(--color-muted-foreground);
   font-size: 0.6875rem;
   font-weight: 600;
-  text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--color-muted-foreground);
-  padding: 0.25rem 0;
+  text-transform: uppercase;
 }
 
 .session-item {
+  display: block;
+  width: 100%;
   padding: 0.5rem 0.75rem;
-  border-radius: var(--radius-md);
-  cursor: pointer;
   border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-foreground);
+  cursor: pointer;
+  text-align: left;
   transition: background 0.15s, border-color 0.15s;
 }
 
-.session-item:hover {
+.session-item:hover,
+.session-item.selected {
   background: var(--color-accent);
 }
 
 .session-item.selected {
-  background: var(--color-accent);
   border-color: var(--color-ring);
 }
 
+.session-item.delivery {
+  border-color: color-mix(in srgb, var(--color-warning) 35%, transparent);
+}
+
 .session-id {
-  font-size: 0.8125rem;
   font-family: var(--font-mono);
-  word-break: break-all;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
 }
 
 .session-meta {
-  font-size: 0.6875rem;
-  color: var(--color-muted-foreground);
   display: flex;
+  flex-wrap: wrap;
   gap: 0.375rem;
   margin-top: 0.125rem;
+  color: var(--color-muted-foreground);
+  font-size: 0.6875rem;
 }
 
 .history-viewer {
-  overflow-y: auto;
+  min-width: 0;
   max-height: calc(100vh - 140px);
+  overflow-y: auto;
+}
+
+.view-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.view-tabs button {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+}
+
+.view-tabs button.active {
+  border-color: var(--color-ring);
+  background: var(--color-accent);
 }
 
 .history-header {
@@ -265,15 +487,19 @@ function relativeTime(iso: string): string {
 }
 
 .history-header code {
-  font-size: 0.75rem;
-  background: var(--color-muted);
   padding: 0.125rem 0.5rem;
   border-radius: var(--radius-sm);
+  background: var(--color-muted);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }
 
-.turn-count {
-  font-size: 0.75rem;
+.turn-count,
+.turn-time,
+.turn-source,
+.search-target {
   color: var(--color-muted-foreground);
+  font-size: 0.75rem;
 }
 
 .history-turns {
@@ -291,23 +517,64 @@ function relativeTime(iso: string): string {
 .turn-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-bottom: 0.375rem;
 }
 
-.turn-source {
-  font-size: 0.6875rem;
-  color: var(--color-muted-foreground);
+.turn-time {
+  margin-left: auto;
 }
 
 .turn-content {
+  max-height: 260px;
+  margin: 0;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
   font-size: 0.8125rem;
   line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
-  font-family: inherit;
-  max-height: 200px;
-  overflow-y: auto;
+}
+
+.delivery-error {
+  margin-top: 0.5rem;
+  color: var(--color-destructive);
+  font-size: 0.75rem;
+}
+
+.search-controls {
+  display: grid;
+  grid-template-columns: 2fr 1.5fr 1fr 120px;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+@media (max-width: 960px) {
+  .search-controls {
+    grid-template-columns: 1fr;
+  }
+}
+
+.search-controls input,
+.search-controls select {
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-size: 0.8125rem;
+}
+
+.jump-btn {
+  padding: 0.18rem 0.55rem;
+  font-size: 0.6875rem;
+}
+
+.search-target {
+  margin-bottom: 0.25rem;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 </style>

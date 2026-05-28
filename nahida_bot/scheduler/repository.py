@@ -41,6 +41,17 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         session_mode=r["session_mode"] if "session_mode" in keys else "main",
         session_name=r["session_name"] if "session_name" in keys else None,
         chat_type=r["chat_type"] if "chat_type" in keys else "",
+        created_by_user_id=(
+            r["created_by_user_id"] if "created_by_user_id" in keys else ""
+        ),
+        created_from_session_id=(
+            r["created_from_session_id"] if "created_from_session_id" in keys else ""
+        ),
+        created_from_chat_address=(
+            r["created_from_chat_address"]
+            if "created_from_chat_address" in keys
+            else ""
+        ),
     )
 
 
@@ -59,8 +70,10 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error, session_mode, session_name, chat_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode, session_name, chat_type,
+                    created_by_user_id, created_from_session_id,
+                    created_from_chat_address
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -85,6 +98,9 @@ class CronRepository:
                     job.session_mode,
                     job.session_name,
                     job.chat_type,
+                    job.created_by_user_id,
+                    job.created_from_session_id,
+                    job.created_from_chat_address,
                 ),
             )
             await self._engine.db.commit()
@@ -358,8 +374,10 @@ class CronRepository:
                     fire_at, interval_seconds, cron_expression, max_runs,
                     run_count, is_active, created_at, next_fire_at,
                     last_fired_at, workspace_id, claimed_at, failure_count,
-                    last_error, session_mode, session_name, chat_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, session_mode, session_name, chat_type,
+                    created_by_user_id, created_from_session_id,
+                    created_from_chat_address
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -384,6 +402,9 @@ class CronRepository:
                     job.session_mode,
                     job.session_name,
                     job.chat_type,
+                    job.created_by_user_id,
+                    job.created_from_session_id,
+                    job.created_from_chat_address,
                 ),
             )
             await self._engine.db.commit()

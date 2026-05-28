@@ -131,11 +131,75 @@ class TurnResponse(BaseModel):
     content: str
     source: str = ""
     created_at: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    sentinel_action: str | None = None
+    sentinel_suppressed: bool = False
 
 
 class SessionHistoryResponse(BaseModel):
     session_id: str
     turns: list[TurnResponse]
+
+
+class MessageDeliveryResponse(BaseModel):
+    delivery_id: str
+    target_chat_address: str
+    platform: str
+    target_type: str
+    target_id: str
+    source_session_id: str = ""
+    source_chat_address: str = ""
+    source_user_id: str = ""
+    source: str = ""
+    delivery_mode: str = ""
+    status: str = ""
+    message_id: str = ""
+    text: str = ""
+    error: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = ""
+    sentinel_action: str | None = None
+    sentinel_suppressed: bool = False
+
+
+class MessageDeliveryGroupResponse(BaseModel):
+    target_chat_address: str
+    platform: str
+    target_type: str
+    target_id: str
+    count: int
+    last_created_at: str
+    last_source: str = ""
+
+
+class MessageDeliveryGroupsResponse(BaseModel):
+    groups: list[MessageDeliveryGroupResponse]
+
+
+class MessageDeliveriesResponse(BaseModel):
+    target_chat_address: str
+    deliveries: list[MessageDeliveryResponse]
+
+
+class SessionSearchResultResponse(BaseModel):
+    result_type: Literal["turn", "delivery"]
+    id: str
+    session_id: str = ""
+    target_chat_address: str = ""
+    role: str = ""
+    source: str = ""
+    content: str = ""
+    created_at: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    sentinel_action: str | None = None
+    sentinel_suppressed: bool = False
+    delivery_mode: str = ""
+    status: str = ""
+    message_id: str = ""
+
+
+class SessionSearchResponse(BaseModel):
+    results: list[SessionSearchResultResponse]
 
 
 # -- Send Message ---------------------------------------------------------
@@ -179,6 +243,9 @@ class CronJobResponse(BaseModel):
     interval_seconds: int | None = None
     cron_expression: str | None = None
     max_runs: int | None = None
+    created_by_user_id: str = ""
+    created_from_session_id: str = ""
+    created_from_chat_address: str = ""
 
 
 class CronListResponse(BaseModel):
@@ -193,7 +260,7 @@ class CreateCronRequest(BaseModel):
     interval_seconds: int | None = None
     cron_expression: str | None = None
     max_runs: int | None = None
-    session_mode: Literal["main", "isolated", "named"] = "main"
+    session_mode: Literal["main", "isolated", "fresh", "named"] = "main"
     session_name: str | None = None
 
     @model_validator(mode="after")

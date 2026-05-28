@@ -16,6 +16,16 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _like_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _like_prefix(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
+
+
 class SQLiteMemoryRepository:
     """Typed SQLite data access for session and conversation turn storage."""
 
@@ -166,6 +176,50 @@ class SQLiteMemoryRepository:
 
         rows = await self._engine.fetch_all(sql, tuple(params))
         return [self._row_to_dict(row) for row in reversed(rows)]
+
+    async def search_turns(
+        self,
+        query: str = "",
+        *,
+        chat_address: str = "",
+        source: str = "",
+        role: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Search turns across sessions for WebUI debugging."""
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if query:
+            pattern = _like_pattern(query)
+            conditions.append(
+                "("
+                "content LIKE ? ESCAPE '\\' OR "
+                "session_id LIKE ? ESCAPE '\\' OR "
+                "source LIKE ? ESCAPE '\\' OR "
+                "metadata_json LIKE ? ESCAPE '\\'"
+                ")"
+            )
+            params.extend([pattern, pattern, pattern, pattern])
+        if chat_address:
+            conditions.append("(session_id = ? OR session_id LIKE ? ESCAPE '\\')")
+            params.extend([chat_address, _like_prefix(chat_address + ":")])
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+        if role:
+            conditions.append("role = ?")
+            params.append(role)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        rows = await self._engine.fetch_all(
+            "SELECT id, session_id, role, content, source, metadata_json, created_at "
+            f"FROM memory_turns {where_clause} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        )
+        return [self._row_to_dict(row) for row in rows]
 
     async def delete_turns_before(self, cutoff: datetime) -> int:
         """Delete turns older than cutoff. Returns count of deleted rows."""

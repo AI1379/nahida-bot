@@ -89,6 +89,9 @@ async def create_cron_job(
     svc = _require_scheduler(app)
 
     address = _resolve_write_target(body.target)
+    created_from_session_id = ""
+    if app.message_router is not None:
+        created_from_session_id = app.message_router.get_active_session_id(address)
 
     try:
         job = await svc.create_job(
@@ -101,6 +104,9 @@ async def create_cron_job(
             max_runs=body.max_runs,
             session_mode=body.session_mode,
             session_name=body.session_name,
+            created_by_user_id="webapi",
+            created_from_session_id=created_from_session_id,
+            created_from_chat_address=address.chat_key,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -218,6 +224,9 @@ def _job_to_response(job: CronJob) -> CronJobResponse:
         interval_seconds=job.interval_seconds,
         cron_expression=job.cron_expression,
         max_runs=job.max_runs,
+        created_by_user_id=job.created_by_user_id,
+        created_from_session_id=job.created_from_session_id,
+        created_from_chat_address=job.created_from_chat_address,
     )
 
 

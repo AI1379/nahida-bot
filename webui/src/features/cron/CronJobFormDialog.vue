@@ -33,7 +33,7 @@ const fireAt = ref("");
 const intervalSeconds = ref("");
 const cronExpression = ref("");
 const maxRuns = ref("");
-const sessionMode = ref<"main" | "isolated" | "named">("main");
+const sessionMode = ref<"main" | "isolated" | "fresh" | "named">("main");
 const sessionName = ref("");
 
 const loading = defineModel<boolean>("loading", { default: false });
@@ -49,7 +49,7 @@ watch(
       intervalSeconds.value = props.job.interval_seconds != null ? String(props.job.interval_seconds) : "";
       cronExpression.value = props.job.cron_expression ?? "";
       maxRuns.value = props.job.max_runs != null ? String(props.job.max_runs) : "";
-      sessionMode.value = props.job.session_mode as "main" | "isolated" | "named";
+      sessionMode.value = props.job.session_mode as "main" | "isolated" | "fresh" | "named";
       sessionName.value = props.job.session_name ?? "";
       target.value = "";
     } else {
@@ -140,6 +140,7 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
               <select v-model="sessionMode" class="field-select">
                 <option value="main">Main</option>
                 <option value="isolated">Isolated</option>
+                <option value="fresh">Fresh</option>
                 <option value="named">Named</option>
               </select>
             </div>

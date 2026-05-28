@@ -49,6 +49,7 @@ def _make_mock_app(
             "is_started",
             "is_initialized",
             "memory_store",
+            "message_delivery_store",
             "message_router",
             "channel_registry",
             "scheduler_service",
@@ -66,6 +67,7 @@ def _make_mock_app(
     mock.is_started = is_started
     mock.is_initialized = True
     mock.memory_store = None
+    mock.message_delivery_store = None
     mock.message_router = None
     mock.channel_registry = MagicMock()
     mock.channel_registry.get.return_value = None
@@ -447,6 +449,140 @@ async def test_sessions_returns_list(client_no_auth: AsyncClient) -> None:
     assert data["sessions"][0]["turn_count"] == 5
 
 
+async def test_session_history_includes_metadata_and_sentinel(
+    client_no_auth: AsyncClient,
+) -> None:
+    from datetime import UTC, datetime
+
+    from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_memory = AsyncMock()
+    mock_memory.get_recent.return_value = [
+        MemoryRecord(
+            turn_id=7,
+            session_id="telegram:private:123",
+            turn=ConversationTurn(
+                role="assistant",
+                content="NO_REPLY",
+                source="agent_response",
+                metadata={"reason": "silent"},
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        )
+    ]
+    mock_app.memory_store = mock_memory
+
+    resp = await client_no_auth.get("/api/sessions/telegram:private:123")
+
+    assert resp.status_code == 200
+    turn = resp.json()["turns"][0]
+    assert turn["metadata"] == {"reason": "silent"}
+    assert turn["sentinel_action"] == "NO_REPLY"
+    assert turn["sentinel_suppressed"] is True
+
+
+async def test_delivery_group_and_detail_endpoints(client_no_auth: AsyncClient) -> None:
+    from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
+        MessageDelivery,
+        MessageDeliveryGroup,
+    )
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_store = AsyncMock()
+    mock_store.list_groups.return_value = [
+        MessageDeliveryGroup(
+            target_chat_address="telegram:private:123",
+            platform="telegram",
+            target_type="private",
+            target_id="123",
+            count=2,
+            last_created_at="2026-01-01T00:00:00+00:00",
+            last_source="message_tool",
+        )
+    ]
+    mock_store.list_for_target.return_value = [
+        MessageDelivery(
+            delivery_id="d1",
+            target_chat_address="telegram:private:123",
+            platform="telegram",
+            target_type="private",
+            target_id="123",
+            source="message_tool",
+            delivery_mode="notify",
+            status="sent",
+            message_id="m1",
+            text="hello",
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+    ]
+    mock_app.message_delivery_store = mock_store
+
+    groups_resp = await client_no_auth.get("/api/sessions/delivery-groups")
+    detail_resp = await client_no_auth.get(
+        "/api/sessions/deliveries?target=telegram:private:123"
+    )
+
+    assert groups_resp.status_code == 200
+    assert groups_resp.json()["groups"][0]["target_chat_address"] == (
+        "telegram:private:123"
+    )
+    assert detail_resp.status_code == 200
+    delivery = detail_resp.json()["deliveries"][0]
+    assert delivery["delivery_id"] == "d1"
+    assert delivery["source"] == "message_tool"
+
+
+async def test_session_search_mixes_turns_and_deliveries(
+    client_no_auth: AsyncClient,
+) -> None:
+    from datetime import UTC, datetime
+
+    from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+    from nahida_bot.db.repositories.sqlite_message_delivery_repo import MessageDelivery
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_memory = AsyncMock()
+    mock_memory.search_turns.return_value = [
+        MemoryRecord(
+            turn_id=1,
+            session_id="telegram:private:123",
+            turn=ConversationTurn(
+                role="user",
+                content="hello from turn",
+                source="user_input",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        )
+    ]
+    mock_store = AsyncMock()
+    mock_store.search.return_value = [
+        MessageDelivery(
+            delivery_id="d1",
+            target_chat_address="telegram:private:123",
+            platform="telegram",
+            target_type="private",
+            target_id="123",
+            source="webapi_send",
+            delivery_mode="notify",
+            status="sent",
+            text="hello from delivery",
+            created_at="2026-01-02T00:00:00+00:00",
+        )
+    ]
+    mock_app.memory_store = mock_memory
+    mock_app.message_delivery_store = mock_store
+
+    resp = await client_no_auth.get("/api/sessions/search?q=hello")
+
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert [item["result_type"] for item in results] == ["delivery", "turn"]
+    assert results[0]["target_chat_address"] == "telegram:private:123"
+    mock_memory.search_turns.assert_awaited_once()
+    mock_store.search.assert_awaited_once()
+
+
 # -- Send Message --------------------------------------------------------
 
 
@@ -497,6 +633,36 @@ async def test_send_success(client_no_auth: AsyncClient) -> None:
     sent_target, sent_message = mock_channel.send_message.call_args.args
     assert sent_target == "123"
     assert sent_message.extra["chat_address"] == "telegram:private:123"
+
+
+async def test_send_success_records_delivery_audit(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+
+    mock_router = MagicMock()
+    mock_router.get_active_session_id.return_value = "telegram:private:123:abc"
+    mock_app.message_router = mock_router
+
+    mock_channel = AsyncMock()
+    mock_channel.send_message = AsyncMock(return_value="msg-456")
+    mock_app.channel_registry.get.return_value = mock_channel
+    mock_store = AsyncMock()
+    mock_app.message_delivery_store = mock_store
+
+    resp = await client_no_auth.post(
+        "/api/send",
+        json={"target": "telegram:private:123", "text": "hello"},
+    )
+
+    assert resp.status_code == 200
+    mock_store.record.assert_awaited_once()
+    call = mock_store.record.await_args.kwargs
+    assert call["target_chat_address"] == "telegram:private:123"
+    assert call["source_session_id"] == "telegram:private:123:abc"
+    assert call["source"] == "webapi_send"
+    assert call["message_id"] == "msg-456"
+    assert call["text"] == "hello"
 
 
 async def test_send_with_typed_target_resolves_typed_session(
@@ -655,6 +821,53 @@ async def test_cron_create_success(client_no_auth: AsyncClient) -> None:
     data = resp.json()
     assert data["job_id"] == "new-job-1"
     assert data["status"] == "created"
+
+
+async def test_cron_create_accepts_fresh_session_mode(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.scheduler.models import CronJob
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_scheduler = AsyncMock()
+    mock_scheduler.create_job.return_value = CronJob(
+        job_id="fresh-job",
+        platform="telegram",
+        chat_id="123",
+        session_key="telegram:private:123",
+        prompt="hello",
+        mode="once",
+        fire_at="2026-06-01T00:00:00",
+        interval_seconds=None,
+        cron_expression=None,
+        max_runs=1,
+        run_count=0,
+        is_active=True,
+        created_at="2026-01-01T00:00:00",
+        next_fire_at="2026-06-01T00:00:00",
+        last_fired_at=None,
+        workspace_id=None,
+        claimed_at=None,
+        failure_count=0,
+        last_error=None,
+        session_mode="fresh",
+        chat_type="private",
+    )
+    mock_app.scheduler_service = mock_scheduler
+
+    resp = await client_no_auth.post(
+        "/api/cron",
+        json={
+            "target": "telegram:private:123",
+            "prompt": "hello",
+            "mode": "once",
+            "fire_at": "2026-06-01T00:00:00",
+            "session_mode": "fresh",
+        },
+    )
+
+    assert resp.status_code == 201
+    assert mock_scheduler.create_job.await_args.kwargs["session_mode"] == "fresh"
 
 
 async def test_cron_mutations_notify_event_broadcaster(

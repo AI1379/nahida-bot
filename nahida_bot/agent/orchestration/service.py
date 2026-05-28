@@ -151,6 +151,8 @@ class AgentOrchestrator:
     async def wait_for_task(
         self, task_id: str, *, timeout_seconds: float | None = None
     ) -> BackgroundTask | None:
+        # TODO(subagent-observability): Expose a non-blocking read/subscribe API
+        # for live subagent output instead of only polling the final task ledger.
         run = self._registry.get_by_task(task_id)
         if run is not None and run.asyncio_task is not None:
             try:
@@ -213,6 +215,9 @@ class AgentOrchestrator:
             )
             try:
                 await self._prepare_child_session(run, payload, spec)
+                # TODO(subagent-observability): Route executor stream events into
+                # the task event stream so WebUI/API callers can inspect live
+                # subagent reasoning/output/tool progress while the task is running.
                 result = await self._executor.run(run, payload)
                 summary = result.final_response.strip()
                 if result.error:

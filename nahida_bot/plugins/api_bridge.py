@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import ChatProvider
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.core.events import EventBus
+    from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
+        SQLiteMessageDeliveryStore,
+    )
     from nahida_bot.plugins.manifest import PluginManifest
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -79,12 +82,14 @@ class RealBotAPI:
         provider_manager: Any | None = None,  # ProviderManager
         scheduler_service: Any | None = None,  # SchedulerService
         orchestration_service: Any | None = None,  # AgentOrchestrator
+        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
+        self._message_delivery_store = message_delivery_store
         self._permissions = permission_checker
         self._tool_registry = tool_registry
         self._handler_registry = handler_registry
@@ -143,6 +148,57 @@ class RealBotAPI:
                 metadata=metadata,
             ),
         )
+
+    async def record_message_delivery(
+        self,
+        *,
+        target: ChatAddress | str,
+        text: str,
+        source: str,
+        delivery_mode: str = "",
+        status: str = "sent",
+        message_id: str = "",
+        error: str = "",
+        metadata: dict[str, Any] | None = None,
+        source_session_id: str = "",
+        source_chat_address: str = "",
+        source_user_id: str = "",
+    ) -> str:
+        """Write an outbound delivery audit record without touching memory turns."""
+        if self._message_delivery_store is None:
+            return ""
+        if isinstance(target, ChatAddress):
+            address = target
+        else:
+            address = ChatAddress.parse(target)
+
+        if not source_session_id or not source_chat_address or not source_user_id:
+            from nahida_bot.core.context import current_session
+
+            ctx = current_session.get()
+            if ctx is not None:
+                source_session_id = source_session_id or ctx.session_id
+                source_user_id = source_user_id or getattr(ctx, "user_id", "")
+                if not source_chat_address and ctx.chat_address is not None:
+                    source_chat_address = ctx.chat_address.chat_key
+
+        record = await self._message_delivery_store.record(
+            target_chat_address=address.chat_key,
+            platform=address.channel,
+            target_type=address.target_type,
+            target_id=address.target_id,
+            source_session_id=source_session_id,
+            source_chat_address=source_chat_address,
+            source_user_id=source_user_id,
+            source=source,
+            delivery_mode=delivery_mode,
+            status=status,
+            message_id=message_id,
+            text=text,
+            error=error,
+            metadata=metadata,
+        )
+        return record.delivery_id
 
     # ── Event Publishing ───────────────────────────────
 
@@ -562,6 +618,7 @@ class RealBotAPI:
         *,
         workspace_manager: WorkspaceManager | None = None,
         memory_store: MemoryStore | None = None,
+        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         provider_manager: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
@@ -569,6 +626,7 @@ class RealBotAPI:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
         self._memory = memory_store
+        self._message_delivery_store = message_delivery_store
         self._provider_manager = provider_manager
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service

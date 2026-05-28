@@ -205,6 +205,40 @@ _SCHEMA_MIGRATIONS = [
     """
     ALTER TABLE cron_jobs ADD COLUMN session_name TEXT DEFAULT NULL;
     """,
+    # Migration 013: outbound message delivery audit and cron ownership
+    """
+    CREATE TABLE IF NOT EXISTS message_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        target_chat_address TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT '',
+        target_type TEXT NOT NULL DEFAULT '',
+        target_id TEXT NOT NULL DEFAULT '',
+        source_session_id TEXT NOT NULL DEFAULT '',
+        source_chat_address TEXT NOT NULL DEFAULT '',
+        source_user_id TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        delivery_mode TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT '',
+        message_id TEXT NOT NULL DEFAULT '',
+        text TEXT NOT NULL DEFAULT '',
+        error TEXT NOT NULL DEFAULT '',
+        metadata_json TEXT,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_message_deliveries_target_created
+        ON message_deliveries(target_chat_address, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_message_deliveries_source_session_created
+        ON message_deliveries(source_session_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_message_deliveries_source_created
+        ON message_deliveries(source, created_at);
+
+    ALTER TABLE cron_jobs ADD COLUMN created_by_user_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE cron_jobs ADD COLUMN created_from_session_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE cron_jobs ADD COLUMN created_from_chat_address TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 

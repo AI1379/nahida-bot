@@ -333,6 +333,12 @@ class MessageRouter:
             session_id=session_id,
             workspace_id=workspace_id,
             chat_address=address,
+            user_id=inbound.user_id,
+            sender_display_name=(
+                inbound.sender_context.display_name
+                if inbound.sender_context is not None
+                else ""
+            ),
         )
         token = current_session.set(session_ctx)
         try:
@@ -361,6 +367,12 @@ class MessageRouter:
             session_id=session_id,
             workspace_id=workspace_id,
             chat_address=address,
+            user_id=inbound.user_id,
+            sender_display_name=(
+                inbound.sender_context.display_name
+                if inbound.sender_context is not None
+                else ""
+            ),
         )
         token = current_session.set(session_ctx)
         try:
