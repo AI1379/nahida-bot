@@ -71,6 +71,23 @@ class MockBotAPI:
     async def get_session(self, session_id: str) -> Any:
         return None
 
+    async def record_message_delivery(
+        self,
+        *,
+        target: ChatAddress | str,
+        text: str,
+        source: str,
+        delivery_mode: str = "",
+        status: str = "sent",
+        message_id: str = "",
+        error: str = "",
+        metadata: dict[str, Any] | None = None,
+        source_session_id: str = "",
+        source_chat_address: str = "",
+        source_user_id: str = "",
+    ) -> str:
+        return ""
+
     async def clear_session(self, session_id: str) -> int:
         return 0
 
