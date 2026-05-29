@@ -216,6 +216,29 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
   animation: content-in 0.15s ease-out;
 }
 
+@media (max-width: 768px) {
+  .dialog-content {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    transform: none;
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    animation: sheet-in 0.2s ease-out;
+  }
+
+  @keyframes sheet-in {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+
+  @keyframes content-in {
+    from { opacity: 0; transform: translate(-50%, -48%); }
+    to { opacity: 1; transform: translate(-50%, -50%); }
+  }
+}
+
 @keyframes content-in {
   from { opacity: 0; transform: translate(-50%, -48%); }
   to { opacity: 1; transform: translate(-50%, -50%); }
@@ -258,6 +281,7 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  -webkit-overflow-scrolling: touch;
 }
 
 .dialog-footer {
@@ -318,5 +342,24 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+@media (max-width: 768px) {
+  .field-row {
+    grid-template-columns: 1fr;
+  }
+
+  .dialog-body {
+    padding: 1rem 0.875rem;
+  }
+
+  .dialog-header {
+    padding: 0.875rem 1rem;
+  }
+
+  .dialog-footer {
+    padding: 0.75rem 0.875rem;
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
 }
 </style>

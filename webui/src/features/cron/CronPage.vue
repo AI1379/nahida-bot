@@ -9,7 +9,7 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import CronJobFormDialog from "./CronJobFormDialog.vue";
 import type { CronJob } from "@/api/schemas";
 import { relativeTime } from "@/lib/utils";
-import { Pencil, Ban, Trash2, Plus } from "lucide-vue-next";
+import { Pencil, Ban, Trash2, Plus, Clock, Hash, Target, MessageSquare } from "lucide-vue-next";
 
 const activeFilter = ref("all");
 const filterOptions = [
@@ -148,65 +148,123 @@ function modeLabel(mode: string) {
 
     <div v-if="isLoading" class="loading">Loading...</div>
 
-    <!-- Table -->
-    <Card v-if="data && data.jobs.length" class="cron-table-card">
-      <table class="cron-table">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Target</th>
-            <th>Mode</th>
-            <th>Session</th>
-            <th>Prompt</th>
-            <th>Status</th>
-            <th>Next Fire</th>
-            <th>Runs</th>
-            <th>Created</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="job in data.jobs" :key="job.job_id">
-            <td class="mono">{{ job.job_id.slice(0, 8) }}</td>
-            <td>
-              <div>{{ job.platform }}</div>
-              <div class="sub">{{ job.chat_type }}:{{ job.chat_id }}</div>
-            </td>
-            <td>
-              <Badge variant="outline">{{ modeLabel(job.mode) }}</Badge>
-            </td>
-            <td>
-              <Badge variant="secondary">{{ job.session_mode }}</Badge>
-            </td>
-            <td class="prompt-cell">{{ job.prompt.slice(0, 60) }}{{ job.prompt.length > 60 ? "..." : "" }}</td>
-            <td>
-              <Badge :variant="statusVariant(job)">{{ statusLabel(job) }}</Badge>
-            </td>
-            <td class="mono">{{ job.next_fire_at ? relativeTime(job.next_fire_at) : "-" }}</td>
-            <td>{{ job.run_count }}{{ job.max_runs ? `/${job.max_runs}` : "" }}</td>
-            <td class="mono">{{ relativeTime(job.created_at) }}</td>
-            <td>
-              <div class="action-buttons">
-                <button class="action-btn" title="Edit" @click="openEdit(job)">
-                  <Pencil :size="14" />
-                </button>
-                <button
-                  v-if="job.is_active"
-                  class="action-btn"
-                  title="Cancel"
-                  @click="confirmCancel(job)"
-                >
-                  <Ban :size="14" />
-                </button>
-                <button class="action-btn action-btn-danger" title="Delete" @click="confirmDelete(job)">
-                  <Trash2 :size="14" />
-                </button>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <!-- Desktop: table view -->
+    <Card v-if="data && data.jobs.length" class="cron-table-card desktop-only">
+      <div class="table-scroll">
+        <table class="cron-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Target</th>
+              <th>Mode</th>
+              <th>Session</th>
+              <th>Prompt</th>
+              <th>Status</th>
+              <th>Next Fire</th>
+              <th>Runs</th>
+              <th>Created</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="job in data.jobs" :key="job.job_id">
+              <td class="mono">{{ job.job_id.slice(0, 8) }}</td>
+              <td>
+                <div>{{ job.platform }}</div>
+                <div class="sub">{{ job.chat_type }}:{{ job.chat_id }}</div>
+              </td>
+              <td>
+                <Badge variant="outline">{{ modeLabel(job.mode) }}</Badge>
+              </td>
+              <td>
+                <Badge variant="secondary">{{ job.session_mode }}</Badge>
+              </td>
+              <td class="prompt-cell">{{ job.prompt.slice(0, 60) }}{{ job.prompt.length > 60 ? "..." : "" }}</td>
+              <td>
+                <Badge :variant="statusVariant(job)">{{ statusLabel(job) }}</Badge>
+              </td>
+              <td class="mono">{{ job.next_fire_at ? relativeTime(job.next_fire_at) : "-" }}</td>
+              <td>{{ job.run_count }}{{ job.max_runs ? `/${job.max_runs}` : "" }}</td>
+              <td class="mono">{{ relativeTime(job.created_at) }}</td>
+              <td>
+                <div class="action-buttons">
+                  <button class="action-btn" title="Edit" @click="openEdit(job)">
+                    <Pencil :size="14" />
+                  </button>
+                  <button
+                    v-if="job.is_active"
+                    class="action-btn"
+                    title="Cancel"
+                    @click="confirmCancel(job)"
+                  >
+                    <Ban :size="14" />
+                  </button>
+                  <button class="action-btn action-btn-danger" title="Delete" @click="confirmDelete(job)">
+                    <Trash2 :size="14" />
+                  </button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </Card>
+
+    <!-- Mobile: card view -->
+    <div v-if="data && data.jobs.length" class="mobile-cards mobile-only">
+      <Card v-for="job in data.jobs" :key="job.job_id" class="job-card">
+        <div class="job-card-header">
+          <span class="mono job-id">{{ job.job_id.slice(0, 8) }}</span>
+          <Badge :variant="statusVariant(job)">{{ statusLabel(job) }}</Badge>
+        </div>
+
+        <div class="job-card-target">
+          <Target :size="12" />
+          <span>{{ job.platform }}</span>
+          <span class="sub">{{ job.chat_type }}:{{ job.chat_id }}</span>
+        </div>
+
+        <div class="job-card-badges">
+          <Badge variant="outline">{{ modeLabel(job.mode) }}</Badge>
+          <Badge variant="secondary">{{ job.session_mode }}</Badge>
+        </div>
+
+        <div class="job-card-prompt">
+          <MessageSquare :size="12" />
+          <span>{{ job.prompt.slice(0, 80) }}{{ job.prompt.length > 80 ? "..." : "" }}</span>
+        </div>
+
+        <div class="job-card-meta">
+          <div class="meta-item">
+            <Clock :size="12" />
+            <span class="mono">{{ job.next_fire_at ? relativeTime(job.next_fire_at) : "-" }}</span>
+          </div>
+          <div class="meta-item">
+            <Hash :size="12" />
+            <span>{{ job.run_count }}{{ job.max_runs ? `/${job.max_runs}` : "" }}</span>
+          </div>
+        </div>
+
+        <div class="job-card-actions">
+          <button class="card-action-btn" @click="openEdit(job)">
+            <Pencil :size="16" />
+            <span>Edit</span>
+          </button>
+          <button
+            v-if="job.is_active"
+            class="card-action-btn"
+            @click="confirmCancel(job)"
+          >
+            <Ban :size="16" />
+            <span>Cancel</span>
+          </button>
+          <button class="card-action-btn card-action-btn-danger" @click="confirmDelete(job)">
+            <Trash2 :size="16" />
+            <span>Delete</span>
+          </button>
+        </div>
+      </Card>
+    </div>
 
     <div v-if="data && !data.jobs.length" class="empty">
       No CRON jobs found.
@@ -256,15 +314,20 @@ function modeLabel(mode: string) {
   font-size: 0.8125rem;
 }
 
+/* ── Toolbar ── */
+
 .cron-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .filter-group {
   display: flex;
   gap: 0.375rem;
+  flex-wrap: wrap;
 }
 
 .toolbar-right {
@@ -276,6 +339,17 @@ function modeLabel(mode: string) {
 .job-count {
   font-size: 0.75rem;
   color: var(--color-muted-foreground);
+  white-space: nowrap;
+}
+
+/* ── Table (desktop) ── */
+
+.desktop-only {
+  display: block;
+}
+
+.mobile-only {
+  display: none;
 }
 
 .cron-table-card {
@@ -283,8 +357,14 @@ function modeLabel(mode: string) {
   overflow: hidden;
 }
 
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 .cron-table {
   width: 100%;
+  min-width: 780px;
   border-collapse: collapse;
   font-size: 0.8125rem;
 }
@@ -360,5 +440,131 @@ function modeLabel(mode: string) {
   font-size: 0.8125rem;
   text-align: center;
   padding: 2rem;
+}
+
+/* ── Mobile cards ── */
+
+@media (max-width: 768px) {
+  .desktop-only {
+    display: none;
+  }
+
+  .mobile-only {
+    display: block;
+  }
+
+  .cron-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar-right {
+    justify-content: space-between;
+  }
+
+  .mobile-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+  }
+
+  .job-card {
+    padding: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .job-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .job-id {
+    font-size: 0.75rem;
+    color: var(--color-muted-foreground);
+  }
+
+  .job-card-target {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    color: var(--color-foreground);
+  }
+
+  .job-card-target .sub {
+    color: var(--color-muted-foreground);
+  }
+
+  .job-card-badges {
+    display: flex;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+  }
+
+  .job-card-prompt {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    color: var(--color-muted-foreground);
+    line-height: 1.4;
+    padding: 0.5rem;
+    background: var(--color-muted);
+    border-radius: var(--radius-sm);
+  }
+
+  .job-card-prompt svg {
+    flex-shrink: 0;
+    margin-top: 0.15rem;
+  }
+
+  .job-card-meta {
+    display: flex;
+    gap: 1rem;
+  }
+
+  .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--color-muted-foreground);
+  }
+
+  .job-card-actions {
+    display: flex;
+    gap: 0.375rem;
+    padding-top: 0.375rem;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .card-action-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+    padding: 0.5rem 0.375rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .card-action-btn:active {
+    background: var(--color-accent);
+  }
+
+  .card-action-btn-danger:active {
+    background: color-mix(in srgb, var(--color-destructive) 12%, transparent);
+    color: var(--color-destructive);
+  }
 }
 </style>
