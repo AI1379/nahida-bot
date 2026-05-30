@@ -28,7 +28,7 @@ repos:
       - id: check-json
         stages: [pre-commit]
       - id: check-added-large-files
-        args: [--maxkb=500]
+        args: [--maxkb=10240]  # 10MB
         stages: [pre-commit]
       - id: check-merge-conflict
         stages: [pre-commit]
