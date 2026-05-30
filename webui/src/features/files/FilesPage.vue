@@ -1,5 +1,31 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import cpp from "highlight.js/lib/languages/cpp";
+import csharp from "highlight.js/lib/languages/csharp";
+import css from "highlight.js/lib/languages/css";
+import go from "highlight.js/lib/languages/go";
+import ini from "highlight.js/lib/languages/ini";
+import java from "highlight.js/lib/languages/java";
+import javascript from "highlight.js/lib/languages/javascript";
+import json from "highlight.js/lib/languages/json";
+import kotlin from "highlight.js/lib/languages/kotlin";
+import lua from "highlight.js/lib/languages/lua";
+import markdown from "highlight.js/lib/languages/markdown";
+import perl from "highlight.js/lib/languages/perl";
+import php from "highlight.js/lib/languages/php";
+import powershell from "highlight.js/lib/languages/powershell";
+import python from "highlight.js/lib/languages/python";
+import r from "highlight.js/lib/languages/r";
+import ruby from "highlight.js/lib/languages/ruby";
+import rust from "highlight.js/lib/languages/rust";
+import scss from "highlight.js/lib/languages/scss";
+import sql from "highlight.js/lib/languages/sql";
+import swift from "highlight.js/lib/languages/swift";
+import typescript from "highlight.js/lib/languages/typescript";
+import xml from "highlight.js/lib/languages/xml";
+import yaml from "highlight.js/lib/languages/yaml";
 import {
   useFileContent,
   useFileCreate,
@@ -29,6 +55,153 @@ import {
   Trash2,
   Upload,
 } from "lucide-vue-next";
+
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("cpp", cpp);
+hljs.registerLanguage("csharp", csharp);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("go", go);
+hljs.registerLanguage("ini", ini);
+hljs.registerLanguage("java", java);
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("kotlin", kotlin);
+hljs.registerLanguage("lua", lua);
+hljs.registerLanguage("markdown", markdown);
+hljs.registerLanguage("perl", perl);
+hljs.registerLanguage("php", php);
+hljs.registerLanguage("powershell", powershell);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("r", r);
+hljs.registerLanguage("ruby", ruby);
+hljs.registerLanguage("rust", rust);
+hljs.registerLanguage("scss", scss);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("swift", swift);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("yaml", yaml);
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  ".bash",
+  ".c",
+  ".cc",
+  ".cfg",
+  ".cjs",
+  ".conf",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".cxx",
+  ".fish",
+  ".go",
+  ".h",
+  ".hh",
+  ".hpp",
+  ".html",
+  ".htm",
+  ".hxx",
+  ".ini",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".kt",
+  ".kts",
+  ".lua",
+  ".mjs",
+  ".md",
+  ".php",
+  ".pl",
+  ".ps1",
+  ".py",
+  ".pyw",
+  ".r",
+  ".rb",
+  ".rs",
+  ".sass",
+  ".scss",
+  ".sh",
+  ".sql",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".vue",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".zsh",
+]);
+
+const TEXT_FILE_NAMES = new Set([
+  "dockerfile",
+  "gemfile",
+  "justfile",
+  "makefile",
+  "rakefile",
+]);
+
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  ".bash": "bash",
+  ".c": "cpp",
+  ".cc": "cpp",
+  ".cfg": "ini",
+  ".cjs": "javascript",
+  ".conf": "ini",
+  ".cpp": "cpp",
+  ".cs": "csharp",
+  ".css": "css",
+  ".cxx": "cpp",
+  ".fish": "bash",
+  ".go": "go",
+  ".h": "cpp",
+  ".hh": "cpp",
+  ".hpp": "cpp",
+  ".html": "xml",
+  ".htm": "xml",
+  ".hxx": "cpp",
+  ".ini": "ini",
+  ".java": "java",
+  ".js": "javascript",
+  ".json": "json",
+  ".jsx": "javascript",
+  ".kt": "kotlin",
+  ".kts": "kotlin",
+  ".lua": "lua",
+  ".mjs": "javascript",
+  ".md": "markdown",
+  ".php": "php",
+  ".pl": "perl",
+  ".ps1": "powershell",
+  ".py": "python",
+  ".pyw": "python",
+  ".r": "r",
+  ".rb": "ruby",
+  ".rs": "rust",
+  ".sass": "scss",
+  ".scss": "scss",
+  ".sh": "bash",
+  ".sql": "sql",
+  ".swift": "swift",
+  ".toml": "ini",
+  ".ts": "typescript",
+  ".tsx": "typescript",
+  ".vue": "xml",
+  ".xml": "xml",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".zsh": "bash",
+};
+
+const LANGUAGE_BY_FILENAME: Record<string, string> = {
+  dockerfile: "bash",
+  gemfile: "ruby",
+  justfile: "bash",
+  makefile: "bash",
+  rakefile: "ruby",
+};
 
 const auth = useAuthStore();
 const { data: wsData, isLoading: wsLoading } = useWorkspaces();
@@ -80,7 +253,6 @@ const pathParts = computed(() => {
   return currentPath.value.split("/").filter(Boolean);
 });
 
-const isMarkdown = computed(() => /\.md$/i.test(selectedFile.value));
 const isSelectedTextFile = computed(() => isTextFile(selectedFile.value));
 const isSelectedImageFile = computed(() => isImageFile(selectedFile.value));
 
@@ -101,6 +273,21 @@ const imagePreviewUrl = computed(() => {
   if (selectedEntry.value?.mtime) params.set("v", selectedEntry.value.mtime);
   if (auth.token) params.set("token", auth.token);
   return `/api/files/raw?${params.toString()}`;
+});
+
+const highlightedPreview = computed(() => {
+  const content = contentQuery.data.value?.content ?? "";
+  const language = languageForFile(selectedFile.value);
+  if (!content || !language) {
+    return { language: "plaintext", html: escapeHtml(content) };
+  }
+  if (language === "plaintext" || !hljs.getLanguage(language)) {
+    return { language: "plaintext", html: escapeHtml(content) };
+  }
+  return {
+    language,
+    html: hljs.highlight(content, { language, ignoreIllegals: true }).value,
+  };
 });
 
 function resetSelection() {
@@ -145,11 +332,36 @@ function entryFullPath(entry: FileEntry) {
 }
 
 function isTextFile(name: string) {
-  return /\.(md|txt|yaml|yml|json)$/i.test(name);
+  const basename = fileBasename(name).toLowerCase();
+  return TEXT_FILE_NAMES.has(basename) || TEXT_FILE_EXTENSIONS.has(fileExtension(name));
 }
 
 function isImageFile(name: string) {
   return /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name);
+}
+
+function languageForFile(name: string) {
+  const basename = fileBasename(name).toLowerCase();
+  return LANGUAGE_BY_FILENAME[basename] ?? LANGUAGE_BY_EXTENSION[fileExtension(name)] ?? "plaintext";
+}
+
+function fileBasename(path: string) {
+  return path.replace(/\\/g, "/").split("/").pop() ?? "";
+}
+
+function fileExtension(path: string) {
+  const basename = fileBasename(path).toLowerCase();
+  const index = basename.lastIndexOf(".");
+  return index > 0 ? basename.slice(index) : "";
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function openCreateDialog() {
@@ -390,11 +602,14 @@ function saveFile() {
                 Failed to load file: {{ contentQuery.error.value.message }}
               </Alert>
               <template v-else-if="contentQuery.data.value">
-                <div
+                <pre
                   v-if="!isEditing"
-                  class="preview-content"
-                  :class="{ markdown: isMarkdown }"
-                >{{ contentQuery.data.value.content }}</div>
+                  class="preview-content code-preview"
+                ><code
+                  class="hljs"
+                  :class="`language-${highlightedPreview.language}`"
+                  v-html="highlightedPreview.html"
+                /></pre>
                 <Textarea
                   v-else
                   v-model="editContent"
@@ -677,11 +892,79 @@ function saveFile() {
   padding: 1rem;
   font-size: 0.8125rem;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
   overflow-x: auto;
   margin: 0;
   font-family: var(--font-mono);
+}
+
+.code-preview {
+  color: var(--color-foreground);
+  white-space: pre;
+  word-break: normal;
+}
+
+.code-preview code {
+  display: block;
+  min-width: max-content;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+}
+
+.code-preview :deep(.hljs-comment),
+.code-preview :deep(.hljs-quote) {
+  color: color-mix(in srgb, var(--color-muted-foreground) 80%, transparent);
+  font-style: italic;
+}
+
+.code-preview :deep(.hljs-keyword),
+.code-preview :deep(.hljs-selector-tag),
+.code-preview :deep(.hljs-subst) {
+  color: #c678dd;
+}
+
+.code-preview :deep(.hljs-string),
+.code-preview :deep(.hljs-regexp),
+.code-preview :deep(.hljs-symbol),
+.code-preview :deep(.hljs-bullet) {
+  color: #50a14f;
+}
+
+.code-preview :deep(.hljs-number),
+.code-preview :deep(.hljs-literal),
+.code-preview :deep(.hljs-variable),
+.code-preview :deep(.hljs-template-variable) {
+  color: #0184bc;
+}
+
+.code-preview :deep(.hljs-title),
+.code-preview :deep(.hljs-section),
+.code-preview :deep(.hljs-name),
+.code-preview :deep(.hljs-function) {
+  color: #4078f2;
+}
+
+.code-preview :deep(.hljs-type),
+.code-preview :deep(.hljs-class .hljs-title),
+.code-preview :deep(.hljs-built_in),
+.code-preview :deep(.hljs-builtin-name) {
+  color: #c18401;
+}
+
+.code-preview :deep(.hljs-attr),
+.code-preview :deep(.hljs-attribute),
+.code-preview :deep(.hljs-meta),
+.code-preview :deep(.hljs-selector-id),
+.code-preview :deep(.hljs-selector-class) {
+  color: #e45649;
+}
+
+.code-preview :deep(.hljs-emphasis) {
+  font-style: italic;
+}
+
+.code-preview :deep(.hljs-strong) {
+  font-weight: 600;
 }
 
 .image-preview-shell {

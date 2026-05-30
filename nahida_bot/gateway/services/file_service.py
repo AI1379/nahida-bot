@@ -18,7 +18,63 @@ from nahida_bot.workspace.sandbox import WorkspaceSandbox
 logger = structlog.get_logger(__name__)
 
 # Allowed file extensions for the file management UI.
-TEXT_EXTENSIONS: frozenset[str] = frozenset({".md", ".txt", ".yaml", ".yml", ".json"})
+TEXT_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".bash",
+        ".c",
+        ".cc",
+        ".cfg",
+        ".cjs",
+        ".conf",
+        ".cpp",
+        ".cs",
+        ".css",
+        ".cxx",
+        ".fish",
+        ".go",
+        ".h",
+        ".hh",
+        ".hpp",
+        ".html",
+        ".htm",
+        ".hxx",
+        ".ini",
+        ".java",
+        ".js",
+        ".json",
+        ".jsx",
+        ".kt",
+        ".kts",
+        ".lua",
+        ".mjs",
+        ".md",
+        ".php",
+        ".pl",
+        ".ps1",
+        ".py",
+        ".pyw",
+        ".r",
+        ".rb",
+        ".rs",
+        ".sass",
+        ".scss",
+        ".sh",
+        ".sql",
+        ".swift",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".vue",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".zsh",
+    }
+)
+TEXT_FILENAMES: frozenset[str] = frozenset(
+    {"dockerfile", "gemfile", "justfile", "makefile", "rakefile"}
+)
 IMAGE_EXTENSIONS: frozenset[str] = frozenset(
     {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"}
 )
@@ -300,7 +356,7 @@ def soft_delete(
 
 def _check_text_extension(path: str) -> None:
     """Verify the file has an editable text extension."""
-    _check_extension(path, TEXT_EXTENSIONS)
+    _check_extension(path, TEXT_EXTENSIONS, TEXT_FILENAMES)
 
 
 def _check_image_extension(path: str) -> None:
@@ -310,16 +366,23 @@ def _check_image_extension(path: str) -> None:
 
 def _check_allowed_extension(path: str) -> None:
     """Verify the file has an extension accepted by the file UI."""
-    _check_extension(path, ALLOWED_EXTENSIONS)
+    _check_extension(path, ALLOWED_EXTENSIONS, TEXT_FILENAMES)
 
 
-def _check_extension(path: str, allowed: frozenset[str]) -> None:
+def _check_extension(
+    path: str,
+    allowed: frozenset[str],
+    allowed_names: frozenset[str] = frozenset(),
+) -> None:
     """Verify the file has one of the allowed extensions.
 
     Rejects empty extensions and extensions not in the allow-list.
     Directory paths (ending with /) are skipped.
     """
     p = Path(path)
+    if p.name.lower() in allowed_names:
+        return
+
     suffix = p.suffix.lower()
     if not suffix:
         # Allow directories (no suffix) but reject extensionless files

@@ -512,6 +512,44 @@ async def test_file_upload_and_raw_image_preview(tmp_path) -> None:
     assert unsupported.status_code == 400
 
 
+async def test_file_content_accepts_common_code_files(tmp_path) -> None:
+    from nahida_bot.workspace.manager import WorkspaceManager
+
+    manager = WorkspaceManager(tmp_path / "workspace-state")
+    manager.initialize()
+    app = _make_mock_app()
+    app.workspace_manager = manager
+    webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+    samples = {
+        "scripts/task.py": "print('hello')\n",
+        "scripts/run.sh": "#!/usr/bin/env bash\necho hello\n",
+        "src/main.cpp": "#include <iostream>\nint main() { return 0; }\n",
+        "web/app.js": "export const answer = 42;\n",
+        "src/main.rs": 'fn main() { println!("hello"); }\n',
+        "Dockerfile": "FROM python:3.12-slim\n",
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        for path, content in samples.items():
+            created = await client.post(
+                "/api/files/create",
+                json={
+                    "path": path,
+                    "content": content,
+                    "workspace_id": "default",
+                },
+            )
+            read = await client.get(
+                "/api/files/content",
+                params={"workspace_id": "default", "path": path},
+            )
+
+            assert created.status_code == 200
+            assert read.status_code == 200
+            assert read.json()["content"] == content
+
+
 # -- Sessions ------------------------------------------------------------
 
 
