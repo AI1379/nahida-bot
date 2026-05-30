@@ -12,6 +12,7 @@ from nahida_bot.gateway.schemas import (
     ConfigSaveResponse,
     ConfigSchemaResponse,
     ConfigValidateResponse,
+    ConfigValueResponse,
 )
 from nahida_bot.gateway.services import audit_log
 from nahida_bot.gateway.services.config_service import (
@@ -53,7 +54,7 @@ async def get_current_config(
         path=cfg.path,
         mtime=cfg.mtime,
         entries=[
-            {"path": e.path, "type": e.type_, "value": e.value}
+            ConfigValueResponse(path=e.path, type=e.type_, value=e.value)
             for e in flatten_yaml_values(raw)
         ],
     )
