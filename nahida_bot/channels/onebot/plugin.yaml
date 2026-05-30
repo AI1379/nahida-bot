@@ -1,0 +1,37 @@
+id: onebot
+name: "OneBot Channel"
+version: "0.1.0"
+description: "QQ and other IM channels via OneBot v11 protocol (NapCat, Lagrange, LLOneBot)"
+entrypoint: "nahida_bot.channels.onebot.plugin:OneBotPlugin"
+
+permissions:
+  network:
+    outbound:
+      - "127.0.0.1"
+      - "localhost"
+    inbound: false
+
+config:
+  protocol_version: "v11"
+  ws_url: ""
+  ws_access_token: ""
+  webhook_enabled: false
+  webhook_host: "127.0.0.1"
+  webhook_port: 6186
+  webhook_path: "/onebot/event"
+  webhook_secret: ""
+  impl_base_url: ""
+  impl_access_token: ""
+  command_prefix: "/"
+  group_trigger_mode: "mention"
+  group_context_capture: false
+  reply_to_inbound: null
+  allowed_friends: []
+  allowed_groups: []
+  reconnect_initial_delay: 1.0
+  reconnect_max_delay: 30.0
+  max_text_length: 4000
+  media_download_dir: "./data/temp/onebot"
+  enable_media_download_tool: true
+  cache_media_on_receive: true
+  split_long_text: true

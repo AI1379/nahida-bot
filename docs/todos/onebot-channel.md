@@ -44,6 +44,7 @@ Cross-cutting 与 Milky 的差异：
 **v11** 是单协议版：所有通信（事件接收 + API 调用）可以在同一条 WebSocket 上完成（正向 WS），也可以拆成 WebHook（事件推送） + HTTP（API 调用）。
 
 **v12** 拆分为两个独立规范：
+
 - **OneBot Connect**：通信方式规范（HTTP、WebSocket、WebHook 三种模式）
 - **OneBot Standard**：事件和 action 的语义定义
 
@@ -498,21 +499,21 @@ nahida_bot/channels/onebot/
 
 ### Phase 0：基础设施
 
-- [ ] 新增 `nahida_bot/channels/onebot/` 目录结构
-- [ ] 新增 `plugin.yaml`（id: `onebot`，entrypoint: `nahida_bot.channels.onebot.plugin:OneBotPlugin`）
-- [ ] 实现 `config.py`：`OneBotPluginConfig` 含所有字段和校验
-- [ ] 实现 `segment_models.py`：v11/v12 segment dataclasses
+- [x] 新增 `nahida_bot/channels/onebot/` 目录结构
+- [x] 新增 `plugin.yaml`（id: `onebot`，entrypoint: `nahida_bot.channels.onebot.plugin:OneBotPlugin`）
+- [x] 实现 `config.py`：`OneBotPluginConfig` 含所有字段和校验
+- [x] 实现 `segment_models.py`：v11/v12 segment dataclasses
 
 ### Phase 1：v11 正向 WS 最小闭环
 
-- [ ] 实现 `protocol.py`：`NormalizedEvent`、`OneBotResponse`、`OneBotProtocol` 接口
-- [ ] 实现 `v11/event.py`：v11 事件解析和归一化
-- [ ] 实现 `v11/action.py`：v11 action 编码 + 响应解码
-- [ ] 实现 `v11/connect.py`：v11 正向 WS 双工连接（事件 + API 走同一 WS）
-- [ ] 实现 `cq_code.py`：CQ 码降级解析器
-- [ ] 实现 `message_converter.py`：segment → `InboundMessage` / `OutboundMessage` → segment
-- [ ] 实现 `plugin.py`：`OneBotPlugin` 生命周期，注册 channel
-- [ ] 实现 `adapter.py`：版本 auto-detection 逻辑
+- [x] 实现 `protocol.py`：`NormalizedEvent`、`OneBotResponse`、`OneBotProtocol` 接口
+- [x] 实现 `v11/event.py`：v11 事件解析和归一化
+- [x] 实现 `v11/action.py`：v11 action 编码 + 响应解码
+- [x] 实现 `v11/connect.py`：v11 正向 WS 双工连接（事件 + API 走同一 WS）
+- [x] 实现 `cq_code.py`：CQ 码降级解析器
+- [x] 实现 `message_converter.py`：segment → `InboundMessage` / `OutboundMessage` → segment
+- [x] 实现 `plugin.py`：`OneBotPlugin` 生命周期，注册 channel
+- [x] 实现 `adapter.py`：版本 auto-detection 逻辑
 
 ### Phase 2：v12 正向 WS
 

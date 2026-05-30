@@ -439,6 +439,51 @@ class TestMessageRouterCommandDispatch:
         assert isinstance(channel, _StubChannel)
         assert channel.sent[0][1] is outbound
 
+    async def test_onebot_outbound_includes_typed_chat_address(self) -> None:
+        from nahida_bot.plugins.base import ChatContext
+
+        router, event_bus, channel_registry, command_registry = _make_router()
+        manifest = PluginManifest(
+            id="onebot",
+            name="OneBot",
+            version="1.0",
+            entrypoint="t:T",
+        )
+        onebot_channel = _StubChannel(api=MagicMock(), manifest=manifest)
+        channel_registry.register(onebot_channel)
+        handler = AsyncMock(return_value="ok")
+        command_registry.register(
+            CommandEntry(
+                name="ping",
+                handler=handler,
+                description="Ping",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+        inbound = InboundMessage(
+            message_id="1",
+            platform="onebot",
+            chat_id="20001",
+            user_id="10001",
+            text="/ping",
+            raw_event={},
+            is_group=True,
+            chat_context=ChatContext(platform="onebot", chat_type="group"),
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=inbound, session_id=""),
+                source="onebot",
+            )
+        )
+        await router.stop()
+
+        assert onebot_channel.sent[0][0] == "20001"
+        assert onebot_channel.sent[0][1].extra["chat_address"] == ("onebot:group:20001")
+
     async def test_command_can_suppress_response(self) -> None:
         router, event_bus, channel_registry, command_registry = _make_router()
         handler = AsyncMock(return_value=CommandResult.none())
