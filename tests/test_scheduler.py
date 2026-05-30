@@ -489,6 +489,84 @@ async def test_update_and_delete_job() -> None:
 
 
 @pytest.mark.asyncio
+async def test_inactive_job_can_be_updated_and_activated() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        job = await service.create_job(
+            address=_address(),
+            prompt="old",
+            mode="interval",
+            interval_seconds=120,
+        )
+        assert await service.cancel_job(job.job_id) is True
+
+        updated = await service.update_job(job.job_id, prompt="new")
+        assert updated.is_active is False
+        assert updated.prompt == "new"
+
+        activated = await service.activate_job(job.job_id)
+        assert activated.is_active is True
+        assert activated.prompt == "new"
+        assert datetime.fromisoformat(activated.next_fire_at) > datetime.now(UTC)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_update_job_changes_session_mode_and_name() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        job = await service.create_job(
+            address=_address(),
+            prompt="test",
+            mode="interval",
+            interval_seconds=120,
+            session_mode="main",
+        )
+
+        named = await service.update_job(
+            job.job_id,
+            session_mode="named",
+            session_name="daily-summary",
+        )
+        assert named.session_mode == "named"
+        assert named.session_name == "daily-summary"
+
+        main = await service.update_job(job.job_id, session_mode="main")
+        assert main.session_mode == "main"
+        assert main.session_name is None
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_update_job_named_session_requires_valid_name() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        job = await service.create_job(
+            address=_address(),
+            prompt="test",
+            mode="interval",
+            interval_seconds=120,
+        )
+
+        with pytest.raises(ValueError, match="session_name is required"):
+            await service.update_job(job.job_id, session_mode="named")
+
+        with pytest.raises(ValueError, match="letters, digits"):
+            await service.update_job(
+                job.job_id,
+                session_mode="named",
+                session_name="bad name!",
+            )
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_stale_claims_recovered_on_start() -> None:
     engine, repo = await _repo()
     try:

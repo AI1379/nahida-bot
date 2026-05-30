@@ -36,7 +36,11 @@ async function request<T>(
     headers.set("Authorization", `Bearer ${auth.token}`);
   }
 
-  if (opts.body && !headers.has("Content-Type")) {
+  if (
+    opts.body &&
+    !headers.has("Content-Type") &&
+    !(opts.body instanceof FormData)
+  ) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -81,6 +85,12 @@ export const api = {
     request<T>(path, {
       method: "POST",
       body: body ? JSON.stringify(body) : undefined,
+    }),
+
+  postForm: <T>(path: string, body: FormData) =>
+    request<T>(path, {
+      method: "POST",
+      body,
     }),
 
   put: <T>(path: string, body?: unknown) =>

@@ -48,6 +48,7 @@ def _make_mock_app(
             "version",
             "is_started",
             "is_initialized",
+            "_config_yaml_path",
             "memory_store",
             "message_delivery_store",
             "message_router",
@@ -66,6 +67,7 @@ def _make_mock_app(
     mock.version = "0.1-test"
     mock.is_started = is_started
     mock.is_initialized = True
+    mock._config_yaml_path = None
     mock.memory_store = None
     mock.message_delivery_store = None
     mock.message_router = None
@@ -407,6 +409,109 @@ async def test_webui_root_mount_serves_spa_without_masking_api(
         assert missing_api.headers["content-type"].startswith("application/json")
 
 
+# -- Config ---------------------------------------------------------------
+
+
+async def test_config_current_includes_flattened_redacted_values(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+app_name: Demo Bot
+webapi:
+  host: 127.0.0.1
+  auth_token: secret-token
+providers:
+  deepseek:
+    api_key: ds-key
+    base_url: https://example.invalid
+    models:
+      - name: deepseek-chat
+integrations:
+  - name: demo
+    api_key: list-secret
+""",
+        encoding="utf-8",
+    )
+    app = _make_mock_app()
+    app._config_yaml_path = str(config_path)
+    webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/config/current")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    entries = {entry["path"]: entry for entry in data["entries"]}
+
+    assert "secret-token" not in data["content"]
+    assert "list-secret" not in data["content"]
+    assert entries["app_name"]["value"] == "Demo Bot"
+    assert entries["webapi.host"]["value"] == "127.0.0.1"
+    assert entries["webapi.auth_token"]["value"] == "***"
+    assert entries["providers.deepseek.api_key"]["value"] == "***"
+    assert entries["providers.deepseek.models[0].name"]["value"] == "deepseek-chat"
+    assert entries["integrations[0].api_key"]["value"] == "***"
+
+
+# -- Files ----------------------------------------------------------------
+
+
+async def test_file_upload_and_raw_image_preview(tmp_path) -> None:
+    from nahida_bot.workspace.manager import WorkspaceManager
+
+    manager = WorkspaceManager(tmp_path / "workspace-state")
+    manager.initialize()
+    app = _make_mock_app()
+    app.workspace_manager = manager
+    webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+    png = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02\x00\x01"
+        b"\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        workspaces = await client.get("/api/workspaces")
+        upload = await client.post(
+            "/api/files/upload",
+            data={"path": "images/pixel.png", "workspace_id": "default"},
+            files={"file": ("pixel.png", png, "image/png")},
+        )
+        conflict = await client.post(
+            "/api/files/upload",
+            data={"path": "images/pixel.png", "workspace_id": "default"},
+            files={"file": ("pixel.png", png, "image/png")},
+        )
+        listing = await client.get("/api/files?workspace_id=default&path=images")
+        raw = await client.get(
+            "/api/files/raw?workspace_id=default&path=images/pixel.png"
+        )
+        text = await client.get(
+            "/api/files/content?workspace_id=default&path=images/pixel.png"
+        )
+        unsupported = await client.post(
+            "/api/files/upload",
+            data={"path": "bad.exe", "workspace_id": "default"},
+            files={"file": ("bad.exe", b"nope", "application/octet-stream")},
+        )
+
+    assert workspaces.status_code == 200
+    assert workspaces.json()["active"] == "default"
+    assert upload.status_code == 200
+    assert upload.json()["path"] == "images/pixel.png"
+    assert conflict.status_code == 409
+    assert listing.status_code == 200
+    assert listing.json()["entries"][0]["name"] == "pixel.png"
+    assert raw.status_code == 200
+    assert raw.headers["content-type"].startswith("image/png")
+    assert raw.content == png
+    assert text.status_code == 400
+    assert unsupported.status_code == 400
+
+
 # -- Sessions ------------------------------------------------------------
 
 
@@ -740,7 +845,7 @@ async def test_cron_list_returns_jobs(client_no_auth: AsyncClient) -> None:
             cron_expression=None,
             max_runs=None,
             run_count=5,
-            is_active=True,
+            is_active=False,
             created_at="2026-01-01T00:00:00",
             next_fire_at="2026-01-01T01:00:00",
             last_fired_at="2026-01-01T00:00:00",
@@ -760,6 +865,8 @@ async def test_cron_list_returns_jobs(client_no_auth: AsyncClient) -> None:
     assert len(data["jobs"]) == 1
     assert data["jobs"][0]["job_id"] == "abc123"
     assert data["jobs"][0]["mode"] == "interval"
+    assert data["jobs"][0]["next_fire_at"] is None
+    assert data["jobs"][0]["last_fired_at"] == "2026-01-01T00:00:00"
 
 
 async def test_cron_list_with_typed_target_passes_chat_type(
@@ -870,6 +977,56 @@ async def test_cron_create_accepts_fresh_session_mode(
     assert mock_scheduler.create_job.await_args.kwargs["session_mode"] == "fresh"
 
 
+async def test_cron_update_accepts_session_mode_and_name(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.scheduler.models import CronJob
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_scheduler = AsyncMock()
+    mock_scheduler.update_job.return_value = CronJob(
+        job_id="named-job",
+        platform="telegram",
+        chat_id="123",
+        session_key="telegram:private:123",
+        prompt="hello",
+        mode="interval",
+        fire_at=None,
+        interval_seconds=120,
+        cron_expression=None,
+        max_runs=None,
+        run_count=0,
+        is_active=True,
+        created_at="2026-01-01T00:00:00",
+        next_fire_at="2026-06-01T00:00:00",
+        last_fired_at=None,
+        workspace_id=None,
+        claimed_at=None,
+        failure_count=0,
+        last_error=None,
+        session_mode="named",
+        session_name="daily-summary",
+        chat_type="private",
+    )
+    mock_app.scheduler_service = mock_scheduler
+
+    resp = await client_no_auth.patch(
+        "/api/cron/named-job",
+        json={
+            "session_mode": "named",
+            "session_name": "daily-summary",
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_mode"] == "named"
+    assert data["session_name"] == "daily-summary"
+    kwargs = mock_scheduler.update_job.await_args.kwargs
+    assert kwargs["session_mode"] == "named"
+    assert kwargs["session_name"] == "daily-summary"
+
+
 async def test_cron_mutations_notify_event_broadcaster(
     client_no_auth: AsyncClient,
 ) -> None:
@@ -909,6 +1066,7 @@ async def test_cron_mutations_notify_event_broadcaster(
     mock_scheduler = AsyncMock()
     mock_scheduler.create_job.return_value = job
     mock_scheduler.update_job.return_value = job
+    mock_scheduler.activate_job.return_value = job
     mock_scheduler.cancel_job.return_value = True
     mock_scheduler.delete_job.return_value = True
     mock_app.scheduler_service = mock_scheduler
@@ -926,12 +1084,14 @@ async def test_cron_mutations_notify_event_broadcaster(
         },
     )
     await client_no_auth.patch("/api/cron/job-1", json={"prompt": "updated"})
+    await client_no_auth.post("/api/cron/job-1/activate")
     await client_no_auth.post("/api/cron/job-1/cancel")
     await client_no_auth.delete("/api/cron/job-1")
 
     assert broadcaster.events == [
         ("job-1", "created"),
         ("job-1", "updated"),
+        ("job-1", "activated"),
         ("job-1", "cancelled"),
         ("job-1", "deleted"),
     ]

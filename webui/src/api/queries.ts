@@ -9,6 +9,7 @@ import type {
   ConfigSchemaResponse,
   ConfigSaveRequest,
   ConfigSaveResponse,
+  CronJob,
   CronListResponse,
   CreateCronRequest,
   CreateCronResponse,
@@ -20,6 +21,8 @@ import type {
   FileListResponse,
   FileRenameRequest,
   FileRenameResponse,
+  FileUploadRequest,
+  FileUploadResponse,
   FileWriteRequest,
   FileWriteResponse,
   LogsResponse,
@@ -276,18 +279,35 @@ export function useCronUpdate() {
   const toast = useToastStore();
 
   return useMutation<
-    { jobId: string; data: UpdateCronRequest },
+    CronJob,
     Error,
     { jobId: string; data: UpdateCronRequest }
   >({
     mutationFn: ({ jobId, data }) =>
-      api.patch(`/cron/${jobId}`, data),
+      api.patch<CronJob>(`/cron/${jobId}`, data),
     onSuccess() {
       qc.invalidateQueries({ queryKey: ["cron", "list"] });
       toast.add("CRON job updated.", "success");
     },
     onError(err) {
       toast.add(`Update failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useCronActivate() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<CronActionResponse, Error, string>({
+    mutationFn: (jobId) =>
+      api.post<CronActionResponse>(`/cron/${jobId}/activate`),
+    onSuccess() {
+      qc.invalidateQueries({ queryKey: ["cron", "list"] });
+      toast.add("CRON job activated.", "success");
+    },
+    onError(err) {
+      toast.add(`Activate failed: ${toApiError(err).detail}`, "error");
     },
   });
 }
@@ -361,6 +381,31 @@ export function useFileCreate() {
     },
     onError(err) {
       toast.add(`Create failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useFileUpload() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<FileUploadResponse, Error, FileUploadRequest>({
+    mutationFn: (body) => {
+      const form = new FormData();
+      form.set("path", body.path);
+      form.set("file", body.file);
+      if (body.workspace_id) form.set("workspace_id", body.workspace_id);
+      form.set("overwrite", body.overwrite ? "true" : "false");
+      return api.postForm<FileUploadResponse>("/files/upload", form);
+    },
+    onSuccess(_data, variables) {
+      const ws = variables.workspace_id ?? "default";
+      qc.invalidateQueries({ queryKey: ["files", ws] });
+      qc.invalidateQueries({ queryKey: ["files", "content", ws] });
+      toast.add("File uploaded.", "success");
+    },
+    onError(err) {
+      toast.add(`Upload failed: ${toApiError(err).detail}`, "error");
     },
   });
 }

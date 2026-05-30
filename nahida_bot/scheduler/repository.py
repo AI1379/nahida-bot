@@ -272,6 +272,26 @@ class CronRepository:
             await self._engine.db.commit()
             return cursor.rowcount > 0
 
+    async def activate_job(self, job_id: str, *, next_fire_at: str) -> bool:
+        """Reactivate an inactive, unclaimed job with a newly computed fire time."""
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                """
+                UPDATE cron_jobs
+                SET is_active = 1,
+                    claimed_at = NULL,
+                    next_fire_at = ?,
+                    failure_count = 0,
+                    last_error = NULL
+                WHERE job_id = ?
+                  AND is_active = 0
+                  AND claimed_at IS NULL
+                """,
+                (next_fire_at, job_id),
+            )
+            await self._engine.db.commit()
+            return cursor.rowcount > 0
+
     async def update_job(
         self,
         job_id: str,
@@ -283,8 +303,10 @@ class CronRepository:
         cron_expression: str | None,
         max_runs: int | None,
         next_fire_at: str,
+        session_mode: str,
+        session_name: str | None,
     ) -> bool:
-        """Update an active, unclaimed job. Returns False if it cannot update."""
+        """Update an unclaimed job. Returns False if it cannot update."""
         async with self._engine.write_lock:
             cursor = await self._engine.execute(
                 """
@@ -296,10 +318,11 @@ class CronRepository:
                     cron_expression = ?,
                     max_runs = ?,
                     next_fire_at = ?,
+                    session_mode = ?,
+                    session_name = ?,
                     failure_count = 0,
                     last_error = NULL
                 WHERE job_id = ?
-                  AND is_active = 1
                   AND claimed_at IS NULL
                 """,
                 (
@@ -310,6 +333,8 @@ class CronRepository:
                     cron_expression,
                     max_runs,
                     next_fire_at,
+                    session_mode,
+                    session_name,
                     job_id,
                 ),
             )

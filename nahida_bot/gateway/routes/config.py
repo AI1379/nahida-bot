@@ -15,6 +15,7 @@ from nahida_bot.gateway.schemas import (
 )
 from nahida_bot.gateway.services import audit_log
 from nahida_bot.gateway.services.config_service import (
+    flatten_yaml_values,
     list_backups,
     read_current_config,
     redact_yaml,
@@ -30,7 +31,7 @@ router = APIRouter()
 
 def _config_path(app) -> str | None:
     """Return the config YAML path from the running Application, if known."""
-    return app._config_yaml_path
+    return getattr(app, "_config_yaml_path", None)
 
 
 @router.get("/api/config/current", response_model=ConfigCurrentResponse)
@@ -51,6 +52,10 @@ async def get_current_config(
         checksum=cfg.checksum,
         path=cfg.path,
         mtime=cfg.mtime,
+        entries=[
+            {"path": e.path, "type": e.type_, "value": e.value}
+            for e in flatten_yaml_values(raw)
+        ],
     )
 
 

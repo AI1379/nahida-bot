@@ -141,6 +141,8 @@ async def update_cron_job(
             interval_seconds=body.interval_seconds,
             cron_expression=body.cron_expression,
             max_runs=body.max_runs,
+            session_mode=body.session_mode,
+            session_name=body.session_name,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -175,6 +177,30 @@ async def cancel_cron_job(
     return CronActionResponse(job_id=job_id, status="cancelled")
 
 
+@router.post("/api/cron/{job_id}/activate", response_model=CronActionResponse)
+async def activate_cron_job(
+    request: Request,
+    job_id: str,
+    app=Depends(get_application),
+) -> CronActionResponse:
+    svc = _require_scheduler(app)
+    try:
+        await svc.activate_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    logger.info("webapi.cron_activated", job_id=job_id)
+    _notify_cron_updated(request, job_id, "activated")
+    return CronActionResponse(job_id=job_id, status="activated")
+
+
 @router.delete("/api/cron/{job_id}", response_model=CronActionResponse)
 async def delete_cron_job(
     request: Request,
@@ -207,7 +233,7 @@ def _job_to_response(job: CronJob) -> CronJobResponse:
         mode=job.mode,
         prompt=job.prompt,
         is_active=job.is_active,
-        next_fire_at=job.next_fire_at,
+        next_fire_at=job.next_fire_at if job.is_active else None,
         run_count=job.run_count,
         created_at=job.created_at,
         session_mode=job.session_mode,

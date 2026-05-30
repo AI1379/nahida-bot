@@ -18,12 +18,27 @@ from nahida_bot.workspace.sandbox import WorkspaceSandbox
 logger = structlog.get_logger(__name__)
 
 # Allowed file extensions for the file management UI.
-ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
-    {".md", ".txt", ".yaml", ".yml", ".json"}
+TEXT_EXTENSIONS: frozenset[str] = frozenset({".md", ".txt", ".yaml", ".yml", ".json"})
+IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"}
 )
+ALLOWED_EXTENSIONS: frozenset[str] = TEXT_EXTENSIONS | IMAGE_EXTENSIONS
 
-# Max single file size for write operations (1 MiB).
+IMAGE_MEDIA_TYPES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif",
+}
+
+# Max single text file size for read/write operations (1 MiB).
 MAX_FILE_SIZE = 1 * 1024 * 1024
+
+# Max single binary file size for preview/upload operations (10 MiB).
+MAX_BINARY_FILE_SIZE = 10 * 1024 * 1024
 
 # Soft-delete directory name.
 _TRASH_DIR = ".trash"
@@ -44,6 +59,22 @@ class FileContent:
     content: str
     size: int
     mtime: str
+
+
+@dataclass(slots=True)
+class FileMetadata:
+    path: str
+    size: int
+    mtime: str
+
+
+@dataclass(slots=True)
+class ImageFile:
+    path: str
+    file_path: Path
+    size: int
+    mtime: str
+    media_type: str
 
 
 def list_files(
@@ -86,7 +117,7 @@ def read_file(
     relative_path: str,
 ) -> FileContent:
     """Read a file's content from the workspace."""
-    _check_extension(relative_path)
+    _check_text_extension(relative_path)
     target = sandbox.resolve_safe_path(relative_path)
 
     if not target.is_file():
@@ -111,7 +142,7 @@ def write_file(
     content: str,
 ) -> FileContent:
     """Write content to a file in the workspace."""
-    _check_extension(relative_path)
+    _check_text_extension(relative_path)
     if len(content.encode("utf-8")) > MAX_FILE_SIZE:
         raise ValueError(f"Content too large (max {MAX_FILE_SIZE} bytes)")
 
@@ -132,11 +163,67 @@ def create_file(
     content: str = "",
 ) -> FileContent:
     """Create a new file. Fails if it already exists."""
-    _check_extension(relative_path)
+    _check_text_extension(relative_path)
     target = sandbox.resolve_safe_path(relative_path)
     if target.exists():
         raise FileExistsError(f"File already exists: {relative_path}")
     return write_file(sandbox, relative_path, content)
+
+
+def read_image_file(
+    sandbox: WorkspaceSandbox,
+    relative_path: str,
+) -> ImageFile:
+    """Resolve an image file for raw preview delivery."""
+    _check_image_extension(relative_path)
+    target = sandbox.resolve_safe_path(relative_path)
+
+    if not target.is_file():
+        raise FileNotFoundError(f"File not found: {relative_path}")
+
+    stat = target.stat()
+    if stat.st_size > MAX_BINARY_FILE_SIZE:
+        raise ValueError(
+            f"File too large ({stat.st_size} bytes, max {MAX_BINARY_FILE_SIZE})"
+        )
+
+    suffix = target.suffix.lower()
+    return ImageFile(
+        path=relative_path,
+        file_path=target,
+        size=stat.st_size,
+        mtime=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+        media_type=IMAGE_MEDIA_TYPES[suffix],
+    )
+
+
+def upload_file(
+    sandbox: WorkspaceSandbox,
+    relative_path: str,
+    data: bytes,
+    *,
+    overwrite: bool = False,
+) -> FileMetadata:
+    """Upload a binary or text file into the workspace."""
+    _check_allowed_extension(relative_path)
+    if len(data) > MAX_BINARY_FILE_SIZE:
+        raise ValueError(f"File too large (max {MAX_BINARY_FILE_SIZE} bytes)")
+
+    target = sandbox.resolve_safe_path(relative_path)
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"File already exists: {relative_path}")
+    if target.exists() and target.is_dir():
+        raise ValueError(f"Cannot overwrite directory: {relative_path}")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    logger.debug("file_service.upload", path=relative_path, size=len(data))
+    stat = target.stat()
+    return FileMetadata(
+        path=relative_path,
+        size=stat.st_size,
+        mtime=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+    )
 
 
 def create_directory(
@@ -173,7 +260,7 @@ def rename_entry(
 
     # Enforce extension policy when renaming files (not directories)
     if old_target.is_file():
-        _check_extension(new_name)
+        _check_allowed_extension(new_name)
 
     new_target = old_target.parent / new_name
     # Verify the new path stays in sandbox
@@ -211,8 +298,23 @@ def soft_delete(
     return str(trash_path.relative_to(sandbox.root))
 
 
-def _check_extension(path: str) -> None:
-    """Verify the file has an allowed extension.
+def _check_text_extension(path: str) -> None:
+    """Verify the file has an editable text extension."""
+    _check_extension(path, TEXT_EXTENSIONS)
+
+
+def _check_image_extension(path: str) -> None:
+    """Verify the file has a previewable image extension."""
+    _check_extension(path, IMAGE_EXTENSIONS)
+
+
+def _check_allowed_extension(path: str) -> None:
+    """Verify the file has an extension accepted by the file UI."""
+    _check_extension(path, ALLOWED_EXTENSIONS)
+
+
+def _check_extension(path: str, allowed: frozenset[str]) -> None:
+    """Verify the file has one of the allowed extensions.
 
     Rejects empty extensions and extensions not in the allow-list.
     Directory paths (ending with /) are skipped.
@@ -224,11 +326,11 @@ def _check_extension(path: str) -> None:
         if not path.endswith("/"):
             raise ValueError(
                 f"Files must have an allowed extension. "
-                f"Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+                f"Allowed: {', '.join(sorted(allowed))}"
             )
         return
-    if suffix not in ALLOWED_EXTENSIONS:
+    if suffix not in allowed:
         raise ValueError(
             f"File extension '{suffix}' not allowed. "
-            f"Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+            f"Allowed: {', '.join(sorted(allowed))}"
         )

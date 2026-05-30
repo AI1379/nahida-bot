@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import { useCronList, useCronCreate, useCronUpdate, useCronCancel, useCronDelete } from "@/api/queries";
+import {
+  useCronList,
+  useCronCreate,
+  useCronUpdate,
+  useCronActivate,
+  useCronCancel,
+  useCronDelete,
+} from "@/api/queries";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Alert from "@/components/ui/Alert.vue";
@@ -9,7 +16,23 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import CronJobFormDialog from "./CronJobFormDialog.vue";
 import type { CronJob } from "@/api/schemas";
 import { relativeTime } from "@/lib/utils";
-import { Pencil, Ban, Trash2, Plus, Clock, Hash, Target, MessageSquare } from "lucide-vue-next";
+import {
+  Pencil,
+  Ban,
+  Trash2,
+  Plus,
+  Clock,
+  Hash,
+  Target,
+  MessageSquare,
+  Play,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUpDown,
+} from "lucide-vue-next";
+
+type SortKey = "next_fire_at" | "last_fired_at" | "target" | "mode" | "session_mode" | "status";
+type SortDirection = "asc" | "desc";
 
 const activeFilter = ref("all");
 const filterOptions = [
@@ -23,10 +46,12 @@ const filterRef = computed(() => ({
 }));
 
 const { data, isLoading, error } = useCronList(filterRef);
+const sortState = ref<{ key: SortKey; direction: SortDirection } | null>(null);
 
 // Mutations
 const createMutation = useCronCreate();
 const updateMutation = useCronUpdate();
+const activateMutation = useCronActivate();
 const cancelMutation = useCronCancel();
 const deleteMutation = useCronDelete();
 
@@ -40,6 +65,11 @@ const formLoading = computed(() => createMutation.isPending.value || updateMutat
 const showCancelDialog = ref(false);
 const cancelJobId = ref("");
 const cancelJobLabel = ref("");
+
+// Activate confirm
+const showActivateDialog = ref(false);
+const activateJobId = ref("");
+const activateJobLabel = ref("");
 
 // Delete confirm
 const showDeleteDialog = ref(false);
@@ -62,14 +92,20 @@ function handleFormSubmit() {
     const payload = formRef.value.buildUpdatePayload();
     updateMutation.mutate(
       { jobId: editingJob.value.job_id, data: payload },
-      { onSettled: () => { showFormDialog.value = false; } },
+      { onSuccess: () => { showFormDialog.value = false; } },
     );
   } else {
     const payload = formRef.value.buildCreatePayload();
     createMutation.mutate(payload, {
-      onSettled: () => { showFormDialog.value = false; },
+      onSuccess: () => { showFormDialog.value = false; },
     });
   }
+}
+
+function confirmActivate(job: CronJob) {
+  activateJobId.value = job.job_id;
+  activateJobLabel.value = job.job_id.slice(0, 8);
+  showActivateDialog.value = true;
 }
 
 function confirmCancel(job: CronJob) {
@@ -87,6 +123,12 @@ function confirmDelete(job: CronJob) {
 function executeCancel() {
   cancelMutation.mutate(cancelJobId.value, {
     onSettled: () => { showCancelDialog.value = false; },
+  });
+}
+
+function executeActivate() {
+  activateMutation.mutate(activateJobId.value, {
+    onSettled: () => { showActivateDialog.value = false; },
   });
 }
 
@@ -116,6 +158,74 @@ function modeLabel(mode: string) {
     default: return mode;
   }
 }
+
+function targetLabel(job: CronJob) {
+  return `${job.platform}:${job.chat_type || "unknown"}:${job.chat_id}`;
+}
+
+function toggleSort(key: SortKey) {
+  if (!sortState.value || sortState.value.key !== key) {
+    sortState.value = { key, direction: "asc" };
+    return;
+  }
+  if (sortState.value.direction === "asc") {
+    sortState.value = { key, direction: "desc" };
+    return;
+  }
+  sortState.value = null;
+}
+
+function isSorted(key: SortKey, direction: SortDirection) {
+  return sortState.value?.key === key && sortState.value.direction === direction;
+}
+
+function sortAriaLabel(label: string, key: SortKey) {
+  if (!sortState.value || sortState.value.key !== key) return `Sort by ${label} ascending`;
+  if (sortState.value.direction === "asc") return `Sort by ${label} descending`;
+  return `Clear ${label} sorting`;
+}
+
+function timestampValue(value: string | null | undefined) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function sortValue(job: CronJob, key: SortKey): string | number | null {
+  switch (key) {
+    case "next_fire_at": return timestampValue(job.next_fire_at);
+    case "last_fired_at": return timestampValue(job.last_fired_at);
+    case "target": return targetLabel(job).toLowerCase();
+    case "mode": return job.mode;
+    case "session_mode": return job.session_mode;
+    case "status": return statusLabel(job);
+  }
+}
+
+function compareJobs(a: CronJob, b: CronJob, key: SortKey, direction: SortDirection) {
+  const av = sortValue(a, key);
+  const bv = sortValue(b, key);
+  const aEmpty = av === null || av === "";
+  const bEmpty = bv === null || bv === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+
+  const result = typeof av === "number" && typeof bv === "number"
+    ? av - bv
+    : String(av).localeCompare(String(bv));
+  return direction === "asc" ? result : -result;
+}
+
+const sortedJobs = computed(() => {
+  const jobs = data.value?.jobs ?? [];
+  if (!sortState.value) return jobs;
+  const { key, direction } = sortState.value;
+  return jobs
+    .map((job, index) => ({ job, index }))
+    .sort((a, b) => compareJobs(a.job, b.job, key, direction) || a.index - b.index)
+    .map((entry) => entry.job);
+});
 </script>
 
 <template>
@@ -155,19 +265,62 @@ function modeLabel(mode: string) {
           <thead>
             <tr>
               <th>ID</th>
-              <th>Target</th>
-              <th>Mode</th>
-              <th>Session</th>
+              <th>
+                <button class="sort-button" type="button" :aria-label="sortAriaLabel('target', 'target')" @click="toggleSort('target')">
+                  <span>Target</span>
+                  <ArrowUp v-if="isSorted('target', 'asc')" :size="12" />
+                  <ArrowDown v-else-if="isSorted('target', 'desc')" :size="12" />
+                  <ChevronsUpDown v-else :size="12" />
+                </button>
+              </th>
+              <th>
+                <button class="sort-button" type="button" :aria-label="sortAriaLabel('type', 'mode')" @click="toggleSort('mode')">
+                  <span>Type</span>
+                  <ArrowUp v-if="isSorted('mode', 'asc')" :size="12" />
+                  <ArrowDown v-else-if="isSorted('mode', 'desc')" :size="12" />
+                  <ChevronsUpDown v-else :size="12" />
+                </button>
+              </th>
+              <th>
+                <button class="sort-button" type="button" :aria-label="sortAriaLabel('session mode', 'session_mode')" @click="toggleSort('session_mode')">
+                  <span>Session</span>
+                  <ArrowUp v-if="isSorted('session_mode', 'asc')" :size="12" />
+                  <ArrowDown v-else-if="isSorted('session_mode', 'desc')" :size="12" />
+                  <ChevronsUpDown v-else :size="12" />
+                </button>
+              </th>
               <th>Prompt</th>
-              <th>Status</th>
-              <th>Next Fire</th>
+              <th>
+                <button class="sort-button" type="button" :aria-label="sortAriaLabel('status', 'status')" @click="toggleSort('status')">
+                  <span>Status</span>
+                  <ArrowUp v-if="isSorted('status', 'asc')" :size="12" />
+                  <ArrowDown v-else-if="isSorted('status', 'desc')" :size="12" />
+                  <ChevronsUpDown v-else :size="12" />
+                </button>
+              </th>
+              <th>
+                <button class="sort-button" type="button" :aria-label="sortAriaLabel('next fire', 'next_fire_at')" @click="toggleSort('next_fire_at')">
+                  <span>Next Fire</span>
+                  <ArrowUp v-if="isSorted('next_fire_at', 'asc')" :size="12" />
+                  <ArrowDown v-else-if="isSorted('next_fire_at', 'desc')" :size="12" />
+                  <ChevronsUpDown v-else :size="12" />
+                </button>
+              </th>
+              <th>
+                <button class="sort-button" type="button" :aria-label="sortAriaLabel('last fire', 'last_fired_at')" @click="toggleSort('last_fired_at')">
+                  <span>Last Fire</span>
+                  <ArrowUp v-if="isSorted('last_fired_at', 'asc')" :size="12" />
+                  <ArrowDown v-else-if="isSorted('last_fired_at', 'desc')" :size="12" />
+                  <ChevronsUpDown v-else :size="12" />
+                </button>
+              </th>
               <th>Runs</th>
               <th>Created</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="job in data.jobs" :key="job.job_id">
+            <tr v-for="job in sortedJobs" :key="job.job_id">
               <td class="mono">{{ job.job_id.slice(0, 8) }}</td>
               <td>
                 <div>{{ job.platform }}</div>
@@ -184,6 +337,7 @@ function modeLabel(mode: string) {
                 <Badge :variant="statusVariant(job)">{{ statusLabel(job) }}</Badge>
               </td>
               <td class="mono">{{ job.next_fire_at ? relativeTime(job.next_fire_at) : "-" }}</td>
+              <td class="mono">{{ job.last_fired_at ? relativeTime(job.last_fired_at) : "-" }}</td>
               <td>{{ job.run_count }}{{ job.max_runs ? `/${job.max_runs}` : "" }}</td>
               <td class="mono">{{ relativeTime(job.created_at) }}</td>
               <td>
@@ -199,6 +353,14 @@ function modeLabel(mode: string) {
                   >
                     <Ban :size="14" />
                   </button>
+                  <button
+                    v-else
+                    class="action-btn"
+                    title="Activate"
+                    @click="confirmActivate(job)"
+                  >
+                    <Play :size="14" />
+                  </button>
                   <button class="action-btn action-btn-danger" title="Delete" @click="confirmDelete(job)">
                     <Trash2 :size="14" />
                   </button>
@@ -212,7 +374,7 @@ function modeLabel(mode: string) {
 
     <!-- Mobile: card view -->
     <div v-if="data && data.jobs.length" class="mobile-cards mobile-only">
-      <Card v-for="job in data.jobs" :key="job.job_id" class="job-card">
+      <Card v-for="job in sortedJobs" :key="job.job_id" class="job-card">
         <div class="job-card-header">
           <span class="mono job-id">{{ job.job_id.slice(0, 8) }}</span>
           <Badge :variant="statusVariant(job)">{{ statusLabel(job) }}</Badge>
@@ -240,6 +402,10 @@ function modeLabel(mode: string) {
             <span class="mono">{{ job.next_fire_at ? relativeTime(job.next_fire_at) : "-" }}</span>
           </div>
           <div class="meta-item">
+            <Clock :size="12" />
+            <span class="mono">{{ job.last_fired_at ? relativeTime(job.last_fired_at) : "-" }}</span>
+          </div>
+          <div class="meta-item">
             <Hash :size="12" />
             <span>{{ job.run_count }}{{ job.max_runs ? `/${job.max_runs}` : "" }}</span>
           </div>
@@ -258,6 +424,14 @@ function modeLabel(mode: string) {
             <Ban :size="16" />
             <span>Cancel</span>
           </button>
+          <button
+            v-else
+            class="card-action-btn"
+            @click="confirmActivate(job)"
+          >
+            <Play :size="16" />
+            <span>Activate</span>
+          </button>
           <button class="card-action-btn card-action-btn-danger" @click="confirmDelete(job)">
             <Trash2 :size="16" />
             <span>Delete</span>
@@ -274,9 +448,19 @@ function modeLabel(mode: string) {
     <CronJobFormDialog
       ref="formRef"
       v-model:open="showFormDialog"
-      v-model:loading="formLoading"
+      :loading="formLoading"
       :job="editingJob"
       @submit="handleFormSubmit"
+    />
+
+    <!-- Activate confirm -->
+    <ConfirmDialog
+      v-model:open="showActivateDialog"
+      title="Activate CRON Job"
+      :description="`Activate job ${activateJobLabel}? It will resume scheduling from the next valid fire time.`"
+      confirm-label="Activate Job"
+      :loading="activateMutation.isPending.value"
+      @confirm="executeActivate"
     />
 
     <!-- Cancel confirm -->
@@ -364,7 +548,7 @@ function modeLabel(mode: string) {
 
 .cron-table {
   width: 100%;
-  min-width: 780px;
+  min-width: 960px;
   border-collapse: collapse;
   font-size: 0.8125rem;
 }
@@ -379,6 +563,28 @@ function modeLabel(mode: string) {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   white-space: nowrap;
+}
+
+.sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.sort-button:hover {
+  color: var(--color-foreground);
+}
+
+.sort-button svg {
+  flex-shrink: 0;
 }
 
 .cron-table td {
@@ -524,6 +730,7 @@ function modeLabel(mode: string) {
   .job-card-meta {
     display: flex;
     gap: 1rem;
+    flex-wrap: wrap;
   }
 
   .meta-item {

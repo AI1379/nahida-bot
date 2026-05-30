@@ -76,11 +76,18 @@ class SystemActionResponse(BaseModel):
 # -- Config ---------------------------------------------------------------
 
 
+class ConfigValueResponse(BaseModel):
+    path: str
+    type: str
+    value: str
+
+
 class ConfigCurrentResponse(BaseModel):
     content: str
     checksum: str
     path: str
     mtime: str
+    entries: list[ConfigValueResponse] = Field(default_factory=list)
 
 
 class ConfigSchemaResponse(BaseModel):
@@ -226,7 +233,7 @@ class CronJobResponse(BaseModel):
     mode: str
     prompt: str
     is_active: bool
-    next_fire_at: str
+    next_fire_at: str | None
     run_count: int
     created_at: str
     session_mode: str = "main"
@@ -291,6 +298,8 @@ class UpdateCronRequest(BaseModel):
     interval_seconds: int | None = None
     cron_expression: str | None = None
     max_runs: int | None = None
+    session_mode: Literal["main", "isolated", "fresh", "named"] | None = None
+    session_name: str | None = None
 
 
 class CronActionResponse(BaseModel):

@@ -71,6 +71,7 @@ export interface ConfigCurrentResponse {
   checksum: string;
   path: string;
   mtime: string;
+  entries: { path: string; type: string; value: string }[];
 }
 
 export interface ConfigSchemaResponse {
@@ -91,7 +92,7 @@ export interface CronJob {
   mode: string;
   prompt: string;
   is_active: boolean;
-  next_fire_at: string;
+  next_fire_at: string | null;
   run_count: number;
   created_at: string;
   session_mode: string;
@@ -101,6 +102,7 @@ export interface CronJob {
   last_fired_at: string | null;
   failure_count: number;
   last_error: string | null;
+  claimed_at: string | null;
   workspace_id: string | null;
   fire_at: string | null;
   interval_seconds: number | null;
@@ -211,7 +213,7 @@ export interface FileEntry {
   path: string;
   is_dir: boolean;
   size: number;
-  modified: string;
+  mtime: string;
 }
 
 export interface FileListResponse {
@@ -225,13 +227,15 @@ export interface FileContentResponse {
   path: string;
   content: string;
   size: number;
-  modified: string;
+  mtime: string;
 }
 
 export interface WorkspaceInfo {
-  id: string;
-  name: string;
-  path: string;
+  workspace_id: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+  last_active_at: string;
 }
 
 export interface WorkspaceListResponse {
@@ -307,6 +311,8 @@ export interface UpdateCronRequest {
   interval_seconds?: number | null;
   cron_expression?: string | null;
   max_runs?: number | null;
+  session_mode?: "main" | "isolated" | "fresh" | "named" | null;
+  session_name?: string | null;
 }
 
 export interface CronActionResponse {
@@ -321,6 +327,19 @@ export interface FileWriteRequest {
 }
 
 export interface FileWriteResponse {
+  path: string;
+  size: number;
+  mtime: string;
+}
+
+export interface FileUploadRequest {
+  path: string;
+  file: File;
+  workspace_id?: string | null;
+  overwrite?: boolean;
+}
+
+export interface FileUploadResponse {
   path: string;
   size: number;
   mtime: string;

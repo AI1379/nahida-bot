@@ -256,25 +256,31 @@ class SchedulerService:
         interval_seconds: int | None = None,
         cron_expression: str | None = None,
         max_runs: int | None = None,
+        session_mode: Literal["main", "isolated", "fresh", "named"] | None = None,
+        session_name: str | None = None,
     ) -> CronJob:
-        """Update an active scheduled job.
+        """Update a scheduled job that is not currently running.
 
         Returns the updated job. Raises ValueError for invalid input and
-        RuntimeError if the job is inactive or currently running.
+        RuntimeError if the job is currently running.
         """
         existing = await self._repo.get_job(job_id)
         if existing is None:
             raise ValueError(f"Job '{job_id}' not found")
-        if not existing.is_active:
-            raise RuntimeError(f"Job '{job_id}' is inactive or completed")
         if existing.claimed_at is not None:
             raise RuntimeError(f"Job '{job_id}' is currently running")
 
         now = datetime.now(UTC)
         new_prompt = prompt if prompt is not None else existing.prompt
         self._validate_prompt(new_prompt)
+        new_session_mode, new_session_name = self._resolve_session_mode_update(
+            existing,
+            session_mode=session_mode,
+            session_name=session_name,
+        )
 
         new_mode = mode or existing.mode
+        mode_changed = mode is not None and mode != existing.mode
         self._validate_max_runs(max_runs)
         new_max_runs = max_runs if max_runs is not None else existing.max_runs
 
@@ -282,11 +288,16 @@ class SchedulerService:
             new_fire_at = fire_at if fire_at is not None else existing.fire_at
             if new_fire_at is None:
                 raise ValueError("fire_at is required for mode='once'")
-            next_fire_at = self._normalize_fire_at(new_fire_at, now=now)
             new_interval_seconds = None
             new_cron_expression = None
-            stored_fire_at = next_fire_at
             new_max_runs = None
+            fire_at_changed = fire_at is not None and fire_at != existing.fire_at
+            if existing.is_active or mode_changed or fire_at_changed:
+                next_fire_at = self._normalize_fire_at(new_fire_at, now=now)
+                stored_fire_at = next_fire_at
+            else:
+                next_fire_at = existing.next_fire_at
+                stored_fire_at = existing.fire_at
         elif new_mode == "interval":
             new_interval_seconds = (
                 interval_seconds
@@ -297,7 +308,13 @@ class SchedulerService:
             assert new_interval_seconds is not None
             stored_fire_at = None
             new_cron_expression = None
-            if interval_seconds is not None or mode == "interval":
+            if existing.is_active and (interval_seconds is not None or mode_changed):
+                next_fire_at = (
+                    now + timedelta(seconds=new_interval_seconds)
+                ).isoformat()
+            elif not existing.is_active and (
+                interval_seconds is not None or mode_changed
+            ):
                 next_fire_at = (
                     now + timedelta(seconds=new_interval_seconds)
                 ).isoformat()
@@ -309,11 +326,14 @@ class SchedulerService:
                 if cron_expression is not None
                 else existing.cron_expression
             )
-            next_fire_at = self._validate_and_get_next_cron(
-                new_cron_expression, now=now
-            )
             stored_fire_at = None
             new_interval_seconds = None
+            if existing.is_active or mode_changed or cron_expression is not None:
+                next_fire_at = self._validate_and_get_next_cron(
+                    new_cron_expression, now=now
+                )
+            else:
+                next_fire_at = existing.next_fire_at
         else:
             raise ValueError(f"Invalid mode: {new_mode}")
 
@@ -326,9 +346,11 @@ class SchedulerService:
             cron_expression=new_cron_expression,
             max_runs=new_max_runs,
             next_fire_at=next_fire_at,
+            session_mode=new_session_mode,
+            session_name=new_session_name,
         )
         if not updated:
-            raise RuntimeError(f"Job '{job_id}' is inactive or currently running")
+            raise RuntimeError(f"Job '{job_id}' is currently running")
 
         job = await self._repo.get_job(job_id)
         if job is None:
@@ -370,6 +392,33 @@ class SchedulerService:
         if cancelled:
             logger.info("scheduler.job_cancelled", job_id=job_id)
         return cancelled
+
+    async def activate_job(self, job_id: str) -> CronJob:
+        """Reactivate an inactive job using the next valid fire time."""
+        existing = await self._repo.get_job(job_id)
+        if existing is None:
+            raise ValueError(f"Job '{job_id}' not found")
+        if existing.is_active:
+            raise RuntimeError(f"Job '{job_id}' is already active")
+        if existing.claimed_at is not None:
+            raise RuntimeError(f"Job '{job_id}' is currently running")
+
+        next_fire_at = self._compute_activation_next_fire(
+            existing,
+            now=datetime.now(UTC),
+        )
+        activated = await self._repo.activate_job(
+            job_id,
+            next_fire_at=next_fire_at,
+        )
+        if not activated:
+            raise RuntimeError(f"Job '{job_id}' is already active or currently running")
+
+        job = await self._repo.get_job(job_id)
+        if job is None:
+            raise RuntimeError(f"Job '{job_id}' disappeared during activation")
+        logger.info("scheduler.job_activated", job_id=job_id, mode=job.mode)
+        return job
 
     async def delete_job(self, job_id: str) -> bool:
         """Permanently delete a job from persistence."""
@@ -717,6 +766,51 @@ class SchedulerService:
             return cron.get_next(datetime).isoformat()
 
         return None
+
+    def _compute_activation_next_fire(self, job: CronJob, *, now: datetime) -> str:
+        if job.max_runs is not None and job.run_count >= job.max_runs:
+            raise ValueError(
+                "max_runs has already been reached; increase max_runs before activation"
+            )
+
+        if job.mode == "once":
+            if not job.fire_at:
+                raise ValueError("fire_at is required before activation")
+            return self._normalize_fire_at(job.fire_at, now=now)
+
+        if job.mode == "interval":
+            self._validate_interval(job.interval_seconds)
+            assert job.interval_seconds is not None
+            return (now + timedelta(seconds=job.interval_seconds)).isoformat()
+
+        if job.mode == "cron":
+            return self._validate_and_get_next_cron(job.cron_expression, now=now)
+
+        raise ValueError(f"Invalid mode: {job.mode}")
+
+    @staticmethod
+    def _resolve_session_mode_update(
+        existing: CronJob,
+        *,
+        session_mode: Literal["main", "isolated", "fresh", "named"] | None,
+        session_name: str | None,
+    ) -> tuple[Literal["main", "isolated", "fresh", "named"], str | None]:
+        new_mode = session_mode or existing.session_mode
+        if new_mode not in {"main", "isolated", "fresh", "named"}:
+            raise ValueError(
+                "session_mode must be one of: main, isolated, fresh, named"
+            )
+
+        if new_mode != "named":
+            return new_mode, None
+
+        new_name = session_name if session_name is not None else existing.session_name
+        if not new_name or not re.match(r"^[a-zA-Z0-9_-]+$", new_name):
+            raise ValueError(
+                "session_name is required for session_mode='named' "
+                "and must contain only letters, digits, hyphens, and underscores"
+            )
+        return new_mode, new_name
 
     async def _mark_failed(self, job: CronJob, error: str) -> None:
         next_failure_count = job.failure_count + 1

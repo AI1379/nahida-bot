@@ -15,13 +15,21 @@ import Textarea from "@/components/ui/Textarea.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import type { CronJob, CreateCronRequest, UpdateCronRequest } from "@/api/schemas";
 
-const props = defineProps<{
-  open: boolean;
-  job?: CronJob | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    job?: CronJob | null;
+    loading?: boolean;
+  }>(),
+  {
+    job: null,
+    loading: false,
+  },
+);
 
 const emit = defineEmits<{
   "update:open": [value: boolean];
+  submit: [];
 }>();
 
 const isCreate = computed(() => !props.job);
@@ -35,8 +43,10 @@ const cronExpression = ref("");
 const maxRuns = ref("");
 const sessionMode = ref<"main" | "isolated" | "fresh" | "named">("main");
 const sessionName = ref("");
-
-const loading = defineModel<boolean>("loading", { default: false });
+const canSubmit = computed(() => (
+  !!prompt.value.trim()
+  && (sessionMode.value !== "named" || !!sessionName.value.trim())
+));
 
 watch(
   () => props.open,
@@ -88,11 +98,13 @@ function buildUpdatePayload(): UpdateCronRequest {
     interval_seconds: intervalSeconds.value ? Number(intervalSeconds.value) : null,
     cron_expression: cronExpression.value || null,
     max_runs: maxRuns.value ? Number(maxRuns.value) : null,
+    session_mode: sessionMode.value,
+    session_name: sessionMode.value === "named" ? sessionName.value : null,
   };
 }
 
 function submit() {
-  emit("update:open", false);
+  emit("submit");
 }
 
 defineExpose({ buildCreatePayload, buildUpdatePayload });
@@ -173,10 +185,10 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
         </div>
         <div class="dialog-footer">
           <DialogClose as-child>
-            <Button variant="outline" size="sm" :disabled="loading">Cancel</Button>
+            <Button variant="outline" size="sm" :disabled="props.loading">Cancel</Button>
           </DialogClose>
-          <Button size="sm" :disabled="loading || !prompt.trim()" @click="submit">
-            <Spinner v-if="loading" size="sm" />
+          <Button size="sm" :disabled="props.loading || !canSubmit" @click="submit">
+            <Spinner v-if="props.loading" size="sm" />
             {{ isCreate ? "Create" : "Save" }}
           </Button>
         </div>

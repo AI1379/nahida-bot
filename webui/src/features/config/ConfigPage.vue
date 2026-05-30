@@ -12,8 +12,9 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import { api } from "@/api/client";
 import type { ConfigValidateResponse } from "@/api/schemas";
 
-const activeTab = ref("schema");
+const activeTab = ref("current");
 const tabs = [
+  { id: "current", label: "Current" },
   { id: "schema", label: "Schema" },
   { id: "yaml", label: "YAML" },
 ];
@@ -30,6 +31,11 @@ const baseChecksum = ref("");
 const showSaveDialog = ref(false);
 
 const saveMutation = useConfigSave();
+
+const currentValueByPath = computed(() => {
+  const entries = configData.value?.entries ?? [];
+  return new Map(entries.map((entry) => [entry.path, entry.value]));
+});
 
 watchEffect(async () => {
   if (configData.value && !validation.value) {
@@ -136,13 +142,39 @@ function confirmSave() {
       <!-- Tabs -->
       <Tabs :tabs="tabs" v-model="activeTab" />
 
-      <!-- Schema view -->
-      <div v-if="activeTab === 'schema' && schemaData" class="schema-view">
-        <table class="schema-table">
+      <!-- Current config view -->
+      <div v-if="activeTab === 'current'" class="current-view">
+        <table v-if="configData.entries.length" class="config-table">
           <thead>
             <tr>
               <th>Key</th>
               <th>Type</th>
+              <th>Current Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="entry in configData.entries" :key="entry.path">
+              <td><code>{{ entry.path }}</code></td>
+              <td>{{ entry.type }}</td>
+              <td>
+                <code class="value-code">{{ entry.value }}</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">
+          No config values found in the current file.
+        </div>
+      </div>
+
+      <!-- Schema view -->
+      <div v-if="activeTab === 'schema' && schemaData" class="schema-view">
+        <table class="config-table">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Type</th>
+              <th>Current</th>
               <th>Default</th>
               <th>Constraints</th>
             </tr>
@@ -151,6 +183,12 @@ function confirmSave() {
             <tr v-for="entry in schemaData.entries" :key="entry.path">
               <td><code>{{ entry.path }}</code></td>
               <td>{{ entry.type }}</td>
+              <td>
+                <code v-if="currentValueByPath.get(entry.path)" class="value-code">
+                  {{ currentValueByPath.get(entry.path) }}
+                </code>
+                <span v-else class="muted">-</span>
+              </td>
               <td>
                 <code v-if="entry.default">{{ entry.default }}</code>
                 <span v-else class="muted">-</span>
@@ -262,13 +300,13 @@ function confirmSave() {
   font-size: 0.6875rem;
 }
 
-.schema-table {
+.config-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.8125rem;
 }
 
-.schema-table th {
+.config-table th {
   text-align: left;
   padding: 0.5rem;
   border-bottom: 1px solid var(--color-border);
@@ -279,17 +317,30 @@ function confirmSave() {
   letter-spacing: 0.04em;
 }
 
-.schema-table td {
+.config-table td {
   padding: 0.5rem;
   border-bottom: 1px solid var(--color-border);
   vertical-align: top;
 }
 
-.schema-table code {
+.config-table code {
   background: var(--color-muted);
   padding: 0.0625rem 0.375rem;
   border-radius: var(--radius-sm);
   font-size: 0.75rem;
+}
+
+.value-code {
+  display: inline-block;
+  max-width: 32rem;
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  color: var(--color-muted-foreground);
+  font-size: 0.8125rem;
+  text-align: center;
+  padding: 2rem;
 }
 
 .yaml-view {

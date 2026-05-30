@@ -45,6 +45,13 @@ class ConfigContent:
 
 
 @dataclass(slots=True)
+class ConfigValueEntry:
+    path: str
+    type_: str
+    value: str
+
+
+@dataclass(slots=True)
 class ConfigSaveResult:
     saved: bool
     backup_path: str | None = None
@@ -68,12 +75,97 @@ def redact_yaml(raw_yaml: str) -> str:
     )
 
 
+def flatten_yaml_values(raw_yaml: str) -> list[ConfigValueEntry]:
+    """Return flattened config values for display in the WebUI."""
+    try:
+        data = yaml.safe_load(raw_yaml)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    entries: list[ConfigValueEntry] = []
+    _flatten_value(data, "", entries)
+    return entries
+
+
 def _redact_dict(d: dict[str, Any]) -> None:
     for key in list(d.keys()):
         if isinstance(d[key], dict):
             _redact_dict(d[key])
+        elif isinstance(d[key], list):
+            _redact_list(d[key])
         elif isinstance(d[key], str) and _REDACT_PATTERNS.search(key):
             d[key] = "***"
+
+
+def _redact_list(values: list[Any]) -> None:
+    for value in values:
+        if isinstance(value, dict):
+            _redact_dict(value)
+        elif isinstance(value, list):
+            _redact_list(value)
+
+
+def _flatten_value(value: Any, path: str, out: list[ConfigValueEntry]) -> None:
+    if isinstance(value, dict):
+        if path and not value:
+            out.append(ConfigValueEntry(path=path, type_="dict", value="{}"))
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            _flatten_value(child, child_path, out)
+        return
+
+    if isinstance(value, list):
+        if not value:
+            out.append(ConfigValueEntry(path=path, type_="list", value="[]"))
+            return
+        for index, child in enumerate(value):
+            _flatten_value(child, f"{path}[{index}]", out)
+        return
+
+    out.append(
+        ConfigValueEntry(
+            path=path,
+            type_=_value_type(value),
+            value=_format_config_value(value),
+        )
+    )
+
+
+def _value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, dict):
+        return "dict"
+    return type(value).__name__
+
+
+def _format_config_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return '""' if value == "" else value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    dumped = yaml.safe_dump(
+        value,
+        allow_unicode=True,
+        default_flow_style=True,
+        sort_keys=False,
+    ).strip()
+    return dumped.removesuffix("\n...")
 
 
 def read_current_config(config_path: str | None = None) -> ConfigContent:
