@@ -90,6 +90,17 @@ class ConfigCurrentResponse(BaseModel):
     entries: list[ConfigValueResponse] = Field(default_factory=list)
 
 
+class ConfigDocumentResponse(BaseModel):
+    content: str
+    checksum: str
+    path: str
+    mtime: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    redacted_data: dict[str, Any] = Field(default_factory=dict)
+    redacted_paths: list[str] = Field(default_factory=list)
+    entries: list[ConfigValueResponse] = Field(default_factory=list)
+
+
 class ConfigSchemaResponse(BaseModel):
     entries: list[dict[str, str]]
 
@@ -105,6 +116,18 @@ class ConfigSaveRequest(BaseModel):
     content: str
     expected_checksum: str
     format: str = "yaml"
+
+
+class ConfigPatchChange(BaseModel):
+    path: str
+    value: Any = None
+    remove: bool = False
+    secret_action: Literal["keep", "replace", "clear"] | None = None
+
+
+class ConfigPatchRequest(BaseModel):
+    expected_checksum: str
+    changes: list[ConfigPatchChange] = Field(default_factory=list)
 
 
 class ConfigSaveResponse(BaseModel):

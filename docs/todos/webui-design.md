@@ -2,7 +2,7 @@
 
 > 状态：设计草案
 > 日期：2026-05-25
-> 最近更新：2026-05-27
+> 最近更新：2026-05-31
 > 目标：为 nahida-bot 增加一个面向本地/私有部署的可视化运维 WebUI，覆盖系统状态、配置管理、CRON、Session、Workspace 文件和未来扩展页面。
 > 相关文档：
 >
@@ -270,6 +270,78 @@ class WebUIAuthConfigModel(BaseModel):
 ### 5.2 配置页：Config
 
 目标：把 `config.yaml` 变成可理解、可验证、可安全保存的配置界面。
+
+#### 5.2.1 图形化配置页重构
+
+当前配置页已经具备读取、校验、保存 YAML 的基础能力，但主要交互仍然是扁平表格和整段 YAML 编辑，不适合日常维护。下一阶段配置页改为“图形化分区表单 + 高级 YAML 兜底”的操作台。
+
+页面结构：
+
+```text
+顶部保存栏：配置路径 / checksum / 校验状态 / 未保存变更 / 保存 / 丢弃 / 查看 YAML
+左侧分区：General / Providers / Channels / Agent / Router / Context / Memory / Multimodal / Scheduler / Plugins
+中间表单：当前分区的字段控件
+右侧状态：validation issues / 改动摘要 / restart required 提示
+```
+
+字段控件规则：
+
+- `bool` 使用开关。
+- `Literal` / enum 使用下拉或分段控件。
+- `int` / `float` 使用数字输入，并显示后端 schema 约束。
+- 长文本如 `system_prompt` 使用 textarea。
+- `list[str]` 使用 chip/tag 编辑器或多行列表编辑器。
+- `api_key`、`token`、`secret`、`password`、`private_key` 等敏感字段使用 SecretInput：默认“保持当前值”，只有用户显式输入新值或清空时才写回。
+- `model spec` 优先从 `providers.*.models` 和模型 `tags` 中选择，也允许自由输入。
+- 未知插件配置优先按插件 `config_schema` 自动生成；没有 schema 时退化为对象/YAML 编辑器。
+
+Provider 区作为第一优先级：
+
+- 以 provider card 管理 `providers.<id>`。
+- 支持新增、删除 provider。
+- 支持设置 `type`、`base_url`、`api_key`、`stream_responses`、`merge_system_messages`。
+- 支持编辑 models 列表；对象形式模型用高级编辑或 JSON 行兜底。
+- 支持设置 `default_provider`。
+- 后续再补 provider 连接测试和模型能力专用编辑器。
+
+保存模型：
+
+- 图形化表单不提交整份脱敏 YAML，而是提交 path-level patch。
+- 后端用 checksum 防止覆盖外部修改。
+- 后端读取未脱敏原文件，应用变更，未修改的敏感字段保持原值。
+- 保存前统一走 `Settings` + `validate_settings()` 校验。
+- 保存时自动备份，返回 `backup_path`、新 checksum 和 `restart_required=true`。
+
+需要新增 API：
+
+```text
+GET   /api/config/document?redact=true
+PATCH /api/config/current
+```
+
+`GET /api/config/document` 返回结构化配置树、脱敏后的配置树、脱敏路径、schema、checksum、mtime 和配置文件路径。
+
+`PATCH /api/config/current` 接收：
+
+```json
+{
+  "expected_checksum": "sha256:...",
+  "changes": [
+    {"path": "debug", "value": true},
+    {"path": "providers.default.base_url", "value": "https://example.com"},
+    {"path": "providers.default.api_key", "secret_action": "keep"}
+  ]
+}
+```
+
+第一阶段范围：
+
+- 新增结构化 config document API。
+- 新增 path-level patch 保存 API。
+- 前端配置页改为分区表单。
+- 优先覆盖 General、Providers、Multimodal、Agent、Router、Context、Memory、Scheduler。
+- YAML 视图保留为高级预览/兜底，不再作为默认编辑入口。
+- 当前实现可以先使用 PyYAML 完成结构化 patch；若要求保存后完整保留注释、空行和手写排版，应引入 `ruamel.yaml` round-trip 写入。
 
 视图：
 

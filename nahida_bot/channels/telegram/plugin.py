@@ -9,6 +9,10 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from nahida_bot.channels.telegram.config import (
+    TelegramPluginConfig,
+    parse_telegram_config,
+)
 from nahida_bot.channels.telegram.markdown_converter import (
     convert_markdown_to_telegram_html,
     split_html_message,
@@ -44,6 +48,7 @@ class TelegramPlugin(Plugin):
     def __init__(self, api: BotAPIProtocol, manifest: PluginManifest) -> None:
         super().__init__(api, manifest)
         self._channel_id = manifest.id
+        self._config = parse_telegram_config(manifest.config)
         self._bot: Bot | None = None
         self._polling_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._converter = TelegramMessageConverter(bot_username=None)
@@ -55,17 +60,21 @@ class TelegramPlugin(Plugin):
         return self._channel_id
 
     @property
+    def config(self) -> TelegramPluginConfig:
+        """Parsed Telegram plugin configuration."""
+        return self._config
+
+    @property
     def reply_to_inbound(self) -> bool | None:
         """Optional channel override for router default reply-to behavior."""
-        value = self.manifest.config.get("reply_to_inbound")
-        return value if isinstance(value, bool) else None
+        return self.config.reply_to_inbound
 
     async def on_load(self) -> None:
         """Create the aiogram Bot instance and verify the token."""
         from aiogram import Bot
         from aiogram.client.default import DefaultBotProperties
 
-        token = self.manifest.config.get("bot_token", "")
+        token = self.config.bot_token
         if not token:
             token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         if not token:
@@ -75,7 +84,7 @@ class TelegramPlugin(Plugin):
                 "in config.yaml"
             )
 
-        proxy = os.environ.get("TELEGRAM_PROXY") or self.manifest.config.get("proxy")
+        proxy = os.environ.get("TELEGRAM_PROXY") or self.config.proxy
 
         bot_kwargs: dict[str, Any] = {
             "token": token,
@@ -140,10 +149,8 @@ class TelegramPlugin(Plugin):
 
         inbound = self._converter.to_inbound(normalized_message)
         decision = GroupInteractionPolicy(
-            mode=self.manifest.config.get("group_trigger_mode", "always"),
-            observe_untriggered=bool(
-                self.manifest.config.get("group_context_capture", False)
-            ),
+            mode=self.config.group_trigger_mode,
+            observe_untriggered=self.config.group_context_capture,
         ).decide(inbound)
         if not decision.observe:
             return
@@ -249,10 +256,10 @@ class TelegramPlugin(Plugin):
         """Background task that calls ``getUpdates`` in a loop."""
         assert self._bot is not None
 
-        polling_timeout = self.manifest.config.get("polling_timeout", 30)
-        allowed_chats: list[str] = self.manifest.config.get("allowed_chats", [])
+        polling_timeout = self.config.polling_timeout
+        allowed_chats = self.config.allowed_chats
         error_backoff = 1.0
-        max_error_backoff = float(self.manifest.config.get("polling_max_backoff", 30))
+        max_error_backoff = self.config.polling_max_backoff
 
         while True:
             try:
@@ -395,7 +402,7 @@ class TelegramPlugin(Plugin):
     ) -> Any:
         """Call a Telegram API method with rate-limit retry logic."""
         if max_attempts is None:
-            max_attempts = int(self.manifest.config.get("send_retry_attempts", 3))
+            max_attempts = self.config.send_retry_attempts
 
         attempt = 0
         while True:
@@ -472,7 +479,7 @@ class TelegramPlugin(Plugin):
         if not file.file_path:
             return None
 
-        media_dir = self.manifest.config.get("media_download_dir", "./data/temp/media")
+        media_dir = self.config.media_download_dir
         dest = Path(destination) if destination else Path(media_dir) / f"{file_id}.dat"
         dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -495,9 +502,7 @@ class TelegramPlugin(Plugin):
         async def _handler(*, file_id: str, file_name: str = "") -> str:
             dest = None
             if file_name:
-                media_dir = self.manifest.config.get(
-                    "media_download_dir", "./data/temp/media"
-                )
+                media_dir = self.config.media_download_dir
                 dest = str(Path(media_dir) / file_name)
 
             result = await self.download_media(file_id, destination=dest)

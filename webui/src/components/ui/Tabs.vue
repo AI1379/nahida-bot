@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { cn } from "@/lib/utils";
-import { computed } from "vue";
 
 const props = defineProps<{
   tabs: { id: string; label: string }[];
@@ -11,13 +10,8 @@ const emit = defineEmits<{
   "update:modelValue": [id: string];
 }>();
 
-const activeClasses = (id: string) =>
-  computed(() =>
-    cn(
-      "tab-item",
-      props.modelValue === id && "tab-active",
-    ),
-  );
+const tabClasses = (id: string) =>
+  cn("tab-item", props.modelValue === id && "tab-active");
 </script>
 
 <template>
@@ -25,7 +19,8 @@ const activeClasses = (id: string) =>
     <button
       v-for="tab in tabs"
       :key="tab.id"
-      :class="activeClasses(tab.id)"
+      :class="tabClasses(tab.id)"
+      type="button"
       role="tab"
       :aria-selected="modelValue === tab.id"
       @click="emit('update:modelValue', tab.id)"
@@ -38,28 +33,40 @@ const activeClasses = (id: string) =>
 <style scoped>
 .tabs {
   display: flex;
-  gap: 0;
+  align-items: center;
+  gap: 0.25rem;
   border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.375rem;
 }
 
 .tab-item {
-  padding: 0.5rem 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  height: 32px;
+  padding: 0 0.75rem;
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-muted-foreground);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .tab-item:hover {
+  background: var(--color-accent);
   color: var(--color-foreground);
 }
 
 .tab-active {
+  background: var(--color-card);
+  border-color: var(--color-border);
   color: var(--color-foreground);
-  border-bottom-color: var(--color-primary);
+  box-shadow: inset 0 -2px 0 var(--color-primary);
 }
 </style>

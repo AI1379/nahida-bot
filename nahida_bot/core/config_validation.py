@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pydantic import ValidationError
+
 from nahida_bot.core.config import Settings
 
 
@@ -98,6 +100,24 @@ def _add_unresolved_model_issue(
             f"Model spec '{spec}' does not match any provider/model, model name, or tag",
         )
     )
+
+
+def _add_pydantic_issues(
+    report: ValidationReport,
+    *,
+    prefix: str,
+    exc: ValidationError,
+) -> None:
+    for error in exc.errors():
+        loc = error.get("loc", ())
+        suffix = ".".join(str(part) for part in loc if part != "__root__")
+        report.issues.append(
+            ValidationIssue(
+                "error",
+                f"{prefix}.{suffix}" if suffix else prefix,
+                str(error.get("msg", "Invalid configuration")),
+            )
+        )
 
 
 def validate_settings(settings: Settings) -> ValidationReport:
@@ -277,25 +297,46 @@ def validate_settings(settings: Settings) -> ValidationReport:
 
     # --- channels ---
     extra = settings.model_extra or {}
-    for channel_id in ("telegram", "milky"):
-        if channel_id in extra:
-            channel_cfg = extra[channel_id]
-            if isinstance(channel_cfg, dict):
-                if channel_id == "telegram" and not channel_cfg.get("bot_token"):
-                    report.issues.append(
-                        ValidationIssue(
-                            "warning",
-                            f"{channel_id}.bot_token",
-                            "Telegram is configured but bot_token is not set",
-                        )
+    if "telegram" in extra and isinstance(extra["telegram"], dict):
+        from nahida_bot.channels.telegram.config import parse_telegram_config
+
+        try:
+            telegram = parse_telegram_config(extra["telegram"])
+        except ValidationError as exc:
+            _add_pydantic_issues(report, prefix="telegram", exc=exc)
+        else:
+            if not telegram.bot_token:
+                report.issues.append(
+                    ValidationIssue(
+                        "warning",
+                        "telegram.bot_token",
+                        "Telegram is configured but bot_token is not set",
                     )
-                if channel_id == "milky" and not channel_cfg.get("access_token"):
-                    report.issues.append(
-                        ValidationIssue(
-                            "warning",
-                            f"{channel_id}.access_token",
-                            "Milky is configured but access_token is not set",
-                        )
+                )
+
+    if "milky" in extra and isinstance(extra["milky"], dict):
+        from nahida_bot.channels.milky.config import parse_milky_config
+
+        try:
+            milky = parse_milky_config(extra["milky"])
+        except ValidationError as exc:
+            _add_pydantic_issues(report, prefix="milky", exc=exc)
+        else:
+            if not milky.access_token:
+                report.issues.append(
+                    ValidationIssue(
+                        "warning",
+                        "milky.access_token",
+                        "Milky is configured but access_token is not set",
                     )
+                )
+
+    if "onebot" in extra and isinstance(extra["onebot"], dict):
+        from nahida_bot.channels.onebot.config import parse_onebot_config
+
+        try:
+            parse_onebot_config(extra["onebot"])
+        except ValidationError as exc:
+            _add_pydantic_issues(report, prefix="onebot", exc=exc)
 
     return report

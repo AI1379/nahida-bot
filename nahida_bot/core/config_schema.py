@@ -164,6 +164,23 @@ _NESTED_MODELS: dict[str, type] = {
 }
 
 
+def _plugin_config_model(plugin_id: str) -> type | None:
+    """Return a hand-authored config model for built-in plugins/channels."""
+    if plugin_id == "telegram":
+        from nahida_bot.channels.telegram.config import TelegramPluginConfig
+
+        return TelegramPluginConfig
+    if plugin_id == "milky":
+        from nahida_bot.channels.milky.config import MilkyPluginConfig
+
+        return MilkyPluginConfig
+    if plugin_id == "onebot":
+        from nahida_bot.channels.onebot.config import OneBotPluginConfig
+
+        return OneBotPluginConfig
+    return None
+
+
 def build_config_schema(
     section: str | None = None,
     show_providers: bool = False,
@@ -262,6 +279,11 @@ def _build_plugin_schema(
                 default_="{}",
             )
         )
+
+        config_model = _plugin_config_model(plugin_id)
+        if config_model is not None:
+            entries.extend(walk_schema(config_model, plugin_id))
+            continue
 
         config_schema = manifest.config_schema or {}
         if config_schema:

@@ -454,6 +454,130 @@ integrations:
     assert entries["integrations[0].api_key"]["value"] == "***"
 
 
+async def test_config_document_returns_structured_redacted_data(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+app_name: Demo Bot
+providers:
+  default:
+    type: openai-compatible
+    api_key: secret-key
+    base_url: https://old.example
+    models:
+      - demo-model
+default_provider: default
+multimodal:
+  image_fallback_mode: "off"
+""",
+        encoding="utf-8",
+    )
+    app = _make_mock_app()
+    app._config_yaml_path = str(config_path)
+    webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/config/document")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["data"]["providers"]["default"]["api_key"] == "secret-key"
+    assert data["redacted_data"]["providers"]["default"]["api_key"] == "***"
+    assert "providers.default.api_key" in data["redacted_paths"]
+    assert "secret-key" not in data["content"]
+
+
+async def test_config_patch_preserves_unmodified_secret(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+app_name: Demo Bot
+debug: false
+providers:
+  default:
+    type: openai-compatible
+    api_key: secret-key
+    base_url: https://old.example
+    models:
+      - demo-model
+default_provider: default
+multimodal:
+  image_fallback_mode: "off"
+""",
+        encoding="utf-8",
+    )
+    app = _make_mock_app()
+    app._config_yaml_path = str(config_path)
+    webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        document = await client.get("/api/config/document")
+        patch = await client.patch(
+            "/api/config/current",
+            json={
+                "expected_checksum": document.json()["checksum"],
+                "changes": [
+                    {"path": "debug", "value": True},
+                    {
+                        "path": "providers.default.base_url",
+                        "value": "https://new.example",
+                    },
+                ],
+            },
+        )
+
+    assert patch.status_code == 200
+    saved = config_path.read_text(encoding="utf-8")
+    assert "debug: true" in saved
+    assert "https://new.example" in saved
+    assert "secret-key" in saved
+    assert "***" not in saved
+    assert (tmp_path / "config_backups").exists()
+
+
+async def test_config_patch_rejects_redacted_secret_placeholder(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+providers:
+  default:
+    type: openai-compatible
+    api_key: secret-key
+    models:
+      - demo-model
+default_provider: default
+multimodal:
+  image_fallback_mode: "off"
+""",
+        encoding="utf-8",
+    )
+    app = _make_mock_app()
+    app._config_yaml_path = str(config_path)
+    webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        document = await client.get("/api/config/document")
+        patch = await client.patch(
+            "/api/config/current",
+            json={
+                "expected_checksum": document.json()["checksum"],
+                "changes": [
+                    {
+                        "path": "providers.default.api_key",
+                        "value": "***",
+                        "secret_action": "replace",
+                    }
+                ],
+            },
+        )
+
+    assert patch.status_code == 409
+    assert "secret-key" in config_path.read_text(encoding="utf-8")
+
+
 # -- Files ----------------------------------------------------------------
 
 

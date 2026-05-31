@@ -74,6 +74,17 @@ export interface ConfigCurrentResponse {
   entries: { path: string; type: string; value: string }[];
 }
 
+export interface ConfigDocumentResponse {
+  content: string;
+  checksum: string;
+  path: string;
+  mtime: string;
+  data: Record<string, unknown>;
+  redacted_data: Record<string, unknown>;
+  redacted_paths: string[];
+  entries: { path: string; type: string; value: string }[];
+}
+
 export interface ConfigSchemaResponse {
   entries: { path: string; type: string; default: string; constraints: string }[];
 }
@@ -261,6 +272,18 @@ export interface ConfigSaveRequest {
   content: string;
   expected_checksum: string;
   format: string;
+}
+
+export interface ConfigPatchChange {
+  path: string;
+  value?: unknown;
+  remove?: boolean;
+  secret_action?: "keep" | "replace" | "clear";
+}
+
+export interface ConfigPatchRequest {
+  expected_checksum: string;
+  changes: ConfigPatchChange[];
 }
 
 export interface ConfigSaveResponse {

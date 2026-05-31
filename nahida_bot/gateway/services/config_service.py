@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +61,19 @@ class ConfigSaveResult:
     validation: ValidationReport | None = None
 
 
+@dataclass(slots=True)
+class ConfigDocument:
+    raw: str
+    redacted_raw: str
+    checksum: str
+    path: str
+    mtime: str
+    data: dict[str, Any]
+    redacted_data: dict[str, Any]
+    redacted_paths: list[str]
+    entries: list[ConfigValueEntry]
+
+
 def _sha256(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -75,6 +89,43 @@ def redact_yaml(raw_yaml: str) -> str:
     )
 
 
+def read_config_document(config_path: str | None = None) -> ConfigDocument:
+    """Read config as both raw YAML and structured redacted data."""
+    cfg = read_current_config(config_path=config_path)
+    data = _parse_yaml_mapping(cfg.raw)
+    redacted_data, redacted_paths = redact_config_data(data)
+    redacted_raw = config_data_to_yaml(redacted_data)
+    return ConfigDocument(
+        raw=cfg.raw,
+        redacted_raw=redacted_raw,
+        checksum=cfg.checksum,
+        path=cfg.path,
+        mtime=cfg.mtime,
+        data=data,
+        redacted_data=redacted_data,
+        redacted_paths=redacted_paths,
+        entries=flatten_config_values(redacted_data),
+    )
+
+
+def redact_config_data(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Return a redacted deep copy and the redacted field paths."""
+    redacted = deepcopy(data)
+    paths: list[str] = []
+    _redact_any(redacted, "", paths)
+    return redacted, paths
+
+
+def config_data_to_yaml(data: dict[str, Any]) -> str:
+    """Serialize structured config data for validation or preview."""
+    return yaml.safe_dump(
+        data,
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False,
+    )
+
+
 def flatten_yaml_values(raw_yaml: str) -> list[ConfigValueEntry]:
     """Return flattened config values for display in the WebUI."""
     try:
@@ -83,6 +134,13 @@ def flatten_yaml_values(raw_yaml: str) -> list[ConfigValueEntry]:
         return []
     if not isinstance(data, dict):
         return []
+    entries: list[ConfigValueEntry] = []
+    _flatten_value(data, "", entries)
+    return entries
+
+
+def flatten_config_values(data: dict[str, Any]) -> list[ConfigValueEntry]:
+    """Return flattened config values from already parsed config data."""
     entries: list[ConfigValueEntry] = []
     _flatten_value(data, "", entries)
     return entries
@@ -104,6 +162,23 @@ def _redact_list(values: list[Any]) -> None:
             _redact_dict(value)
         elif isinstance(value, list):
             _redact_list(value)
+
+
+def _redact_any(value: Any, path: str, out: list[str]) -> None:
+    if isinstance(value, dict):
+        for key in list(value.keys()):
+            child_path = f"{path}.{key}" if path else str(key)
+            child = value[key]
+            if isinstance(child, (dict, list)):
+                _redact_any(child, child_path, out)
+            elif isinstance(child, str) and _REDACT_PATTERNS.search(str(key)):
+                value[key] = _REDACT_PLACEHOLDER
+                out.append(child_path)
+        return
+
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _redact_any(child, f"{path}[{index}]", out)
 
 
 def _flatten_value(value: Any, path: str, out: list[ConfigValueEntry]) -> None:
@@ -191,6 +266,15 @@ def read_current_config(config_path: str | None = None) -> ConfigContent:
     )
 
 
+def _parse_yaml_mapping(raw_yaml: str) -> dict[str, Any]:
+    data = yaml.safe_load(raw_yaml)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("Config must be a YAML mapping")
+    return data
+
+
 def validate_config_text(
     raw_yaml: str,
     *,
@@ -219,6 +303,11 @@ def validate_config_text(
         )
 
     return validate_settings(settings)
+
+
+def validate_config_data(data: dict[str, Any]) -> ValidationReport:
+    """Validate structured config data without writing to disk."""
+    return validate_config_text(config_data_to_yaml(data))
 
 
 def save_config_with_backup(
@@ -281,22 +370,7 @@ def save_config_with_backup(
         return ConfigSaveResult(saved=False, validation=report)
 
     # Backup
-    backup_path = None
-    if backup_dir:
-        bdir = Path(backup_dir)
-    else:
-        bdir = path.parent / "config_backups"
-    bdir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    backup_file = bdir / f"config.yaml.{timestamp}.bak"
-    shutil.copy2(path, backup_file)
-    backup_path = str(backup_file)
-
-    # Atomic write: write to temp, then rename
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.replace(path)
-
+    backup_path = _backup_and_write(path, content, backup_dir=backup_dir)
     new_checksum = _sha256(content)
 
     logger.info(
@@ -313,6 +387,206 @@ def save_config_with_backup(
         restart_required=True,
         validation=report,
     )
+
+
+def save_config_patch_with_backup(
+    changes: list[dict[str, Any]],
+    *,
+    expected_checksum: str,
+    config_path: str | None = None,
+    backup_dir: str | None = None,
+) -> ConfigSaveResult:
+    """Apply path-level config changes and save with checksum/backup protection."""
+    path = _resolve_config_path(config_path)
+    if not path or not path.exists():
+        return ConfigSaveResult(saved=False, validation=ValidationReport())
+
+    current_raw = path.read_text(encoding="utf-8")
+    current_checksum = _sha256(current_raw)
+    if current_checksum != expected_checksum:
+        report = ValidationReport(
+            issues=[
+                ValidationIssue(
+                    "error",
+                    "",
+                    f"Config was modified externally (checksum mismatch). "
+                    f"Expected {expected_checksum}, got {current_checksum}. "
+                    f"Re-read and retry.",
+                )
+            ]
+        )
+        return ConfigSaveResult(saved=False, validation=report)
+
+    try:
+        data = _parse_yaml_mapping(current_raw)
+        _apply_patch_changes(data, changes)
+    except (TypeError, ValueError) as exc:
+        report = ValidationReport(issues=[ValidationIssue("error", "", str(exc))])
+        return ConfigSaveResult(saved=False, validation=report)
+
+    content = config_data_to_yaml(data)
+    report = validate_config_text(content)
+    if report.errors > 0:
+        return ConfigSaveResult(saved=False, validation=report)
+
+    redacted_fields = _find_redacted_placeholders(content)
+    if redacted_fields:
+        report.issues.append(
+            ValidationIssue(
+                "error",
+                redacted_fields[0],
+                f"Save rejected: content contains redacted placeholder "
+                f"'{_REDACT_PLACEHOLDER}' in sensitive field(s): "
+                f"{', '.join(redacted_fields)}.",
+            )
+        )
+        return ConfigSaveResult(saved=False, validation=report)
+
+    backup_path = _backup_and_write(path, content, backup_dir=backup_dir)
+    new_checksum = _sha256(content)
+    logger.info(
+        "config.patch_saved",
+        path=str(path),
+        backup=backup_path,
+        new_checksum=new_checksum,
+        change_count=len(changes),
+    )
+    return ConfigSaveResult(
+        saved=True,
+        backup_path=backup_path,
+        checksum=new_checksum,
+        restart_required=True,
+        validation=report,
+    )
+
+
+def _backup_and_write(path: Path, content: str, *, backup_dir: str | None) -> str:
+    if backup_dir:
+        bdir = Path(backup_dir)
+    else:
+        bdir = path.parent / "config_backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    backup_file = bdir / f"config.yaml.{timestamp}.bak"
+    shutil.copy2(path, backup_file)
+
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(path)
+    return str(backup_file)
+
+
+def _apply_patch_changes(data: dict[str, Any], changes: list[dict[str, Any]]) -> None:
+    for change in changes:
+        path = str(change.get("path") or "").strip()
+        if not path:
+            raise ValueError("Patch change is missing path")
+
+        secret_action = change.get("secret_action")
+        if secret_action == "keep":
+            continue
+
+        if change.get("remove"):
+            _remove_path(data, path)
+            continue
+
+        value = "" if secret_action == "clear" else change.get("value")
+        _set_path(data, path, value)
+
+
+def _parse_config_path(path: str) -> list[str | int]:
+    segments: list[str | int] = []
+    token = ""
+    index = 0
+    while index < len(path):
+        char = path[index]
+        if char == ".":
+            if token:
+                segments.append(token)
+                token = ""
+            index += 1
+            continue
+        if char == "[":
+            if token:
+                segments.append(token)
+                token = ""
+            end = path.find("]", index)
+            if end == -1:
+                raise ValueError(f"Invalid config path: {path}")
+            raw_index = path[index + 1 : end]
+            if not raw_index.isdigit():
+                raise ValueError(f"Invalid list index in config path: {path}")
+            segments.append(int(raw_index))
+            index = end + 1
+            continue
+        token += char
+        index += 1
+    if token:
+        segments.append(token)
+    if not segments:
+        raise ValueError("Config path is empty")
+    return segments
+
+
+def _new_container(next_segment: str | int) -> Any:
+    return [] if isinstance(next_segment, int) else {}
+
+
+def _set_path(data: dict[str, Any], path: str, value: Any) -> None:
+    segments = _parse_config_path(path)
+    current: Any = data
+    for offset, segment in enumerate(segments[:-1]):
+        next_segment = segments[offset + 1]
+        if isinstance(segment, int):
+            if not isinstance(current, list):
+                raise ValueError(f"Expected list while setting {path}")
+            while len(current) <= segment:
+                current.append(_new_container(next_segment))
+            if current[segment] is None:
+                current[segment] = _new_container(next_segment)
+            current = current[segment]
+            continue
+
+        if not isinstance(current, dict):
+            raise ValueError(f"Expected mapping while setting {path}")
+        if segment not in current or current[segment] is None:
+            current[segment] = _new_container(next_segment)
+        current = current[segment]
+
+    final = segments[-1]
+    if isinstance(final, int):
+        if not isinstance(current, list):
+            raise ValueError(f"Expected list while setting {path}")
+        while len(current) <= final:
+            current.append(None)
+        current[final] = value
+        return
+
+    if not isinstance(current, dict):
+        raise ValueError(f"Expected mapping while setting {path}")
+    current[final] = value
+
+
+def _remove_path(data: dict[str, Any], path: str) -> None:
+    segments = _parse_config_path(path)
+    current: Any = data
+    for segment in segments[:-1]:
+        if isinstance(segment, int):
+            if not isinstance(current, list) or segment >= len(current):
+                return
+            current = current[segment]
+            continue
+        if not isinstance(current, dict) or segment not in current:
+            return
+        current = current[segment]
+
+    final = segments[-1]
+    if isinstance(final, int):
+        if isinstance(current, list) and final < len(current):
+            current.pop(final)
+        return
+    if isinstance(current, dict):
+        current.pop(final, None)
 
 
 def list_backups(

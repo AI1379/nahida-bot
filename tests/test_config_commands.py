@@ -91,6 +91,29 @@ def test_schema_includes_builtin_plugin_config_defaults() -> None:
     assert entries["builtin-commands.external_attachment_roots"].type_ == "list"
 
 
+def test_schema_uses_channel_config_models() -> None:
+    telegram_entries = {
+        entry.path: entry
+        for entry in build_config_schema("telegram", show_providers=False)
+    }
+    onebot_entries = {
+        entry.path: entry
+        for entry in build_config_schema("onebot", show_providers=False)
+    }
+    milky_entries = {
+        entry.path: entry
+        for entry in build_config_schema("milky", show_providers=False)
+    }
+
+    assert telegram_entries["telegram.bot_token"].type_ == "str"
+    assert telegram_entries["telegram.polling_timeout"].constraints == ">=1"
+    assert telegram_entries["telegram.allowed_chats"].type_ == "list[str]"
+    assert onebot_entries["onebot.ws_url"].type_ == "str"
+    assert onebot_entries["onebot.ws_access_token"].type_ == "str"
+    assert milky_entries["milky.access_token"].type_ == "str"
+    assert milky_entries["milky.connect_timeout"].constraints == ">0"
+
+
 def test_schema_reads_external_plugin_config_schema(tmp_path: Path) -> None:
     plugin_dir = tmp_path / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
@@ -186,3 +209,22 @@ def test_validate_warns_for_sqlite_vec_without_dimensions() -> None:
     report = validate_settings(settings)
 
     assert any(i.path == "memory.embedding.dimensions" for i in report.issues)
+
+
+def test_validate_uses_channel_config_models() -> None:
+    settings = Settings.model_validate(
+        {
+            "telegram": {"group_trigger_mode": "all"},
+            "onebot": {"protocol_version": "v11"},
+            "milky": {"reconnect_initial_delay": 10.0, "reconnect_max_delay": 1.0},
+        }
+    )
+
+    report = validate_settings(settings)
+
+    assert any(
+        i.severity == "error" and i.path == "telegram.group_trigger_mode"
+        for i in report.issues
+    )
+    assert any(i.severity == "error" and i.path == "onebot" for i in report.issues)
+    assert any(i.severity == "error" and i.path == "milky" for i in report.issues)

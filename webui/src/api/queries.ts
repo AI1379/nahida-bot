@@ -6,6 +6,8 @@ import { useAppStore } from "@/stores/app";
 import type {
   BootstrapResponse,
   ConfigCurrentResponse,
+  ConfigDocumentResponse,
+  ConfigPatchRequest,
   ConfigSchemaResponse,
   ConfigSaveRequest,
   ConfigSaveResponse,
@@ -58,6 +60,13 @@ export function useConfigCurrent() {
   return useQuery<ConfigCurrentResponse>({
     queryKey: ["config", "current"],
     queryFn: () => api.get("/config/current?redact=true"),
+  });
+}
+
+export function useConfigDocument() {
+  return useQuery<ConfigDocumentResponse>({
+    queryKey: ["config", "document"],
+    queryFn: () => api.get("/config/document"),
   });
 }
 
@@ -215,6 +224,33 @@ export function useConfigSave() {
       if (apiErr.status === 409) {
         toast.add("Config was modified externally. Re-reading...", "warning");
         qc.invalidateQueries({ queryKey: ["config", "current"] });
+      } else {
+        toast.add(`Save failed: ${apiErr.detail}`, "error");
+      }
+    },
+  });
+}
+
+export function useConfigPatchSave() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  const app = useAppStore();
+
+  return useMutation<ConfigSaveResponse, Error, ConfigPatchRequest>({
+    mutationFn: (body) => api.patch<ConfigSaveResponse>("/config/current", body),
+    onSuccess(data) {
+      qc.invalidateQueries({ queryKey: ["config", "current"] });
+      qc.invalidateQueries({ queryKey: ["config", "document"] });
+      if (data.restart_required) {
+        app.setRestartRequired(data.backup_path);
+      }
+      toast.add("Configuration saved." + (data.backup_path ? ` Backup: ${data.backup_path}` : ""), "success");
+    },
+    onError(err) {
+      const apiErr = toApiError(err);
+      if (apiErr.status === 409) {
+        toast.add("Config was modified externally or validation failed. Re-reading...", "warning");
+        qc.invalidateQueries({ queryKey: ["config", "document"] });
       } else {
         toast.add(`Save failed: ${apiErr.detail}`, "error");
       }

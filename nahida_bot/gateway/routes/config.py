@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import (
     ConfigCurrentResponse,
+    ConfigDocumentResponse,
+    ConfigPatchRequest,
     ConfigSaveRequest,
     ConfigSaveResponse,
     ConfigSchemaResponse,
@@ -16,10 +18,13 @@ from nahida_bot.gateway.schemas import (
 )
 from nahida_bot.gateway.services import audit_log
 from nahida_bot.gateway.services.config_service import (
+    config_data_to_yaml,
     flatten_yaml_values,
     list_backups,
+    read_config_document,
     read_current_config,
     redact_yaml,
+    save_config_patch_with_backup,
     save_config_with_backup,
     validate_config_text,
 )
@@ -60,6 +65,36 @@ async def get_current_config(
     )
 
 
+@router.get("/api/config/document", response_model=ConfigDocumentResponse)
+async def get_config_document(
+    app=Depends(get_application),
+) -> ConfigDocumentResponse:
+    try:
+        doc = read_config_document(config_path=_config_path(app))
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    return ConfigDocumentResponse(
+        content=doc.redacted_raw,
+        checksum=doc.checksum,
+        path=doc.path,
+        mtime=doc.mtime,
+        data=doc.data,
+        redacted_data=doc.redacted_data,
+        redacted_paths=doc.redacted_paths,
+        entries=[
+            ConfigValueResponse(path=e.path, type=e.type_, value=e.value)
+            for e in doc.entries
+        ],
+    )
+
+
 @router.get("/api/config/schema", response_model=ConfigSchemaResponse)
 async def get_config_schema(
     section: str | None = Query(None),
@@ -91,10 +126,19 @@ async def validate_config(
     app=Depends(get_application),
 ) -> ConfigValidateResponse:
     content = body.get("content", "")
+    if not content and "data" in body:
+        data = body.get("data")
+        if not isinstance(data, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'data' must be a JSON object",
+            )
+        content = config_data_to_yaml(data)
+
     if not content:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing 'content' field",
+            detail="Missing 'content' or 'data' field",
         )
     report = validate_config_text(content)
     logger.info(
@@ -114,6 +158,65 @@ async def validate_config(
             }
             for i in report.issues
         ],
+    )
+
+
+@router.patch("/api/config/current", response_model=ConfigSaveResponse)
+async def patch_current_config(
+    request: Request,
+    body: ConfigPatchRequest,
+    app=Depends(get_application),
+) -> ConfigSaveResponse:
+    result = save_config_patch_with_backup(
+        changes=[change.model_dump(exclude_unset=True) for change in body.changes],
+        expected_checksum=body.expected_checksum,
+        config_path=_config_path(app),
+    )
+    if not result.saved and result.validation and result.validation.errors > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Validation failed or checksum mismatch",
+                "issues": [
+                    {
+                        "severity": i.severity,
+                        "path": i.path,
+                        "message": i.message,
+                    }
+                    for i in result.validation.issues
+                ],
+            },
+        )
+
+    audit_log.audit("config.patch_saved", detail=f"backup={result.backup_path}")
+
+    broadcaster = getattr(request.app.state, "event_broadcaster", None)
+    if broadcaster is not None and result.saved:
+        broadcaster.notify_config_saved(result.backup_path, result.restart_required)
+
+    logger.info(
+        "webapi.config_patch_saved",
+        saved=result.saved,
+        backup=result.backup_path,
+        restart_required=result.restart_required,
+    )
+    return ConfigSaveResponse(
+        saved=result.saved,
+        backup_path=result.backup_path,
+        checksum=result.checksum,
+        restart_required=result.restart_required,
+        validation={
+            "errors": result.validation.errors if result.validation else 0,
+            "warnings": result.validation.warnings if result.validation else 0,
+            "issues": [
+                {
+                    "severity": i.severity,
+                    "path": i.path,
+                    "message": i.message,
+                }
+                for i in (result.validation.issues if result.validation else [])
+            ],
+        },
     )
 
 
