@@ -26,6 +26,7 @@ MODULE_SCOPES = frozenset(
         "node",
         "plugins",
         "providers",
+        "webui",
         "workspace",
         # memory maps to agent/memory/ but is listed as a separate scope
         "memory",

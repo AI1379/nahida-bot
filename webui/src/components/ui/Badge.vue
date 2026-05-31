@@ -22,34 +22,41 @@ const classes = computed(() => cn("badge", `badge-${props.variant}`));
   align-items: center;
   padding: 0.125rem 0.5rem;
   font-size: 0.6875rem;
-  font-weight: 500;
+  font-weight: 600;
   border-radius: 9999px;
+  border: 1px solid transparent;
   line-height: 1.4;
   white-space: nowrap;
 }
 .badge-default {
-  background: var(--color-primary);
-  color: var(--color-primary-foreground);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 22%, transparent);
+  color: var(--color-primary);
 }
 .badge-success {
-  background: color-mix(in srgb, var(--color-success) 15%, transparent);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 24%, transparent);
   color: var(--color-success);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-success) 7%, transparent);
 }
 .badge-warning {
-  background: color-mix(in srgb, var(--color-warning) 25%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 30%, transparent);
   color: var(--color-warning);
 }
 .badge-destructive {
-  background: color-mix(in srgb, var(--color-destructive) 25%, transparent);
+  background: color-mix(in srgb, var(--color-destructive) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-destructive) 32%, transparent);
   color: var(--color-destructive);
 }
 .badge-secondary {
   background: var(--color-secondary);
+  border-color: var(--color-border);
   color: var(--color-secondary-foreground);
 }
 .badge-outline {
-  background: transparent;
+  background: color-mix(in srgb, var(--color-card) 74%, transparent);
   border: 1px solid var(--color-border);
-  color: var(--color-foreground);
+  color: var(--color-muted-foreground);
 }
 </style>

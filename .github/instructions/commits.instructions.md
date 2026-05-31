@@ -48,6 +48,7 @@ Map to `nahida_bot/` top-level packages:
 | `node` | `node/` | Node runtime |
 | `plugins` | `plugins/` | Plugin system |
 | `workspace` | `workspace/` | Workspace management |
+| `webui` | `webui/` | Browser WebUI frontend pages, components, and styling |
 
 ### Cross-cutting Scopes
 

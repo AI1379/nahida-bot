@@ -1709,6 +1709,7 @@ code {
 .section-button {
   width: 100%;
   border: 0;
+  border-left: 3px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-muted-foreground);
@@ -1721,7 +1722,12 @@ code {
 .section-button:hover,
 .section-button.active {
   background: var(--color-accent);
-  color: var(--color-foreground);
+  color: var(--color-accent-foreground);
+}
+
+.section-button.active {
+  border-left-color: var(--color-primary);
+  box-shadow: inset 6px 0 10px -12px var(--color-primary);
 }
 
 .section-panel,

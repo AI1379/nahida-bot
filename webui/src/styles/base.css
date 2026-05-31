@@ -30,6 +30,55 @@
     font-family: var(--font-mono);
   }
 
+  input[type="checkbox"] {
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    display: inline-grid;
+    flex: 0 0 auto;
+    place-content: center;
+    margin: 0;
+    border: 1px solid var(--color-input);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--color-card) 88%, transparent);
+    cursor: pointer;
+    transition:
+      background 0.15s,
+      border-color 0.15s,
+      box-shadow 0.15s;
+  }
+
+  input[type="checkbox"]::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    background: var(--color-primary);
+    clip-path: polygon(14% 48%, 0 62%, 39% 100%, 100% 20%, 84% 8%, 37% 72%);
+    transform: scale(0);
+    transform-origin: center;
+    transition: transform 0.12s ease-out;
+  }
+
+  input[type="checkbox"]:checked {
+    border-color: color-mix(in srgb, var(--color-primary) 48%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 14%, var(--color-card));
+    box-shadow: 0 0 10px color-mix(in srgb, var(--color-primary) 5%, transparent);
+  }
+
+  input[type="checkbox"]:checked::before {
+    transform: scale(1);
+  }
+
+  input[type="checkbox"]:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-ring) 70%, transparent);
+    outline-offset: 2px;
+  }
+
+  input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
   /* Thin scrollbars */
   * {
     scrollbar-width: thin;

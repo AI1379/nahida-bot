@@ -64,9 +64,11 @@ const tabClasses = (id: string) =>
 }
 
 .tab-active {
-  background: var(--color-card);
-  border-color: var(--color-border);
-  color: var(--color-foreground);
-  box-shadow: inset 0 -2px 0 var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 5%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-primary) 18%, var(--color-border));
+  color: var(--color-accent-foreground);
+  box-shadow:
+    inset 0 -2px 0 var(--color-primary),
+    0 0 8px color-mix(in srgb, var(--color-primary) 4%, transparent);
 }
 </style>

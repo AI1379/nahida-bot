@@ -57,7 +57,7 @@ const activeName = computed(() => {
 <style scoped>
 .nav-rail {
   width: 52px;
-  background: var(--color-card);
+  background: var(--color-sidebar);
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
@@ -78,6 +78,7 @@ const activeName = computed(() => {
 }
 
 .nav-item {
+  position: relative;
   width: 36px;
   height: 36px;
   display: flex;
@@ -85,7 +86,7 @@ const activeName = computed(() => {
   justify-content: center;
   border-radius: var(--radius-md);
   color: var(--color-muted-foreground);
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, box-shadow 0.15s, color 0.15s;
   text-decoration: none;
 }
 
@@ -95,7 +96,10 @@ const activeName = computed(() => {
 }
 
 .nav-item.active {
-  background: var(--color-primary);
-  color: var(--color-primary-foreground);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
+  color: var(--color-primary);
+  box-shadow:
+    inset 3px 0 0 var(--color-primary),
+    0 0 8px color-mix(in srgb, var(--color-primary) 5%, transparent);
 }
 </style>

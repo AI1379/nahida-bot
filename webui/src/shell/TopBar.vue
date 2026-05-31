@@ -100,6 +100,7 @@ async function logout() {
 
 .topbar-sse.on {
   color: var(--color-success);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--color-success) 34%, transparent));
 }
 
 .topbar-sse.off {
@@ -113,6 +114,7 @@ async function logout() {
 
 .topbar-status.ok {
   color: var(--color-success);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--color-success) 30%, transparent));
 }
 
 .topbar-status.off {

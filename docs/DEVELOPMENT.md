@@ -674,10 +674,26 @@ MIT License
 - `test`: 测试相关
 - `chore`: 构建/工具变更
 
+**常用 scope：**
+
+- `agent`: Agent loop、context、metrics 等核心 Agent 逻辑
+- `channel`: 聊天平台接入与消息适配
+- `cli`: CLI 入口与命令
+- `core`: 应用生命周期、事件总线、共享类型
+- `db`: 数据库引擎与 repository
+- `gateway`: WebAPI、Gateway 服务、远程节点协议
+- `memory`: 记忆持久化与检索
+- `node`: Node runtime
+- `plugins`: 插件系统
+- `providers`: LLM provider 集成
+- `tests`: 跨模块测试
+- `webui`: Browser WebUI 前端页面、组件与样式
+- `workspace`: Workspace 管理
+
 **示例：**
 
 ```
-feat(adapter): add Telegram platform adapter
+feat(channel): add Telegram platform adapter
 
 - Implement message sending
 - Add webhook handler

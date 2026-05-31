@@ -44,8 +44,13 @@ const classes = computed(() =>
   font-weight: 500;
   line-height: 1;
   cursor: pointer;
-  border: none;
-  transition: background 0.15s, color 0.15s, opacity 0.15s;
+  border: 1px solid transparent;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s,
+    color 0.15s,
+    opacity 0.15s;
   white-space: nowrap;
 }
 .btn:focus-visible {
@@ -55,17 +60,21 @@ const classes = computed(() =>
 
 .btn-default {
   padding: 0.5rem 0.875rem;
-  background: var(--color-primary);
-  color: var(--color-primary-foreground);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
+  color: var(--color-primary);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-primary) 5%, transparent);
 }
 .btn-default:hover {
-  opacity: 0.9;
+  background: color-mix(in srgb, var(--color-primary) 22%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-primary) 44%, var(--color-border));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-primary) 7%, transparent);
 }
 
 .btn-destructive {
   padding: 0.5rem 0.875rem;
   background: var(--color-destructive);
-  color: white;
+  color: var(--color-destructive-foreground);
 }
 .btn-destructive:hover {
   opacity: 0.9;
@@ -73,12 +82,13 @@ const classes = computed(() =>
 
 .btn-outline {
   padding: 0.5rem 0.875rem;
-  background: transparent;
+  background: color-mix(in srgb, var(--color-card) 76%, transparent);
   border: 1px solid var(--color-border);
   color: var(--color-foreground);
 }
 .btn-outline:hover {
   background: var(--color-accent);
+  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border));
 }
 
 .btn-ghost {
@@ -88,6 +98,7 @@ const classes = computed(() =>
 }
 .btn-ghost:hover {
   background: var(--color-accent);
+  color: var(--color-accent-foreground);
 }
 
 .btn-secondary {
