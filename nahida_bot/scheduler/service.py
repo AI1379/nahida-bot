@@ -15,6 +15,7 @@ import structlog
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
+from nahida_bot.core.message_context import strip_envelope_prefix
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.plugins.base import MessageContext, OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
@@ -915,6 +916,9 @@ class SchedulerService:
                     action=sr.action,
                     suppressed=not response_text,
                 )
+
+        if response_text:
+            response_text = strip_envelope_prefix(response_text)
 
         if response_text and self._channels is not None:
             channel = self._channels.get(job.platform)

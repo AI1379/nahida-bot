@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
@@ -12,6 +13,46 @@ from nahida_bot.plugins.base import (
     MessageContext,
     SenderContext,
 )
+
+# Regex to detect and strip timestamp/envelope prefixes the LLM may
+# mistakenly emit despite ENVELOPE_INSTRUCTION.
+#
+# Matches patterns like:
+#   2026-05-10 14:03 +08
+#   [2026-05-10 14:03 +08]
+#   [2026-05-10 14:03 +08 | milky/group:Chat | Alice admin]
+#   2026-05-10 14:03 +08:00
+#   2026-05-10T14:03+08:00
+# followed by optional newlines and then the actual reply content.
+_ENVELOPE_PREFIX_RE = re.compile(
+    r"^"  # start of text
+    r"\s*"  # optional leading whitespace
+    r"\[?"  # optional opening bracket
+    r"\d{4}-\d{2}-\d{2}"  # date: YYYY-MM-DD
+    r"[T\s]+\d{2}:\d{2}"  # time: HH:MM (space or T separator)
+    r"(?::\d{2})?"  # optional seconds
+    r"(?:\s*[+-]\d{2}(?::?\d{2})?)?"  # optional tz: +08, +0800, +08:00
+    r"(?:\s*\|[^\]\n]*)?"  # optional envelope body after |
+    r"\]?"  # optional closing bracket
+    r"[\s,;.:]*"  # trailing separator chars
+    r"(?:\n)?",  # optional newline after prefix
+)
+
+
+def strip_envelope_prefix(text: str) -> str:
+    """Remove a mistaken envelope/timestamp prefix from LLM output.
+
+    The LLM is instructed not to reproduce envelope metadata, but some
+    models occasionally emit a leading timestamp or full bracket tag
+    anyway.  This function strips that prefix so the user never sees it.
+
+    Returns the cleaned text (which may be empty if the entire text was
+    just a timestamp).
+    """
+    if not text:
+        return text
+    return _ENVELOPE_PREFIX_RE.sub("", text, count=1).lstrip()
+
 
 ENVELOPE_INSTRUCTION = (
     "## Message Metadata Tags\n"

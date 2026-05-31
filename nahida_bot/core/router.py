@@ -21,7 +21,7 @@ from nahida_bot.core.events import (
     MessageSending,
     MessageSent,
 )
-from nahida_bot.core.message_context import context_from_inbound
+from nahida_bot.core.message_context import context_from_inbound, strip_envelope_prefix
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.core.runtime_settings import runtime_settings_from_meta
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
@@ -498,6 +498,8 @@ class MessageRouter:
                                 send_text = sr.text
                             else:
                                 continue
+                    if send_text:
+                        send_text = strip_envelope_prefix(send_text)
                     if send_text and send_text != last_sent:
                         await self._send_response(
                             inbound, session_id, send_text, reasoning=reasoning
@@ -520,6 +522,8 @@ class MessageRouter:
                                 if not sr.text:
                                     continue
                                 final = sr.text
+                        if final:
+                            final = strip_envelope_prefix(final)
                         reasoning = self._prepare_reasoning(
                             event.reasoning,
                             reasoning_display,
