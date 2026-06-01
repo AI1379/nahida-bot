@@ -1,7 +1,7 @@
 # Model Spec Resolution and Role Tags
 
 > 最近审计：2026-05-15
-> 状态：已实现。旧 `model_routing` 配置字段仍作为 legacy ignored 字段保留，内部任务已改用单个 model spec 字符串和 `ModelRouter.resolve_for_task()`。
+> 状态：已实现（已迁移自 design/）
 
 ## 背景
 
@@ -78,7 +78,7 @@ multimodal:
 - 旧字段若仍存在，只作为兼容输入拼成一个 spec，并在文档中标为 legacy。
 - 新代码不得绕过 `ModelRouter.resolve()` 直接解析 tag 或 provider/model。
 
-## TODO
+## 实施清单
 
 - [x] 扩展 provider model config，支持 `tags`。
 - [x] 新增统一 `ModelRouter.resolve(spec)`，支持 provider/model、裸模型名、tag。

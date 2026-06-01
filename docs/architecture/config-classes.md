@@ -2,7 +2,7 @@
 
 本文档梳理 nahida_bot 中所有散落的配置 dataclass / BaseModel，描述其字段含义、默认值，以及**配置值的实际来源**。
 
-已有的 [CONFIGURATION.md](../CONFIGURATION.md) 描述了用户可编辑的 YAML 配置格式，本文档则从代码层面补充说明这些 YAML 配置如何流入各个内部配置类，以及哪些配置类目前**完全使用硬编码默认值**、无法通过 YAML 覆盖。
+已有的 [CONFIGURATION.md](../guide/configuration.md) 描述了用户可编辑的 YAML 配置格式，本文档则从代码层面补充说明这些 YAML 配置如何流入各个内部配置类，以及哪些配置类目前**完全使用硬编码默认值**、无法通过 YAML 覆盖。
 
 ---
 
@@ -19,6 +19,9 @@ config.yaml + .env
   ├── providers → ProviderEntryConfig     → ProviderSlot → ChatProvider 子类
   │                └── ProviderModelConfig → ModelCapabilities
   ├── multimodal → MultimodalConfig       → MediaPolicy
+  ├── memory → MemoryConfig               → MemoryRetrievalConfig / MemoryEmbeddingConfig / MemoryConsolidationConfig
+  ├── webapi → WebAPIConfigModel          → WebAPI 服务
+  ├── webui → WebUIConfigModel            → WebUIAuthConfigModel → WebUI 服务
   ├── system_prompt                        → RouterConfig (仅此一项)
   └── extra keys (telegram/milky...)      → PluginManifest.config → 各 Channel Config
 
@@ -36,7 +39,7 @@ config.yaml + .env
 ### 1.1 Settings — 根配置模型
 
 - **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
-- **定义**: [config.py:51](../../nahida_bot/core/config.py#L51)
+- **定义**: [config.py:51](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L51)
 - **实例化**: `load_settings()` 末尾 `Settings(**full_config)`
 - **来源**: `config.yaml` + `.env` 环境变量插值 + CLI kwargs 合并
 
@@ -47,7 +50,7 @@ Settings 的已知字段（`providers`, `multimodal`, `system_prompt` 等）由 
 ### 1.2 ProviderEntryConfig — Provider 配置条目
 
 - **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
-- **定义**: [config.py:26](../../nahida_bot/core/config.py#L26)
+- **定义**: [config.py:26](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L26)
 - **实例化**: Pydantic 自动解析 `Settings.providers` 字典值时创建
 - **来源**: `config.yaml` 中 `providers` 下每个 provider 条目
 
@@ -66,24 +69,25 @@ class ProviderEntryConfig(BaseModel):
 ### 1.3 ProviderModelConfig — 模型能力声明
 
 - **类型**: Pydantic `BaseModel`
-- **定义**: [config.py:14](../../nahida_bot/core/config.py#L14)
+- **定义**: [config.py:14](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L14)
 - **实例化**: Pydantic 解析 `ProviderEntryConfig.models` 中对象形式的条目时创建
 - **来源**: YAML 中每个模型条目的 `name` + `capabilities` 字段
 
 ```python
 class ProviderModelConfig(BaseModel):
     name: str
+    tags: list[str] = []
     capabilities: dict[str, Any] = {}
 ```
 
-模型可以是纯字符串（`"deepseek-v4-pro"`）或带 capabilities 的对象。capabilities 字典随后在 `app.py` 的 `_model_capabilities_from_config()` 中展开为 `ModelCapabilities` dataclass。
+模型可以是纯字符串（`"deepseek-v4-pro"`）或带 capabilities 的对象。`tags` 列表用于 model spec 的 tag 匹配（如 `primary`、`embedding`、`vision`）。capabilities 字典随后在 `app.py` 的 `_model_capabilities_from_config()` 中展开为 `ModelCapabilities` dataclass。
 
 ---
 
 ### 1.4 MultimodalConfig — 多模态配置
 
 - **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
-- **定义**: [config.py:37](../../nahida_bot/core/config.py#L37)
+- **定义**: [config.py:37](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L37)
 - **实例化**: 作为 `Settings.multimodal` 字段的默认值或由 YAML 解析
 - **来源**: `config.yaml` 中 `multimodal` 节
 
@@ -105,7 +109,7 @@ class MultimodalConfig(BaseModel):
 ### 1.5 MilkyPluginConfig — Milky (QQ) 频道配置
 
 - **类型**: Pydantic `BaseModel`（含 field validators 和 model validator）
-- **定义**: [milky/config.py:12](../../nahida_bot/channels/milky/config.py#L12)
+- **定义**: [milky/config.py:12](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/channels/milky/config.py#L12)
 - **实例化**: `parse_milky_config(manifest.config)` → `MilkyPluginConfig.model_validate(raw)`
 - **来源**: 两层合并 —— `milky/plugin.yaml` 中的默认值 ← `config.yaml` 中 `milky:` 节覆盖
 
@@ -126,7 +130,7 @@ class MultimodalConfig(BaseModel):
 ### 1.6 ModelCapabilities — 模型能力描述
 
 - **类型**: `dataclass(slots=True, frozen=True)`
-- **定义**: [providers/base.py:15](../../nahida_bot/agent/providers/base.py#L15)
+- **定义**: [providers/base.py:15](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/base.py#L15)
 - **实例化**: `app.py` 中 `_model_capabilities_from_config()` 从 YAML capabilities 字典构建，或使用 `ModelCapabilities()` 默认值
 - **来源**: YAML 中每个模型条目的 `capabilities` 子字段 → `_model_capabilities_from_config()` 展开
 
@@ -159,7 +163,7 @@ class ModelCapabilities:
 ### 1.7 MediaPolicy — 媒体验证与缓存策略
 
 - **类型**: `dataclass(slots=True, frozen=True)`
-- **定义**: [media/resolver.py:39](../../nahida_bot/agent/media/resolver.py#L39)
+- **定义**: [media/resolver.py:39](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/media/resolver.py#L39)
 - **实例化**: `app.py:291` 中从 `Settings.multimodal` 字段构建
 - **来源**: `MultimodalConfig` 的子集映射
 
@@ -180,7 +184,7 @@ class MediaPolicy:
 ### 1.8 ProviderSlot — Provider 运行时描述
 
 - **类型**: `dataclass(slots=True)`
-- **定义**: [providers/manager.py:11](../../nahida_bot/agent/providers/manager.py#L11)
+- **定义**: [providers/manager.py:11](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/manager.py#L11)
 - **实例化**: `app.py` 中 `_init_providers()` 遍历 `Settings.providers` 时逐个创建
 - **来源**: 由 `ProviderEntryConfig` + `ModelCapabilities` + `ChatProvider` 实例组装
 
@@ -203,21 +207,21 @@ class ProviderSlot:
 
 | Provider 类 | 定义位置 | 特有配置字段 |
 |-------------|---------|------------|
-| `OpenAICompatibleProvider` | [openai_compatible.py:34](../../nahida_bot/agent/providers/openai_compatible.py#L34) | `base_url`, `api_key`, `model`, `merge_system_messages`, `stream_responses`, `reasoning_key` |
-| `DeepSeekProvider` | [deepseek.py:13](../../nahida_bot/agent/providers/deepseek.py#L13) | 继承 OpenAI + `thinking_enabled`, `reasoning_effort` |
-| `GLMProvider` | [glm.py:12](../../nahida_bot/agent/providers/glm.py#L12) | 继承 OpenAI，无额外字段 |
-| `GroqProvider` | [groq.py:13](../../nahida_bot/agent/providers/groq.py#L13) | 继承 OpenAI + `reasoning_key="reasoning"` |
-| `AnthropicProvider` | [anthropic.py:49](../../nahida_bot/agent/providers/anthropic.py#L49) | `base_url`, `api_key`, `model`, `max_tokens`, `stream_responses` |
-| `MinimaxProvider` | [minimax.py:17](../../nahida_bot/agent/providers/minimax.py#L17) | 继承 Anthropic，无额外字段 |
-| `OpenAIResponsesProvider` | [openai_responses.py:54](../../nahida_bot/agent/providers/openai_responses.py#L54) | `store_responses`, `use_previous_response_id`, `stream_responses`, `reasoning_effort`, `max_output_tokens`, `built_in_tools` |
+| `OpenAICompatibleProvider` | [openai_compatible.py:34](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/openai_compatible.py#L34) | `base_url`, `api_key`, `model`, `merge_system_messages`, `stream_responses`, `reasoning_key` |
+| `DeepSeekProvider` | [deepseek.py:13](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/deepseek.py#L13) | 继承 OpenAI + `thinking_enabled`, `reasoning_effort` |
+| `GLMProvider` | [glm.py:12](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/glm.py#L12) | 继承 OpenAI，无额外字段 |
+| `GroqProvider` | [groq.py:13](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/groq.py#L13) | 继承 OpenAI + `reasoning_key="reasoning"` |
+| `AnthropicProvider` | [anthropic.py:49](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/anthropic.py#L49) | `base_url`, `api_key`, `model`, `max_tokens`, `stream_responses` |
+| `MinimaxProvider` | [minimax.py:17](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/minimax.py#L17) | 继承 Anthropic，无额外字段 |
+| `OpenAIResponsesProvider` | [openai_responses.py:54](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/openai_responses.py#L54) | `store_responses`, `use_previous_response_id`, `stream_responses`, `reasoning_effort`, `max_output_tokens`, `built_in_tools` |
 
 ---
 
 ### 1.10 RouterConfig — 消息路由配置
 
 - **类型**: `dataclass(slots=True)`
-- **定义**: [router.py:41](../../nahida_bot/core/router.py#L41)
-- **YAML 接入**: [config.py](../../nahida_bot/core/config.py) 中 `RouterConfigModel` BaseModel → `Settings.router`
+- **定义**: [router.py:48](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/router.py#L48)
+- **YAML 接入**: [config.py](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py) 中 `RouterConfigModel` BaseModel → `Settings.router`
 - **映射**: `app.py` 中从 `self.settings.router` 构建 `RouterConfig` 并传入 `MessageRouter(config=...)`。`system_prompt` 优先使用顶层 `settings.system_prompt`
 
 ```python
@@ -229,6 +233,37 @@ class RouterConfig:
     command_timeout_seconds: float = 30.0                  # ← settings.router.command_timeout_seconds
     command_timeout_message: str = "Command timed out..."  # ← settings.router.command_timeout_message
     reply_to_inbound: bool = True                          # ← settings.router.reply_to_inbound
+    show_reasoning: bool = False                           # ← settings.router.show_reasoning
+    reasoning_max_chars: int = 2000                        # ← settings.router.reasoning_max_chars
+    group_context_enabled: bool = True                     # ← settings.router.group_context.enabled
+    enable_silent_reply: bool = True                       # ← settings.router.enable_silent_reply
+```
+
+#### ReasoningDisplayConfig — 推理显示运行时配置
+
+- **类型**: `dataclass(slots=True, frozen=True)`
+- **定义**: [router.py:64](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/router.py#L64)
+- **实例化**: 从 `RouterConfig` + 每轮运行时 `/reasoning` 命令覆盖构建
+
+```python
+@dataclass(slots=True, frozen=True)
+class ReasoningDisplayConfig:
+    show: bool              # 是否显示推理过程
+    max_chars: int          # 推理内容最大字符数
+```
+
+#### GroupContextConfig — 群聊观察上下文配置
+
+- **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
+- **定义**: [config.py:196](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L196)
+- **YAML 接入**: `Settings.router` → `RouterConfigModel.group_context`
+
+```python
+class GroupContextConfig(BaseModel):
+    enabled: bool = True
+    max_messages: int = 20       # 注入的最大观察消息数
+    ttl_seconds: int = 900       # 观察消息过期时间
+    max_chars: int = 4000        # 观察上下文总字符预算
 ```
 
 ---
@@ -239,8 +274,8 @@ class RouterConfig:
 
 ### 2.1 AgentLoopConfig — Agent 循环配置
 
-- **定义**: [loop.py:78](../../nahida_bot/agent/loop.py#L78)
-- **YAML 接入**: [config.py](../../nahida_bot/core/config.py) 中 `AgentConfig` BaseModel → `Settings.agent`
+- **定义**: [loop.py:78](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/loop.py#L78)
+- **YAML 接入**: [config.py](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py) 中 `AgentConfig` BaseModel → `Settings.agent`
 - **映射**: `app.py` 中从 `self.settings.agent` 构建 `AgentLoopConfig` 并传入 `AgentLoop(config=...)`
 
 ```python
@@ -260,8 +295,8 @@ class AgentLoopConfig:
 
 ### 2.2 ContextBudget — 上下文窗口预算
 
-- **定义**: [context.py:74](../../nahida_bot/agent/context.py#L74)
-- **YAML 接入**: [config.py](../../nahida_bot/core/config.py) 中 `ContextConfig` BaseModel → `Settings.context`
+- **定义**: [context.py:74](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/context.py#L74)
+- **YAML 接入**: [config.py](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py) 中 `ContextConfig` BaseModel → `Settings.context`
 - **映射**: `build_context_budget()` 将 `ContextConfig` 映射为 fallback `ContextBudget`；`SessionRunner` 每轮解析模型后会用 `ModelCapabilities.context_window` 等字段重算本轮预算
 
 ```python
@@ -279,8 +314,8 @@ class ContextBudget:
 
 ### 2.3 SchedulerConfig — 定时任务调度配置
 
-- **定义**: [scheduler/models.py:33](../../nahida_bot/scheduler/models.py#L33)
-- **YAML 接入**: [config.py](../../nahida_bot/core/config.py) 中 `SchedulerConfigModel` BaseModel → `Settings.scheduler`
+- **定义**: [scheduler/models.py:33](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/scheduler/models.py#L33)
+- **YAML 接入**: [config.py](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py) 中 `SchedulerConfigModel` BaseModel → `Settings.scheduler`
 - **映射**: `app.py` 中从 `self.settings.scheduler` 构建 `SchedulerConfig` 并传入 `SchedulerService(config=...)`
 
 ```python
@@ -294,17 +329,98 @@ class SchedulerConfig:
     max_jobs_per_chat: int = 20              # 每个会话最大任务数
     failure_retry_seconds: int = 300         # 失败重试等待
     max_consecutive_failures: int = 3        # 连续失败上限
+    memory_dreaming_enabled: bool = True     # 是否启用记忆 dreaming
+    memory_dreaming_interval_seconds: int = 3600   # dreaming 周期
+    memory_dreaming_initial_delay_seconds: int = 300  # 首次延迟
+    memory_dreaming_session_limit: int = 20  # 单次扫描会话数
+    memory_dreaming_recent_turn_limit: int = 40  # 单会话读取 turns
+    memory_dreaming_provider_id: str = ""    # Legacy: prefer model spec
+    memory_dreaming_model: str = ""          # dreaming 模型 spec
 ```
 
 ---
 
-## 三、插件系统内部的配置相关模型
+## 三、已接入 YAML 的内部配置类（续）
+
+### 3.1 MemoryConfig 系列 — 长期记忆配置
+
+- **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
+- **定义**: [config.py:151-193](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L151)
+- **YAML 接入**: `Settings.memory` → `MemoryConfig`
+
+```python
+class MemoryConfig(BaseModel):
+    enabled: bool = True
+    retrieval: MemoryRetrievalConfig = MemoryRetrievalConfig()
+    embedding: MemoryEmbeddingConfig = MemoryEmbeddingConfig()
+    consolidation: MemoryConsolidationConfig = MemoryConsolidationConfig()
+
+class MemoryRetrievalConfig(BaseModel):
+    fts_enabled: bool = True               # FTS5/BM25 检索
+    vector_enabled: bool = False           # 向量召回
+    hybrid_enabled: bool = True            # RRF hybrid fusion
+    max_injected_items: int = 5            # 单轮注入条数
+    max_injected_chars: int = 4000         # 单轮字符预算
+    vector_backend: Literal["json", "sqlite-vec", "none"] = "json"
+
+class MemoryEmbeddingConfig(BaseModel):
+    enabled: bool = False
+    model: str = ""                        # embedding 模型 spec
+    provider_id: str = ""                  # Legacy: prefer model spec
+    dimensions: int = 0                    # 向量维度（sqlite-vec 必填）
+    batch_size: int = 16
+    embed_after_consolidation: bool = True
+
+class MemoryConsolidationConfig(BaseModel):
+    rule_based_enabled: bool = True         # 每轮规则抽取
+```
+
+`MemoryConfig` 传递给 `MemoryStore`、`MemoryConsolidator`、`EmbeddingProvider` 和 `SessionRunner`。
+
+### 3.2 WebAPIConfigModel — WebAPI 服务配置
+
+- **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
+- **定义**: [config.py:117](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L117)
+- **YAML 接入**: `Settings.webapi`
+
+```python
+class WebAPIConfigModel(BaseModel):
+    enabled: bool = False
+    auth_token: str = ""                   # Bearer token
+    cors_origins: list[str] = ["*"]
+    host: str = ""                         # 空值跟随顶层 host
+    port: int = 0                          # 0 = 自动分配
+```
+
+### 3.3 WebUIConfigModel — WebUI 控制台配置
+
+- **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
+- **定义**: [config.py:129-148](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py#L129)
+- **YAML 接入**: `Settings.webui`
+
+```python
+class WebUIConfigModel(BaseModel):
+    enabled: bool = True
+    auth: WebUIAuthConfigModel = WebUIAuthConfigModel()
+
+class WebUIAuthConfigModel(BaseModel):
+    enabled: bool = True
+    admin_password: str = ""               # 明文密码
+    admin_password_hash: str = ""          # bcrypt 哈希（优先）
+    session_ttl_seconds: int = 3600
+    login_rate_per_minute: int = 5
+    bind_session_to_ip: bool = True
+```
+
+---
+
+## 四、插件系统内部的配置相关模型
 
 这些不是运行时可调的配置，而是插件元数据声明，记录以供参考。
 
 ### 3.1 PluginManifest — 插件清单
 
-- **定义**: [plugins/manifest.py:64](../../nahida_bot/plugins/manifest.py#L64)
+- **定义**: [plugins/manifest.py:64](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/plugins/manifest.py#L64)
 - **实例化**: `parse_manifest()` 解析插件目录中的 `plugin.yaml` 文件
 - **来源**: 各插件自带的 `plugin.yaml`，非主配置文件
 
@@ -328,15 +444,15 @@ class PluginManifest(BaseModel):
 
 | 类 | 定义位置 | 说明 |
 |----|---------|------|
-| `NetworkPermission` | [manifest.py:12](../../nahida_bot/plugins/manifest.py#L12) | `outbound: list[str]`, `inbound: bool` |
-| `FilesystemPermission` | [manifest.py:19](../../nahida_bot/plugins/manifest.py#L19) | `read: list[str]`, `write: list[str]` |
-| `MemoryPermission` | [manifest.py:26](../../nahida_bot/plugins/manifest.py#L26) | `read: bool`, `write: bool` |
-| `SystemPermission` | [manifest.py:33](../../nahida_bot/plugins/manifest.py#L33) | `env_vars`, `subprocess`, `signal_handlers` |
-| `Permissions` | [manifest.py:41](../../nahida_bot/plugins/manifest.py#L41) | 组合以上四项 |
+| `NetworkPermission` | [manifest.py:12](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/plugins/manifest.py#L12) | `outbound: list[str]`, `inbound: bool` |
+| `FilesystemPermission` | [manifest.py:19](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/plugins/manifest.py#L19) | `read: list[str]`, `write: list[str]` |
+| `MemoryPermission` | [manifest.py:26](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/plugins/manifest.py#L26) | `read: bool`, `write: bool` |
+| `SystemPermission` | [manifest.py:33](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/plugins/manifest.py#L33) | `env_vars`, `subprocess`, `signal_handlers` |
+| `Permissions` | [manifest.py:41](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/plugins/manifest.py#L41) | 组合以上四项 |
 
 ---
 
-## 四、配置来源汇总
+## 五、配置来源汇总
 
 | 配置类 | YAML 可配置 | 来源路径 |
 |--------|:----------:|---------|
@@ -344,6 +460,14 @@ class PluginManifest(BaseModel):
 | `ProviderEntryConfig` | 是 | `config.yaml` → `Settings.providers` |
 | `ProviderModelConfig` | 是 | `config.yaml` → `ProviderEntryConfig.models` |
 | `MultimodalConfig` | 是 | `config.yaml` → `Settings.multimodal` |
+| `MemoryConfig` | 是 | `config.yaml` → `Settings.memory` |
+| `MemoryRetrievalConfig` | 是 | `config.yaml` → `Settings.memory.retrieval` |
+| `MemoryEmbeddingConfig` | 是 | `config.yaml` → `Settings.memory.embedding` |
+| `MemoryConsolidationConfig` | 是 | `config.yaml` → `Settings.memory.consolidation` |
+| `GroupContextConfig` | 是 | `config.yaml` → `Settings.router.group_context` |
+| `WebAPIConfigModel` | 是 | `config.yaml` → `Settings.webapi` |
+| `WebUIConfigModel` | 是 | `config.yaml` → `Settings.webui` |
+| `WebUIAuthConfigModel` | 是 | `config.yaml` → `Settings.webui.auth` |
 | `MilkyPluginConfig` | 是 | `config.yaml` → `Settings.extra` → `PluginManifest.config` |
 | `ModelCapabilities` | 是 | `config.yaml` → `ProviderModelConfig.capabilities` → `_model_capabilities_from_config()` |
 | `MediaPolicy` | 部分 | `MultimodalConfig` 子集映射，`supported_mime_types` 硬编码 |

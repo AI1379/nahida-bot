@@ -47,6 +47,8 @@ Nahida Bot 的核心目标：
 | [sandbox-security.md](sandbox-security.md) | Workspace 沙盒安全增强方案 |
 | [provider-architecture.md](provider-architecture.md) | Provider 多后端架构、格式调研与实现细节 |
 | [agent-orchestration.md](agent-orchestration.md) | Agent/Subagent 编排、后台任务、跨会话管理与本地队列设计 |
+| [model-context-budget.md](model-context-budget.md) | 模型上下文窗口与动态预算机制 |
+| [model-routing.md](model-routing.md) | Model spec 解析与 ModelRouter 路由机制 |
 | [plugin-system.md](plugin-system.md) | Plugin 系统完整设计（SDK、Manifest、生命周期、权限、事件集成） |
 | [channel-plugin.md](channel-plugin.md) | ChannelService 设计与通信协议 |
 | [security-observability.md](security-observability.md) | 安全基线与可观测性要求 |
@@ -56,6 +58,6 @@ Nahida Bot 的核心目标：
 ## 与 ROADMAP 的关系
 
 - [docs/ROADMAP.md](../ROADMAP.md)：回答"做什么、做到什么程度"。
-- [docs/architecture/](.)：回答"怎么分层、模块如何协作、先做哪些模块、Channel 作为 Plugin 的设计"。
+- [docs/architecture/](./)：回答"怎么分层、模块如何协作、先做哪些模块、Channel 作为 Plugin 的设计"。
 
 两份文档应同步更新，不允许只改其中一份。

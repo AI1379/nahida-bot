@@ -628,7 +628,7 @@ fallback vision 描述建议明确标注为“图片内容描述”，并在系�
 产物：
 
 - 本文档。
-- 可选：更新 `docs/CONFIGURATION.md`，说明 `image_fallback_mode` 也适用于工具产出媒体。
+- 可选：更新 `docs/guide/configuration.md`，说明 `image_fallback_mode` 也适用于工具产出媒体。
 
 ### 阶段 2：内部媒体提取器
 

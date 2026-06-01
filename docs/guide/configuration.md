@@ -36,6 +36,11 @@ Nahida Bot 从 YAML 文件、`.env` 文件和环境变量读取配置。值的�
 | `context` | `object` | （见下文） | 上下文窗口预算配置 |
 | `scheduler` | `object` | （见下文） | 定时任务调度配置 |
 | `router` | `object` | （见下文） | 消息路由配置 |
+| `webapi` | `object` | （见下文） | WebAPI 服务配置 |
+| `webui` | `object` | （见下文） | WebUI 控制台配置 |
+| `memory` | `object` | （见下文） | 长期记忆与 embedding 配置 |
+| `enable_silent_reply` | `bool` | `true` | 全局开关：是否允许 Agent 以 `NO_REPLY` 静默回复 |
+| `model_routing` | `dict` | `{}` | ~~Legacy，已忽略。~~ 内部任务路由改用 model spec + `ModelRouter` |
 
 ### 示例
 
@@ -85,11 +90,20 @@ default_provider: deepseek-main
 models:
   - "deepseek-v4-pro"                      # 纯字符串
   - name: "Qwen/Qwen3.6-35B-A3B"           # 带 capabilities 的对象
+    tags: [primary, vision]
     capabilities:
       image_input: true
       max_image_count: 4
       context_window: 128000
 ```
+
+### 模型标签
+
+每个模型可以声明 `tags`（字符串列表），供内部任务 model spec 解析使用。详见 [Model Specs](#model-specs)。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `tags` | `list[str]` | `[]` | 模型标签，用于 model spec 的 tag 匹配 |
 
 ### 模型能力声明
 
@@ -347,6 +361,59 @@ multimodal:
 | `command_timeout_seconds` | `float` | `30.0` | 命令处理器执行超时（秒） |
 | `command_timeout_message` | `str` | `"Command timed out..."` | 命令超时时显示的消息 |
 | `reply_to_inbound` | `bool` | `true` | 默认是否让回复引用触发消息；频道插件可用同名配置覆盖 |
+| `show_reasoning` | `bool` | `false` | 是否在回复中附带模型推理过程 |
+| `reasoning_max_chars` | `int` | `2000` | 推理过程显示的最大字符数 |
+| `enable_silent_reply` | `bool` | `true` | 是否允许 Agent 使用 `NO_REPLY` 静默回复（运行时可通过 `/reasoning` 调整） |
+| `group_context` | `object` | （见下文） | 群聊观察上下文注入配置 |
+
+### 群聊观察上下文
+
+在 `router.group_context` 下配置。控制群聊中未直接触发 bot 的消息作为上下文注入的行为。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `true` | 是否启用群聊观察上下文注入 |
+| `max_messages` | `int` | `20` | 注入的最大观察消息数 |
+| `ttl_seconds` | `int` | `900` | 观察消息过期时间（秒），超出的不注入 |
+| `max_chars` | `int` | `4000` | 观察上下文总字符预算 |
+
+---
+
+## WebAPI
+
+在 `webapi` 键下配置。控制 HTTP REST API 服务。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `false` | 是否启用 WebAPI 服务 |
+| `auth_token` | `str` | `""` | API 认证令牌；请求需在 `Authorization: Bearer <token>` 中携带 |
+| `cors_origins` | `list[str]` | `["*"]` | CORS 允许的来源列表 |
+| `host` | `str` | `""` | 绑定地址；空值跟随顶层 `host` |
+| `port` | `int` | `0` | 绑定端口；`0` 表示自动分配 |
+
+---
+
+## WebUI
+
+在 `webui` 键下配置。控制浏览器端管理控制台。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `true` | 是否启用 WebUI（需构建前端资源） |
+| `auth` | `object` | （见下文） | 认证配置 |
+
+### WebUI 认证
+
+在 `webui.auth` 下配置。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `true` | 是否启用登录认证 |
+| `admin_password` | `str` | `""` | 明文管理员密码；与 `admin_password_hash` 二选一 |
+| `admin_password_hash` | `str` | `""` | bcrypt 哈希密码；优先于明文密码 |
+| `session_ttl_seconds` | `int` | `3600` | 登录会话有效期（秒） |
+| `login_rate_per_minute` | `int` | `5` | 每分钟最大登录尝试次数 |
+| `bind_session_to_ip` | `bool` | `true` | 是否将 session 绑定到客户端 IP |
 
 ---
 
@@ -468,3 +535,81 @@ milky:
 ## 完整示例
 
 多 provider 的完整配置示例见项目根目录的 [`config-multiproviders.yaml`](../config-multiproviders.yaml)。
+
+```yaml
+app_name: "Nahida Bot"
+debug: false
+log_level: "INFO"
+log_file: "./data/logs/nahida.log"
+log_file_level: "DEBUG"
+db_path: "./data/nahida.db"
+system_prompt: "You are a helpful assistant."
+default_provider: deepseek-main
+enable_silent_reply: true
+
+providers:
+  deepseek-main:
+    type: deepseek
+    api_key: "${DEEPSEEK_LLM_API_KEY}"
+    base_url: "${DEEPSEEK_LLM_BASE_URL}"
+    stream_responses: true
+    models:
+      - name: "deepseek-v4-pro"
+        tags: [primary]
+      - name: "deepseek-v4-flash"
+        tags: [cheap]
+
+  siliconflow:
+    type: "openai-compatible"
+    api_key: "${SILICONFLOW_LLM_API_KEY}"
+    base_url: "${SILICONFLOW_LLM_BASE_URL}"
+    merge_system_messages: true
+    stream_responses: true
+    models:
+      - name: "Qwen/Qwen3-Embedding-8B"
+        tags: [embedding]
+      - name: "Qwen/Qwen3.6-35B-A3B"
+        tags: [primary, vision]
+        capabilities:
+          image_input: true
+          max_image_count: 4
+
+multimodal:
+  image_fallback_mode: "auto"
+  media_context_policy: "cache_aware"
+  image_fallback_model: "siliconflow/Qwen/Qwen3.6-35B-A3B"
+
+router:
+  max_history_turns: 200
+  show_reasoning: false
+  reasoning_max_chars: 2000
+  group_context:
+    enabled: true
+    max_messages: 20
+    ttl_seconds: 900
+
+webapi:
+  enabled: true
+  auth_token: "${WEBAPI_AUTH_TOKEN}"
+  cors_origins: ["*"]
+
+webui:
+  enabled: true
+  auth:
+    enabled: true
+    admin_password: "${WEBUI_ADMIN_PASSWORD}"
+
+memory:
+  enabled: true
+  retrieval:
+    fts_enabled: true
+  embedding:
+    enabled: true
+    model: "embedding"
+  consolidation:
+    rule_based_enabled: true
+
+scheduler:
+  memory_dreaming_enabled: true
+  memory_dreaming_model: "memory"
+```

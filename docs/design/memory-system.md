@@ -7,8 +7,8 @@
 >
 > - [ROADMAP.md](../ROADMAP.md#phase-25---记忆模型与持久化)
 > - [data-and-state.md](../architecture/data-and-state.md#记忆模型与存储抽象)
-> - [agent-core-rebuild.md](agent-core-rebuild.md#5-memory-持久化完整-agent-run)
-> - [agent-loop-optimization.md](agent-loop-optimization.md#五压缩机制对比)
+> - [agent-core.md](agent-core.md#35-memory-持久化完整-agent-run)
+> - [agent-core.md](agent-core.md#5-compaction-设计)
 
 ## 1. 结论先行
 
@@ -263,7 +263,7 @@ workspace/
 
 ### 5.2 Agent Run Log
 
-配合 [agent-core-rebuild.md](agent-core-rebuild.md)，新增：
+配合 [agent-core.md](agent-core.md#35-memory-持久化完整-agent-run)，新增：
 
 ```text
 agent_runs

@@ -184,10 +184,10 @@ telegram:
 | ---- | ---- |
 | [ARCHITECTURE](docs/architecture/README.md) | 系统架构、分层设计、模块协作 |
 | [ROADMAP](docs/ROADMAP.md) | 路线图、阶段规划、验收清单 |
-| [DEVELOPMENT](docs/DEVELOPMENT.md) | 代码风格、测试规范、类型检查 |
-| [CONFIGURATION](docs/CONFIGURATION.md) | 配置指南、环境变量、完整参考 |
+| [DEVELOPMENT](docs/guide/development.md) | 代码风格、测试规范、类型检查 |
+| [CONFIGURATION](docs/guide/configuration.md) | 配置指南、环境变量、完整参考 |
 | [config.yaml](config.yaml) | 带注释的完整配置参考 |
-| [设计文档](docs/todos/) | WebUI、Memory、OneBot Channel 等专题设计 |
+| [设计文档](docs/design/) | WebUI、Memory、OneBot Channel 等专题设计 |
 
 ## 🤝 参考项目
 

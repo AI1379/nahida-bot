@@ -1,0 +1,13 @@
+{
+  "name": "nahida-bot-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Nahida Bot - Agent-first Python LLM chatbot framework",
+  "scripts": {
+    "docs:dev": "pnpm --filter docs dev",
+    "docs:build": "pnpm --filter docs build",
+    "docs:preview": "pnpm --filter docs preview",
+    "webui:dev": "pnpm --filter webui dev",
+    "webui:build": "pnpm --filter webui build"
+  }
+}

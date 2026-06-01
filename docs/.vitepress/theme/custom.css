@@ -1,0 +1,41 @@
+/* Nahida Bot — Dendro Archon green theme */
+
+:root {
+  --vp-c-brand-1: #4caf50;
+  --vp-c-brand-2: #388e3c;
+  --vp-c-brand-3: #2e7d32;
+  --vp-c-brand-soft: rgba(76, 175, 80, 0.14);
+}
+
+.dark {
+  --vp-c-brand-1: #66bb6a;
+  --vp-c-brand-2: #4caf50;
+  --vp-c-brand-3: #388e3c;
+  --vp-c-brand-soft: rgba(102, 187, 106, 0.14);
+}
+
+/* Allow long Chinese section names in TOC to wrap */
+.VPDocAsideOutline .outline-link {
+  white-space: normal;
+}
+
+/* Task list / checkbox styling */
+.contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.contains-task-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4em;
+  margin: 0.25em 0;
+}
+
+.contains-task-list input[type="checkbox"] {
+  margin-top: 0.25em;
+  flex-shrink: 0;
+  width: 1em;
+  height: 1em;
+  accent-color: var(--vp-c-brand-1);
+}
