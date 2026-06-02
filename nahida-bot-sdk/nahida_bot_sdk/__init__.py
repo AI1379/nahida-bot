@@ -87,6 +87,7 @@ from nahida_bot_sdk.commands import (  # noqa: F401
 
 # Testing utilities
 from nahida_bot_sdk.testing import (  # noqa: F401
+    ConsoleMockBotAPI,
     MockBotAPI,
     RecordingMockBotAPI,
     StubChannelService,
@@ -158,6 +159,7 @@ __all__ = [
     "CommandMatch",
     "CommandResult",
     # Testing
+    "ConsoleMockBotAPI",
     "MockBotAPI",
     "RecordingMockBotAPI",
     "StubChannelService",
