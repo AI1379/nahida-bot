@@ -196,7 +196,7 @@ async def run_console(plugin_dir: str) -> None:
         await api._trigger_event(event)
 
         while api.sent_messages:
-            target, outbound = api.sent_messages.pop(0)
+            _, outbound = api.sent_messages.pop(0)
             print(f"  \033[1mBot\033[0m > {_safe_encode(outbound.text)}")
 
 
@@ -298,7 +298,7 @@ async def _handle_fire(api: ConsoleMockBotAPI, args: str) -> None:
     print(f"  \033[36m[Event]\033[0m Fired {event_type_name}")
 
 
-def _build_payload(event_type_name: str, data: dict[str, object]) -> object:  # noqa: S106
+def _build_payload(event_type_name: str, data: dict[str, object]) -> object:
     """Construct the correct payload instance for an event type.
 
     Falls back to the raw dict if the payload type is unknown.
@@ -308,11 +308,11 @@ def _build_payload(event_type_name: str, data: dict[str, object]) -> object:  # 
     # Map of event type name → payload class
     payload_cls = getattr(ev, f"{event_type_name}Payload", None)
     if payload_cls is not None:
-        return payload_cls(**data)
+        return payload_cls(**(data))  # type: ignore[arg-type]
 
     # Special case: message events all use MessagePayload
     if event_type_name.startswith("Message"):
-        return MessagePayload(**data)
+        return MessagePayload(**(data))  # type: ignore[arg-type]
 
     # Fallback: raw dict
     return data

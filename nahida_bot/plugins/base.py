@@ -1,5 +1,7 @@
 """Re-export shim — canonical types live in nahida_bot_sdk."""
 
+# pyright: reportUnusedImport=false
+
 from nahida_bot_sdk.api import (  # noqa: F401
     BotAPI,
     ChannelService,

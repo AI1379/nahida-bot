@@ -4,6 +4,8 @@ Event types and payloads are defined in nahida_bot_sdk.events.
 Infrastructure (EventBus, EventContext, etc.) remains here.
 """
 
+# pyright: reportUnusedImport=false
+
 from __future__ import annotations
 
 import asyncio

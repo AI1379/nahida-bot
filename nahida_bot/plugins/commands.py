@@ -4,6 +4,8 @@ Public types (CommandResult, CommandHandlerResult, CommandInfo, CommandMatch)
 are defined in nahida_bot_sdk.commands. Internal infrastructure stays here.
 """
 
+# pyright: reportUnusedImport=false
+
 from __future__ import annotations
 
 import re

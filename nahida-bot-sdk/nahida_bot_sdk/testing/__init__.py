@@ -1,5 +1,6 @@
 """Testing utilities for nahida-bot plugin development."""
 
+# pyright: reportUnusedImport=false
 from nahida_bot_sdk.testing._mocks import (  # noqa: F401
     ConsoleMockBotAPI,
     MockBotAPI,

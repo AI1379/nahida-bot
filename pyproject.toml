@@ -114,8 +114,8 @@ reportUntypedBaseClass = "error"
 reportUntypedNamedTuple = "error"
 reportPrivateUsage = false
 reportOverlappingOverload = "error"
-include = ["nahida_bot", "tests"]
-exclude = ["**/node_modules", "**/__pycache__", "build", "dist"]
+include = ["nahida_bot", "nahida-bot-sdk/nahida_bot_sdk"]
+exclude = ["**/node_modules", "**/__pycache__", "build", "dist", "tests"]
 
 # ============================================================
 # Pytest 配置

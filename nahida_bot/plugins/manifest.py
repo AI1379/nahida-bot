@@ -4,6 +4,8 @@ The parse_manifest function wraps the SDK version to translate
 ManifestParseError into PluginLoadError for backward compatibility.
 """
 
+# pyright: reportUnusedImport=false
+
 from nahida_bot.core.exceptions import PluginLoadError
 from nahida_bot_sdk.manifest import (  # noqa: F401
     Capabilities,
