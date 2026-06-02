@@ -1,0 +1,5 @@
+id: test-console
+name: "Test Console Plugin"
+version: "0.1.0"
+description: "A simple plugin for testing the SDK console"
+entrypoint: "test_console_plugin.plugin:TestConsolePlugin"

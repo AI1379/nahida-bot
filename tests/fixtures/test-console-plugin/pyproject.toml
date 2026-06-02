@@ -1,0 +1,9 @@
+[project]
+name = "test-console-plugin"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["nahida-bot-sdk>=0.1.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

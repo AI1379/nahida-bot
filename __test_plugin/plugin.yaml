@@ -1,0 +1,5 @@
+id: com.example.test-console
+name: "Console Test Plugin"
+version: "0.1.0"
+description: "Exercises all SDK console features: commands, tools, events"
+entrypoint: "test_plugin.plugin:ConsoleTestPlugin"
