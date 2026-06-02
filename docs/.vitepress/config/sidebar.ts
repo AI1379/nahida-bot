@@ -6,6 +6,7 @@ export const sidebar: DefaultTheme.Sidebar = {
       text: "指南",
       items: [
         { text: "快速开始", link: "/guide/getting-started" },
+        { text: "插件 API 参考", link: "/guide/plugin-api" },
         { text: "Workspace 文件", link: "/guide/workspace-files" },
         { text: "开发规范", link: "/guide/development" },
         { text: "配置参考", link: "/guide/configuration" },
