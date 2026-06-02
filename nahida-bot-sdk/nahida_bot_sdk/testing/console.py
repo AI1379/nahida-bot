@@ -38,9 +38,17 @@ from nahida_bot_sdk.manifest import parse_manifest
 from nahida_bot_sdk.testing import ConsoleMockBotAPI
 
 
-def _header(text: str) -> None:
-    print(f"\n  {text}")
-    print("  " + "─" * 50)
+# ── Terminal color constants ──────────────────────────
+
+
+class C:
+    """ANSI escape codes for consistent terminal output styling."""
+
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+    RED = "\033[31m"
+    YELLOW = "\033[33m"
+    CYAN = "\033[36m"
 
 
 def _help() -> None:
@@ -122,7 +130,7 @@ async def run_console(plugin_dir: str) -> None:
     # REPL loop
     while True:
         try:
-            raw = input("  \033[1mYou >\033[0m ").strip()
+            raw = input(f"  {C.BOLD}You >{C.RESET} ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n  Goodbye!")
             break
@@ -183,7 +191,7 @@ async def run_console(plugin_dir: str) -> None:
             cmd_name = cmd_parts[0]
             cmd_args = cmd_parts[1] if len(cmd_parts) > 1 else ""
             result = await api.invoke_command(cmd_name, cmd_args)
-            print(f"  \033[1mBot\033[0m > {_safe_encode(str(result))}")
+            print(f"  {C.BOLD}Bot{C.RESET} > {_safe_encode(str(result))}")
             continue
 
         # ── Plain text — simulate MessageReceived ─────
@@ -197,7 +205,7 @@ async def run_console(plugin_dir: str) -> None:
 
         while api.sent_messages:
             _, outbound = api.sent_messages.pop(0)
-            print(f"  \033[1mBot\033[0m > {_safe_encode(outbound.text)}")
+            print(f"  {C.BOLD}Bot{C.RESET} > {_safe_encode(outbound.text)}")
 
 
 # ── Console command handlers ──────────────────────────
@@ -249,10 +257,10 @@ async def _handle_call(api: ConsoleMockBotAPI, args: str) -> None:
     try:
         arguments = json.loads(parts[1]) if len(parts) > 1 else {}
     except json.JSONDecodeError as exc:
-        print(f"  \033[31m[Error]\033[0m Invalid JSON: {exc}")
+        print(f"  {C.RED}[Error]{C.RESET} Invalid JSON: {exc}")
         return
     result = await api.invoke_tool(tool_name, arguments)
-    print(f"  \033[33m[{tool_name}]\033[0m {_safe_encode(result)}")
+    print(f"  {C.YELLOW}[{tool_name}]{C.RESET} {_safe_encode(result)}")
 
 
 async def _handle_fire(api: ConsoleMockBotAPI, args: str) -> None:
@@ -274,7 +282,7 @@ async def _handle_fire(api: ConsoleMockBotAPI, args: str) -> None:
             event_cls = None
         if event_cls is None:
             print(
-                f"  \033[31m[Error]\033[0m Event type '{event_type_name}' "
+                f"  {C.RED}[Error]{C.RESET} Event type '{event_type_name}' "
                 f"not found and no handlers subscribed to it"
             )
             return
@@ -292,10 +300,10 @@ async def _handle_fire(api: ConsoleMockBotAPI, args: str) -> None:
         event = event_cls(payload=payload)
 
     except Exception as exc:
-        print(f"  \033[31m[Error]\033[0m Failed to construct event: {exc}")
+        print(f"  {C.RED}[Error]{C.RESET} Failed to construct event: {exc}")
         return
     await api._trigger_event(event)
-    print(f"  \033[36m[Event]\033[0m Fired {event_type_name}")
+    print(f"  {C.CYAN}[Event]{C.RESET} Fired {event_type_name}")
 
 
 def _build_payload(event_type_name: str, data: dict[str, object]) -> object:
