@@ -6,7 +6,9 @@
 
 欢迎连接到属于你的私有「虚空终端」！**Nahida Bot** 不仅仅是一个冷冰冰的机器，而是一个 **Agent 为灵魂**、以 **Workspace 为家**，还能通过 **插件随意换装** 的 Python 智能框架哦~ 🌿
 
-[![QQ 群](https://img.shields.io/badge/QQ_Group-529674493-green?logo=qq)](https://qm.qq.com/q/rXP8DKCyRi)
+文档：[Docs](https://nahida-bot.cobaltdev.top)
+
+[![QQ 群](https://img.shields.io/badge/QQ_Group-529674493-green?logo=qq)](https://qm.qq.com/q/rXP8DKCyRi) [![Netlify Status](https://api.netlify.com/api/v1/badges/a9eafce9-b879-47be-8220-f4eb728ead1a/deploy-status)](https://app.netlify.com/projects/nahida-bot/deploys)
 
 ## ✨ 核心天赋
 
