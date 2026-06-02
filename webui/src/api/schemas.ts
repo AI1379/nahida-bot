@@ -393,3 +393,66 @@ export interface FileDeleteResponse {
   status: string;
   trash_path: string;
 }
+
+// -- Token Usage --
+
+export interface TokenTotals {
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  cache_creation_tokens: number;
+  estimated_cost: number | null;
+  event_count: number;
+}
+
+export interface ProviderToken {
+  provider_id: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  cache_creation_tokens: number;
+  estimated: boolean;
+  estimated_cost: number | null;
+  event_count: number;
+}
+
+export interface DailyToken {
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  provider_id: string;
+  model: string;
+}
+
+export interface TokenStatsResponse {
+  totals: TokenTotals;
+  by_provider: ProviderToken[];
+  daily: DailyToken[];
+}
+
+export interface TokenEvent {
+  id: number | null;
+  timestamp: string;
+  session_id: string;
+  source_tag: string;
+  provider_id: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  reasoning_tokens: number;
+  cache_creation_tokens: number;
+  estimated: boolean;
+  estimated_cost: number | null;
+}
+
+export interface TokenEventsResponse {
+  events: TokenEvent[];
+}
+
+export interface TokenClearResponse {
+  cleared: boolean;
+}

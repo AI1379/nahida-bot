@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from nahida_bot.cli.config_commands import config_app
+from nahida_bot.cli.token_commands import token_app
 from nahida_bot.core.app import Application
 from nahida_bot.core.config import load_settings
 
@@ -18,6 +19,7 @@ console = Console()
 
 app = typer.Typer(help="Nahida Bot - LLM Chatbot Framework")
 app.add_typer(config_app, name="config")
+app.add_typer(token_app, name="tokens")
 
 
 @app.command()

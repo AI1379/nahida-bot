@@ -36,6 +36,8 @@ import type {
   StatusResponse,
   SystemActionRequest,
   SystemActionResponse,
+  TokenStatsResponse,
+  TokenEventsResponse,
   UpdateCronRequest,
   WorkspaceListResponse,
 } from "./schemas";
@@ -478,6 +480,35 @@ export function useFileDelete() {
     },
     onError(err) {
       toast.add(`Delete failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+// -- Token Usage Queries --
+
+export function useTokenStats(params?: Ref<{ provider_id?: string; days?: number }>) {
+  return useQuery<TokenStatsResponse>({
+    queryKey: computed(() => ["tokens", "stats", params?.value]),
+    queryFn: () => {
+      const p = new URLSearchParams();
+      const v = params?.value;
+      if (v?.provider_id) p.set("provider_id", v.provider_id);
+      if (v?.days) p.set("days", String(v.days));
+      else p.set("days", "7");
+      return api.get(`/tokens/stats?${p}`);
+    },
+  });
+}
+
+export function useTokenEvents(params?: Ref<{ provider_id?: string; limit?: number }>) {
+  return useQuery<TokenEventsResponse>({
+    queryKey: computed(() => ["tokens", "events", params?.value]),
+    queryFn: () => {
+      const p = new URLSearchParams();
+      const v = params?.value;
+      if (v?.provider_id) p.set("provider_id", v.provider_id);
+      p.set("limit", String(v?.limit ?? 100));
+      return api.get(`/tokens/events?${p}`);
     },
   });
 }

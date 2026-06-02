@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from nahida_bot.scheduler.service import SchedulerService
     from nahida_bot.workspace.manager import WorkspaceManager
     from nahida_bot.agent.orchestration import AgentOrchestrator
+    from nahida_bot.agent.usage import UsageRecorder
     from nahida_bot.gateway.app import WebAPIApp
 
 logger = structlog.get_logger(__name__)
@@ -97,7 +98,7 @@ class Application:
         self.scheduler_service: SchedulerService | None = None
         self.orchestration_service: AgentOrchestrator | None = None
         self.webapi_service: WebAPIApp | None = None
-        self._usage_ledger: Any | None = None
+        self._usage_ledger: UsageRecorder | None = None
 
         logger.debug(
             "application.instance_created",
@@ -182,6 +183,13 @@ class Application:
 
             # Initialize webapi
             self._init_webapi()
+
+            # Wire usage recorder to DB (both are now initialized)
+            if self._usage_ledger is not None and self._db_engine is not None:
+                await self._usage_ledger.load_from_db(self._db_engine)
+                # Inject into the agent loop (created before _init_webapi)
+                if self.agent_loop is not None:
+                    self.agent_loop.usage_recorder = self._usage_ledger
 
             self._initialized = True
         except Exception as e:
@@ -308,6 +316,7 @@ class Application:
                     tool_use_system_prompt=self.settings.agent.tool_use_system_prompt,
                     provider_error_template=self.settings.agent.provider_error_template,
                 ),
+                # Inject lazy — wired after _init_webapi creates the recorder
             )
         else:
             logger.warning(
@@ -597,8 +606,8 @@ class Application:
 
     def _init_webapi(self) -> None:
         """Create the WebAPI service."""
+        from nahida_bot.agent.usage import UsageRecorder
         from nahida_bot.gateway.app import WebAPIApp
-        from nahida_bot.gateway.services.usage_ledger import InMemoryUsageLedger
 
         cfg = self.settings.webapi
         if not cfg.enabled:
@@ -624,7 +633,7 @@ class Application:
                 "webui.auth.admin_password or webapi.auth_token.",
             )
 
-        self._usage_ledger = InMemoryUsageLedger()
+        self._usage_ledger = UsageRecorder()
 
         self.webapi_service = WebAPIApp(
             application=self,

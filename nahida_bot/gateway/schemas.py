@@ -343,3 +343,67 @@ class LogEntry(BaseModel):
 
 class LogsResponse(BaseModel):
     entries: list[LogEntry]
+
+
+# -- Token Usage ----------------------------------------------------------
+
+
+class TokenTotalsSchema(BaseModel):
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    cache_creation_tokens: int = 0
+    estimated_cost: float | None = None
+    event_count: int = 0
+
+
+class ProviderTokenSchema(BaseModel):
+    provider_id: str
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    cache_creation_tokens: int = 0
+    estimated: bool = False
+    estimated_cost: float | None = None
+    event_count: int = 0
+
+
+class DailyTokenSchema(BaseModel):
+    date: str  # "YYYY-MM-DD"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    provider_id: str = ""
+    model: str = ""
+
+
+class TokenStatsResponse(BaseModel):
+    totals: TokenTotalsSchema
+    by_provider: list[ProviderTokenSchema]
+    daily: list[DailyTokenSchema]
+
+
+class TokenEventSchema(BaseModel):
+    id: int | None = None
+    timestamp: str = ""
+    session_id: str = ""
+    source_tag: str = ""
+    provider_id: str = ""
+    model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+    cache_creation_tokens: int = 0
+    estimated: bool = False
+    estimated_cost: float | None = None
+
+
+class TokenEventsResponse(BaseModel):
+    events: list[TokenEventSchema]
+
+
+class TokenClearResponse(BaseModel):
+    cleared: bool

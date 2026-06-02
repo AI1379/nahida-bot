@@ -9,16 +9,20 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage, ContextPart
+
+if TYPE_CHECKING:
+    from nahida_bot.agent.usage import UsageRecorder
 from nahida_bot.agent.metrics import MetricsCollector, Trace
 from nahida_bot.agent.providers import (
     ChatProvider,
     ProviderError,
     ProviderResponse,
+    TokenUsage,
     ToolCall,
     ToolDefinition,
 )
@@ -112,6 +116,7 @@ class AgentRunResult:
     steps: int = 0
     trace_id: str | None = None
     error: str | None = None
+    total_usage: TokenUsage | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -129,6 +134,7 @@ class LoopEvent:
     steps: int = 0
     trace_id: str | None = None
     error: str | None = None
+    total_usage: TokenUsage | None = None
 
 
 class AgentLoop:
@@ -142,12 +148,14 @@ class AgentLoop:
         config: AgentLoopConfig | None = None,
         tool_executor: ToolExecutor | None = None,
         metrics: MetricsCollector | None = None,
+        usage_recorder: UsageRecorder | None = None,
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
         self.config = config or AgentLoopConfig()
         self.tool_executor = tool_executor
         self.metrics = metrics
+        self.usage_recorder = usage_recorder
 
     async def run(
         self,
@@ -190,6 +198,7 @@ class AgentLoop:
                     steps=event.steps,
                     trace_id=event.trace_id,
                     error=event.error,
+                    total_usage=event.total_usage,
                 )
         return AgentRunResult(final_response="")
 
@@ -252,6 +261,7 @@ class AgentLoop:
         )
         tool_messages: list[ContextMessage] = []
         assistant_messages: list[ContextMessage] = []
+        total_usage = TokenUsage()
 
         step = 0
         try:
@@ -266,6 +276,7 @@ class AgentLoop:
                         tool_messages=list(tool_messages),
                         steps=step - 1,
                         error="cancelled",
+                        total_usage=total_usage,
                     )
                     return
 
@@ -293,6 +304,21 @@ class AgentLoop:
                     provider=active_provider,
                     model=model,
                 )
+
+                # Accumulate token usage across all steps
+                if response.usage is not None:
+                    total_usage = TokenUsage(
+                        input_tokens=total_usage.input_tokens
+                        + response.usage.input_tokens,
+                        output_tokens=total_usage.output_tokens
+                        + response.usage.output_tokens,
+                        cached_tokens=total_usage.cached_tokens
+                        + response.usage.cached_tokens,
+                        reasoning_tokens=total_usage.reasoning_tokens
+                        + response.usage.reasoning_tokens,
+                        cache_creation_tokens=total_usage.cache_creation_tokens
+                        + response.usage.cache_creation_tokens,
+                    )
 
                 assistant_message = self._build_assistant_message(response)
                 if assistant_message is not None:
@@ -328,6 +354,7 @@ class AgentLoop:
                         tool_messages=list(tool_messages),
                         steps=step,
                         trace_id=trace.trace_id if trace else None,
+                        total_usage=total_usage,
                     )
                     return
 
@@ -339,6 +366,7 @@ class AgentLoop:
                         tool_messages=list(tool_messages),
                         steps=step,
                         error="cancelled",
+                        total_usage=total_usage,
                     )
                     return
 
@@ -392,6 +420,7 @@ class AgentLoop:
                 tool_messages=list(tool_messages),
                 steps=self.config.max_steps,
                 trace_id=trace.trace_id if trace else None,
+                total_usage=total_usage,
             )
         except ProviderError as exc:
             logger.warning(
@@ -418,6 +447,7 @@ class AgentLoop:
                 steps=step,
                 trace_id=trace.trace_id if trace else None,
                 error=exc.code,
+                total_usage=total_usage,
             )
 
     def _system_prompt_with_tool_guidance(
@@ -487,6 +517,27 @@ class AgentLoop:
                     self.metrics.record_provider_call(
                         trace, step=step, latency_seconds=time.monotonic() - t0
                     )
+                # Record token usage if recorder is wired
+                if self.usage_recorder is not None:
+                    provider_name = getattr(active_provider, "name", "")
+                    if response.usage is not None:
+                        await self.usage_recorder.record(
+                            provider_id=provider_name,
+                            model=effective_model,
+                            usage=response.usage,
+                        )
+                    else:
+                        # Fallback: estimate with heuristic tokenizer
+                        prompt_text = json.dumps(
+                            active_provider.serialize_messages(messages)
+                        )
+                        output_text = response.content or ""
+                        await self.usage_recorder.estimate_and_record(
+                            provider_id=provider_name,
+                            model=effective_model,
+                            prompt_text=prompt_text,
+                            output_text=output_text,
+                        )
                 return response
             except ProviderError as exc:
                 if trace is not None and self.metrics is not None:

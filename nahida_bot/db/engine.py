@@ -239,6 +239,33 @@ _SCHEMA_MIGRATIONS = [
     ALTER TABLE cron_jobs ADD COLUMN created_from_session_id TEXT NOT NULL DEFAULT '';
     ALTER TABLE cron_jobs ADD COLUMN created_from_chat_address TEXT NOT NULL DEFAULT '';
     """,
+    # Migration 014: token usage event ledger
+    """
+    CREATE TABLE IF NOT EXISTS usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        session_id TEXT NOT NULL DEFAULT '',
+        source_tag TEXT NOT NULL DEFAULT '',
+        provider_id TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+        estimated INTEGER NOT NULL DEFAULT 0,
+        estimated_cost REAL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_usage_timestamp
+        ON usage_events(timestamp);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_provider
+        ON usage_events(provider_id);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_session
+        ON usage_events(session_id);
+    """,
 ]
 
 

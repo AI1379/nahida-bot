@@ -563,6 +563,7 @@ class SessionRunner:
                         "steps": event.steps,
                         "trace_id": event.trace_id,
                         "error": event.error,
+                        "total_usage": event.total_usage,
                     }
                 yield event
             logger.debug(
