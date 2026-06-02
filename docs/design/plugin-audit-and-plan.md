@@ -665,10 +665,10 @@ GET  /api/plugins/discovery                  # 触发重新扫描插件目录
 - [x] 创建 `nahida-bot-sdk/` 目录，初始化 `pyproject.toml`（依赖仅 `pydantic>=2.0`）
 - [x] 将 `Plugin`、`BotAPI`、`PluginManifest`、消息类型、事件类型从 `nahida_bot/plugins/` 迁移到 SDK
 - [x] 实现 `MockBotAPI`（含假 workspace、假 memory、假 session、工具/命令注册记录）
-- [ ] 实现 `python -m nahida_bot_sdk.testing.console` 插件测试控制台（暂缓）
+- [x] 实现 `python -m nahida_bot_sdk.testing.console` 插件测试控制台
 - [x] nahida-bot 改为 `from nahida_bot_sdk import ...`，删除 `nahida_bot/plugins/` 中的重复类型定义
 - [x] 现有 5 个插件的 import 改为依赖 `nahida-bot-sdk`（通过墊片自动兼容，零改动）
-- [ ] **验收测试**：在一个完全隔离的目录中编写插件（只依赖 nahida-bot-sdk），注册 command + tool，通过控制台验证功能（依赖控制台暂缓）
+- [x] **验收测试**：在一个完全隔离的目录中编写插件（只依赖 nahida-bot-sdk），注册 command + tool，通过控制台验证功能
 
 ### Phase B：插件依赖拓扑加载 `depends_on`
 
