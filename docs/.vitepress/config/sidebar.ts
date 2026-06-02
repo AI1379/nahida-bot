@@ -6,10 +6,19 @@ export const sidebar: DefaultTheme.Sidebar = {
       text: "指南",
       items: [
         { text: "快速开始", link: "/guide/getting-started" },
-        { text: "插件 API 参考", link: "/guide/plugin-api" },
         { text: "Workspace 文件", link: "/guide/workspace-files" },
         { text: "开发规范", link: "/guide/development" },
         { text: "配置参考", link: "/guide/configuration" },
+      ],
+    },
+  ],
+  "/plugin-api/": [
+    {
+      text: "插件 API",
+      items: [
+        { text: "概览", link: "/plugin-api/" },
+        { text: "教程", link: "/plugin-api/tutorial" },
+        { text: "API 参考", link: "/plugin-api/reference" },
       ],
     },
   ],

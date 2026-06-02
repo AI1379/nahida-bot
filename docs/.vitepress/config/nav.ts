@@ -3,6 +3,11 @@ import type { DefaultTheme } from "vitepress";
 export const nav: DefaultTheme.NavItem[] = [
   { text: "指南", link: "/guide/getting-started", activeMatch: "/guide/" },
   {
+    text: "插件 API",
+    link: "/plugin-api/",
+    activeMatch: "/plugin-api/",
+  },
+  {
     text: "架构",
     link: "/architecture/",
     activeMatch: "/architecture/",
