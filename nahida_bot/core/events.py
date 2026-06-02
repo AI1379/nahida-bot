@@ -1,23 +1,46 @@
-"""Typed in-process event bus for the core runtime."""
+"""Typed in-process event bus for the core runtime.
+
+Event types and payloads are defined in nahida_bot_sdk.events.
+Infrastructure (EventBus, EventContext, etc.) remains here.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import (
     TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
-    Generic,
     Protocol,
     TypeVar,
     cast,
 )
-from uuid import UUID, uuid4
+
+# Re-export all event types and payloads from SDK
+from nahida_bot_sdk.events import (  # noqa: F401
+    AppInitializing,
+    AppLifecyclePayload,
+    AppStarted,
+    AppStopped,
+    AppStopping,
+    Event,
+    MessageObserved,
+    MessagePayload,
+    MessageReceived,
+    MessageSending,
+    MessageSent,
+    PluginDisabled,
+    PluginEnabled,
+    PluginErrorOccurred,
+    PluginErrorPayload,
+    PluginLoaded,
+    PluginPayload,
+    PluginUnloaded,
+)
 
 if TYPE_CHECKING:
     from nahida_bot.core.app import Application
@@ -25,6 +48,9 @@ if TYPE_CHECKING:
 
 PayloadT = TypeVar("PayloadT")
 EventT = TypeVar("EventT", bound="Event[Any]", contravariant=True)
+
+
+# ── Event Bus Infrastructure ──────────────────────────────────
 
 
 class LoggerLike(Protocol):
@@ -35,129 +61,6 @@ class LoggerLike(Protocol):
 
     def warning(self, event: str, **kwargs: object) -> object:
         """Log one warning event."""
-
-
-@dataclass(slots=True, frozen=True)
-class Event(Generic[PayloadT]):
-    """Base typed event model."""
-
-    payload: PayloadT
-    event_id: UUID = field(default_factory=uuid4)
-    trace_id: str = ""
-    source: str = ""
-    occurred_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-
-# ── Application Lifecycle Events ──────────────────────────────
-
-
-@dataclass(slots=True, frozen=True)
-class AppLifecyclePayload:
-    """Payload used by application lifecycle events."""
-
-    app_name: str
-    debug: bool
-
-
-@dataclass(slots=True, frozen=True)
-class AppInitializing(Event[AppLifecyclePayload]):
-    """Raised before application initialization starts."""
-
-
-@dataclass(slots=True, frozen=True)
-class AppStarted(Event[AppLifecyclePayload]):
-    """Raised after application startup completes."""
-
-
-@dataclass(slots=True, frozen=True)
-class AppStopping(Event[AppLifecyclePayload]):
-    """Raised before application shutdown starts."""
-
-
-@dataclass(slots=True, frozen=True)
-class AppStopped(Event[AppLifecyclePayload]):
-    """Raised after application shutdown completes."""
-
-
-# ── Plugin Events ─────────────────────────────────────────────
-
-
-@dataclass(slots=True, frozen=True)
-class PluginPayload:
-    """Payload for plugin lifecycle events."""
-
-    plugin_id: str
-    plugin_name: str
-    plugin_version: str
-
-
-@dataclass(slots=True, frozen=True)
-class PluginLoaded(Event[PluginPayload]):
-    """Raised after a plugin has been loaded (module imported, class instantiated)."""
-
-
-@dataclass(slots=True, frozen=True)
-class PluginEnabled(Event[PluginPayload]):
-    """Raised after a plugin has been enabled (on_load + on_enable called)."""
-
-
-@dataclass(slots=True, frozen=True)
-class PluginDisabled(Event[PluginPayload]):
-    """Raised after a plugin has been disabled."""
-
-
-@dataclass(slots=True, frozen=True)
-class PluginUnloaded(Event[PluginPayload]):
-    """Raised after a plugin has been fully unloaded."""
-
-
-@dataclass(slots=True, frozen=True)
-class PluginErrorPayload:
-    """Payload for plugin error events."""
-
-    plugin_id: str
-    plugin_name: str
-    method: str
-    error: str
-
-
-@dataclass(slots=True, frozen=True)
-class PluginErrorOccurred(Event[PluginErrorPayload]):
-    """Raised when a plugin method raises an unhandled exception."""
-
-
-# ── Message Events ────────────────────────────────────────────
-
-
-@dataclass(slots=True, frozen=True)
-class MessagePayload:
-    """Payload for message lifecycle events."""
-
-    message: Any  # InboundMessage — use Any to avoid circular import
-    session_id: str
-
-
-@dataclass(slots=True, frozen=True)
-class MessageReceived(Event[MessagePayload]):
-    """Raised after a channel service plugin normalizes an inbound event."""
-
-
-@dataclass(slots=True, frozen=True)
-class MessageObserved(Event[MessagePayload]):
-    """Raised for inbound messages recorded as context but not handled by agent."""
-
-
-@dataclass(slots=True, frozen=True)
-class MessageSending(Event[MessagePayload]):
-    """Raised before sending a message for observation and audit hooks."""
-
-
-@dataclass(slots=True, frozen=True)
-class MessageSent(Event[MessagePayload]):
-    """Raised after a message has been successfully sent."""
-
-
-# ── Event Bus Infrastructure ──────────────────────────────────
 
 
 @dataclass(slots=True)
@@ -257,18 +160,7 @@ class EventBus:
         priority: int = 0,
         timeout: float = 30.0,
     ) -> Subscription:
-        """Subscribe a handler to one concrete event type.
-
-        Args:
-            event_type: The event class to listen for.
-            handler: Async or sync callback accepting (event, ctx).
-            priority: Execution order — lower runs first. Values <= 0 run
-                serially (core); values > 0 run concurrently (plugins).
-            timeout: Per-handler timeout in seconds for async-phase handlers.
-
-        Returns:
-            A ``Subscription`` that can be used to unsubscribe.
-        """
+        """Subscribe a handler to one concrete event type."""
         if self._closed:
             raise EventBusClosedError("EventBus is already closed")
 
@@ -306,16 +198,7 @@ class EventBus:
             self._handlers.pop(event_type, None)
 
     async def publish(self, event: Event[Any]) -> PublishResult:
-        """Publish one event with two-phase handler dispatch.
-
-        Phase 1 (sync, priority <= 0): handlers execute serially in
-        ascending priority order. A failing handler does not prevent
-        subsequent handlers from running.
-
-        Phase 2 (async, priority > 0): handlers execute concurrently with
-        per-handler timeout protection. A timeout or error in one handler
-        does not affect others.
-        """
+        """Publish one event with two-phase handler dispatch."""
         if self._closed:
             raise EventBusClosedError("EventBus is already closed")
 
@@ -323,7 +206,6 @@ class EventBus:
         if not entries:
             return PublishResult(dispatched=0, failures=())
 
-        # Sort by priority (ascending — lower priority runs first)
         entries.sort(key=lambda e: e.priority)
 
         sync_entries = [e for e in entries if e.priority <= 0]
@@ -331,7 +213,6 @@ class EventBus:
 
         failures: list[HandlerFailure] = []
 
-        # Phase 1: serial execution for core handlers
         for entry in sync_entries:
             try:
                 outcome = entry.handler(event, self._context)
@@ -341,7 +222,6 @@ class EventBus:
                 failures.append(HandlerFailure(handler_name=entry.name, error=str(exc)))
                 self._context.logger.exception("Event handler failed", exc_info=exc)
 
-        # Phase 2: concurrent execution with per-handler timeout
         if async_entries:
 
             async def _run_with_timeout(entry: _HandlerEntry) -> None:
@@ -378,10 +258,7 @@ class EventBus:
         )
 
     def publish_nowait(self, event: Event[Any]) -> bool:
-        """Publish one event in background.
-
-        Returns False if the bus is closed and event cannot be scheduled.
-        """
+        """Publish one event in background."""
         if self._closed:
             return False
 

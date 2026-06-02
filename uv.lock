@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
+[manifest]
+members = [
+    "nahida-bot",
+    "nahida-bot-sdk",
+]
+
 [[package]]
 name = "aiofiles"
 version = "25.1.0"
@@ -1002,6 +1008,7 @@ dependencies = [
     { name = "jieba" },
     { name = "markdownify" },
     { name = "mcp" },
+    { name = "nahida-bot-sdk" },
     { name = "psutil" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -1044,6 +1051,7 @@ requires-dist = [
     { name = "jieba", specifier = ">=0.42.1" },
     { name = "markdownify", specifier = ">=0.14.0" },
     { name = "mcp", specifier = ">=1.27.0" },
+    { name = "nahida-bot-sdk", editable = "nahida-bot-sdk" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
@@ -1073,6 +1081,21 @@ dev = [
 telegram = [
     { name = "aiogram", specifier = ">=3.15.0" },
     { name = "aiohttp-socks", specifier = ">=0.8.0" },
+]
+
+[[package]]
+name = "nahida-bot-sdk"
+version = "0.1.0"
+source = { editable = "nahida-bot-sdk" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

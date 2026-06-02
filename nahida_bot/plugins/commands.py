@@ -1,4 +1,8 @@
-"""Command registry and message-to-command matcher."""
+"""Command registry and message-to-command matcher.
+
+Public types (CommandResult, CommandHandlerResult, CommandInfo, CommandMatch)
+are defined in nahida_bot_sdk.commands. Internal infrastructure stays here.
+"""
 
 from __future__ import annotations
 
@@ -6,38 +10,12 @@ import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from nahida_bot.plugins.base import OutboundMessage
-
-
-@dataclass(slots=True, frozen=True)
-class CommandResult:
-    """Structured result returned by a command handler."""
-
-    message: OutboundMessage | None = None
-    suppress_response: bool = False
-
-    @classmethod
-    def text(cls, text: str) -> "CommandResult":
-        """Create a result that sends a plain text response."""
-        return cls(message=OutboundMessage(text=text))
-
-    @classmethod
-    def none(cls) -> "CommandResult":
-        """Create a result that intentionally sends no response."""
-        return cls(suppress_response=True)
-
-
-CommandHandlerResult = str | OutboundMessage | CommandResult | None
-
-
-@dataclass(slots=True, frozen=True)
-class CommandInfo:
-    """Public command metadata exposed through BotAPI."""
-
-    name: str
-    description: str
-    aliases: tuple[str, ...]
-    plugin_id: str
+from nahida_bot_sdk.commands import (  # noqa: F401
+    CommandHandlerResult,
+    CommandInfo,
+    CommandMatch,
+    CommandResult,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,15 +36,6 @@ class CommandEntry:
             aliases=self.aliases,
             plugin_id=self.plugin_id,
         )
-
-
-@dataclass(slots=True, frozen=True)
-class CommandMatch:
-    """Result of attempting to match a command in a message."""
-
-    matched: bool
-    name: str = ""
-    args: str = ""
 
 
 class CommandRegistry:
@@ -124,10 +93,6 @@ class CommandRegistry:
 
 
 # Pattern: optional leading @mention, then /command, then rest as args.
-# Matches: "/help", "/search foo bar", "@bot /ping", "@bot/help arg"
-_MENTION_PATTERN = re.compile(
-    r"^\s*@?\S*?\s*"  # optional @mention prefix
-)
 _COMMAND_PATTERN = re.compile(
     r"^\s*(@\S+\s+)?"  # optional @mention + space
     r"([/!])(\w+)"  # prefix char (/ or !) + command name
@@ -148,22 +113,11 @@ class CommandMatcher:
         self._prefix = prefix
 
     def match(self, text: str, *, prefix: str = "") -> CommandMatch:
-        """Try to extract a command from message text.
-
-        Args:
-            text: The message body to parse.
-            prefix: Override prefix for this specific message (e.g. from
-                ``InboundMessage.command_prefix``). Falls back to the
-                matcher's default if empty.
-
-        Returns:
-            ``CommandMatch`` with ``matched=True`` if a command was found.
-        """
+        """Try to extract a command from message text."""
         effective_prefix = prefix or self._prefix
         if not text:
             return CommandMatch(matched=False)
 
-        # Strip leading @mention (e.g. "@botname " or "@botname/")
         stripped = text.strip()
         m = _COMMAND_PATTERN.match(stripped)
         if m is None:

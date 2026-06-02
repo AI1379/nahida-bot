@@ -36,6 +36,8 @@ dependencies = [
     "croniter>=6.2.2",
     "sqlite-vec>=0.1.9",
     "psutil>=7.2.2",
+    # SDK (workspace member)
+    "nahida-bot-sdk",
 ]
 
 [dependency-groups]
@@ -69,6 +71,12 @@ nahida-bot = "nahida_bot.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.workspace]
+members = ["nahida-bot-sdk"]
+
+[tool.uv.sources]
+nahida-bot-sdk = { workspace = true }
 
 [tool.ruff]
 target-version = "py312"
