@@ -9,14 +9,11 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import structlog
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage, ContextPart
-
-if TYPE_CHECKING:
-    from nahida_bot.agent.usage import UsageRecorder
 from nahida_bot.agent.metrics import MetricsCollector, Trace
 from nahida_bot.agent.providers import (
     ChatProvider,
@@ -148,14 +145,12 @@ class AgentLoop:
         config: AgentLoopConfig | None = None,
         tool_executor: ToolExecutor | None = None,
         metrics: MetricsCollector | None = None,
-        usage_recorder: UsageRecorder | None = None,
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
         self.config = config or AgentLoopConfig()
         self.tool_executor = tool_executor
         self.metrics = metrics
-        self.usage_recorder = usage_recorder
 
     async def run(
         self,
@@ -517,27 +512,6 @@ class AgentLoop:
                     self.metrics.record_provider_call(
                         trace, step=step, latency_seconds=time.monotonic() - t0
                     )
-                # Record token usage if recorder is wired
-                if self.usage_recorder is not None:
-                    provider_name = getattr(active_provider, "name", "")
-                    if response.usage is not None:
-                        await self.usage_recorder.record(
-                            provider_id=provider_name,
-                            model=effective_model,
-                            usage=response.usage,
-                        )
-                    else:
-                        # Fallback: estimate with heuristic tokenizer
-                        prompt_text = json.dumps(
-                            active_provider.serialize_messages(messages)
-                        )
-                        output_text = response.content or ""
-                        await self.usage_recorder.estimate_and_record(
-                            provider_id=provider_name,
-                            model=effective_model,
-                            prompt_text=prompt_text,
-                            output_text=output_text,
-                        )
                 return response
             except ProviderError as exc:
                 if trace is not None and self.metrics is not None:

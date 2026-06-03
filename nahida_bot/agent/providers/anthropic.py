@@ -274,7 +274,7 @@ class AnthropicProvider(ChatProvider):
     # chat()
     # ------------------------------------------------------------------
 
-    async def chat(
+    async def _chat_impl(
         self,
         *,
         messages: list[ContextMessage],

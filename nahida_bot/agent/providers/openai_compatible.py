@@ -155,7 +155,7 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
             )
         return [result for _index, result in sorted(parsed, key=lambda item: item[0])]
 
-    async def chat(
+    async def _chat_impl(
         self,
         *,
         messages: list[ContextMessage],

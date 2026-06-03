@@ -44,7 +44,9 @@ class _QueuedProvider(ChatProvider):
     def tokenizer(self):
         return None
 
-    async def chat(self, *, messages, tools=None, timeout_seconds=None, model=None):  # noqa: ANN001
+    async def _chat_impl(
+        self, *, messages, tools=None, timeout_seconds=None, model=None
+    ):  # noqa: ANN001
         self.calls += 1
         self.observed_messages.append(list(messages))
         if self.failures:
@@ -763,7 +765,9 @@ async def test_agent_loop_fallback_preserves_prior_assistant_messages() -> None:
         def tokenizer(self):
             return None
 
-        async def chat(self, *, messages, tools=None, timeout_seconds=None, model=None):  # noqa: ANN001
+        async def _chat_impl(
+            self, *, messages, tools=None, timeout_seconds=None, model=None
+        ):  # noqa: ANN001
             nonlocal call_count
             call_count += 1
             if call_count == 1:

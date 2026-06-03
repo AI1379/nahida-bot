@@ -64,7 +64,7 @@ class TestProviderRegistry:
                 def tokenizer(self):  # type: ignore[override]
                     return None
 
-                async def chat(self, **kwargs):  # type: ignore[override]
+                async def _chat_impl(self, **kwargs):  # type: ignore[override]
                     ...
 
     def test_deepseek_provider_subclass(self) -> None:
@@ -93,7 +93,7 @@ class TestProviderRegistry:
             def tokenizer(self):  # type: ignore[override]
                 return None
 
-            async def chat(self, **kwargs):  # type: ignore[override]
+            async def _chat_impl(self, **kwargs):  # type: ignore[override]
                 ...
 
         provider_type = "runtime-test-provider"

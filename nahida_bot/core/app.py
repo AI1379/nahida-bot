@@ -187,9 +187,10 @@ class Application:
             # Wire usage recorder to DB (both are now initialized)
             if self._usage_ledger is not None and self._db_engine is not None:
                 await self._usage_ledger.load_from_db(self._db_engine)
-                # Inject into the agent loop (created before _init_webapi)
-                if self.agent_loop is not None:
-                    self.agent_loop.usage_recorder = self._usage_ledger
+                # Inject into every provider — usage is a provider concern
+                if self._provider_manager is not None:
+                    for slot in self._provider_manager.slots:
+                        slot.provider.usage_recorder = self._usage_ledger
 
             self._initialized = True
         except Exception as e:

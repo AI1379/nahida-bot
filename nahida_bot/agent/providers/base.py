@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.tokenization import Tokenizer
+
+if TYPE_CHECKING:
+    from nahida_bot.agent.usage import UsageRecorder
 
 ToolType = Literal["function"]
 
@@ -149,13 +153,16 @@ class ChatProvider(ABC):
     name: str
     api_family: str = "openai-completions"
 
+    # Injected by the application after provider creation.
+    # When set, :meth:`chat` will automatically record usage after every call.
+    usage_recorder: UsageRecorder | None = None
+
     @property
     @abstractmethod
     def tokenizer(self) -> Tokenizer | None:
         """Provider-specific tokenizer for context budgeting."""
         raise NotImplementedError
 
-    @abstractmethod
     async def chat(
         self,
         *,
@@ -166,10 +173,67 @@ class ChatProvider(ABC):
     ) -> ProviderResponse:
         """Run a single chat completion round.
 
+        Delegates to :meth:`_chat_impl` and automatically records token
+        usage when ``usage_recorder`` is wired.
+
         Args:
             model: Override the default model for this request only.
         """
+        response = await self._chat_impl(
+            messages=messages,
+            tools=tools,
+            timeout_seconds=timeout_seconds,
+            model=model,
+        )
+        await self._record_usage(response, model=model or "", messages=messages)
+        return response
+
+    @abstractmethod
+    async def _chat_impl(
+        self,
+        *,
+        messages: list[ContextMessage],
+        tools: list[ToolDefinition] | None = None,
+        timeout_seconds: float | None = None,
+        model: str | None = None,
+    ) -> ProviderResponse:
+        """Provider-specific chat implementation (called by :meth:`chat`)."""
         raise NotImplementedError
+
+    # -- Usage recording --------------------------------------------------
+
+    async def _record_usage(
+        self,
+        response: ProviderResponse,
+        *,
+        model: str,
+        messages: list[ContextMessage],
+    ) -> None:
+        """Record token usage after a completed chat call (internal).
+
+        Uses structured usage from *response* when available, otherwise falls
+        back to heuristic tokenization.
+        """
+        if self.usage_recorder is None:
+            return
+
+        pid = self.name
+
+        if response.usage is not None:
+            await self.usage_recorder.record(
+                provider_id=pid,
+                model=model,
+                usage=response.usage,
+            )
+        else:
+            prompt_text = json.dumps(self.serialize_messages(messages))
+            output_text = response.content or ""
+            await self.usage_recorder.estimate_and_record(
+                provider_id=pid,
+                model=model,
+                prompt_text=prompt_text,
+                output_text=output_text,
+            )
 
     def format_tools(self, tools: list[ToolDefinition]) -> list[object]:
         """Convert ToolDefinition list to provider-native tool format.

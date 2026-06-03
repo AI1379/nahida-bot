@@ -35,7 +35,9 @@ class _ProviderWithTokenizer(ChatProvider):
     def tokenizer(self):
         return _AlwaysOneTokenizer()
 
-    async def chat(self, *, messages, tools=None, timeout_seconds=None, model=None):  # noqa: ANN001
+    async def _chat_impl(
+        self, *, messages, tools=None, timeout_seconds=None, model=None
+    ):  # noqa: ANN001
         return ProviderResponse(content="ok")
 
 
@@ -46,7 +48,9 @@ class _ProviderWithoutTokenizer(ChatProvider):
     def tokenizer(self):
         return None
 
-    async def chat(self, *, messages, tools=None, timeout_seconds=None, model=None):  # noqa: ANN001
+    async def _chat_impl(
+        self, *, messages, tools=None, timeout_seconds=None, model=None
+    ):  # noqa: ANN001
         return ProviderResponse(content="ok")
 
 

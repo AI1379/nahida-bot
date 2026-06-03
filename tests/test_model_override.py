@@ -44,7 +44,7 @@ class _RecordingProvider(ChatProvider):
     def tokenizer(self) -> Tokenizer | None:
         return None
 
-    async def chat(
+    async def _chat_impl(
         self,
         *,
         messages: list[ContextMessage],
