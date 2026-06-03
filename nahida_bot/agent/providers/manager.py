@@ -91,7 +91,6 @@ class ProviderManager:
             return None
         slot, _ = resolved
         return slot
-        return None
 
     def list_available(self) -> list[dict[str, str]]:
         """Return all available provider+model combinations."""
@@ -101,6 +100,11 @@ class ProviderManager:
             for model in models:
                 results.append({"provider_id": slot.id, "model": model})
         return results
+
+    @property
+    def slots(self) -> list[ProviderSlot]:
+        """Return all provider slots."""
+        return list(self._slots.values())
 
     @property
     def slot_ids(self) -> list[str]:
