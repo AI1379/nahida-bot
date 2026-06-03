@@ -21,6 +21,21 @@ export const sidebar: DefaultTheme.Sidebar = {
         { text: "API 参考", link: "/plugin-api/reference" },
       ],
     },
+    {
+      text: "Nahida Bot SDK API",
+      collapsed: true,
+      items: [
+        { text: "总览", link: "/plugin-api/auto/" },
+        { text: "BotAPI 协议", link: "/plugin-api/auto/api" },
+        { text: "消息类型", link: "/plugin-api/auto/messaging" },
+        { text: "事件系统", link: "/plugin-api/auto/events" },
+        { text: "命令相关", link: "/plugin-api/auto/commands" },
+        { text: "Plugin 基类", link: "/plugin-api/auto/plugin" },
+        { text: "Manifest 清单", link: "/plugin-api/auto/manifest" },
+        { text: "聊天地址与会话", link: "/plugin-api/auto/chat-address" },
+        { text: "测试工具", link: "/plugin-api/auto/testing" },
+      ],
+    },
   ],
   "/architecture/": [
     {

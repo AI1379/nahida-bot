@@ -58,6 +58,10 @@ dev = [
 
     # Pre-commit
     "pre-commit>=4.0.0",
+
+    # 文档生成
+    "griffe>=2.0.0",
+    "jinja2>=3.0.0",
 ]
 
 telegram = [
