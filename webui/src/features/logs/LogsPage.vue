@@ -12,6 +12,7 @@ import {
 } from "reka-ui";
 import { useLogs } from "@/api/queries";
 import { setLogEntryHandler } from "@/api/events";
+import { formatTime, formatDateTime } from "@/lib/utils";
 import type { LogEntry } from "@/api/schemas";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -79,13 +80,6 @@ function levelVariant(level: string) {
     default:
       return "outline";
   }
-}
-
-function formatTime(ts: string) {
-  if (!ts) return "";
-  const idx = ts.indexOf("T");
-  if (idx === -1) return ts;
-  return ts.slice(idx + 1, idx + 12);
 }
 
 function formatFields(fields: Record<string, unknown>) {
@@ -223,7 +217,7 @@ function selectDetail(entry: LogEntry) {
             <div class="detail-body">
               <div class="detail-row">
                 <span class="detail-label">Time</span>
-                <code>{{ selected.timestamp }}</code>
+                <code>{{ formatDateTime(selected.timestamp) }}</code>
               </div>
               <div class="detail-row">
                 <span class="detail-label">Logger</span>

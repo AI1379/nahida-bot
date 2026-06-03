@@ -4,7 +4,7 @@ import { useTokenStats, useTokenEvents } from "@/api/queries";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Alert from "@/components/ui/Alert.vue";
-import { formatNumber } from "@/lib/utils";
+import { formatNumber, formatTime } from "@/lib/utils";
 
 const days = ref(7);
 const selectedProvider = ref("");
@@ -215,7 +215,7 @@ const maxDailyTokens = computed(() => {
                   v-for="(ev, i) in eventsData.events"
                   :key="ev.id ?? i"
                 >
-                  <td class="time-cell">{{ ev.timestamp.slice(11, 19) || ev.timestamp.slice(0, 19) }}</td>
+                  <td class="time-cell">{{ formatTime(ev.timestamp) }}</td>
                   <td>{{ ev.provider_id }}</td>
                   <td class="model-cell">{{ ev.model }}</td>
                   <td class="num">{{ formatTokens(ev.input_tokens) }}</td>

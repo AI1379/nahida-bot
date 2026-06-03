@@ -51,6 +51,17 @@ export function relativeTime(iso: string): string {
   return formatDateTime(iso);
 }
 
+export function formatTime(iso: string): string {
+  const date = new Date(iso);
+  const timestamp = date.getTime();
+  if (!Number.isFinite(timestamp)) return "";
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  const ms = String(date.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 export function formatDateTime(iso: string): string {
   const date = new Date(iso);
   const timestamp = date.getTime();
