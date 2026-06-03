@@ -68,6 +68,10 @@ use `RecordingMockBotAPI` instead.
 
 #### `set_session_model(session_id: str, model_name: str)`
 
+#### `llm_chat(messages: list[dict[str, str]], model: str = '', temperature: float | None = None, max_tokens: int | None = None, tools: list[dict[str, Any]] | None = None)`
+
+#### `run_subagent(prompt: str, model: str = '', system_prompt: str = '', tools: list[str] | None = None, max_steps: int = 10, timeout_seconds: int = 300)`
+
 #### `update_runtime_settings(session_id: str, updates: dict[str, Any])`
 
 #### `memory_search(query: str, limit: int = 5)`
@@ -209,6 +213,10 @@ Dispatch a command by name and return the result text.
 #### `list_models()`
 
 #### `set_session_model(session_id: str, model_name: str)`
+
+#### `llm_chat(messages: list[dict[str, str]], model: str = '', temperature: float | None = None, max_tokens: int | None = None, tools: list[dict[str, Any]] | None = None)`
+
+#### `run_subagent(prompt: str, model: str = '', system_prompt: str = '', tools: list[str] | None = None, max_steps: int = 10, timeout_seconds: int = 300)`
 
 #### `update_runtime_settings(session_id: str, updates: dict[str, Any])`
 

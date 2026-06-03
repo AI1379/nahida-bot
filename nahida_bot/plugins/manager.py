@@ -74,6 +74,7 @@ class PluginManager:
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         channel_registry: Any | None = None,
         provider_manager: Any | None = None,
+        model_router: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
     ) -> None:
@@ -83,6 +84,7 @@ class PluginManager:
         self._message_delivery_store = message_delivery_store
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
+        self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
         self._loader = PluginLoader()
@@ -98,6 +100,7 @@ class PluginManager:
         memory_store: MemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         provider_manager: Any | None = None,
+        model_router: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
     ) -> None:
@@ -106,6 +109,7 @@ class PluginManager:
         self._memory = memory_store
         self._message_delivery_store = message_delivery_store
         self._provider_manager = provider_manager
+        self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
         for record in self._records.values():
@@ -193,6 +197,10 @@ class PluginManager:
             raise
 
         checker = PermissionChecker(record.manifest)
+
+        # TODO: Use a simpler way to inject dependencies into the API bridge
+        # instead of passing everything through the constructor. Maybe a context
+        # object or direct references to the manager's registries and services?
         api_bridge = RealBotAPI(
             plugin_id=plugin_id,
             manifest=record.manifest,
@@ -206,6 +214,7 @@ class PluginManager:
             command_registry=self._command_registry,
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,
+            model_router=self._model_router,
             scheduler_service=self._scheduler_service,
             orchestration_service=self._orchestration_service,
         )

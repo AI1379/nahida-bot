@@ -163,6 +163,7 @@ class Application:
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
                 provider_manager=self._provider_manager,
+                model_router=self._model_router,
                 orchestration_service=self.orchestration_service,
             )
             if self.agent_loop is not None:
@@ -177,6 +178,7 @@ class Application:
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
                 provider_manager=self._provider_manager,
+                model_router=self._model_router,
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
             )
@@ -600,6 +602,7 @@ class Application:
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
                 provider_manager=self._provider_manager,
+                model_router=self._model_router,
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
             )

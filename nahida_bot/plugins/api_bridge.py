@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import structlog
 
+from nahida_bot.agent.context import MessageRole
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import (
     ChannelService,
@@ -25,7 +26,8 @@ from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
 
 if TYPE_CHECKING:
-    from nahida_bot.agent.providers.base import ChatProvider
+    from nahida_bot.agent.context import ContextMessage
+    from nahida_bot.agent.providers.base import ChatProvider, ProviderResponse
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.core.events import EventBus
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
@@ -80,6 +82,7 @@ class RealBotAPI:
         command_registry: Any,  # CommandRegistry
         channel_registry: Any | None = None,  # ChannelRegistry
         provider_manager: Any | None = None,  # ProviderManager
+        model_router: Any | None = None,  # ModelRouter
         scheduler_service: Any | None = None,  # SchedulerService
         orchestration_service: Any | None = None,  # AgentOrchestrator
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
@@ -96,6 +99,7 @@ class RealBotAPI:
         self._command_registry = command_registry
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
+        self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
         self._logger = _PluginLogger(plugin_id)
@@ -584,6 +588,194 @@ class RealBotAPI:
         )
         return merged
 
+    # ── LLM Access ──────────────────────────────────────
+
+    async def llm_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str = "",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Any:  # Returns LLMResponse from SDK
+        """Send a single-turn chat request through the bot's provider system."""
+        self._permissions.check_llm_access()
+
+        from nahida_bot.agent.context import ContextMessage
+        from nahida_bot.agent.providers.base import ToolDefinition
+        from nahida_bot_sdk.api import LLMResponse, LLMUsage
+
+        # Resolve model spec through the router
+        slot = None
+        resolved_model = ""
+        if self._model_router is not None and model:
+            routed = self._model_router.resolve(model)
+            if routed is not None:
+                slot = routed.slot
+                resolved_model = routed.model or slot.default_model
+                self._logger.debug(
+                    "llm_chat_model_resolved",
+                    spec=model,
+                    reason=routed.reason,
+                    provider_id=slot.id,
+                    model=resolved_model,
+                )
+        elif self._provider_manager is not None:
+            slot = self._provider_manager.default
+            if slot is not None:
+                resolved_model = slot.default_model
+
+        if slot is None:
+            raise RuntimeError(
+                f"Plugin '{self._plugin_id}': no provider available for "
+                f"model spec '{model}'"
+            )
+
+        # Convert simple dict messages to ContextMessage list
+        ctx_messages: list[ContextMessage] = [
+            ContextMessage(
+                role=cast(MessageRole, m.get("role", "user")),
+                content=m.get("content", ""),
+                source=m.get("source", ""),
+            )
+            for m in messages
+        ]
+
+        # Convert tool dicts to ToolDefinition list
+        tool_defs: list[ToolDefinition] | None = None
+        if tools:
+            tool_defs = [
+                ToolDefinition(
+                    name=t.get("name", ""),
+                    description=t.get("description", ""),
+                    parameters=t.get("parameters", {}),
+                )
+                for t in tools
+            ]
+
+        # Build provider kwargs
+        provider_kwargs: dict[str, Any] = {
+            "messages": ctx_messages,
+            "model": resolved_model,
+        }
+        if tool_defs:
+            provider_kwargs["tools"] = tool_defs
+
+        response: ProviderResponse = await slot.provider.chat(**provider_kwargs)
+
+        # Convert ProviderResponse to SDK LLMResponse
+        usage = None
+        if response.usage is not None:
+            usage = LLMUsage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cached_tokens=response.usage.cached_tokens,
+                reasoning_tokens=response.usage.reasoning_tokens,
+            )
+
+        tool_calls: list[dict[str, Any]] = []
+        for tc in response.tool_calls:
+            tool_calls.append(
+                {
+                    "call_id": tc.call_id,
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                }
+            )
+
+        return LLMResponse(
+            content=response.content or "",
+            model=resolved_model,
+            provider=slot.id,
+            finish_reason=response.finish_reason or "",
+            usage=usage,
+            tool_calls=tool_calls,
+        )
+
+    async def run_subagent(
+        self,
+        prompt: str,
+        *,
+        model: str = "",
+        system_prompt: str = "",
+        tools: list[str] | None = None,
+        max_steps: int = 10,
+        timeout_seconds: int = 300,
+    ) -> Any:  # Returns SubagentResult from SDK
+        """Run a multi-turn subagent with optional tool access."""
+        self._permissions.check_llm_access()
+
+        from nahida_bot.agent.orchestration.models import SubagentSpec
+        from nahida_bot.core.context import current_session
+        from nahida_bot_sdk.api import SubagentResult
+
+        if self._orchestration_service is None:
+            raise RuntimeError(
+                f"Plugin '{self._plugin_id}': orchestration service is not available"
+            )
+
+        session_ctx = current_session.get()
+        if session_ctx is None:
+            raise RuntimeError(
+                f"Plugin '{self._plugin_id}': run_subagent() requires an active "
+                f"session context (call it from a command or event handler)"
+            )
+
+        # Resolve model spec to provider_id + model
+        provider_id = ""
+        resolved_model = ""
+        if self._model_router is not None and model:
+            routed = self._model_router.resolve(model)
+            if routed is not None:
+                provider_id = routed.slot.id
+                resolved_model = routed.model or routed.slot.default_model
+                self._logger.debug(
+                    "subagent_model_resolved",
+                    spec=model,
+                    reason=routed.reason,
+                    provider_id=provider_id,
+                    model=resolved_model,
+                )
+        elif self._provider_manager is not None:
+            default_slot = self._provider_manager.default
+            if default_slot is not None:
+                provider_id = default_slot.id
+                resolved_model = default_slot.default_model
+
+        spec = SubagentSpec(
+            task=prompt,
+            instructions=system_prompt or None,
+            context_mode="isolated",
+            provider_id=provider_id or None,
+            model=resolved_model or None,
+            timeout_seconds=timeout_seconds,
+            tool_allowlist=tuple(tools or []),
+            notify_policy="silent",
+        )
+
+        task = await self._orchestration_service.spawn_subagent(spec)
+        completed = await self._orchestration_service.wait_for_task(
+            task.task_id, timeout_seconds=timeout_seconds
+        )
+
+        if completed is None:
+            return SubagentResult(
+                final_response="",
+                status="timed_out",
+                model=resolved_model,
+                provider=provider_id,
+                error="Subagent timed out.",
+            )
+
+        return SubagentResult(
+            final_response=completed.summary or "",
+            status=completed.status.value,
+            model=resolved_model,
+            provider=provider_id,
+            error=completed.error or "",
+        )
+
     def get_provider_manager(self) -> Any:
         """Access the ProviderManager (if configured)."""
         return self._provider_manager
@@ -620,6 +812,7 @@ class RealBotAPI:
         memory_store: MemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         provider_manager: Any | None = None,
+        model_router: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
     ) -> None:
@@ -628,6 +821,7 @@ class RealBotAPI:
         self._memory = memory_store
         self._message_delivery_store = message_delivery_store
         self._provider_manager = provider_manager
+        self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
 

@@ -15,6 +15,47 @@ BotAPI protocol, ChannelService protocol, and related interfaces.
 ## 类
 
 
+### LLMUsage
+
+Token usage from an LLM call.
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `input_tokens` | `int` | ``0`` |  |
+| `output_tokens` | `int` | ``0`` |  |
+| `cached_tokens` | `int` | ``0`` |  |
+| `reasoning_tokens` | `int` | ``0`` |  |
+
+
+### LLMResponse
+
+Normalized response from a single-turn LLM chat call.
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `content` | `str` | `—` |  |
+| `model` | `str` | ``''`` |  |
+| `provider` | `str` | ``''`` |  |
+| `finish_reason` | `str` | ``''`` |  |
+| `usage` | `LLMUsage | None` | ``None`` |  |
+| `tool_calls` | `list[dict[str, Any]]` | ``[]`` |  |
+
+
+### SubagentResult
+
+Result from a multi-turn subagent run.
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `final_response` | `str` | `—` |  |
+| `status` | `str` | ``'succeeded'`` |  |
+| `model` | `str` | ``''`` |  |
+| `provider` | `str` | ``''`` |  |
+| `steps` | `int` | ``0`` |  |
+| `usage` | `LLMUsage | None` | ``None`` |  |
+| `error` | `str` | ``''`` |  |
+
+
 ### PluginLogger
 
 Structured logger automatically scoped to a plugin.
@@ -164,6 +205,30 @@ List available provider/model pairs.
 #### `set_session_model(session_id: str, model_name: str)`
 
 Switch the session to a model and return provider id if found.
+
+#### `llm_chat(messages: list[dict[str, str]], model: str = '', temperature: float | None = None, max_tokens: int | None = None, tools: list[dict[str, Any]] | None = None)`
+
+Send a single-turn chat request to an LLM.
+
+The *model* spec is resolved via the bot's built-in ModelRouter:
+it accepts tags (`"cheap"`), bare model names, or
+`provider/model` compound form. An empty string uses the
+default provider's default model.
+
+Tools are passed through to the provider but NOT executed —
+the plugin receives `tool_calls` in the response and handles
+them itself.
+
+#### `run_subagent(prompt: str, model: str = '', system_prompt: str = '', tools: list[str] | None = None, max_steps: int = 10, timeout_seconds: int = 300)`
+
+Run a multi-turn subagent with optional tool access.
+
+The subagent runs in an isolated child session. *tools* is a
+list of tool names to grant (empty = no tools). The subagent
+can call any of them during its reasoning loop.
+
+Requires an active session context (e.g. inside a command or
+event handler).
 
 #### `update_runtime_settings(session_id: str, updates: dict[str, Any])`
 

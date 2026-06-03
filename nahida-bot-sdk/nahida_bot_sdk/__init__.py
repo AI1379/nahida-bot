@@ -30,7 +30,10 @@ from nahida_bot_sdk.messaging import (  # noqa: F401
 from nahida_bot_sdk.api import (  # noqa: F401
     BotAPI,
     ChannelService,
+    LLMResponse,
+    LLMUsage,
     PluginLogger,
+    SubagentResult,
     SubscriptionHandle,
 )
 
@@ -117,7 +120,10 @@ __all__ = [
     # API protocols
     "BotAPI",
     "ChannelService",
+    "LLMResponse",
+    "LLMUsage",
     "PluginLogger",
+    "SubagentResult",
     "SubscriptionHandle",
     # Plugin base
     "MemoryRef",

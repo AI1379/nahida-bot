@@ -118,6 +118,10 @@ Aggregate permission declarations for a plugin.
 
 - **返回类型:** `SystemPermission`
 
+#### llm_access
+
+- **返回类型:** `bool`
+
 
 ### Capabilities
 

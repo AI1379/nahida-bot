@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -17,6 +18,44 @@ from nahida_bot_sdk.messaging import OutboundMessage
 if TYPE_CHECKING:
     from nahida_bot_sdk.commands import CommandHandlerResult, CommandInfo
     from nahida_bot_sdk.plugin import MemoryRef, SessionInfo
+
+
+# ── LLM / Subagent data types ──────────────────────────
+
+
+@dataclass(slots=True)
+class LLMUsage:
+    """Token usage from an LLM call."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+
+
+@dataclass(slots=True)
+class LLMResponse:
+    """Normalized response from a single-turn LLM chat call."""
+
+    content: str
+    model: str = ""
+    provider: str = ""
+    finish_reason: str = ""
+    usage: LLMUsage | None = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class SubagentResult:
+    """Result from a multi-turn subagent run."""
+
+    final_response: str
+    status: str = "succeeded"  # succeeded | failed | timed_out | cancelled
+    model: str = ""
+    provider: str = ""
+    steps: int = 0
+    usage: LLMUsage | None = None
+    error: str = ""
 
 
 class PluginLogger(Protocol):
@@ -194,6 +233,51 @@ class BotAPI(Protocol):
 
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         """Switch the session to a model and return provider id if found."""
+        ...
+
+    # ── LLM Access ──────────────────────────────────────
+
+    async def llm_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str = "",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        """Send a single-turn chat request to an LLM.
+
+        The *model* spec is resolved via the bot's built-in ModelRouter:
+        it accepts tags (``"cheap"``), bare model names, or
+        ``provider/model`` compound form. An empty string uses the
+        default provider's default model.
+
+        Tools are passed through to the provider but NOT executed —
+        the plugin receives ``tool_calls`` in the response and handles
+        them itself.
+        """
+        ...
+
+    async def run_subagent(
+        self,
+        prompt: str,
+        *,
+        model: str = "",
+        system_prompt: str = "",
+        tools: list[str] | None = None,
+        max_steps: int = 10,
+        timeout_seconds: int = 300,
+    ) -> SubagentResult:
+        """Run a multi-turn subagent with optional tool access.
+
+        The subagent runs in an isolated child session. *tools* is a
+        list of tool names to grant (empty = no tools). The subagent
+        can call any of them during its reasoning loop.
+
+        Requires an active session context (e.g. inside a command or
+        event handler).
+        """
         ...
 
     async def update_runtime_settings(

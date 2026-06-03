@@ -91,6 +91,14 @@ class PermissionChecker:
                 f"(allowed prefixes: {', '.join(prefixes)})"
             )
 
+    def check_llm_access(self) -> None:
+        """Check if the plugin may call LLMs through the bot's providers."""
+        if not self._manifest.permissions.llm_access:
+            raise PermissionDenied(
+                f"Plugin '{self._manifest.id}' has no LLM access permission "
+                f"(set permissions.llm_access: true in plugin.yaml)"
+            )
+
     @staticmethod
     def _match_patterns(value: str, patterns: list[str]) -> bool:
         """Glob-style match of value against a list of patterns."""

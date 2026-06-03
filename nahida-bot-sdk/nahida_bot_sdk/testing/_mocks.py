@@ -112,6 +112,33 @@ class MockBotAPI:
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         return None
 
+    async def llm_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str = "",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        from nahida_bot_sdk.api import LLMResponse
+
+        return LLMResponse(content="")
+
+    async def run_subagent(
+        self,
+        prompt: str,
+        *,
+        model: str = "",
+        system_prompt: str = "",
+        tools: list[str] | None = None,
+        max_steps: int = 10,
+        timeout_seconds: int = 300,
+    ) -> Any:
+        from nahida_bot_sdk.api import SubagentResult
+
+        return SubagentResult(final_response="")
+
     async def update_runtime_settings(
         self, session_id: str, updates: dict[str, Any]
     ) -> dict[str, Any]:
@@ -383,6 +410,33 @@ class ConsoleMockBotAPI:
 
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         return None
+
+    async def llm_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model: str = "",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Any:
+        from nahida_bot_sdk.api import LLMResponse
+
+        return LLMResponse(content="")
+
+    async def run_subagent(
+        self,
+        prompt: str,
+        *,
+        model: str = "",
+        system_prompt: str = "",
+        tools: list[str] | None = None,
+        max_steps: int = 10,
+        timeout_seconds: int = 300,
+    ) -> Any:
+        from nahida_bot_sdk.api import SubagentResult
+
+        return SubagentResult(final_response="")
 
     async def update_runtime_settings(
         self, session_id: str, updates: dict[str, Any]

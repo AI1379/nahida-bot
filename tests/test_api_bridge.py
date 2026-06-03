@@ -222,6 +222,7 @@ def _api(
         command_registry=command_registry,
         channel_registry=channel_registry,
         provider_manager=_ProviderManager(),
+        model_router=None,
     )
     return api, channel_registry, tool_registry, command_registry
 

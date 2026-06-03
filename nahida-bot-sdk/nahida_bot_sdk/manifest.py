@@ -49,6 +49,7 @@ class Permissions(BaseModel):
     filesystem: FilesystemPermission = Field(default_factory=FilesystemPermission)
     memory: MemoryPermission = Field(default_factory=MemoryPermission)
     system: SystemPermission = Field(default_factory=SystemPermission)
+    llm_access: bool = False
 
 
 class Capabilities(BaseModel):

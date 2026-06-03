@@ -717,6 +717,234 @@ GET  /api/plugins/discovery                  # 触发重新扫描插件目录
 - [ ] `sdk_version` / `nahida_bot_version` 降级为辅助字段，pyproject.toml 依赖声明是主版本门禁
 - [ ] 未来探索：AstrBot 兼容层原型验证（§2.9）
 
+### Phase G：插件 LLM 访问能力
+
+#### G.1 动机
+
+当前插件层完全没有任何 LLM 交互能力。`BotAPI` 有 `list_models()` 和 `set_session_model()`，但这些都是模型**管理**接口而非**使用**接口。插件只能通过注册 tool/command 间接参与 agent loop，不能自己发起 LLM 调用。
+
+这限制了插件的应用场景：很多插件想做"用 LLM 总结一段文本"、"判断消息意图"、"跑一个固定 workflow"之类的任务，但没有途径。
+
+#### G.2 设计：两层 API
+
+插件对 LLM 的需求分为两个层次，需要分别提供：
+
+| 层次 | API | 场景 | 特点 |
+|------|-----|------|------|
+| **Provider 层** | `llm_chat()` | 分类、总结、翻译、提取、意图判断 | 单轮调用，插件自己控制流程 |
+| **Agent 层** | `run_subagent()` | 多步推理、研究分析、带工具调用的 workflow | 多轮 loop，bot 管理工具执行和重试 |
+
+如果只给 Agent 层，简单任务也要走 loop 的开销。如果只给 Provider 层，复杂任务插件要自己重写 tool-calling loop。**两层各司其职，同时提供。**
+
+#### G.3 模型路由
+
+两个 API 的 `model` 参数都走现有的 `ModelRouter.resolve()`，接受三种形式：
+
+| 形式 | 示例 | 解析方式 |
+|------|------|---------|
+| Tag | `"cheap"`, `"vision"`, `"primary"` | 扫描所有 provider slot 的 `tags_by_model` |
+| 裸模型名 | `"deepseek-chat"` | `ProviderManager.resolve_model_selection()` |
+| `provider/model` | `"openai/gpt-4o"` | `ProviderManager.resolve_model_selection()` |
+
+不传 `model`（空字符串）时使用默认 provider 的默认模型。
+
+插件不需要知道具体用了哪个 provider 哪个 model——它只说需求，bot 配置决定实际路由。这是 plugin 和 provider 配置之间的**解耦层**。
+
+#### G.4 API 签名
+
+##### `llm_chat()` — 单轮 LLM 调用
+
+```python
+async def llm_chat(
+    self,
+    messages: list[dict[str, str]],
+    *,
+    model: str = "",
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    tools: list[dict[str, Any]] | None = None,
+) -> LLMResponse:
+    """Send a single-turn chat request to an LLM.
+
+    Args:
+        messages: List of {"role": "...", "content": "..."} dicts.
+        model: Model spec — tag, bare model name, or ``provider/model``.
+               Empty string uses the default provider's default model.
+        temperature: Optional sampling temperature.
+        max_tokens: Optional max tokens for the response.
+        tools: Optional tool definitions (JSON Schema format). When
+               provided, the response may contain tool_calls that the
+               plugin handles itself.
+
+    Returns:
+        LLMResponse with content, tool_calls, model, provider, usage, etc.
+    """
+    ...
+```
+
+##### `run_subagent()` — 多轮子代理
+
+```python
+async def run_subagent(
+    self,
+    prompt: str,
+    *,
+    model: str = "",
+    system_prompt: str = "",
+    tools: list[str] | None = None,
+    max_steps: int = 10,
+    timeout_seconds: int = 300,
+) -> SubagentResult:
+    """Run a multi-turn subagent with optional tool access.
+
+    The subagent runs in an isolated child session. It can call any
+    tool listed in *tools* (the tool must be registered in ToolRegistry).
+
+    Args:
+        prompt: The task description.
+        model: Model spec (same format as llm_chat).
+        system_prompt: Optional system prompt override.
+        tools: Tool names to grant (empty list or None = no tools).
+        max_steps: Max agent loop iterations.
+        timeout_seconds: Hard timeout for the entire run.
+
+    Returns:
+        SubagentResult with final_response, status, steps, usage, etc.
+    """
+    ...
+```
+
+#### G.5 返回类型（SDK 数据类）
+
+```python
+@dataclass(slots=True)
+class LLMUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    reasoning_tokens: int = 0
+
+@dataclass(slots=True)
+class LLMResponse:
+    content: str
+    model: str = ""
+    provider: str = ""
+    finish_reason: str = ""
+    usage: LLMUsage | None = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
+@dataclass(slots=True)
+class SubagentResult:
+    final_response: str
+    status: str = "succeeded"  # succeeded | failed | timed_out | cancelled
+    model: str = ""
+    provider: str = ""
+    steps: int = 0
+    usage: LLMUsage | None = None
+    error: str = ""
+```
+
+#### G.6 权限模型
+
+在 `Permissions` 模型中新增 `llm_access: bool = False`。插件必须在 manifest 中显式声明：
+
+```yaml
+permissions:
+  llm_access: true
+```
+
+`RealBotAPI.llm_chat()` 和 `RealBotAPI.run_subagent()` 在被调用时首先执行 `PermissionChecker.check_llm_access()`。未声明 `llm_access: true` 的插件调用时直接抛出 `PermissionDenied`。
+
+**为什么需要权限检查**：LLM 调用消耗 token（= 费用），不是所有插件都应该默认能用。插件作者必须显式 opt-in，管理员在审查 plugin.yaml 时能看到这个权限声明。
+
+#### G.7 实现方案
+
+##### `llm_chat` 实现路径
+
+```
+Plugin (SDK)
+  └─> api.llm_chat(messages, model="cheap")
+        └─> RealBotAPI.llm_chat()
+              ├─> PermissionChecker.check_llm_access()
+              ├─> ModelRouter.resolve(model)  →  RoutedModel(slot, model, reason)
+              ├─> 将 dict messages 转换为 ContextMessage 列表
+              ├─> slot.provider.chat(messages=..., model=..., tools=..., ...)
+              └─> 将 ProviderResponse 转换为 LLMResponse 返回
+```
+
+`RealBotAPI` 已有 `_provider_manager`（通过 `set_runtime_services()` 注入），但 `ModelRouter` 未注入。需要在 `RealBotAPI` 中新增 `_model_router` 字段并在 `set_runtime_services()` 中注入。
+
+##### `run_subagent` 实现路径
+
+```
+Plugin (SDK)
+  └─> api.run_subagent(prompt="...", tools=["workspace_read"])
+        └─> RealBotAPI.run_subagent()
+              ├─> PermissionChecker.check_llm_access()
+              ├─> 构造 SubagentSpec(task=prompt, model=..., tool_allowlist=..., notify_policy="silent")
+              ├─> AgentOrchestrator.spawn_subagent(spec) → BackgroundTask
+              ├─> AgentOrchestrator.wait_for_task(task.task_id, timeout=...)
+              └─> 将 BackgroundTask 转换为 SubagentResult 返回
+```
+
+需要当前存在 session context（`current_session.get()`）。如果插件在 sessionless 上下文中调用，抛出 `RuntimeError`。
+
+##### `ModelRouter` 注入
+
+`ModelRouter` 当前只在 `Application._init_agent_subsystem()` 中创建并用于内部 task 路由，未暴露给插件层。需要在 `PluginManager` 加载插件时通过 `set_runtime_services()` 注入。
+
+#### G.8 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `nahida-bot-sdk/nahida_bot_sdk/api.py` | 新增 `LLMResponse`, `SubagentResult`, `LLMUsage` 数据类；`BotAPI` 协议新增 `llm_chat()` 和 `run_subagent()` 方法签名 |
+| `nahida-bot-sdk/nahida_bot_sdk/manifest.py` | `Permissions` 模型新增 `llm_access: bool = False` |
+| `nahida-bot-sdk/nahida_bot_sdk/__init__.py` | 导出新数据类 |
+| `nahida_bot/plugins/api_bridge.py` | `RealBotAPI` 实现 `llm_chat()` 和 `run_subagent()`；新增 `_model_router` 注入 |
+| `nahida_bot/plugins/permissions.py` | `PermissionChecker` 新增 `check_llm_access()` 方法 |
+| `nahida_bot/plugins/manager.py` | `PluginManager` 注入 `ModelRouter` 到 API bridge |
+
+#### G.9 使用示例
+
+**示例 1：消息意图分类**
+
+```python
+class ModerationPlugin(Plugin):
+    async def on_load(self):
+        @self.api.on_event(MessageReceived)
+        async def check_toxicity(event):
+            response = await self.api.llm_chat(
+                messages=[
+                    {"role": "system", "content": "Classify: safe, spam, or harmful. Reply with one word."},
+                    {"role": "user", "content": event.text},
+                ],
+                model="cheap",  # 走 tag 路由到便宜模型
+            )
+            if response.content.strip().lower() == "harmful":
+                await self.api.send_message(event.chat_id, "⚠️ Harmful content detected")
+```
+
+**示例 2：带工具的研究 workflow**
+
+```python
+class ResearchPlugin(Plugin):
+    async def on_load(self):
+        @self.api.register_command("research")
+        async def research_cmd(args, sender, chat_id):
+            topic = args.strip()
+            result = await self.api.run_subagent(
+                prompt=f"Research: {topic}. Write a 3-paragraph summary.",
+                model="primary",
+                tools=["web_search", "workspace_read", "workspace_write"],
+                max_steps=15,
+                timeout_seconds=600,
+            )
+            if result.status == "succeeded":
+                await self.api.send_message(chat_id, result.final_response)
+            else:
+                await self.api.send_message(chat_id, f"Research failed: {result.error}")
+```
+
 ### 依赖关系
 
 ```
@@ -725,9 +953,9 @@ Phase A (SDK 包) ───────── 基础依赖，必须先做
     ├──> Phase B (depends_on)
     ├──> Phase C (capabilities) ──┐
     ├──> Phase D (permissions) ──┼──> Phase E (WebUI 面板)
-    └──> (插件开发体验改进)      │
-                                 │
-Phase F (锦上添花) ──────────────┘ 最后做
+    ├──> Phase G (LLM access) ───┘     (依赖 ProviderManager + ModelRouter 已就位)
+    │
+Phase F (锦上添花) ────────────── 最后做
 ```
 
 ---
