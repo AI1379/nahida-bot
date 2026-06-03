@@ -27,19 +27,23 @@ class TestConsolePlugin(Plugin):
 
         self.api.subscribe(MessageReceived, self._on_message)
 
-    async def _hello(self, session_id: str, address: str, message: InboundMessage):
-        return CommandResult.text(f"Hello, {message.user_id}!")
+    async def _hello(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ):
+        return CommandResult.text(f"Hello, {inbound.user_id}!")
 
-    async def _echo(self, session_id: str, address: str, message: InboundMessage):
-        args = message.text[5:].strip()  # strip "/echo "
+    async def _echo(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ):
         return CommandResult.text(args if args else "(nothing to echo)")
 
     async def _add(self, a: float, b: float) -> str:
         return str(a + b)
 
     async def _on_message(self, event: MessageReceived) -> None:
-        text = event.payload.message
-        if isinstance(text, str) and text.strip():
+        inbound = event.payload.message
+        text = inbound.text if isinstance(inbound, InboundMessage) else str(inbound)
+        if text.strip():
             await self.api.send_message(
                 "console:private:test",
                 OutboundMessage(text=f"You said: {text}"),

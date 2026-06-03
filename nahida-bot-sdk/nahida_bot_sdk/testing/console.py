@@ -35,7 +35,8 @@ from pathlib import Path
 
 from nahida_bot_sdk.events import MessagePayload, MessageReceived
 from nahida_bot_sdk.manifest import parse_manifest
-from nahida_bot_sdk.testing import ConsoleMockBotAPI
+from nahida_bot_sdk.messaging import InboundMessage
+from nahida_bot_sdk.testing import ConsoleMockBotAPI, load_plugin_for_test
 
 
 # ── Terminal color constants ──────────────────────────
@@ -109,11 +110,11 @@ async def run_console(plugin_dir: str) -> None:
     api = ConsoleMockBotAPI()
     plugin = entry_class(api=api, manifest=manifest)
 
-    # Run on_load
+    # Register decorated handlers, then run on_load.
     print("\n  nahida-bot-sdk Plugin Console")
     print(f"  Plugin: {manifest.name} v{manifest.version}")
     print(f"  ID: {manifest.id}")
-    await plugin.on_load()
+    await load_plugin_for_test(plugin)
 
     # Show summary
     if api.tool_names:
@@ -196,8 +197,16 @@ async def run_console(plugin_dir: str) -> None:
 
         # ── Plain text — simulate MessageReceived ─────
 
+        inbound = InboundMessage(
+            message_id="console_0",
+            platform="console",
+            chat_id="test",
+            user_id="console_user",
+            text=raw,
+            raw_event={},
+        )
         msg = MessagePayload(
-            message=raw,
+            message=inbound,
             session_id="console:private:test",
         )
         event = MessageReceived(payload=msg)

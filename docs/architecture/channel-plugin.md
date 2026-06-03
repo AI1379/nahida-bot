@@ -60,6 +60,7 @@ class TelegramPlugin(Plugin):
 `RealBotAPI.register_channel()` 通过运行时协议校验确保注册对象合法：
 
 - 对象必须满足 `ChannelService` 协议（`isinstance` 检查）
+- 插件必须声明 `permissions.network.inbound: true`
 - 通过注册表显式加入 `ChannelRegistry`
 - 插件 disable/unload 时自动取消注册
 

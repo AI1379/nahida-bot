@@ -69,6 +69,11 @@ telegram = [
     "aiohttp-socks>=0.8.0",
 ]
 
+[project.optional-dependencies]
+builtin-plugins = [
+    "nahida-plugin-echo",
+]
+
 [project.scripts]
 nahida-bot = "nahida_bot.cli:main"
 
@@ -81,6 +86,7 @@ members = ["nahida-bot-sdk"]
 
 [tool.uv.sources]
 nahida-bot-sdk = { workspace = true }
+nahida-plugin-echo = { path = "./plugins/echo" }
 
 [tool.ruff]
 target-version = "py312"

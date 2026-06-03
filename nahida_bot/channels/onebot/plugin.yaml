@@ -9,7 +9,7 @@ permissions:
     outbound:
       - "127.0.0.1"
       - "localhost"
-    inbound: false
+    inbound: true
 
 config:
   protocol_version: "v11"

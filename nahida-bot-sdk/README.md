@@ -11,12 +11,14 @@ uv pip install nahida-bot-sdk
 ## Usage
 
 ```python
-from nahida_bot_sdk import Plugin, BotAPI, PluginManifest, OutboundMessage
+from nahida_bot_sdk import CommandResult, InboundMessage, Plugin
 
 class MyPlugin(Plugin):
     async def on_load(self) -> None:
         self.api.register_command("hello", self._hello, description="Say hello")
 
-    async def _hello(self, session_id: str, address: str, message: InboundMessage):
+    async def _hello(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> CommandResult:
         return CommandResult.text("Hello!")
 ```

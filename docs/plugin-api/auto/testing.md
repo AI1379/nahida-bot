@@ -91,7 +91,7 @@ use `RecordingMockBotAPI` instead.
 
 Stateful BotAPI mock that records calls for assertion.
 
-Tracks: published events, registered tools, registered channels.
+Tracks: published events, registered tools, commands, handlers, services.
 
 - **基类:** `MockBotAPI`
 
@@ -105,15 +105,35 @@ Tracks: published events, registered tools, registered channels.
 
 - **返回类型:** `dict[str, dict[str, Any]]`
 
+#### registered_commands
+
+- **返回类型:** `dict[str, dict[str, Any]]`
+
+#### registered_event_handlers
+
+- **返回类型:** `dict[type, list[Callable[..., Awaitable[None]]]]`
+
 #### registered_channels
 
 - **返回类型:** `list[Any]`
 
+#### registered_provider_types
+
+- **返回类型:** `dict[str, dict[str, Any]]`
+
 **方法:**
+
+#### `on_event(event_type: type)`
+
+#### `subscribe(event_type: type, handler: Callable[..., Awaitable[None]])`
 
 #### `register_tool(name: str, description: str, parameters: dict[str, Any], handler: Any)`
 
+#### `register_command(name: str, handler: Callable[..., Awaitable[Any]], description: str = '', aliases: list[str] | None = None)`
+
 #### `register_channel(channel: Any)`
+
+#### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
 
 #### `publish_event(event: Any)`
 
@@ -168,6 +188,10 @@ can print responses.
 
 - **返回类型:** `list[type]`
 
+#### channel_count
+
+- **返回类型:** `int`
+
 **方法:**
 
 #### `send_message(target: str, message: OutboundMessage, channel: str = '')`
@@ -198,7 +222,7 @@ Dispatch a command by name and return the result text.
 
 #### `register_channel(channel: Any)`
 
-#### `register_provider_type(args: Any = (), kw: Any = {})`
+#### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
 
 #### `get_session(session_id: str)`
 
@@ -231,3 +255,11 @@ Dispatch a command by name and return the result text.
 #### `resolve_workspace_path(path: str)`
 
 #### `publish_event(event: Any)`
+
+
+## 函数
+
+
+### `load_plugin_for_test(plugin: Any)`
+
+Register decorated handlers on a test BotAPI, then call `on_load`.

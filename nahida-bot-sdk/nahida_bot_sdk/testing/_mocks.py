@@ -7,6 +7,13 @@ from unittest.mock import MagicMock
 
 from nahida_bot_sdk.chat_address import ChatAddress
 from nahida_bot_sdk.messaging import InboundMessage, OutboundMessage
+from nahida_bot_sdk.plugin import bind_decorated_registrations
+
+
+async def load_plugin_for_test(plugin: Any) -> None:
+    """Register decorated handlers on a test BotAPI, then call ``on_load``."""
+    bind_decorated_registrations(plugin)
+    await plugin.on_load()
 
 
 class MockBotAPI:
@@ -176,13 +183,35 @@ class MockBotAPI:
 class RecordingMockBotAPI(MockBotAPI):
     """Stateful BotAPI mock that records calls for assertion.
 
-    Tracks: published events, registered tools, registered channels.
+    Tracks: published events, registered tools, commands, handlers, services.
     """
 
     def __init__(self) -> None:
         self.published_events: list[Any] = []
         self.registered_tools: dict[str, dict[str, Any]] = {}
+        self.registered_commands: dict[str, dict[str, Any]] = {}
+        self.registered_event_handlers: dict[
+            type,
+            list[Callable[..., Awaitable[None]]],
+        ] = {}
         self.registered_channels: list[Any] = []
+        self.registered_provider_types: dict[str, dict[str, Any]] = {}
+
+    def on_event(self, event_type: type) -> Callable:
+        def decorator(handler: Callable[..., Awaitable[None]]) -> Callable:
+            self.subscribe(event_type, handler)
+            return handler
+
+        return decorator
+
+    def subscribe(
+        self,
+        event_type: type,
+        handler: Callable[..., Awaitable[None]],
+    ) -> Any:
+        handlers = self.registered_event_handlers.setdefault(event_type, [])
+        handlers.append(handler)
+        return _MockSubHandle(handlers, handler)
 
     def register_tool(
         self,
@@ -191,14 +220,57 @@ class RecordingMockBotAPI(MockBotAPI):
         parameters: dict[str, Any],
         handler: Any,
     ) -> None:
+        if name in self.registered_tools:
+            raise KeyError(f"Tool '{name}' is already registered")
         self.registered_tools[name] = {
             "description": description,
             "parameters": parameters,
             "handler": handler,
         }
 
+    def register_command(
+        self,
+        name: str,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        description: str = "",
+        aliases: list[str] | None = None,
+    ) -> None:
+        names = [name, *(aliases or [])]
+        seen: set[str] = set()
+        for command_name in names:
+            if command_name in seen:
+                raise KeyError(f"Command '{command_name}' is duplicated")
+            seen.add(command_name)
+            if command_name in self.registered_commands:
+                raise KeyError(f"Command '{command_name}' is already registered")
+        entry = {
+            "name": name,
+            "handler": handler,
+            "description": description,
+            "aliases": aliases or [],
+        }
+        for command_name in names:
+            self.registered_commands[command_name] = entry
+
     def register_channel(self, channel: Any) -> None:
         self.registered_channels.append(channel)
+
+    def register_provider_type(
+        self,
+        type_key: str,
+        factory: Any,
+        *,
+        config_schema: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> None:
+        if type_key in self.registered_provider_types:
+            raise KeyError(f"Provider type '{type_key}' is already registered")
+        self.registered_provider_types[type_key] = {
+            "factory": factory,
+            "config_schema": config_schema,
+            "description": description,
+        }
 
     async def publish_event(self, event: Any) -> None:
         self.published_events.append(event)
@@ -242,6 +314,8 @@ class ConsoleMockBotAPI:
         self._tools: dict[str, dict[str, Any]] = {}
         self._commands: dict[str, dict[str, Any]] = {}
         self._event_handlers: dict[type, list[Callable[..., Awaitable[None]]]] = {}
+        self._channels: list[Any] = []
+        self._provider_types: dict[str, dict[str, Any]] = {}
         self._workspace: dict[str, str] = {}
 
     # ── Messaging ──────────────────────────────────────
@@ -297,6 +371,8 @@ class ConsoleMockBotAPI:
         parameters: dict[str, Any],
         handler: Callable[..., Awaitable[str]],
     ) -> None:
+        if name in self._tools:
+            raise KeyError(f"Tool '{name}' is already registered")
         self._tools[name] = {
             "description": description,
             "parameters": parameters,
@@ -328,13 +404,22 @@ class ConsoleMockBotAPI:
         description: str = "",
         aliases: list[str] | None = None,
     ) -> None:
-        self._commands[name] = {
+        names = [name, *(aliases or [])]
+        seen: set[str] = set()
+        for command_name in names:
+            if command_name in seen:
+                raise KeyError(f"Command '{command_name}' is duplicated")
+            seen.add(command_name)
+            if command_name in self._commands:
+                raise KeyError(f"Command '{command_name}' is already registered")
+        entry = {
             "handler": handler,
             "description": description,
             "aliases": aliases or [],
+            "name": name,
         }
-        for alias in aliases or []:
-            self._commands[alias] = self._commands[name]
+        for command_name in names:
+            self._commands[command_name] = entry
 
     def list_commands(self) -> list[dict[str, Any]]:
         seen: set[int] = set()
@@ -345,7 +430,7 @@ class ConsoleMockBotAPI:
                 seen.add(hid)
                 result.append(
                     {
-                        "name": name,
+                        "name": entry["name"],
                         "description": entry["description"],
                         "aliases": entry["aliases"],
                     }
@@ -358,18 +443,19 @@ class ConsoleMockBotAPI:
         if entry is None:
             return f"[Error] Command '{name}' not found."
         handler = entry["handler"]
+        inbound = InboundMessage(
+            message_id="console_0",
+            platform="console",
+            chat_id="test",
+            user_id="console_user",
+            text=f"/{name} {args}".rstrip(),
+            raw_event={},
+        )
         try:
             result = await handler(
+                args=args,
+                inbound=inbound,
                 session_id="console:private:test",
-                address="console:private:test",
-                message=InboundMessage(
-                    message_id="console_0",
-                    platform="console",
-                    chat_id="test",
-                    user_id="console_user",
-                    text=f"/{name} {args}",
-                    raw_event={},
-                ),
             )
         except Exception as exc:
             return f"[Error] Command '{name}' raised {type(exc).__name__}: {exc}"
@@ -379,10 +465,23 @@ class ConsoleMockBotAPI:
     # ── Service Registration ──────────────────────────
 
     def register_channel(self, channel: Any) -> None:
-        pass
+        self._channels.append(channel)
 
-    def register_provider_type(self, *args: Any, **kw: Any) -> None:
-        pass
+    def register_provider_type(
+        self,
+        type_key: str,
+        factory: Any,
+        *,
+        config_schema: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> None:
+        if type_key in self._provider_types:
+            raise KeyError(f"Provider type '{type_key}' is already registered")
+        self._provider_types[type_key] = {
+            "factory": factory,
+            "config_schema": config_schema,
+            "description": description,
+        }
 
     @property
     def scheduler_service(self) -> Any | None:
@@ -483,6 +582,10 @@ class ConsoleMockBotAPI:
     def event_handler_types(self) -> list[type]:
         return list(self._event_handlers)
 
+    @property
+    def channel_count(self) -> int:
+        return len(self._channels)
+
 
 class _MockSubHandle:
     def __init__(
@@ -510,8 +613,10 @@ def _format_command_result(result: Any) -> str:
     if isinstance(result, CommandResult):
         if result.suppress_response:
             return "(suppressed)"
-        if result.message:
+        if isinstance(result.message, OutboundMessage):
             return result.message.text
+        if isinstance(result.message, str):
+            return result.message
         return "(empty result)"
     if isinstance(result, OutboundMessage):
         return result.text

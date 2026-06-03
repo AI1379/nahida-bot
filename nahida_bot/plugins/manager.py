@@ -220,6 +220,7 @@ class PluginManager:
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)
+        api_bridge.add_decorated_registrations(instance)
         record.instance = instance
         record.api_bridge = api_bridge
         record.state = PluginState.LOADED
@@ -247,6 +248,10 @@ class PluginManager:
         prev_state = record.state
         self._require_state(record, PluginState.LOADED, PluginState.DISABLED)
         assert record.instance is not None
+        assert record.api_bridge is not None
+
+        if not await self._safe_activate_registrations(record):
+            return
 
         # Only call on_load on first enable (LOADED → ENABLED).
         # Re-enabling from DISABLED skips on_load to avoid duplicate init.
@@ -258,8 +263,6 @@ class PluginManager:
         await self._safe_invoke(record.instance, "on_enable")
 
         if record.state != PluginState.ERROR:
-            if record.api_bridge is not None:
-                record.api_bridge.reactivate_service_registrations()
             record.state = PluginState.ENABLED
             await self._publish_plugin_event("PluginEnabled", record)
         else:
@@ -281,15 +284,8 @@ class PluginManager:
         record = self._require_record(plugin_id)
         self._require_state(record, PluginState.ENABLED)
 
-        # Remove registered tools, handlers, and commands
-        self._tool_registry.unregister_by_plugin(plugin_id)
-        self._handler_registry.unregister_by_plugin(plugin_id)
-        self._command_registry.unregister_by_plugin(plugin_id)
-
-        # Unsubscribe from EventBus
         if record.api_bridge is not None:
-            record.api_bridge.clear_subscriptions()
-            record.api_bridge.deactivate_service_registrations()
+            record.api_bridge.deactivate_registrations()
 
         if record.instance is not None:
             await self._safe_invoke(record.instance, "on_disable")
@@ -330,8 +326,7 @@ class PluginManager:
         if record.instance is not None:
             await self._safe_invoke(record.instance, "on_unload")
         if record.api_bridge is not None:
-            record.api_bridge.clear_subscriptions()
-            record.api_bridge.clear_service_registrations()
+            record.api_bridge.clear_registrations()
 
         self._loader.unload(record.manifest)
         record.instance = None
@@ -382,12 +377,35 @@ class PluginManager:
 
     def _clear_plugin_registrations(self, plugin_id: str, record: PluginRecord) -> None:
         """Remove runtime registrations left behind by a failed plugin hook."""
-        self._tool_registry.unregister_by_plugin(plugin_id)
-        self._handler_registry.unregister_by_plugin(plugin_id)
-        self._command_registry.unregister_by_plugin(plugin_id)
         if record.api_bridge is not None:
-            record.api_bridge.clear_subscriptions()
-            record.api_bridge.clear_service_registrations()
+            record.api_bridge.clear_registrations()
+        else:
+            self._tool_registry.unregister_by_plugin(plugin_id)
+            self._handler_registry.unregister_by_plugin(plugin_id)
+            self._command_registry.unregister_by_plugin(plugin_id)
+
+    async def _safe_activate_registrations(self, record: PluginRecord) -> bool:
+        """Activate remembered plugin registrations with error isolation."""
+        if record.api_bridge is None or record.instance is None:
+            return False
+        try:
+            record.api_bridge.activate_registrations()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            msg = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "plugin_manager.registration_activation_error",
+                plugin_id=record.manifest.id,
+            )
+            record.state = PluginState.ERROR
+            record.error_message = msg
+            await self._publish_error_event(
+                record.instance,
+                "activate_registrations",
+                msg,
+            )
+            self._clear_plugin_registrations(record.manifest.id, record)
+            return False
 
     async def _safe_call(self, plugin_id: str, method: str) -> None:
         """Call a manager method with exception isolation."""

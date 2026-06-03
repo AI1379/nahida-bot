@@ -54,6 +54,11 @@ class TestCommandRegistry:
         with pytest.raises(KeyError, match="already registered"):
             reg.register(_entry("hint", aliases=("h",)))
 
+    def test_register_duplicate_name_within_entry_raises(self) -> None:
+        reg = CommandRegistry()
+        with pytest.raises(KeyError, match="duplicated"):
+            reg.register(_entry("help", aliases=("help",)))
+
     def test_unregister_removes_name_and_aliases(self) -> None:
         reg = CommandRegistry()
         reg.register(_entry("help", aliases=("h",)))

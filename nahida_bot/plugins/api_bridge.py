@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import structlog
@@ -24,6 +25,7 @@ from nahida_bot.core.runtime_settings import (
 from nahida_bot.plugins.commands import CommandEntry, CommandHandlerResult, CommandInfo
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
+from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 if TYPE_CHECKING:
     from nahida_bot.agent.context import ContextMessage
@@ -37,6 +39,30 @@ if TYPE_CHECKING:
     from nahida_bot.workspace.manager import WorkspaceManager
 
 _PROVIDER_ALLOWED_PHASES = frozenset({"pre-agent"})
+
+
+@dataclass(slots=True)
+class _EventRegistration:
+    event_type: type
+    handler: Callable[..., Awaitable[None]]
+    adapted_handler: Callable[..., Awaitable[None]] | None = None
+    subscription: Any | None = None
+    active: bool = False
+
+
+class _StoredSubscriptionHandle:
+    """Stable handle for an event registration remembered by RealBotAPI."""
+
+    def __init__(self, api: "RealBotAPI", registration: _EventRegistration) -> None:
+        self._api = api
+        self._registration = registration
+        self._unsubscribed = False
+
+    def unsubscribe(self) -> None:
+        if self._unsubscribed:
+            return
+        self._api._remove_event_registration(self._registration)
+        self._unsubscribed = True
 
 
 class _PluginLogger:
@@ -103,7 +129,14 @@ class RealBotAPI:
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
         self._logger = _PluginLogger(plugin_id)
-        self._subscriptions: list[Any] = []  # EventBus Subscription objects
+        self._registrations_active = False
+        self._decorated_registrations_added = False
+        self._registered_commands: dict[str, CommandEntry] = {}
+        self._registered_command_names: dict[str, str] = {}
+        self._active_commands: set[str] = set()
+        self._registered_tools: dict[str, ToolEntry] = {}
+        self._active_tools: set[str] = set()
+        self._event_registrations: list[_EventRegistration] = []
         self._registered_channels: dict[str, ChannelService] = {}
         self._active_channels: set[str] = set()
         self._registered_provider_types: dict[
@@ -226,26 +259,12 @@ class RealBotAPI:
         event_type: type,
         handler: Callable[..., Awaitable[None]],
     ) -> SubscriptionHandle:
-        """Programmatic event subscription. Tracks for cleanup on disable."""
-
-        # Adapt plugin handler (event-only) to EventBus handler (event, ctx)
-        async def _adapted(event: Any, ctx: Any) -> None:
-            await handler(event)
-
-        sub = self._event_bus.subscribe(
-            event_type, _adapted, priority=100, timeout=30.0
-        )
-        self._subscriptions.append(sub)
-
-        # Track in handler registry
-        self._handler_registry.register(
-            HandlerEntry(
-                event_type=event_type,
-                handler=_adapted,
-                plugin_id=self._plugin_id,
-            )
-        )
-        return sub
+        """Programmatic event subscription remembered across disable/enable."""
+        registration = _EventRegistration(event_type=event_type, handler=handler)
+        self._event_registrations.append(registration)
+        if self._registrations_active:
+            self._activate_event_registration(registration)
+        return _StoredSubscriptionHandle(self, registration)
 
     # ── Tool Registration ──────────────────────────────
 
@@ -256,15 +275,19 @@ class RealBotAPI:
         parameters: dict[str, Any],
         handler: Callable[..., Awaitable[str]],
     ) -> None:
-        self._tool_registry.register(
-            ToolEntry(
-                name=name,
-                description=description,
-                parameters=parameters,
-                handler=handler,
-                plugin_id=self._plugin_id,
+        if name in self._registered_tools:
+            raise KeyError(
+                f"Tool '{name}' is already registered by plugin '{self._plugin_id}'"
             )
+        self._registered_tools[name] = ToolEntry(
+            name=name,
+            description=description,
+            parameters=parameters,
+            handler=handler,
+            plugin_id=self._plugin_id,
         )
+        if self._registrations_active:
+            self._activate_tool(name)
         self._logger.debug("tool_registered", tool_name=name)
 
     # ── Service Registration ──────────────────────────
@@ -278,10 +301,16 @@ class RealBotAPI:
                 f"register_channel() requires a ChannelService implementation, "
                 f"got {type(channel).__name__!r} in plugin '{self._plugin_id}'"
             )
+        self._permissions.check_network_inbound()
         channel_id = channel.channel_id
-        self._channel_registry.register(channel)
+        if channel_id in self._registered_channels:
+            raise KeyError(
+                f"Channel '{channel_id}' is already registered by plugin "
+                f"'{self._plugin_id}'"
+            )
         self._registered_channels[channel_id] = channel
-        self._active_channels.add(channel_id)
+        if self._registrations_active:
+            self._activate_channel(channel_id)
         self._logger.debug("channel_registered", channel_id=channel_id)
 
     def register_provider_type(
@@ -298,21 +327,18 @@ class RealBotAPI:
                 "Provider types may only be registered from pre-agent plugins "
                 f"(plugin '{self._plugin_id}' has load_phase={self._manifest.load_phase!r})"
             )
-        from nahida_bot.agent.providers.registry import register_runtime_provider
-
-        register_runtime_provider(
-            type_key,
-            factory,
-            description=description,
-            config_schema=config_schema,
-            owner_plugin_id=self._plugin_id,
-        )
+        if type_key in self._registered_provider_types:
+            raise KeyError(
+                f"Provider type '{type_key}' is already registered by plugin "
+                f"'{self._plugin_id}'"
+            )
         self._registered_provider_types[type_key] = (
             factory,
             config_schema,
             description,
         )
-        self._active_provider_types.add(type_key)
+        if self._registrations_active:
+            self._activate_provider_type(type_key)
         self._logger.debug("provider_type_registered", provider_type=type_key)
 
     @property
@@ -329,15 +355,34 @@ class RealBotAPI:
         description: str = "",
         aliases: list[str] | None = None,
     ) -> None:
-        self._command_registry.register(
-            CommandEntry(
-                name=name,
-                handler=handler,
-                description=description,
-                aliases=tuple(aliases or []),
-                plugin_id=self._plugin_id,
-            )
+        alias_tuple = tuple(aliases or [])
+        command_names = (name, *alias_tuple)
+        seen_command_names: set[str] = set()
+        for command_name in command_names:
+            if command_name in seen_command_names:
+                raise KeyError(
+                    f"Command name or alias '{command_name}' is duplicated in "
+                    f"plugin '{self._plugin_id}'"
+                )
+            seen_command_names.add(command_name)
+            if command_name in self._registered_command_names:
+                existing = self._registered_command_names[command_name]
+                raise KeyError(
+                    f"Command name or alias '{command_name}' is already "
+                    f"registered by plugin '{self._plugin_id}' "
+                    f"for command '{existing}'"
+                )
+        self._registered_commands[name] = CommandEntry(
+            name=name,
+            handler=handler,
+            description=description,
+            aliases=alias_tuple,
+            plugin_id=self._plugin_id,
         )
+        for command_name in command_names:
+            self._registered_command_names[command_name] = name
+        if self._registrations_active:
+            self._activate_command(name)
         self._logger.debug("command_registered", command_name=name)
 
     # ── Session ────────────────────────────────────────
@@ -797,13 +842,151 @@ class RealBotAPI:
             return {"active": False, "state": "idle", "pending_messages": 0}
         return router.get_session_run_status(session_id)
 
+    # ── Registration Lifecycle ─────────────────────────
+
+    def add_decorated_registrations(self, plugin: Any) -> None:
+        """Remember class-level decorator registrations for this plugin instance."""
+        if self._decorated_registrations_added:
+            return
+        bind_decorated_registrations(plugin, self)
+        self._decorated_registrations_added = True
+
+    def activate_registrations(self) -> None:
+        """Activate all remembered registrations for an enabled plugin."""
+        self._registrations_active = True
+        for name in self._registered_commands:
+            self._activate_command(name)
+        for name in self._registered_tools:
+            self._activate_tool(name)
+        for registration in self._event_registrations:
+            self._activate_event_registration(registration)
+        for channel_id in self._registered_channels:
+            self._activate_channel(channel_id)
+        for type_key in self._registered_provider_types:
+            self._activate_provider_type(type_key)
+
+    def deactivate_registrations(self) -> None:
+        """Deactivate all active registrations without forgetting them."""
+        for name in list(self._active_commands):
+            self._command_registry.unregister(name)
+            self._active_commands.discard(name)
+        for name in list(self._active_tools):
+            self._tool_registry.unregister(name)
+            self._active_tools.discard(name)
+        self._deactivate_event_registrations(clear=False)
+        for channel_id in list(self._active_channels):
+            if self._channel_registry is not None:
+                self._channel_registry.unregister(channel_id)
+            self._active_channels.discard(channel_id)
+
+        from nahida_bot.agent.providers.registry import unregister_runtime_provider
+
+        for type_key in list(self._active_provider_types):
+            unregister_runtime_provider(type_key, owner_plugin_id=self._plugin_id)
+            self._active_provider_types.discard(type_key)
+        self._registrations_active = False
+
+    def clear_registrations(self) -> None:
+        """Permanently clear all registrations owned by this plugin."""
+        self.deactivate_registrations()
+        self._registered_commands.clear()
+        self._registered_command_names.clear()
+        self._registered_tools.clear()
+        self._event_registrations.clear()
+        self._registered_channels.clear()
+        self._registered_provider_types.clear()
+        self._decorated_registrations_added = False
+
+    def _activate_command(self, name: str) -> None:
+        if name in self._active_commands:
+            return
+        self._command_registry.register(self._registered_commands[name])
+        self._active_commands.add(name)
+
+    def _activate_tool(self, name: str) -> None:
+        if name in self._active_tools:
+            return
+        self._tool_registry.register(self._registered_tools[name])
+        self._active_tools.add(name)
+
+    def _activate_event_registration(self, registration: _EventRegistration) -> None:
+        if registration.active:
+            return
+
+        async def _adapted(event: Any, ctx: Any) -> None:
+            await registration.handler(event)
+
+        subscription = self._event_bus.subscribe(
+            registration.event_type,
+            _adapted,
+            priority=100,
+            timeout=30.0,
+        )
+        registration.adapted_handler = _adapted
+        registration.subscription = subscription
+        registration.active = True
+        self._handler_registry.register(
+            HandlerEntry(
+                event_type=registration.event_type,
+                handler=_adapted,
+                plugin_id=self._plugin_id,
+            )
+        )
+
+    def _activate_channel(self, channel_id: str) -> None:
+        if channel_id in self._active_channels:
+            return
+        if self._channel_registry is None:
+            raise RuntimeError("Channel registry is not available")
+        self._channel_registry.register(self._registered_channels[channel_id])
+        self._active_channels.add(channel_id)
+
+    def _activate_provider_type(self, type_key: str) -> None:
+        if type_key in self._active_provider_types:
+            return
+        from nahida_bot.agent.providers.registry import register_runtime_provider
+
+        factory, config_schema, description = self._registered_provider_types[type_key]
+        register_runtime_provider(
+            type_key,
+            factory,
+            description=description,
+            config_schema=config_schema,
+            owner_plugin_id=self._plugin_id,
+        )
+        self._active_provider_types.add(type_key)
+
+    def _remove_event_registration(self, registration: _EventRegistration) -> None:
+        if registration.active:
+            if registration.subscription is not None:
+                registration.subscription.unsubscribe()
+            if registration.adapted_handler is not None:
+                self._handler_registry.unregister(
+                    registration.adapted_handler,
+                    self._plugin_id,
+                )
+            registration.subscription = None
+            registration.adapted_handler = None
+            registration.active = False
+        if registration in self._event_registrations:
+            self._event_registrations.remove(registration)
+
+    def _deactivate_event_registrations(self, *, clear: bool) -> None:
+        for registration in list(self._event_registrations):
+            if registration.subscription is not None:
+                registration.subscription.unsubscribe()
+            registration.subscription = None
+            registration.adapted_handler = None
+            registration.active = False
+        self._handler_registry.unregister_by_plugin(self._plugin_id)
+        if clear:
+            self._event_registrations.clear()
+
     # ── Cleanup ────────────────────────────────────────
 
     def clear_subscriptions(self) -> None:
         """Unsubscribe all event handlers registered by this plugin."""
-        for sub in self._subscriptions:
-            sub.unsubscribe()
-        self._subscriptions.clear()
+        self._deactivate_event_registrations(clear=True)
 
     def set_runtime_services(
         self,
@@ -824,46 +1007,3 @@ class RealBotAPI:
         self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
-
-    def deactivate_service_registrations(self) -> None:
-        """Temporarily deactivate services registered by this plugin."""
-        for channel_id in list(self._active_channels):
-            if self._channel_registry is not None:
-                self._channel_registry.unregister(channel_id)
-            self._active_channels.discard(channel_id)
-
-        from nahida_bot.agent.providers.registry import unregister_runtime_provider
-
-        for type_key in list(self._active_provider_types):
-            unregister_runtime_provider(type_key, owner_plugin_id=self._plugin_id)
-            self._active_provider_types.discard(type_key)
-
-    def reactivate_service_registrations(self) -> None:
-        """Re-register remembered services when a disabled plugin is re-enabled."""
-        for channel_id, channel in self._registered_channels.items():
-            if channel_id not in self._active_channels and self._channel_registry:
-                self._channel_registry.register(channel)
-                self._active_channels.add(channel_id)
-
-        from nahida_bot.agent.providers.registry import register_runtime_provider
-
-        for type_key, (
-            factory,
-            config_schema,
-            description,
-        ) in self._registered_provider_types.items():
-            if type_key not in self._active_provider_types:
-                register_runtime_provider(
-                    type_key,
-                    factory,
-                    description=description,
-                    config_schema=config_schema,
-                    owner_plugin_id=self._plugin_id,
-                )
-                self._active_provider_types.add(type_key)
-
-    def clear_service_registrations(self) -> None:
-        """Permanently unregister services registered by this plugin."""
-        self.deactivate_service_registrations()
-        self._registered_channels.clear()
-        self._registered_provider_types.clear()

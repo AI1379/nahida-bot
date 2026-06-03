@@ -234,13 +234,23 @@ $ python -m nahida_bot_sdk.testing.console ./plugins/my-plugin
 
 **现状**：插件系统完全没有处理外部 Python 库依赖的机制。当前 5 个已有插件的第三方依赖（`httpx`、`aiohttp`、`aiogram` 等）全部作为 nahida-bot 自身的依赖写在根 `pyproject.toml` 中。这对第三方插件不可行。
 
-**设计决策**：每个插件自带 `pyproject.toml`，成为一个标准 Python package。这不是替代 `plugin.yaml`，而是双文件分工：
+**设计决策**：每个插件自带 `pyproject.toml`，成为一个标准 Python package。这不是替代 `plugin.yaml`，而是双文件分工。
+
+**插件命名规范**：参考 NoneBot2 和 AstrBot 的实践，采用 hyphen 用于 PyPI 包名、underscore 用于 Python 模块名、前缀标识归属的约定：
+
+| 用途 | 格式 | 示例 |
+|------|------|------|
+| PyPI 包名 / 目录名 | `nahida-plugin-{name}` | `nahida-plugin-image-gen` |
+| Python 模块名 | `nahida_plugin_{name}` | `nahida_plugin_image_gen` |
+| 插件 ID | `{name}` | `image-gen` |
+
+前缀 `nahida-plugin-` / `nahida_plugin_` 的作用：(1) PyPI 上可发现；(2) import 时自文档化——一眼可见是 nahida-bot 插件；(3) 避免与通用 Python 包命名冲突。插件加载器不强制检查命名格式——任何目录下包含合法 `plugin.yaml` 均可加载——但脚手架自动生成合规名称，插件商店收录时也会校验。
 
 ```text
 plugins/my-plugin/
 ├── plugin.yaml          ← nahida-bot 特有元数据（id、entrypoint、permissions、capabilities…）
 ├── pyproject.toml       ← Python 标准打包元数据（name、version、dependencies、requires-python）
-├── my_plugin/
+├── nahida_plugin_my_plugin/
 │   ├── __init__.py
 │   └── plugin.py        ← class MyPlugin(Plugin): ...
 └── README.md
@@ -276,7 +286,7 @@ id: "com.example.image-gen"
 name: "Image Generator"
 version: "0.1.0"
 description: "AI image generation via Stable Diffusion"
-entrypoint: "my_plugin.plugin:ImageGenPlugin"
+entrypoint: "nahida_plugin_image_gen.plugin:ImageGenPlugin"
 load_phase: "post-agent"
 
 permissions:

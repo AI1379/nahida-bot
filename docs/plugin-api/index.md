@@ -24,7 +24,7 @@ mkdir my-plugin && cd my-plugin
 
 # 2. 编写 pyproject.toml（声明依赖 nahida-bot-sdk）
 # 3. 编写 plugin.yaml（声明权限和入口点）
-# 4. 编写 plugin.py（继承 Plugin，实现 on_load）
+# 4. 编写 plugin.py（继承 Plugin，声明或注册命令/工具/事件）
 # 5. 测试
 uv pip install .
 uv run python -m nahida_bot_sdk.testing.console .

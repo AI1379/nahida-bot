@@ -52,7 +52,14 @@ class CommandRegistry:
         Raises ``KeyError`` if the name or any alias is already taken.
         """
         names = [entry.name, *entry.aliases]
+        seen: set[str] = set()
         for name in names:
+            if name in seen:
+                raise KeyError(
+                    f"Command name or alias '{name}' is duplicated in plugin "
+                    f"'{entry.plugin_id}'"
+                )
+            seen.add(name)
             if name in self._commands:
                 existing = self._commands[name]
                 raise KeyError(

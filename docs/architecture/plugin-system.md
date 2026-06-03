@@ -367,6 +367,7 @@ from unittest.mock import AsyncMock
 
 from nahida_bot_sdk.api.interfaces import BotAPI, SubscriptionHandle
 from nahida_bot_sdk.api.messaging import OutboundMessage
+from nahida_bot_sdk.testing import load_plugin_for_test
 
 
 class MockBotAPI:
@@ -378,7 +379,7 @@ class MockBotAPI:
 
         api = MockBotAPI()
         plugin = MyPlugin(api=api, manifest=my_manifest)
-        await plugin.on_load()
+        await load_plugin_for_test(plugin)
 
         # 验证插件注册了事件处理器
         assert api.has_event_handler(MessageReceived)
@@ -513,7 +514,7 @@ class _MockLogger:
 # tests/test_my_plugin.py
 
 import pytest
-from nahida_bot_sdk.testing.mocks import MockBotAPI
+from nahida_bot_sdk.testing import MockBotAPI, load_plugin_for_test
 from nahida_bot_sdk.types import MessageReceived
 from my_plugin import MyPlugin, MANIFEST
 
@@ -529,12 +530,12 @@ def plugin(api):
 
 
 async def test_plugin_registers_event_handler(plugin):
-    await plugin.on_load()
+    await load_plugin_for_test(plugin)
     assert plugin.api.has_event_handler(MessageReceived)
 
 
 async def test_plugin_responds_to_message(plugin):
-    await plugin.on_load()
+    await load_plugin_for_test(plugin)
     event = MessageReceived(payload=InboundMessage(
         message_id="test",
         platform="test",
@@ -728,7 +729,7 @@ class PluginManifest(BaseModel):
    enable │
             ▼
         ┌─────────┐
-        │Enabled  │  on_load() + on_enable() 被调用，事件处理器和工具生效
+        │Enabled  │  注册声明已激活；首次启用调用 on_load()，每次启用调用 on_enable()
         └──┬──┬───┘
   disable │  │ reload
            │  │
@@ -762,7 +763,7 @@ class PluginManager:
         ...
 
     async def enable(self, plugin_id: str) -> None:
-        """启用插件：调用 on_load() + on_enable()，注册事件和工具。"""
+        """启用插件：激活注册；首次启用调用 on_load()，每次启用调用 on_enable()。"""
         ...
 
     async def disable(self, plugin_id: str) -> None:
@@ -1210,7 +1211,7 @@ class ChannelService(Protocol):
         ...
 ```
 
-Channel 插件自己实现该协议，并在 `on_load()` 或其它合适时机调用 `api.register_channel(self)`。注册时通过 `isinstance(channel, ChannelService)` 运行时校验，确保注册对象满足协议要求。Plugin Host 不再对某个专门的 channel 插件子类做特殊处理。
+Channel 插件自己实现该协议，并在 `on_load()` 或其它合适时机调用 `api.register_channel(self)`。注册时通过 `isinstance(channel, ChannelService)` 运行时校验，且要求插件声明 `permissions.network.inbound: true`。Plugin Host 不再对某个专门的 channel 插件子类做特殊处理。
 
 ## 12. 实施计划
 
@@ -1226,7 +1227,7 @@ Channel 插件自己实现该协议，并在 `on_load()` 或其它合适时机�
 1. 实现 `plugin.yaml` 解析和校验（Pydantic 模型）。
 2. 实现插件发现（扫描指定目录）和加载（动态导入 + 入口点解析）。
 3. 实现基础生命周期（load → enable → disable → unload）。
-4. 验证：可以加载一个最小插件并调用 `on_load()`。
+4. 验证：可以加载一个最小插件并启用，首次启用时调用 `on_load()`。
 
 ### Phase 3.2 — 事件系统增强
 

@@ -193,6 +193,144 @@ class TestPluginLifecycle:
         for pid in ("p1", "p2"):
             assert manager.get_record(pid).state == PluginState.UNLOADED  # type: ignore[union-attr]
 
+    async def test_reenable_restores_imperative_registrations(
+        self, tmp_path: Path
+    ) -> None:
+        plugin_dir = tmp_path / "imperative_lifecycle"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        manifest = """
+id: imperative_lifecycle
+name: Imperative Lifecycle
+version: "1.0.0"
+entrypoint: "plugin:LifecyclePlugin"
+"""
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+        code = """
+from nahida_bot.core.events import Event
+from nahida_bot.plugins.base import Plugin
+
+class LifecyclePlugin(Plugin):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.on_load_count = 0
+        self.on_enable_count = 0
+        self.on_disable_count = 0
+
+    async def on_load(self) -> None:
+        self.on_load_count += 1
+        self.api.register_command("hello", self._cmd_hello)
+        self.api.register_tool("echo_tool", "Echo", {"type": "object"}, self._tool_echo)
+        self.api.subscribe(Event, self._on_event)
+
+    async def on_enable(self) -> None:
+        self.on_enable_count += 1
+
+    async def on_disable(self) -> None:
+        self.on_disable_count += 1
+
+    async def _cmd_hello(self, *, args, inbound, session_id):
+        return "hello"
+
+    async def _tool_echo(self, **kwargs):
+        return "ok"
+
+    async def _on_event(self, event):
+        return None
+"""
+        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+        await manager.load("imperative_lifecycle")
+        await manager.enable("imperative_lifecycle")
+
+        record = manager.get_record("imperative_lifecycle")
+        assert record is not None
+        assert manager.command_registry.get("hello") is not None
+        assert manager.tool_registry.get("echo_tool") is not None
+        assert (
+            len(manager.handler_registry.handlers_for_plugin("imperative_lifecycle"))
+            == 1
+        )
+
+        await manager.disable("imperative_lifecycle")
+        assert manager.command_registry.get("hello") is None
+        assert manager.tool_registry.get("echo_tool") is None
+        assert (
+            manager.handler_registry.handlers_for_plugin("imperative_lifecycle") == []
+        )
+
+        await manager.enable("imperative_lifecycle")
+        assert manager.command_registry.get("hello") is not None
+        assert manager.tool_registry.get("echo_tool") is not None
+        assert (
+            len(manager.handler_registry.handlers_for_plugin("imperative_lifecycle"))
+            == 1
+        )
+
+        instance = record.instance
+        assert instance is not None
+        assert instance.on_load_count == 1  # type: ignore[attr-defined]
+        assert instance.on_enable_count == 2  # type: ignore[attr-defined]
+        assert instance.on_disable_count == 1  # type: ignore[attr-defined]
+
+    async def test_reenable_restores_decorator_registrations(
+        self, tmp_path: Path
+    ) -> None:
+        plugin_dir = tmp_path / "decorator_lifecycle"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        manifest = """
+id: decorator_lifecycle
+name: Decorator Lifecycle
+version: "1.0.0"
+entrypoint: "plugin:DecoratorPlugin"
+"""
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+        code = """
+from nahida_bot.core.events import Event
+from nahida_bot.plugins.base import Plugin
+from nahida_bot_sdk import register_command, register_tool, subscribe
+
+class DecoratorPlugin(Plugin):
+    @register_command("decorated")
+    async def _cmd_decorated(self, *, args, inbound, session_id):
+        return "ok"
+
+    @register_tool("decorated_tool", description="Decorated")
+    async def _tool_decorated(self, **kwargs):
+        return "ok"
+
+    @subscribe(Event)
+    async def _on_event(self, event):
+        return None
+"""
+        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+        await manager.load("decorator_lifecycle")
+        await manager.enable("decorator_lifecycle")
+
+        assert manager.command_registry.get("decorated") is not None
+        assert manager.tool_registry.get("decorated_tool") is not None
+        assert (
+            len(manager.handler_registry.handlers_for_plugin("decorator_lifecycle"))
+            == 1
+        )
+
+        await manager.disable("decorator_lifecycle")
+        assert manager.command_registry.get("decorated") is None
+        assert manager.tool_registry.get("decorated_tool") is None
+        assert manager.handler_registry.handlers_for_plugin("decorator_lifecycle") == []
+
+        await manager.enable("decorator_lifecycle")
+        assert manager.command_registry.get("decorated") is not None
+        assert manager.tool_registry.get("decorated_tool") is not None
+        assert (
+            len(manager.handler_registry.handlers_for_plugin("decorator_lifecycle"))
+            == 1
+        )
+
 
 class TestPluginStateTransitions:
     async def test_cannot_enable_found_plugin(self, tmp_path: Path) -> None:
@@ -265,6 +403,9 @@ name: Registering Crasher
 version: "1.0.0"
 load_phase: "pre-agent"
 entrypoint: "plugin:RegisteringCrashPlugin"
+permissions:
+  network:
+    inbound: true
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 

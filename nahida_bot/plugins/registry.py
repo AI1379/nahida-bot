@@ -74,6 +74,18 @@ class HandlerRegistry:
         """Record an event handler registration."""
         self._handlers.append(entry)
 
+    def unregister(
+        self,
+        handler: Callable[..., Awaitable[None]],
+        plugin_id: str,
+    ) -> bool:
+        """Remove one handler owned by a plugin. Returns whether it was found."""
+        for index, entry in enumerate(self._handlers):
+            if entry.plugin_id == plugin_id and entry.handler is handler:
+                self._handlers.pop(index)
+                return True
+        return False
+
     def unregister_by_plugin(self, plugin_id: str) -> list[HandlerEntry]:
         """Remove all handlers owned by a plugin. Returns removed entries."""
         kept: list[HandlerEntry] = []

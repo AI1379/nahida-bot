@@ -42,6 +42,9 @@ from nahida_bot_sdk.plugin import (  # noqa: F401
     MemoryRef,
     Plugin,
     SessionInfo,
+    register_command,
+    register_tool,
+    subscribe,
 )
 
 # Manifest
@@ -94,6 +97,7 @@ from nahida_bot_sdk.testing import (  # noqa: F401
     MockBotAPI,
     RecordingMockBotAPI,
     StubChannelService,
+    load_plugin_for_test,
 )
 
 __all__ = [
@@ -129,6 +133,9 @@ __all__ = [
     "MemoryRef",
     "Plugin",
     "SessionInfo",
+    "register_command",
+    "register_tool",
+    "subscribe",
     # Manifest
     "Capabilities",
     "FilesystemPermission",
@@ -169,4 +176,5 @@ __all__ = [
     "MockBotAPI",
     "RecordingMockBotAPI",
     "StubChannelService",
+    "load_plugin_for_test",
 ]

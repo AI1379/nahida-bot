@@ -8,7 +8,7 @@ permissions:
   network:
     outbound:
       - "api.telegram.org"
-    inbound: false
+    inbound: true
 
 config:
   group_trigger_mode: "always"

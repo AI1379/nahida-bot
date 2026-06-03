@@ -143,7 +143,7 @@ class MyPlugin(Plugin):
     """我的插件。"""
 
     async def on_load(self) -> None:
-        """插件加载时调用。在此注册命令、工具、事件处理器。"""
+        """首次启用前调用一次。可在此注册动态命令、工具、事件处理器。"""
         ...
 
     async def on_unload(self) -> None:
@@ -161,7 +161,7 @@ class MyPlugin(Plugin):
 
 | 方法 | 调用时机 | 是否必须 |
 |------|---------|:------:|
-| `on_load()` | 首次启用时 | ✅ 是 |
+| `on_load()` | 首次启用时（装饰器声明激活后） | 否 |
 | `on_enable()` | 每次启用后 | 否 |
 | `on_disable()` | 每次禁用后 | 否 |
 | `on_unload()` | 卸载/热重载时 | 否 |
@@ -225,7 +225,14 @@ def register_command(
 ) -> None:
 ```
 
-注册一个可由用户通过 `/<name>` 调用的命令。handler 接收 `(session_id, address, message)`：
+注册一个可由用户通过 `/<name>` 调用的命令。handler 使用关键字参数：
+
+```python
+async def handler(
+    *, args: str, inbound: InboundMessage, session_id: str
+) -> CommandHandlerResult:
+    ...
+```
 
 ```python
 from nahida_bot_sdk.commands import CommandResult
@@ -237,8 +244,10 @@ async def on_load(self) -> None:
         aliases=["hi", "greet"],
     )
 
-async def _hello(self, session_id: str, address: str, message: InboundMessage):
-    return CommandResult.text(f"Hello, {message.user_id}!")
+async def _hello(
+    self, *, args: str, inbound: InboundMessage, session_id: str
+) -> CommandResult:
+    return CommandResult.text(f"Hello, {inbound.user_id}!")
 ```
 
 **返回值类型**（`CommandHandlerResult`）：
@@ -306,8 +315,8 @@ async def on_load(self) -> None:
     self.api.subscribe(MessageReceived, self._on_message)
 
 async def _on_message(self, event: MessageReceived) -> None:
-    text = event.payload.message
-    if isinstance(text, str) and "hello" in text.lower():
+    inbound = event.payload.message
+    if isinstance(inbound, InboundMessage) and "hello" in inbound.text.lower():
         await self.api.send_message(
             "group:12345",
             OutboundMessage(text="Hi there!"),
@@ -507,7 +516,7 @@ class ChatAddress:
 | 事件 | 载荷 | 触发时机 |
 |------|------|---------|
 | `PluginLoaded` | `PluginPayload(plugin_id, plugin_name, plugin_version)` | 模块导入后 |
-| `PluginEnabled` | 同上 | on_load + on_enable 后 |
+| `PluginEnabled` | 同上 | 首次启用时 on_load + on_enable 后；再次启用时 on_enable 后 |
 | `PluginDisabled` | 同上 | on_disable 后 |
 | `PluginUnloaded` | 同上 | 完全卸载后 |
 | `PluginErrorOccurred` | `PluginErrorPayload(plugin_id, plugin_name, method, error)` | 方法抛出异常 |
@@ -516,7 +525,7 @@ class ChatAddress:
 
 | 事件 | 载荷 | 触发时机 |
 |------|------|---------|
-| `MessageReceived` | `MessagePayload(message, session_id)` | 收到入站消息（Agent 处理前） |
+| `MessageReceived` | `MessagePayload(message: InboundMessage, session_id)` | 收到入站消息（Agent 处理前） |
 | `MessageObserved` | 同上 | 入站消息仅记录不处理 |
 | `MessageSending` | 同上 | 出站消息发送前 |
 | `MessageSent` | 同上 | 出站消息发送后 |
@@ -559,11 +568,11 @@ class CommandInfo:
 用于单元测试，无需启动 bot：
 
 ```python
-from nahida_bot_sdk.testing import MockBotAPI, RecordingMockBotAPI
+from nahida_bot_sdk.testing import MockBotAPI, RecordingMockBotAPI, load_plugin_for_test
 
 api = RecordingMockBotAPI()
 plugin = MyPlugin(api=api, manifest=my_manifest)
-await plugin.on_load()
+await load_plugin_for_test(plugin)
 
 # 验证工具已注册
 assert "add_numbers" in api.registered_tools
@@ -575,6 +584,9 @@ assert len(api.published_events) > 0
 
 `RecordingMockBotAPI` 跟踪：
 - `registered_tools` — `dict[name, {description, parameters, handler}]`
+- `registered_commands` — `dict[name_or_alias, {name, description, aliases, handler}]`
+- `registered_event_handlers` — `dict[event_type, list[handler]]`
+- `registered_provider_types` — `dict[type_key, {factory, config_schema, description}]`
 - `published_events` — `list[event]`
 - `registered_channels` — `list[channel]`
 
@@ -583,18 +595,29 @@ assert len(api.published_events) > 0
 交互式测试，支持命令/工具/事件调度：
 
 ```python
-from nahida_bot_sdk.testing import ConsoleMockBotAPI
+from nahida_bot_sdk import InboundMessage
+from nahida_bot_sdk.testing import ConsoleMockBotAPI, load_plugin_for_test
 
 api = ConsoleMockBotAPI()
 plugin = MyPlugin(api=api, manifest=manifest)
-await plugin.on_load()
+await load_plugin_for_test(plugin)
 
 # 调用命令
 result = await api.invoke_command("hello", "arg")
 # 调用工具
 result = await api.invoke_tool("add_numbers", {"a": 3, "b": 5})
 # 触发事件
-await api._trigger_event(MessageReceived(payload=MessagePayload(message="hi", session_id="test")))
+inbound = InboundMessage(
+    message_id="m1",
+    platform="console",
+    chat_id="test",
+    user_id="u1",
+    text="hi",
+    raw_event={},
+)
+await api._trigger_event(
+    MessageReceived(payload=MessagePayload(message=inbound, session_id="test"))
+)
 # 检查响应
 print(api.sent_messages)  # list[(target, OutboundMessage)]
 ```
@@ -648,17 +671,20 @@ class MyPlugin(Plugin):
         # 订阅消息事件
         self.api.subscribe(MessageReceived, self._on_message)
 
-    async def _hello(self, session_id: str, address: str, message: InboundMessage):
-        return CommandResult.text(f"Hello, {message.user_id}!")
+    async def _hello(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> CommandResult:
+        return CommandResult.text(f"Hello, {inbound.user_id}!")
 
     async def _uppercase(self, text: str) -> str:
         return text.upper()
 
     async def _on_message(self, event: MessageReceived) -> None:
-        if isinstance(event.payload.message, str):
+        inbound = event.payload.message
+        if isinstance(inbound, InboundMessage):
             await self.api.send_message(
                 "console:private:test",
-                OutboundMessage(text=f"Echo: {event.payload.message}"),
+                OutboundMessage(text=f"Echo: {inbound.text}"),
             )
 ```
 

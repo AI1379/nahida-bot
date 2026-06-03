@@ -84,15 +84,17 @@ class HelloPlugin(Plugin):
         # 订阅消息事件——监听所有入站消息
         self.api.subscribe(MessageReceived, self._on_message)
 
-    async def _hello(self, session_id: str, address: str, message: InboundMessage):
-        return CommandResult.text(f"Hello, {message.user_id}!")
+    async def _hello(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> CommandResult:
+        return CommandResult.text(f"Hello, {inbound.user_id}!")
 
     async def _on_message(self, event: MessageReceived) -> None:
-        text = event.payload.message
-        if not isinstance(text, str) or not text.strip():
+        inbound = event.payload.message
+        if not isinstance(inbound, InboundMessage) or not inbound.text.strip():
             return
         # 如果有人发送 "天气"，回复一段话
-        if "天气" in text:
+        if "天气" in inbound.text:
             await self.api.send_message(
                 "console:private:test",
                 OutboundMessage(text="今天天气不错！适合写代码。"),

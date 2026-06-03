@@ -15,6 +15,7 @@ from nahida_bot.agent.providers.registry import (
     unregister_runtime_provider,
 )
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryItem, MemoryRecord
+from nahida_bot.core.exceptions import PermissionDenied
 from nahida_bot.core.events import Event, EventBus, EventContext
 from nahida_bot.plugins.api_bridge import RealBotAPI
 from nahida_bot.plugins.base import OutboundMessage
@@ -185,7 +186,7 @@ def _manifest() -> PluginManifest:
         version="1.0.0",
         entrypoint="x:Y",
         permissions=Permissions(
-            network=NetworkPermission(outbound=["chat-*"]),
+            network=NetworkPermission(outbound=["chat-*"], inbound=True),
             filesystem=FilesystemPermission(read=["workspace"], write=["workspace"]),
             memory=MemoryPermission(read=True, write=True),
         ),
@@ -274,9 +275,36 @@ def test_tool_and_command_registration(tmp_path: Path) -> None:
     api.register_tool("search", "Search", {"type": "object"}, _tool)
     api.register_command("ping", _command, description="Ping", aliases=["p"])
 
+    assert tool_registry.get("search") is None
+    assert command_registry.get("ping") is None
+
+    api.activate_registrations()
     assert tool_registry.get("search") is not None
     assert command_registry.get("ping") is not None
     assert command_registry.get("p") is not None
+
+    api.deactivate_registrations()
+    assert tool_registry.get("search") is None
+    assert command_registry.get("ping") is None
+
+    api.activate_registrations()
+    assert tool_registry.get("search") is not None
+    assert command_registry.get("ping") is not None
+
+
+def test_command_registration_rejects_alias_conflicts_before_activation(
+    tmp_path: Path,
+) -> None:
+    async def _command(**kwargs: object) -> str:
+        return "ok"
+
+    api, _, _, _ = _api(tmp_path)
+
+    api.register_command("foo", _command, aliases=["bar"])
+    with pytest.raises(KeyError, match="already registered"):
+        api.register_command("bar", _command)
+    with pytest.raises(KeyError, match="duplicated"):
+        api.register_command("baz", _command, aliases=["baz"])
 
 
 def test_channel_service_registration_lifecycle(tmp_path: Path) -> None:
@@ -284,15 +312,18 @@ def test_channel_service_registration_lifecycle(tmp_path: Path) -> None:
     channel = StubChannelService(channel_id="custom")
 
     api.register_channel(channel)
-    assert channel_registry.get("custom") is channel
-
-    api.deactivate_service_registrations()
     assert channel_registry.get("custom") is None
 
-    api.reactivate_service_registrations()
+    api.activate_registrations()
     assert channel_registry.get("custom") is channel
 
-    api.clear_service_registrations()
+    api.deactivate_registrations()
+    assert channel_registry.get("custom") is None
+
+    api.activate_registrations()
+    assert channel_registry.get("custom") is channel
+
+    api.clear_registrations()
     assert channel_registry.get("custom") is None
 
 
@@ -301,6 +332,25 @@ def test_register_channel_rejects_non_channel_service(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="ChannelService"):
         api.register_channel(cast(Any, SimpleNamespace(channel_id="custom")))
+
+
+def test_register_channel_requires_inbound_permission(tmp_path: Path) -> None:
+    manifest = _manifest().model_copy(
+        update={
+            "permissions": Permissions(
+                network=NetworkPermission(outbound=["chat-*"], inbound=False),
+                filesystem=FilesystemPermission(
+                    read=["workspace"],
+                    write=["workspace"],
+                ),
+                memory=MemoryPermission(read=True, write=True),
+            )
+        }
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+
+    with pytest.raises(PermissionDenied, match="inbound network permission"):
+        api.register_channel(StubChannelService(channel_id="custom"))
 
 
 def test_register_provider_type_requires_pre_agent_phase(tmp_path: Path) -> None:
@@ -327,6 +377,7 @@ def test_register_provider_type_allows_pre_agent_plugin(tmp_path: Path) -> None:
             provider_type,
             lambda config: cast(Any, _RuntimeProvider(config)),
         )
+        api.activate_registrations()
         provider = cast(Any, create_provider(provider_type, model="demo-model"))
         assert provider.config["model"] == "demo-model"
     finally:
@@ -342,11 +393,38 @@ async def test_event_subscription_and_cleanup(tmp_path: Path) -> None:
         seen.append(event.payload)
 
     api.subscribe(Event, _handler)
+    api.activate_registrations()
     await api.publish_event(Event(payload="hello"))
     assert seen == ["hello"]
 
-    api.clear_subscriptions()
+    api.deactivate_registrations()
     await api.publish_event(Event(payload="again"))
+    assert seen == ["hello"]
+
+    api.activate_registrations()
+    await api.publish_event(Event(payload="reactivated"))
+    assert seen == ["hello", "reactivated"]
+
+
+@pytest.mark.asyncio
+async def test_event_subscription_handle_unsubscribes_permanently(
+    tmp_path: Path,
+) -> None:
+    api, _, _, _ = _api(tmp_path)
+    seen: list[str] = []
+
+    async def _handler(event: Event[str]) -> None:
+        seen.append(event.payload)
+
+    handle = api.subscribe(Event, _handler)
+    api.activate_registrations()
+    await api.publish_event(Event(payload="hello"))
+    handle.unsubscribe()
+    await api.publish_event(Event(payload="again"))
+    api.deactivate_registrations()
+    api.activate_registrations()
+    await api.publish_event(Event(payload="after-reactivate"))
+
     assert seen == ["hello"]
 
 
