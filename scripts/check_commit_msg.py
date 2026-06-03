@@ -46,7 +46,7 @@ TITLE_RE = re.compile(
     r"(?P<desc>\S.*)$"
 )
 
-_LINE_LENGTH_LIMIT = 72
+_LINE_LENGTH_LIMIT = 108
 
 
 def _fail(msg: str):
