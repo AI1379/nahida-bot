@@ -73,6 +73,42 @@ class SystemActionResponse(BaseModel):
     message: str
 
 
+# -- Plugins --------------------------------------------------------------
+
+
+class PluginSummaryResponse(BaseModel):
+    id: str
+    name: str
+    version: str
+    description: str = ""
+    state: str
+    path: str
+    entrypoint: str
+    load_phase: str
+    nahida_bot_version: str = ""
+    sdk_version: str = ""
+    error_message: str = ""
+    permissions: dict[str, Any] = Field(default_factory=dict)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    depends_on: list[dict[str, str]] = Field(default_factory=list)
+    config_keys: list[str] = Field(default_factory=list)
+    config_schema: dict[str, Any] = Field(default_factory=dict)
+    has_config: bool = False
+    has_instance: bool = False
+    has_runtime_api: bool = False
+
+
+class PluginListResponse(BaseModel):
+    plugins: list[PluginSummaryResponse]
+
+
+class PluginActionResponse(BaseModel):
+    plugin_id: str
+    action: str
+    state: str
+    status: str
+
+
 # -- Config ---------------------------------------------------------------
 
 

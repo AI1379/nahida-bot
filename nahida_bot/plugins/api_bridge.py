@@ -275,17 +275,26 @@ class RealBotAPI:
         parameters: dict[str, Any],
         handler: Callable[..., Awaitable[str]],
     ) -> None:
-        if name in self._registered_tools:
-            raise KeyError(
-                f"Tool '{name}' is already registered by plugin '{self._plugin_id}'"
-            )
-        self._registered_tools[name] = ToolEntry(
+        entry = ToolEntry(
             name=name,
             description=description,
             parameters=parameters,
             handler=handler,
             plugin_id=self._plugin_id,
         )
+        if name in self._registered_tools:
+            if self._registrations_active:
+                self._registered_tools[name] = entry
+                if name in self._active_tools:
+                    self._tool_registry.unregister(name)
+                    self._active_tools.discard(name)
+                self._activate_tool(name)
+                self._logger.debug("tool_reregistered", tool_name=name)
+                return
+            raise KeyError(
+                f"Tool '{name}' is already registered by plugin '{self._plugin_id}'"
+            )
+        self._registered_tools[name] = entry
         if self._registrations_active:
             self._activate_tool(name)
         self._logger.debug("tool_registered", tool_name=name)

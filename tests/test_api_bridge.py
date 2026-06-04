@@ -292,6 +292,43 @@ def test_tool_and_command_registration(tmp_path: Path) -> None:
     assert command_registry.get("ping") is not None
 
 
+def test_active_tool_reregistration_replaces_owned_definition(tmp_path: Path) -> None:
+    async def _tool_v1(query: str) -> str:
+        return f"v1:{query}"
+
+    async def _tool_v2(query: str) -> str:
+        return f"v2:{query}"
+
+    api, _, tool_registry, _ = _api(tmp_path)
+
+    api.register_tool("search", "Search", {"type": "object"}, _tool_v1)
+    api.activate_registrations()
+    assert tool_registry.get("search").handler is _tool_v1  # type: ignore[union-attr]
+
+    api.deactivate_registrations()
+    assert tool_registry.get("search") is None
+
+    api.activate_registrations()
+    api.register_tool("search", "Search", {"type": "object"}, _tool_v2)
+
+    entry = tool_registry.get("search")
+    assert entry is not None
+    assert entry.handler is _tool_v2
+
+
+def test_inactive_tool_reregistration_still_rejects_duplicates(
+    tmp_path: Path,
+) -> None:
+    async def _tool(query: str) -> str:
+        return query
+
+    api, _, _, _ = _api(tmp_path)
+
+    api.register_tool("search", "Search", {"type": "object"}, _tool)
+    with pytest.raises(KeyError, match="already registered"):
+        api.register_tool("search", "Search", {"type": "object"}, _tool)
+
+
 def test_command_registration_rejects_alias_conflicts_before_activation(
     tmp_path: Path,
 ) -> None:

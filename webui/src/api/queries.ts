@@ -30,6 +30,9 @@ import type {
   LogsResponse,
   MessageDeliveriesResponse,
   MessageDeliveryGroupsResponse,
+  PluginAction,
+  PluginActionResponse,
+  PluginListResponse,
   SessionHistoryResponse,
   SessionListResponse,
   SessionSearchResponse,
@@ -205,6 +208,13 @@ export function useLogs(
   });
 }
 
+export function usePluginList() {
+  return useQuery<PluginListResponse>({
+    queryKey: ["plugins"],
+    queryFn: () => api.get("/plugins"),
+  });
+}
+
 // -- Mutations --
 
 export function useConfigSave() {
@@ -292,6 +302,29 @@ export function useSystemShutdown() {
     },
     onError(err) {
       toast.add(`Shutdown failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function usePluginAction() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<
+    PluginActionResponse,
+    Error,
+    { pluginId: string; action: PluginAction }
+  >({
+    mutationFn: ({ pluginId, action }) =>
+      api.post<PluginActionResponse>(
+        `/plugins/${encodeURIComponent(pluginId)}/${action}`,
+      ),
+    onSuccess(data) {
+      qc.invalidateQueries({ queryKey: ["plugins"] });
+      toast.add(`Plugin ${data.action} completed.`, "success");
+    },
+    onError(err) {
+      toast.add(`Plugin action failed: ${toApiError(err).detail}`, "error");
     },
   });
 }

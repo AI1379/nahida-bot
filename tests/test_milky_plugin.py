@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from nahida_bot.channels.milky.client import MilkyAPIError
+from nahida_bot.channels.milky.client import MilkyAPIError, MilkyNetworkError
 from nahida_bot.channels.milky.plugin import MilkyPlugin
 from nahida_bot.channels.milky.segments import OutgoingTextSegment
 from nahida_bot.core.events import MessageObserved, MessageReceived
@@ -84,6 +85,24 @@ class _FakeClient:
         self.closed = True
 
 
+class _FlakyLoginClient(_FakeClient):
+    def __init__(self, *, failures: int, uin: int = 999) -> None:
+        super().__init__()
+        self.failures = failures
+        self.uin = uin
+        self.login_calls = 0
+
+    async def get_login_info(self) -> dict[str, object]:
+        self.login_calls += 1
+        if self.login_calls <= self.failures:
+            raise MilkyNetworkError(
+                "milky unavailable",
+                api_name="get_login_info",
+                retryable=True,
+            )
+        return {"uin": self.uin}
+
+
 async def test_on_load_registers_channel_with_injected_client() -> None:
     api = RecordingMockBotAPI()
     plugin = MilkyPlugin(api=api, manifest=_manifest())
@@ -95,6 +114,51 @@ async def test_on_load_registers_channel_with_injected_client() -> None:
     assert plugin.channel_id == "milky"
     assert api.registered_channels == [plugin]
     assert plugin.self_id == 999
+
+
+async def test_on_load_registers_channel_when_login_info_unavailable() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FlakyLoginClient(failures=10)
+    plugin._client = client  # type: ignore[assignment]
+
+    await plugin.on_load()
+
+    assert api.registered_channels == [plugin]
+    assert plugin.self_id == 0
+    assert client.login_calls == 1
+
+
+async def test_on_enable_retries_login_info_until_available() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(
+            enable_media_download_tool=False,
+            reconnect_initial_delay=0.001,
+            reconnect_max_delay=0.001,
+        ),
+    )
+    client = _FlakyLoginClient(failures=1, uin=123456)
+    plugin._client = client  # type: ignore[assignment]
+
+    await plugin.on_load()
+    assert plugin.self_id == 0
+
+    with patch(
+        "nahida_bot.channels.milky.plugin.MilkyEventStream",
+        return_value=AsyncMock(),
+    ):
+        await plugin.on_enable()
+
+    for _ in range(50):
+        if plugin.self_id == 123456:
+            break
+        await asyncio.sleep(0.01)
+
+    assert plugin.self_id == 123456
+    assert client.login_calls >= 2
+    await plugin.on_disable()
 
 
 async def test_handle_inbound_event_publishes_message_received() -> None:
@@ -421,6 +485,41 @@ async def test_on_disable_stops_stream_and_closes_client() -> None:
 
     stream.stop.assert_awaited_once()
     assert client.closed is True
+
+
+async def test_reenable_recreates_client_after_disable() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(enable_media_download_tool=False),
+    )
+    first_client = _FakeClient()
+    plugin._client = first_client  # type: ignore[assignment]
+
+    await plugin.on_load()
+    with patch(
+        "nahida_bot.channels.milky.plugin.MilkyEventStream",
+        return_value=AsyncMock(),
+    ):
+        await plugin.on_enable()
+    await plugin.on_disable()
+
+    second_client = _FakeClient()
+    with (
+        patch(
+            "nahida_bot.channels.milky.plugin.MilkyClient",
+            return_value=second_client,
+        ),
+        patch(
+            "nahida_bot.channels.milky.plugin.MilkyEventStream",
+            return_value=AsyncMock(),
+        ),
+    ):
+        await plugin.on_enable()
+
+    assert first_client.closed is True
+    assert plugin._client is second_client  # type: ignore[comparison-overlap]
+    await plugin.on_disable()
 
 
 def _scene_cache(plugin: MilkyPlugin) -> dict[str, str]:

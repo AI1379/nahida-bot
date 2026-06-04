@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -64,6 +65,7 @@ class MilkyPlugin(Plugin):
         self._outbound_converter: MilkyOutboundConverter | None = None
         self._self_id = 0
         self._scene_by_peer: OrderedDict[str, str] = OrderedDict()
+        self._login_info_task: asyncio.Task[None] | None = None
 
     @property
     def channel_id(self) -> str:
@@ -87,21 +89,11 @@ class MilkyPlugin(Plugin):
 
     async def on_load(self) -> None:
         """Create client, verify connection, and register channel."""
+        self._ensure_runtime_client()
+        await self._refresh_login_info_once(log_failure=True)
         config = self.config
-        if self._client is None:
-            self._client = MilkyClient(config)
-        login_info = await self._client.get_login_info()
-        self._self_id = _pick_int(login_info, "uin", "user_id", "self_id", "qq")
-        self._inbound_converter = MilkyMessageConverter(
-            config,
-            self_id=self._self_id,
-            forward_client=self._client,
-            logger_warning=logger.warning,
-            observe_untriggered_group_messages=config.group_context_capture,
-        )
-        self._outbound_converter = MilkyOutboundConverter(config)
         logger.info(
-            "milky.connected",
+            "milky.loaded",
             base_url=config.normalized_base_url,
             api_prefix=config.api_prefix,
             event_path=config.event_path,
@@ -113,6 +105,9 @@ class MilkyPlugin(Plugin):
 
     async def on_enable(self) -> None:
         """Start the Milky WebSocket event stream and optional tools."""
+        self._ensure_runtime_client()
+        if self._self_id <= 0:
+            self._start_login_info_retry()
         self._event_stream = MilkyEventStream(self.config, self.handle_inbound_event)
         await self._event_stream.start()
         if self.config.enable_media_download_tool:
@@ -124,8 +119,10 @@ class MilkyPlugin(Plugin):
         if self._event_stream is not None:
             await self._event_stream.stop()
             self._event_stream = None
+        await self._stop_login_info_retry()
         if self._client is not None:
             await self._client.close()
+            self._client = None
         logger.info("milky.stopped", channel=self.channel_id)
 
     async def handle_inbound_event(self, event: dict[str, Any]) -> None:
@@ -465,6 +462,72 @@ class MilkyPlugin(Plugin):
         if self._outbound_converter is None:
             raise RuntimeError("MilkyPlugin is not loaded: outbound converter missing")
         return self._outbound_converter
+
+    def _ensure_runtime_client(self) -> MilkyClient:
+        if self._client is None:
+            self._client = MilkyClient(self.config)
+        if self._inbound_converter is None or self._outbound_converter is None:
+            self._rebuild_converters()
+        return self._client
+
+    async def _refresh_login_info_once(self, *, log_failure: bool) -> bool:
+        client = self._ensure_runtime_client()
+        try:
+            login_info = await client.get_login_info()
+        except Exception as exc:  # noqa: BLE001
+            if log_failure:
+                logger.warning(
+                    "milky.login_info_unavailable",
+                    base_url=self.config.normalized_base_url,
+                    error=str(exc),
+                )
+            return False
+
+        self._self_id = _pick_int(login_info, "uin", "user_id", "self_id", "qq")
+        self._rebuild_converters()
+        logger.info(
+            "milky.login_info_loaded",
+            channel=self.channel_id,
+            self_id=self._self_id,
+        )
+        return True
+
+    def _start_login_info_retry(self) -> None:
+        if self._login_info_task is not None and not self._login_info_task.done():
+            return
+        self._login_info_task = asyncio.create_task(self._login_info_retry_loop())
+
+    async def _stop_login_info_retry(self) -> None:
+        task = self._login_info_task
+        self._login_info_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _login_info_retry_loop(self) -> None:
+        delay = self.config.reconnect_initial_delay
+        while self._self_id <= 0:
+            if await self._refresh_login_info_once(log_failure=True):
+                return
+            logger.info("milky.login_info_retry_scheduled", delay=delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, self.config.reconnect_max_delay)
+
+    def _rebuild_converters(self) -> None:
+        client = self._ensure_client()
+        config = self.config
+        self._inbound_converter = MilkyMessageConverter(
+            config,
+            self_id=self._self_id,
+            forward_client=client,
+            logger_warning=logger.warning,
+            observe_untriggered_group_messages=config.group_context_capture,
+        )
+        self._outbound_converter = MilkyOutboundConverter(config)
 
     def _remember_scene(self, peer_id: str, scene: str) -> None:
         self._scene_by_peer[peer_id] = scene

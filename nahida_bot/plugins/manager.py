@@ -192,8 +192,9 @@ class PluginManager:
 
         try:
             plugin_class = self._loader.load(record.manifest, record.plugin_dir)
-        except PluginLoadError:
+        except PluginLoadError as exc:
             record.state = PluginState.ERROR
+            record.error_message = str(exc)
             raise
 
         checker = PermissionChecker(record.manifest)

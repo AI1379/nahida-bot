@@ -556,6 +556,54 @@ class ToolPlugin(Plugin):
         await manager.disable("tool_plugin")
         assert manager.tool_registry.get("my_tool") is None
 
+    async def test_tool_registered_on_enable_can_reenable(self, tmp_path: Path) -> None:
+        plugin_dir = tmp_path / "enable_tool_plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest = """
+id: enable_tool_plugin
+name: Enable Tool Plugin
+version: "1.0.0"
+entrypoint: "plugin:EnableToolPlugin"
+"""
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+
+        code = """
+from nahida_bot.plugins.base import Plugin
+
+class EnableToolPlugin(Plugin):
+    async def on_enable(self) -> None:
+        self.api.register_tool(
+            "cycle_tool",
+            "A re-enabled test tool",
+            {"type": "object", "properties": {"query": {"type": "string"}}},
+            self._handle,
+        )
+
+    async def _handle(self, query: str) -> str:
+        return f"result: {query}"
+"""
+        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+        await manager.load("enable_tool_plugin")
+        await manager.enable("enable_tool_plugin")
+
+        assert manager.tool_registry.get("cycle_tool") is not None
+
+        await manager.disable("enable_tool_plugin")
+        assert manager.tool_registry.get("cycle_tool") is None
+
+        await manager.enable("enable_tool_plugin")
+
+        record = manager.get_record("enable_tool_plugin")
+        assert record is not None
+        assert record.state == PluginState.ENABLED
+        entry = manager.tool_registry.get("cycle_tool")
+        assert entry is not None
+        assert entry.plugin_id == "enable_tool_plugin"
+
     async def test_builtin_workspace_tools_are_registered_and_execute(
         self, tmp_path: Path
     ) -> None:

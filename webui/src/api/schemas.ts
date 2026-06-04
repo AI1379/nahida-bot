@@ -266,6 +266,87 @@ export interface LogsResponse {
   entries: LogEntry[];
 }
 
+// -- Plugins --
+
+export type PluginState =
+  | "found"
+  | "loaded"
+  | "enabled"
+  | "disabled"
+  | "error"
+  | "unloaded";
+
+export type PluginAction =
+  | "load"
+  | "enable"
+  | "disable"
+  | "reload"
+  | "unload";
+
+export interface PluginPermissions {
+  network?: {
+    outbound?: string[];
+    inbound?: boolean;
+  };
+  filesystem?: {
+    read?: string[];
+    write?: string[];
+  };
+  memory?: {
+    read?: boolean;
+    write?: boolean;
+  };
+  system?: {
+    env_vars?: string[];
+    subprocess?: boolean;
+    signal_handlers?: boolean;
+  };
+  llm_access?: boolean;
+}
+
+export interface PluginCapabilities {
+  tools?: Record<string, string>[];
+  subscribes_to?: string[];
+}
+
+export interface PluginDependency {
+  id: string;
+  version: string;
+}
+
+export interface PluginSummary {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  state: PluginState;
+  path: string;
+  entrypoint: string;
+  load_phase: "pre-agent" | "post-agent" | string;
+  nahida_bot_version: string;
+  sdk_version: string;
+  error_message: string;
+  permissions: PluginPermissions;
+  capabilities: PluginCapabilities;
+  depends_on: PluginDependency[];
+  config_keys: string[];
+  config_schema: Record<string, unknown>;
+  has_config: boolean;
+  has_instance: boolean;
+  has_runtime_api: boolean;
+}
+
+export interface PluginListResponse {
+  plugins: PluginSummary[];
+}
+
+export interface PluginActionResponse {
+  plugin_id: string;
+  action: PluginAction;
+  state: PluginState;
+  status: string;
+}
+
 // -- Request / mutation types --
 
 export interface ConfigSaveRequest {

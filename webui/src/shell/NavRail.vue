@@ -7,6 +7,7 @@ import {
   MessageSquare,
   FolderOpen,
   ScrollText,
+  Plug,
   Coins,
 } from "lucide-vue-next";
 import { computed, type Component } from "vue";
@@ -27,6 +28,7 @@ const items: NavItem[] = [
   { name: "sessions", icon: MessageSquare, to: "/sessions", label: "Sessions" },
   { name: "files", icon: FolderOpen, to: "/files", label: "Files" },
   { name: "logs", icon: ScrollText, to: "/logs", label: "Logs" },
+  { name: "plugins", icon: Plug, to: "/plugins", label: "Plugins" },
   { name: "usage", icon: Coins, to: "/usage", label: "Usage" },
 ];
 

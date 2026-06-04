@@ -85,6 +85,27 @@ def _make_mock_app(
     return mock
 
 
+def _make_plugin_record(tmp_path, *, state: str = "enabled"):
+    from nahida_bot.plugins.manager import PluginRecord, PluginState
+    from nahida_bot.plugins.manifest import PluginManifest
+
+    manifest = PluginManifest(
+        id="demo.plugin",
+        name="Demo Plugin",
+        version="1.2.3",
+        description="Demo plugin for tests",
+        entrypoint="demo_plugin:DemoPlugin",
+        load_phase="post-agent",
+        config={"api_key": "secret-value", "mode": "test"},
+        config_schema={"type": "object"},
+    )
+    return PluginRecord(
+        manifest=manifest,
+        plugin_dir=tmp_path / "plugins" / "demo",
+        state=PluginState(state),
+    )
+
+
 @pytest.fixture
 def webapi_no_auth() -> WebAPIApp:
     return WebAPIApp(
@@ -407,6 +428,84 @@ async def test_webui_root_mount_serves_spa_without_masking_api(
         missing_api = await client.get("/api/not-found")
         assert missing_api.status_code == 404
         assert missing_api.headers["content-type"].startswith("application/json")
+
+
+# -- Plugins --------------------------------------------------------------
+
+
+async def test_plugins_list_returns_sanitized_manifest(
+    client_no_auth: AsyncClient,
+    tmp_path,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    record = _make_plugin_record(tmp_path)
+    manager = MagicMock()
+    manager.list_plugins.return_value = [record]
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.get("/api/plugins")
+
+    assert resp.status_code == 200
+    plugin = resp.json()["plugins"][0]
+    assert plugin["id"] == "demo.plugin"
+    assert plugin["state"] == "enabled"
+    assert plugin["has_config"] is True
+    assert plugin["config_keys"] == ["api_key", "mode"]
+    assert "secret-value" not in resp.text
+
+
+async def test_plugins_returns_503_without_manager(client_no_auth: AsyncClient) -> None:
+    resp = await client_no_auth.get("/api/plugins")
+
+    assert resp.status_code == 503
+
+
+async def test_plugin_enable_action_returns_new_state(
+    client_no_auth: AsyncClient,
+    tmp_path,
+) -> None:
+    from nahida_bot.plugins.manager import PluginState
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    record = _make_plugin_record(tmp_path, state="loaded")
+    manager = MagicMock()
+    manager.get_record.return_value = record
+
+    async def enable(plugin_id: str) -> None:
+        assert plugin_id == "demo.plugin"
+        record.state = PluginState.ENABLED
+
+    manager.enable = AsyncMock(side_effect=enable)
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.post("/api/plugins/demo.plugin/enable")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "plugin_id": "demo.plugin",
+        "action": "enable",
+        "state": "enabled",
+        "status": "ok",
+    }
+
+
+async def test_plugin_action_state_error_returns_409(
+    client_no_auth: AsyncClient,
+    tmp_path,
+) -> None:
+    from nahida_bot.core.exceptions import PluginStateError
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    record = _make_plugin_record(tmp_path)
+    manager = MagicMock()
+    manager.get_record.return_value = record
+    manager.enable = AsyncMock(side_effect=PluginStateError("bad transition"))
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.post("/api/plugins/demo.plugin/enable")
+
+    assert resp.status_code == 409
+    assert "bad transition" in resp.json()["detail"]
 
 
 # -- Config ---------------------------------------------------------------
