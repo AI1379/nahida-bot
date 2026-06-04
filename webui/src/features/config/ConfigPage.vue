@@ -4,6 +4,7 @@ import {
   useConfigDocument,
   useConfigPatchSave,
   useConfigSchema,
+  usePluginList,
 } from "@/api/queries";
 import Badge from "@/components/ui/Badge.vue";
 import Alert from "@/components/ui/Alert.vue";
@@ -11,6 +12,8 @@ import Button from "@/components/ui/Button.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Tabs from "@/components/ui/Tabs.vue";
 import Textarea from "@/components/ui/Textarea.vue";
+import { schemaEntriesToFields } from "@/features/plugins/jsonSchemaForm";
+import type { SchemaField } from "@/features/plugins/jsonSchemaForm";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import { api } from "@/api/client";
 import type { ConfigPatchChange, ConfigValidateResponse } from "@/api/schemas";
@@ -89,7 +92,32 @@ const {
   error: configError,
 } = useConfigDocument();
 const { data: schemaData, isLoading: schemaLoading } = useConfigSchema();
+const { data: pluginData } = usePluginList();
 const saveMutation = useConfigPatchSave();
+
+// --- Plugins section state ---
+const pluginsExpanded = ref(true);
+const activePluginId = ref("");
+
+const pluginList = computed(() => pluginData.value?.plugins ?? []);
+
+const activePluginFields = computed<SchemaField[]>(() => {
+  if (!activePluginId.value || !schemaData.value) return [];
+  return schemaEntriesToFields(schemaData.value.entries, activePluginId.value);
+});
+
+function selectPlugin(pluginId: string) {
+  activePluginId.value = pluginId;
+  activeSection.value = `plugin:${pluginId}`;
+}
+
+function isPluginSection(sectionId: string): boolean {
+  return sectionId.startsWith("plugin:");
+}
+
+function pluginIdFromSection(sectionId: string): string {
+  return sectionId.startsWith("plugin:") ? sectionId.slice(7) : "";
+}
 
 const providerTypeOptions = [
   "openai-compatible",
@@ -434,6 +462,10 @@ const sectionCopy: Record<string, { title: string; description: string }> = {
   scheduler: {
     title: "Scheduler",
     description: "Cron scheduler limits and memory dreaming schedule.",
+  },
+  plugins: {
+    title: "Plugins",
+    description: "Configuration for loaded plugins. Settings are stored as top-level keys in config.yaml.",
   },
 };
 
@@ -1086,6 +1118,30 @@ function confirmSave() {
           >
             {{ section.label }}
           </button>
+
+          <!-- Collapsible Plugins group -->
+          <div class="nav-group">
+            <button
+              class="section-button group-toggle"
+              :class="{ active: isPluginSection(activeSection) }"
+              @click="pluginsExpanded = !pluginsExpanded"
+            >
+              <span>Plugins</span>
+              <span class="toggle-arrow" :class="{ expanded: pluginsExpanded }">▸</span>
+            </button>
+            <div v-if="pluginsExpanded" class="group-children">
+              <button
+                v-for="plugin in pluginList"
+                :key="plugin.id"
+                class="section-button plugin-nav-item"
+                :class="{ active: activeSection === `plugin:${plugin.id}` }"
+                @click="selectPlugin(plugin.id)"
+              >
+                {{ plugin.name || plugin.id }}
+              </button>
+              <div v-if="!pluginList.length" class="nav-muted">No plugins</div>
+            </div>
+          </div>
         </aside>
 
         <main class="section-panel">
@@ -1552,6 +1608,95 @@ function confirmSave() {
             </div>
           </template>
 
+          <!-- Plugin configuration form -->
+          <template v-if="isPluginSection(activeSection) && activePluginFields.length">
+            <div class="section-heading">
+              <h2>{{ activePluginFields.length ? pluginIdFromSection(activeSection) : 'Plugins' }}</h2>
+              <p>{{ sectionCopy.plugins.description }}</p>
+            </div>
+            <div class="field-grid">
+              <div
+                v-for="field in activePluginFields"
+                :key="field.path"
+                class="field-row"
+                :class="{
+                  wide: field.kind === 'array-string' || field.kind === 'array-number' || field.kind === 'secret',
+                }"
+              >
+                <label :for="`plugin_${field.path.replaceAll('.', '_')}`">
+                  <span>{{ field.label }}</span>
+                  <code>{{ field.path }}</code>
+                </label>
+
+                <select
+                  v-if="field.kind === 'select'"
+                  :id="`plugin_${field.path.replaceAll('.', '_')}`"
+                  :value="fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
+                  @change="updateText(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="opt in field.options" :key="opt" :value="opt">
+                    {{ opt || "auto" }}
+                  </option>
+                </select>
+
+                <input
+                  v-else-if="field.kind === 'boolean'"
+                  :id="`plugin_${field.path.replaceAll('.', '_')}`"
+                  type="checkbox"
+                  :checked="fieldBool(`${pluginIdFromSection(activeSection)}.${field.path}`)"
+                  @change="updateBool(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).checked)"
+                />
+
+                <input
+                  v-else-if="field.kind === 'number' || field.kind === 'integer'"
+                  :id="`plugin_${field.path.replaceAll('.', '_')}`"
+                  type="number"
+                  :step="field.kind === 'integer' ? 1 : 'any'"
+                  :value="fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
+                  @input="updateNumber(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).value)"
+                />
+
+                <div v-else-if="field.kind === 'secret'" class="secret-control">
+                  <input
+                    :id="`plugin_${field.path.replaceAll('.', '_')}`"
+                    type="password"
+                    :placeholder="redactedPaths.has(`${pluginIdFromSection(activeSection)}.${field.path}`) ? 'unchanged' : ''"
+                    :value="redactedPaths.has(`${pluginIdFromSection(activeSection)}.${field.path}`) && fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`) === '***' ? '' : fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
+                    @input="updateText(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).value)"
+                  />
+                  <Button variant="outline" size="sm" @click="clearSecret(`${pluginIdFromSection(activeSection)}.${field.path}`)">
+                    Clear
+                  </Button>
+                </div>
+
+                <Textarea
+                  v-else-if="field.kind === 'array-string' || field.kind === 'array-number'"
+                  :id="`plugin_${field.path.replaceAll('.', '_')}`"
+                  :model-value="listText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
+                  :rows="3"
+                  @update:model-value="updateList(`${pluginIdFromSection(activeSection)}.${field.path}`, $event)"
+                />
+
+                <!-- Default: text -->
+                <input
+                  v-else
+                  :id="`plugin_${field.path.replaceAll('.', '_')}`"
+                  type="text"
+                  :value="fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
+                  @input="updateText(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </div>
+          </template>
+
+          <template v-if="isPluginSection(activeSection) && !activePluginFields.length">
+            <div class="section-heading">
+              <h2>{{ pluginIdFromSection(activeSection) }}</h2>
+              <p>{{ sectionCopy.plugins.description }}</p>
+            </div>
+            <p class="muted">This plugin has no configurable fields.</p>
+          </template>
+
         </main>
 
         <aside class="status-panel">
@@ -1728,6 +1873,47 @@ code {
 .section-button.active {
   border-left-color: var(--color-primary);
   box-shadow: inset 6px 0 10px -12px var(--color-primary);
+}
+
+/* Collapsible Plugins group */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toggle-arrow {
+  font-size: 0.625rem;
+  transition: transform 0.15s;
+}
+
+.toggle-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.group-children {
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--color-border-subtle);
+  margin-left: 0.5rem;
+}
+
+.plugin-nav-item {
+  font-size: 0.75rem;
+  padding: 0.375rem 0.5rem;
+}
+
+.nav-muted {
+  color: var(--color-muted-foreground);
+  font-size: 0.7rem;
+  padding: 0.375rem 0.5rem;
 }
 
 .section-panel,
