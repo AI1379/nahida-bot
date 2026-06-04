@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import { useTokenStats, useTokenEvents } from "@/api/queries";
+import { useTokenStats, useTokenEvents, useTokenClear } from "@/api/queries";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Alert from "@/components/ui/Alert.vue";
+import Button from "@/components/ui/Button.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import { formatNumber, formatTime } from "@/lib/utils";
 
 const days = ref(7);
@@ -35,6 +37,15 @@ function formatTokens(n: number): string {
 const hasData = computed(() => {
   return (stats.value?.totals.event_count ?? 0) > 0;
 });
+
+const showClearDialog = ref(false);
+const clearMutation = useTokenClear();
+
+function executeClear() {
+  clearMutation.mutate(undefined, {
+    onSettled: () => { showClearDialog.value = false; },
+  });
+}
 
 const maxDailyTokens = computed(() => {
   if (!stats.value?.daily?.length) return 1;
@@ -75,6 +86,16 @@ const maxDailyTokens = computed(() => {
               {{ p.provider_id }}
             </option>
           </select>
+        </div>
+        <div class="filter-group filter-group-end">
+          <Button
+            v-if="hasData"
+            variant="destructive"
+            size="sm"
+            @click="showClearDialog = true"
+          >
+            Clear History
+          </Button>
         </div>
       </div>
     </section>
@@ -229,6 +250,17 @@ const maxDailyTokens = computed(() => {
         </Card>
       </section>
     </template>
+
+    <!-- Clear history confirm -->
+    <ConfirmDialog
+      v-model:open="showClearDialog"
+      title="Clear Token Usage History"
+      description="This will permanently delete all token usage records. This action cannot be undone."
+      variant="destructive"
+      confirm-label="Clear All"
+      :loading="clearMutation.isPending.value"
+      @confirm="executeClear"
+    />
   </div>
 </template>
 
@@ -258,6 +290,10 @@ const maxDailyTokens = computed(() => {
   display: flex;
   gap: 1rem;
   align-items: flex-end;
+}
+
+.filter-group-end {
+  margin-left: auto;
 }
 
 .filter-group {

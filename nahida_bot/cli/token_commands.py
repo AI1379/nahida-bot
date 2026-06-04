@@ -19,6 +19,27 @@ from nahida_bot.db.engine import DatabaseEngine
 token_app = typer.Typer(help="Token usage statistics and management")
 console = Console()
 
+_CONFIG_YAML_CTX = "config_yaml"
+
+
+def _config_callback(ctx: typer.Context, config_yaml: str | None) -> None:
+    """Store the --config option in the Typer context for subcommands."""
+    if ctx.resilient_parsing:
+        return
+    ctx.ensure_object(dict)
+    ctx.obj[_CONFIG_YAML_CTX] = config_yaml
+
+
+@token_app.callback()
+def token_root(
+    ctx: typer.Context,
+    config: str | None = typer.Option(
+        None, "--config", "-c", help="Path to YAML configuration file"
+    ),
+) -> None:
+    """Token usage statistics and management."""
+    _config_callback(ctx, config)
+
 
 def _format_tokens(n: int) -> str:
     """Format a token count with thousands separators."""
@@ -36,9 +57,9 @@ def _format_cost(cost: float | None) -> str:
     return f"${cost:.4f}"
 
 
-async def _load_recorder() -> UsageRecorder | None:
+async def _load_recorder(config_yaml: str | None = None) -> UsageRecorder | None:
     """Create a UsageRecorder and load data from the configured database."""
-    settings = load_settings()
+    settings = load_settings(config_yaml=config_yaml)
     db_path = settings.db_path
     if not db_path:
         console.print("[red]No database path configured.[/red]")
@@ -58,13 +79,20 @@ async def _load_recorder() -> UsageRecorder | None:
     return recorder
 
 
+def _get_config_yaml(ctx: typer.Context) -> str | None:
+    """Extract the config YAML path from the Typer context."""
+    obj = ctx.obj or {}
+    return obj.get(_CONFIG_YAML_CTX)
+
+
 @token_app.command(name="stats")
 def stats(
+    ctx: typer.Context,
     provider: str = typer.Option("", "--provider", "-p", help="Filter by provider ID"),
     days: int = typer.Option(7, "--days", "-d", help="Days for daily breakdown"),
 ) -> None:
     """Show aggregate token usage statistics."""
-    recorder = asyncio.run(_load_recorder())
+    recorder = asyncio.run(_load_recorder(_get_config_yaml(ctx)))
     if recorder is None:
         return
 
@@ -138,13 +166,15 @@ def stats(
 
 @token_app.command(name="list")
 def list_events(
+    ctx: typer.Context,
     limit: int = typer.Option(20, "--limit", "-n", help="Number of events to show"),
     provider: str = typer.Option("", "--provider", "-p", help="Filter by provider ID"),
 ) -> None:
     """Show recent token usage events."""
+    config_yaml = _get_config_yaml(ctx)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    recorder = loop.run_until_complete(_load_recorder())
+    recorder = loop.run_until_complete(_load_recorder(config_yaml))
     if recorder is None:
         return
 
@@ -180,9 +210,9 @@ def list_events(
 
 
 @token_app.command(name="providers")
-def list_providers() -> None:
+def list_providers(ctx: typer.Context) -> None:
     """Show per-provider token consumption breakdown."""
-    recorder = asyncio.run(_load_recorder())
+    recorder = asyncio.run(_load_recorder(_get_config_yaml(ctx)))
     if recorder is None:
         return
 
@@ -217,6 +247,7 @@ def list_providers() -> None:
 
 @token_app.command(name="clear")
 def clear(
+    ctx: typer.Context,
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
 ) -> None:
     """Clear all token usage history."""
@@ -226,9 +257,10 @@ def clear(
             abort=True,
         )
 
+    config_yaml = _get_config_yaml(ctx)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    recorder = loop.run_until_complete(_load_recorder())
+    recorder = loop.run_until_complete(_load_recorder(config_yaml))
     if recorder is not None:
         loop.run_until_complete(recorder.clear())
         console.print("[green]Token usage history cleared.[/green]")

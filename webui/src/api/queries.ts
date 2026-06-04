@@ -40,6 +40,7 @@ import type {
   SystemActionRequest,
   SystemActionResponse,
   TokenStatsResponse,
+  TokenClearResponse,
   TokenEventsResponse,
   UpdateCronRequest,
   WorkspaceListResponse,
@@ -542,6 +543,24 @@ export function useTokenEvents(params?: Ref<{ provider_id?: string; limit?: numb
       if (v?.provider_id) p.set("provider_id", v.provider_id);
       p.set("limit", String(v?.limit ?? 100));
       return api.get(`/tokens/events?${p}`);
+    },
+  });
+}
+
+export function useTokenClear() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<TokenClearResponse, Error, void>({
+    mutationFn: () => api.del<TokenClearResponse>("/tokens?confirm=true"),
+    onSuccess(data) {
+      qc.invalidateQueries({ queryKey: ["tokens"] });
+      if (data.cleared) {
+        toast.add("Token usage history cleared.", "success");
+      }
+    },
+    onError(err) {
+      toast.add(`Clear failed: ${toApiError(err).detail}`, "error");
     },
   });
 }
