@@ -138,9 +138,17 @@ class PluginLoader:
 
         Note: Python's module caching makes full unload difficult. This is a
         best-effort cleanup used during hot-reload scenarios.
+
+        Builtin modules (``nahida_bot.*``) are never removed from
+        ``sys.modules`` because other code may hold direct references to them.
+        Removing them would cause ``unittest.mock.patch`` to re-import the
+        module as a *new* object, silently breaking any patches that target
+        the original module's namespace.
         """
         module_path = manifest.entrypoint.rsplit(":", 1)[0]
-        sys.modules.pop(module_path, None)
+        is_builtin = module_path.startswith("nahida_bot.")
+        if not is_builtin:
+            sys.modules.pop(module_path, None)
         self._module_to_plugin.pop(module_path, None)
         logger.debug(
             "plugin_loader.unloaded_module",

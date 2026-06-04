@@ -49,19 +49,16 @@ dev = [
     "python-dotenv>=1.0.1",
     "aiogram>=3.15.0",
     "aiohttp-socks>=0.8.0",
-
     # 类型检查
     "pyright>=1.1.0",
-
     # Linting & Formatting
     "ruff>=0.15.0",
-
     # Pre-commit
     "pre-commit>=4.0.0",
-
     # 文档生成
     "griffe>=2.0.0",
     "jinja2>=3.0.0",
+    "pytest-timeout>=2.4.0",
 ]
 
 telegram = [
