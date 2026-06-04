@@ -45,7 +45,7 @@ class ChatContext:
 
 @dataclass(slots=True, frozen=True)
 class MessageContext:
-    """Per-turn facts rendered as a compact LLM-visible message envelope."""
+    """Per-turn facts rendered as structured LLM-visible context data."""
 
     timestamp: float = 0.0
     channel: str = ""

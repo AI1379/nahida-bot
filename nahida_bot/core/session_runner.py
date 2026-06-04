@@ -28,6 +28,7 @@ from nahida_bot.core.message_context import (
     message_context_from_metadata,
     message_context_to_metadata,
     render_message_with_context,
+    strip_envelope_prefix,
 )
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
@@ -2216,13 +2217,15 @@ class SessionRunner:
         seen: set[str] = set()
 
         for message in assistant_messages:
-            content = str(getattr(message, "content", "") or "")
+            content = strip_envelope_prefix(str(getattr(message, "content", "") or ""))
             if not content or content in seen:
                 continue
             visible.append((content, message))
             seen.add(content)
 
-        final_response = str(getattr(result, "final_response", "") or "")
+        final_response = strip_envelope_prefix(
+            str(getattr(result, "final_response", "") or "")
+        )
         fallback_metadata_source = (
             assistant_messages[-1] if assistant_messages else None
         )

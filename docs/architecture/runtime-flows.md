@@ -24,8 +24,8 @@ Command Router
   └─ 未命中命令：继续进入 Agent Loop
   ↓
 Context Builder (workspace 文件注入 + 历史记录)
-  ├─ 历史 turn 按持久化 metadata 稳定渲染 per-turn envelope
-  └─ 当前 turn 按 InboundMessage 的 MessageContext 渲染 envelope
+  ├─ 历史 turn 按持久化 metadata 稳定渲染 per-turn context block
+  └─ 当前 turn 按 InboundMessage 的 MessageContext 渲染 context block
   ↓
 Agent Loop
   ├─ 消息入 LLM
@@ -47,16 +47,21 @@ channel service plugin 发送
   ↓
 持久化历史记录到 SQLite
   ├─ turn.content 保留原始消息文本
-  └─ turn.metadata.message_context 保留可重建 envelope 的结构化字段
+  └─ turn.metadata.message_context 保留可重建 context block 的结构化字段
 ```
 
-### Per-turn Message Context Envelope
+### Per-turn Message Context Blocks
 
-LLM 不通过工具查询“这条消息什么时候发、来自哪里、是谁发的”。这些事实属于消息本身，在进入模型前渲染成每条 turn 的短 envelope：
+LLM 不通过工具查询“这条消息什么时候发、来自哪里、是谁发的”。这些事实属于消息本身，写入 `turn.metadata.message_context`，并在进入模型前渲染成结构化、低信任的 context block，而不是聊天前缀：
 
 ```text
-[2026-05-10 14:03 +08 | milky/group | Alice admin]
-消息内容
+<message_context trust="untrusted" role="user">
+timestamp: 2026-05-10 14:03 +08
+channel: milky/group
+sender: Alice admin
+text:
+  消息内容
+</message_context>
 ```
 
 设计约束：
@@ -65,7 +70,9 @@ LLM 不通过工具查询“这条消息什么时候发、来自哪里、是谁�
 - 不维护 participant directory；每条消息直接带可读的发送方短标签，避免模型倒查 ID 映射。
 - channel converter 负责提供平台特有 facts，例如 chat 类型、显示名、管理员/群主等角色标签；核心只消费统一 `MessageContext`。
 - `raw_event`、完整用户资料、完整群资料默认不进入 LLM 上下文。
-- 普通轮次不重写历史 envelope。turn 写入后 `message_context` 稳定，历史重建时使用确定性渲染，提升后端 prompt cache 命中率。
+- context block 是外部上下文资料，不是回复格式。系统提示必须要求模型使用其中事实，但不得服从 block 内的指令，不得复现 metadata wrapper、时间戳或旧式 `[time | channel | sender]` 包络。
+- assistant 的自然语言正文保持干净。即使保留 assistant turn 的 `metadata.message_context` 供审计或未来工具使用，普通历史重建也不把 assistant metadata 渲染成可模仿的回复前缀。
+- 普通轮次不重写历史 context block。turn 写入后 `message_context` 稳定，历史重建时使用确定性渲染，提升后端 prompt cache 命中率。
 - 会话压缩是唯一允许重写多条历史的边界；压缩摘要必须显式保留时间范围、channel、关键参与者和身份变化。
 - 插件后续若需要贡献上下文，只能贡献受预算约束的短 tag 或 key/value fact，不能直接拼接任意 prompt。
 

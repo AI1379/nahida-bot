@@ -429,7 +429,7 @@ class InboundMessage:
     attachments: list[InboundAttachment]  # 附件列表
     sender_context: SenderContext | None  # 发送者信息
     chat_context: ChatContext | None      # 聊天信息
-    message_context: MessageContext | None  # LLM 信封渲染
+    message_context: MessageContext | None  # LLM context block 渲染
     mentions_bot: bool       # 是否 @了 bot
     mentioned_user_ids: tuple[str, ...]   # 被 @的用户 ID 列表
 ```

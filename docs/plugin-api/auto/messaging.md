@@ -60,7 +60,7 @@ Short, provider-safe facts about the chat that produced one message.
 
 ### MessageContext
 
-Per-turn facts rendered as a compact LLM-visible message envelope.
+Per-turn facts rendered as structured LLM-visible context data.
 
 | 字段 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|

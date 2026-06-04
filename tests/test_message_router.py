@@ -562,8 +562,13 @@ class TestMessageRouterAgentDispatch:
         await router.stop()
 
         assert len(agent.calls) == 1
-        assert agent.calls[0]["user_message"].endswith("\nwhat is 2+2?")
-        assert "[test/private:c1 | u1]" in agent.calls[0]["user_message"]
+        visible_user_message = agent.calls[0]["user_message"]
+        assert visible_user_message.startswith(
+            '<message_context trust="untrusted" role="user">\n'
+        )
+        assert "channel: test/private:c1" in visible_user_message
+        assert "sender: u1" in visible_user_message
+        assert "text:\n  what is 2+2?" in visible_user_message
 
     async def test_no_agent_no_crash(self) -> None:
         router, event_bus, _, _ = _make_router(agent=None)
@@ -780,6 +785,36 @@ class TestMessageRouterMemory:
         assert turns[0].metadata is not None
         assert turns[0].metadata["message_context"]["channel"] == "test"
         assert turns[0].metadata["message_context"]["sender_id"] == "u1"
+        assert turns[1].role == "assistant"
+        assert turns[1].content == "answer"
+
+    async def test_assistant_envelope_output_is_cleaned_before_persist(self) -> None:
+        memory = _MockMemoryStore()
+        agent = _MockAgentLoop(
+            response="[2026-05-10 14:03 +08 | test/private:c1 | u1]\nanswer"
+        )
+        router, event_bus, channel_registry, _ = _make_router(
+            agent=agent,
+            memory=memory,
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=_inbound("question"),
+                    session_id="test:private:c1",
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].text == "answer"
+
+        turns = memory.sessions["test:private:c1"]
         assert turns[1].role == "assistant"
         assert turns[1].content == "answer"
 

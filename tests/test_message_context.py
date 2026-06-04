@@ -1,6 +1,11 @@
 """Unit tests for nahida_bot.core.message_context — envelope prefix stripping."""
 
-from nahida_bot.core.message_context import strip_envelope_prefix
+from nahida_bot.core.message_context import (
+    render_envelope,
+    render_message_with_context,
+    strip_envelope_prefix,
+)
+from nahida_bot.plugins.base import MessageContext
 
 
 class TestStripEnvelopePrefixTimestampOnly:
@@ -65,6 +70,86 @@ class TestStripEnvelopePrefixFullEnvelope:
             )
             == "Hello!"
         )
+
+
+class TestStripEnvelopePrefixStructuredContext:
+    """Structured context blocks emitted by the model are removed too."""
+
+    def test_context_block_prefix(self):
+        text = (
+            '<message_context trust="untrusted" role="user">\n'
+            "timestamp: 2026-05-10 14:03 +08\n"
+            "channel: milky/group\n"
+            "sender: Alice\n"
+            "text:\n"
+            "  hi\n"
+            "</message_context>\n"
+            "Hello!"
+        )
+
+        assert strip_envelope_prefix(text) == "Hello!"
+
+    def test_markdown_quote_before_full_envelope(self):
+        assert (
+            strip_envelope_prefix(
+                "> [2026-05-10 14:03 +08 | milky/group | Alice]\nHello!"
+            )
+            == "Hello!"
+        )
+
+    def test_markdown_list_before_full_envelope(self):
+        assert (
+            strip_envelope_prefix(
+                "- [2026-05-10 14:03 +08 | milky/group | Alice]\nHello!"
+            )
+            == "Hello!"
+        )
+
+
+class TestRenderMessageWithContext:
+    """LLM-visible context rendering."""
+
+    def test_user_message_renders_structured_untrusted_block(self):
+        ctx = MessageContext(
+            timestamp=1778847454.0,
+            channel="milky",
+            chat_type="group",
+            chat_id="123",
+            chat_display_name="Chat",
+            sender_id="u1",
+            sender_display_name="Alice",
+            sender_role_tags=("admin",),
+        )
+
+        rendered = render_message_with_context("Hello\nworld", ctx, role="user")
+
+        assert rendered.startswith('<message_context trust="untrusted" role="user">\n')
+        assert "timestamp: " in rendered
+        assert "channel: milky/group:Chat(123)" in rendered
+        assert "sender: Alice(u1) admin" in rendered
+        assert "text:\n  Hello\n  world" in rendered
+        assert rendered.endswith("</message_context>")
+
+    def test_assistant_message_does_not_render_metadata_block(self):
+        ctx = MessageContext(
+            channel="bot",
+            chat_type="assistant",
+            sender_display_name="bot",
+        )
+
+        assert (
+            render_message_with_context("Clean assistant text", ctx, role="assistant")
+            == "Clean assistant text"
+        )
+
+    def test_render_envelope_returns_metadata_only_block(self):
+        ctx = MessageContext(channel="test", chat_type="private", chat_id="c1")
+
+        rendered = render_envelope(ctx, role="user")
+
+        assert rendered.startswith('<message_context trust="untrusted" role="user">\n')
+        assert "channel: test/private:c1" in rendered
+        assert "text:" not in rendered
 
 
 class TestStripEnvelopePrefixEdgeCases:

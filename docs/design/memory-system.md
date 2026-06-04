@@ -32,7 +32,7 @@ Nahida Bot 不应直接引入 Microsoft GraphRAG、LlamaIndex GraphRAG 这类重
 - SQLite 表包括 `sessions`、`memory_turns`、`memory_keywords`。
 - `SQLiteMemoryStore.search()` 通过 jieba/英文分词后做关键词 OR 匹配。
 - `SessionRunner._load_history()` 每轮加载最近 N 条 turn 作为短期历史。
-- `metadata.message_context` 已用于稳定重建 channel、sender、chat 类型等 envelope facts。
+- `metadata.message_context` 已用于稳定重建 channel、sender、chat 类型等 context facts。
 - 多模态附件默认不持久化 base64 或临时 URL，只保留引用、缓存路径和描述。
 
 主要不足：
@@ -253,12 +253,12 @@ workspace/
 - 最近对话窗口。
 - 用户可读历史。
 - 多模态引用恢复。
-- message envelope 稳定重建。
+- message context block 稳定重建。
 
 原则：
 
 - 不把 `memory_turns` 当长期事实库。
-- 不对普通 turn 动态改写 envelope。
+- 不对普通 turn 动态改写 context block；assistant 正文保持干净，不回灌 metadata wrapper。
 - tool transcript 不应只靠 `memory_turns` 表达。
 
 ### 5.2 Agent Run Log
