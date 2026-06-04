@@ -318,11 +318,12 @@ class MessageRouter:
         address = _address_from_inbound(inbound)
         session_id = self.get_active_session_id(address)
         logger.debug(
-            "router.dispatch",
-            platform=inbound.platform,
-            chat_id=inbound.chat_id,
-            session_id=session_id,
-            text_preview=inbound.text[:100],
+            "router.message_received",
+            source=event.source,
+            payload_session_id=event.payload.session_id,
+            active_session_id=session_id,
+            chat_address=str(address),
+            **_inbound_log_fields(inbound),
         )
         workspace_id = self._resolve_workspace_id()
 
@@ -352,15 +353,36 @@ class MessageRouter:
         """Persist an observed-only inbound message without running the agent."""
         runner = self._runner
         if runner is None or not self._config.group_context_enabled:
+            logger.debug(
+                "router.observed_skipped",
+                reason=("no_runner" if runner is None else "group_context_disabled"),
+                source=event.source,
+                payload_session_id=event.payload.session_id,
+            )
             return
 
         inbound: InboundMessage = event.payload.message
         if not inbound.is_group:
+            logger.debug(
+                "router.observed_skipped",
+                reason="not_group",
+                source=event.source,
+                payload_session_id=event.payload.session_id,
+                **_inbound_log_fields(inbound),
+            )
             return
 
         address = _address_from_inbound(inbound)
         session_id = self.get_active_session_id(address)
         workspace_id = self._resolve_workspace_id()
+        logger.debug(
+            "router.observed_received",
+            source=event.source,
+            payload_session_id=event.payload.session_id,
+            active_session_id=session_id,
+            chat_address=str(address),
+            **_inbound_log_fields(inbound),
+        )
         session_ctx = SessionContext(
             platform=inbound.platform,
             chat_id=inbound.chat_id,
@@ -381,6 +403,12 @@ class MessageRouter:
                 session_id=session_id,
                 workspace_id=workspace_id,
             )
+            logger.debug(
+                "router.observed_persisted",
+                session_id=session_id,
+                workspace_id=workspace_id or "",
+                **_inbound_log_fields(inbound),
+            )
         finally:
             current_session.reset(token)
 
@@ -391,6 +419,12 @@ class MessageRouter:
         workspace_id: str | None,
     ) -> None:
         """Command matching + agent execution (called within session context)."""
+        logger.debug(
+            "router.dispatch_start",
+            session_id=session_id,
+            workspace_id=workspace_id or "",
+            **_inbound_log_fields(inbound),
+        )
         # Step 1: Command matching
         match = self._matcher.match(inbound.text, prefix=inbound.command_prefix)
         if match.matched:
@@ -428,12 +462,38 @@ class MessageRouter:
                     )
                     await self._send_outbound(inbound, session_id, outbound)
                 return
+            logger.debug(
+                "router.command_missing",
+                command=match.name,
+                session_id=session_id,
+                command_prefix=inbound.command_prefix,
+                args_chars=len(match.args),
+            )
         if self._stopping:
+            logger.debug(
+                "router.dispatch_skipped",
+                reason="stopping",
+                session_id=session_id,
+                **_inbound_log_fields(inbound),
+            )
             return
         runner = self._runner
         if runner is None or not runner.has_agent:
+            logger.debug(
+                "router.dispatch_skipped",
+                reason="no_agent",
+                session_id=session_id,
+                has_runner=runner is not None,
+                **_inbound_log_fields(inbound),
+            )
             return
         if not self._config.agent_enabled:
+            logger.debug(
+                "router.dispatch_skipped",
+                reason="agent_disabled",
+                session_id=session_id,
+                **_inbound_log_fields(inbound),
+            )
             return
 
         tracker = runner.run_tracker
@@ -445,6 +505,7 @@ class MessageRouter:
                 "router.message_queued",
                 session_id=session_id,
                 queue_depth=len(self._pending.get(session_id, [])),
+                **_inbound_log_fields(inbound),
             )
             return
 
@@ -458,8 +519,8 @@ class MessageRouter:
         logger.debug(
             "router.agent_dispatched",
             session_id=session_id,
-            platform=inbound.platform,
-            chat_id=inbound.chat_id,
+            workspace_id=workspace_id or "",
+            **_inbound_log_fields(inbound),
         )
 
     async def _run_agent_in_background(
@@ -474,6 +535,14 @@ class MessageRouter:
         tracker = runner.run_tracker
         last_sent = ""
         reasoning_display = await self._load_reasoning_display_config(session_id)
+        logger.debug(
+            "router.agent_run_start",
+            session_id=session_id,
+            workspace_id=workspace_id or "",
+            reasoning_display=reasoning_display.show,
+            reasoning_max_chars=reasoning_display.max_chars,
+            **_inbound_log_fields(inbound),
+        )
         try:
             async for event in runner.run_stream(
                 user_message=inbound.text,
@@ -485,6 +554,17 @@ class MessageRouter:
                 source_tag="user_input",
                 stop_event=stop_event,
             ):
+                logger.debug(
+                    "router.agent_event",
+                    session_id=session_id,
+                    event_type=event.type,
+                    trace_id=event.trace_id or "",
+                    text_chars=len(event.text or ""),
+                    reasoning_chars=len(event.reasoning or ""),
+                    final_response_chars=len(event.final_response or ""),
+                    tool_names=list(event.tool_names or []),
+                    error=event.error or "",
+                )
                 if event.type == "text":
                     reasoning = self._prepare_reasoning(
                         event.reasoning,
@@ -607,8 +687,22 @@ class MessageRouter:
     ) -> None:
         """Send response through the originating channel."""
         if not text and not reasoning:
+            logger.debug(
+                "router.response_skipped",
+                reason="empty_response",
+                session_id=session_id,
+                **_inbound_log_fields(inbound),
+            )
             return
 
+        logger.debug(
+            "router.response_prepared",
+            session_id=session_id,
+            response_text_chars=len(text),
+            response_reasoning_chars=len(reasoning),
+            default_reply_to=self._default_reply_to(inbound),
+            **_inbound_log_fields(inbound),
+        )
         await self._send_outbound(
             inbound,
             session_id,
@@ -640,6 +734,13 @@ class MessageRouter:
     ) -> None:
         """Send an outbound message through the originating channel."""
         if not outbound.text and not outbound.attachments:
+            logger.debug(
+                "message_router.outbound_skipped",
+                reason="empty_outbound",
+                session_id=session_id,
+                **_inbound_log_fields(inbound),
+                **_outbound_log_fields(outbound),
+            )
             return
 
         channel = self._channels.get(inbound.platform)
@@ -647,15 +748,24 @@ class MessageRouter:
             logger.warning(
                 "message_router.no_channel",
                 platform=inbound.platform,
+                session_id=session_id,
             )
             return
 
         # Publish MessageSending event for observation/audit hooks.
-        await self._event_bus.publish(
+        sending_result = await self._event_bus.publish(
             MessageSending(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="message_router",
             )
+        )
+        logger.debug(
+            "message_router.message_sending_published",
+            session_id=session_id,
+            dispatched=sending_result.dispatched,
+            failure_count=len(sending_result.failures),
+            **_inbound_log_fields(inbound),
+            **_outbound_log_fields(outbound),
         )
 
         outbound_message = (
@@ -665,10 +775,31 @@ class MessageRouter:
         )
 
         # Send via channel.
-        msg_id = await channel.send_message(inbound.chat_id, outbound_message)
+        logger.debug(
+            "message_router.channel_send_start",
+            session_id=session_id,
+            channel=inbound.platform,
+            target=inbound.chat_id,
+            **_inbound_log_fields(inbound),
+            **_outbound_log_fields(outbound_message),
+        )
+        started_at = time.monotonic()
+        try:
+            msg_id = await channel.send_message(inbound.chat_id, outbound_message)
+        except Exception:
+            logger.exception(
+                "message_router.channel_send_failed",
+                session_id=session_id,
+                channel=inbound.platform,
+                target=inbound.chat_id,
+                latency_seconds=round(time.monotonic() - started_at, 3),
+                **_inbound_log_fields(inbound),
+                **_outbound_log_fields(outbound_message),
+            )
+            raise
 
         # Publish MessageSent event
-        await self._event_bus.publish(
+        sent_result = await self._event_bus.publish(
             MessageSent(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="message_router",
@@ -679,7 +810,12 @@ class MessageRouter:
             "message_router.response_sent",
             platform=inbound.platform,
             chat_id=inbound.chat_id,
+            session_id=session_id,
             msg_id=msg_id,
+            latency_seconds=round(time.monotonic() - started_at, 3),
+            message_sent_dispatched=sent_result.dispatched,
+            message_sent_failure_count=len(sent_result.failures),
+            **_outbound_log_fields(outbound_message),
         )
 
     async def _execute_command(
@@ -780,3 +916,33 @@ def _with_chat_address(
         extra=extra,
         attachments=outbound.attachments,
     )
+
+
+def _inbound_log_fields(inbound: InboundMessage) -> dict[str, object]:
+    return {
+        "platform": inbound.platform,
+        "chat_id": inbound.chat_id,
+        "user_id": inbound.user_id,
+        "message_id": inbound.message_id,
+        "is_group": inbound.is_group,
+        "text_chars": len(inbound.text),
+        "text_preview": inbound.text[:120],
+        "attachment_count": len(inbound.attachments),
+        "attachment_kinds": [att.kind for att in inbound.attachments],
+        "mentions_bot": inbound.mentions_bot,
+        "mentioned_user_ids": list(inbound.mentioned_user_ids),
+        "reply_to": inbound.reply_to,
+        "command_prefix": inbound.command_prefix,
+    }
+
+
+def _outbound_log_fields(outbound: OutboundMessage) -> dict[str, object]:
+    return {
+        "outbound_text_chars": len(outbound.text),
+        "outbound_text_preview": outbound.text[:120],
+        "outbound_reasoning_chars": len(outbound.reasoning),
+        "outbound_attachment_count": len(outbound.attachments),
+        "outbound_attachment_types": [att.type for att in outbound.attachments],
+        "outbound_reply_to": outbound.reply_to,
+        "outbound_extra_keys": sorted(outbound.extra.keys()),
+    }

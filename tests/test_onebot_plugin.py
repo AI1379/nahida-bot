@@ -69,6 +69,34 @@ async def test_handle_v11_cq_fallback_group_mention_publishes_received() -> None
     assert inbound.mentioned_user_ids == ("999",)
 
 
+async def test_handle_v11_message_string_group_mention_publishes_received() -> None:
+    api = RecordingMockBotAPI()
+    plugin = OneBotPlugin(api=api, manifest=_manifest())
+
+    await plugin.handle_inbound_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "sub_type": "normal",
+            "message_id": 123,
+            "group_id": 20001,
+            "user_id": 10001,
+            "self_id": 999,
+            "time": 1700000000,
+            "message": "[CQ:at,qq=999] ping",
+            "sender": {"nickname": "Alice", "role": "member"},
+        }
+    )
+
+    assert len(api.published_events) == 1
+    event = api.published_events[0]
+    assert isinstance(event, MessageReceived)
+    inbound = event.payload.message
+    assert inbound.text == "ping"
+    assert inbound.mentions_bot is True
+    assert inbound.mentioned_user_ids == ("999",)
+
+
 async def test_send_message_uses_chat_address_for_group_target() -> None:
     api = RecordingMockBotAPI()
     plugin = OneBotPlugin(api=api, manifest=_manifest())

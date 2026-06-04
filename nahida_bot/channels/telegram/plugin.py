@@ -139,20 +139,57 @@ class TelegramPlugin(Plugin):
         """
         message_data = event.get("message")
         if not message_data or not isinstance(message_data, dict):
+            logger.debug(
+                "telegram.update_ignored",
+                reason="missing_message",
+                update_id=event.get("update_id", ""),
+            )
             return
+        logger.debug(
+            "telegram.message_event_received",
+            channel=self.channel_id,
+            **_telegram_message_log_fields(message_data),
+        )
 
         normalized_message = dict(message_data)
         text = self._extract_message_text(normalized_message)
         if not text:
+            logger.debug(
+                "telegram.message_dropped",
+                reason="empty_text",
+                channel=self.channel_id,
+                **_telegram_message_log_fields(message_data),
+            )
             return
         normalized_message["text"] = text
 
         inbound = self._converter.to_inbound(normalized_message)
+        logger.debug(
+            "telegram.message_normalized",
+            channel=self.channel_id,
+            **_inbound_log_fields(inbound),
+        )
         decision = GroupInteractionPolicy(
             mode=self.config.group_trigger_mode,
             observe_untriggered=self.config.group_context_capture,
         ).decide(inbound)
+        logger.debug(
+            "telegram.message_decision",
+            channel=self.channel_id,
+            reason=decision.reason,
+            observe=decision.observe,
+            respond=decision.respond,
+            group_trigger_mode=self.config.group_trigger_mode,
+            group_context_capture=self.config.group_context_capture,
+            **_inbound_log_fields(inbound),
+        )
         if not decision.observe:
+            logger.debug(
+                "telegram.message_filtered",
+                channel=self.channel_id,
+                reason=decision.reason,
+                **_inbound_log_fields(inbound),
+            )
             return
 
         # Telegram chat_id sign convention: negative = group/supergroup
@@ -165,11 +202,25 @@ class TelegramPlugin(Plugin):
         session_id = MessageRouter.make_session_id(address)
         event_type = MessageReceived if decision.respond else MessageObserved
 
+        logger.debug(
+            "telegram.message_publish_start",
+            channel=self.channel_id,
+            emitted_event=event_type.__name__,
+            session_id=session_id,
+            **_inbound_log_fields(inbound),
+        )
         await self.api.publish_event(
             event_type(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="telegram",
             )
+        )
+        logger.debug(
+            "telegram.message_publish_done",
+            channel=self.channel_id,
+            emitted_event=event_type.__name__,
+            session_id=session_id,
+            **_inbound_log_fields(inbound),
         )
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
@@ -181,6 +232,13 @@ class TelegramPlugin(Plugin):
         """
         assert self._bot is not None
         last_msg_id = ""
+        send_count = 0
+        logger.debug(
+            "telegram.send_start",
+            channel=self.channel_id,
+            target=target,
+            **_outbound_log_fields(message),
+        )
 
         # 0. Send reasoning as a blockquote before the main text
         if message.reasoning:
@@ -194,6 +252,7 @@ class TelegramPlugin(Plugin):
                     {"chat_id": int(target), "text": chunk},
                 )
                 last_msg_id = str(sent.message_id)
+                send_count += 1
 
         # 1. Send text (converted from Markdown to Telegram HTML)
         if message.text:
@@ -212,13 +271,23 @@ class TelegramPlugin(Plugin):
 
                 sent = await self._send_with_retry(self._bot.send_message, kwargs)
                 last_msg_id = str(sent.message_id)
+                send_count += 1
 
         # 2. Send attachments
         for attachment in message.attachments:
             sent_id = await self._send_attachment(target, attachment)
             if sent_id:
                 last_msg_id = sent_id
+                send_count += 1
 
+        logger.debug(
+            "telegram.send_done",
+            channel=self.channel_id,
+            target=target,
+            message_id=last_msg_id,
+            send_count=send_count,
+            **_outbound_log_fields(message),
+        )
         return last_msg_id
 
     async def get_user_info(self, user_id: str) -> dict[str, Any]:
@@ -560,3 +629,50 @@ class TelegramPlugin(Plugin):
             return max(0.0, float(value))
         except (TypeError, ValueError):
             return None
+
+
+def _telegram_message_log_fields(message_data: dict[str, Any]) -> dict[str, object]:
+    chat = message_data.get("chat")
+    if not isinstance(chat, dict):
+        chat = {}
+    sender = message_data.get("from")
+    if not isinstance(sender, dict):
+        sender = {}
+    return {
+        "message_id": str(message_data.get("message_id", "")),
+        "chat_id": str(chat.get("id", "")),
+        "chat_type": str(chat.get("type", "")),
+        "user_id": str(sender.get("id", "")),
+        "has_text": bool(message_data.get("text")),
+        "has_caption": bool(message_data.get("caption")),
+        "keys": sorted(message_data.keys()),
+    }
+
+
+def _inbound_log_fields(inbound: Any) -> dict[str, object]:
+    return {
+        "platform": inbound.platform,
+        "chat_id": inbound.chat_id,
+        "user_id": inbound.user_id,
+        "message_id": inbound.message_id,
+        "is_group": inbound.is_group,
+        "text_chars": len(inbound.text),
+        "text_preview": inbound.text[:120],
+        "attachment_count": len(inbound.attachments),
+        "attachment_kinds": [attachment.kind for attachment in inbound.attachments],
+        "mentions_bot": inbound.mentions_bot,
+        "mentioned_user_ids": list(inbound.mentioned_user_ids),
+        "reply_to": inbound.reply_to,
+    }
+
+
+def _outbound_log_fields(message: OutboundMessage) -> dict[str, object]:
+    return {
+        "text_chars": len(message.text),
+        "text_preview": message.text[:120],
+        "reasoning_chars": len(message.reasoning),
+        "attachment_count": len(message.attachments),
+        "attachment_types": [attachment.type for attachment in message.attachments],
+        "reply_to": message.reply_to,
+        "extra_keys": sorted(message.extra.keys()),
+    }

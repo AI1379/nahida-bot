@@ -341,6 +341,10 @@ class AgentLoop:
                         step=step,
                         max_steps=self.config.max_steps,
                         finish_reason=response.finish_reason or "",
+                        total_input_tokens=total_usage.input_tokens,
+                        total_output_tokens=total_usage.output_tokens,
+                        total_cached_tokens=total_usage.cached_tokens,
+                        total_reasoning_tokens=total_usage.reasoning_tokens,
                     )
                     yield LoopEvent(
                         type="done",
@@ -407,6 +411,10 @@ class AgentLoop:
                 max_steps=self.config.max_steps,
                 assistant_message_count=len(assistant_messages),
                 tool_message_count=len(tool_messages),
+                total_input_tokens=total_usage.input_tokens,
+                total_output_tokens=total_usage.output_tokens,
+                total_cached_tokens=total_usage.cached_tokens,
+                total_reasoning_tokens=total_usage.reasoning_tokens,
             )
             yield LoopEvent(
                 type="done",
@@ -430,6 +438,10 @@ class AgentLoop:
                 step=step,
                 max_steps=self.config.max_steps,
                 error_code=exc.code,
+                total_input_tokens=total_usage.input_tokens,
+                total_output_tokens=total_usage.output_tokens,
+                total_cached_tokens=total_usage.cached_tokens,
+                total_reasoning_tokens=total_usage.reasoning_tokens,
             )
             fallback = assistant_messages[-1].content if assistant_messages else ""
             if not fallback:
@@ -503,6 +515,20 @@ class AgentLoop:
                     finish_reason=response.finish_reason or "",
                     tool_call_count=len(response.tool_calls),
                     content_chars=len(response.content or ""),
+                    reasoning_chars=len(response.reasoning_content or ""),
+                    refusal_chars=len(response.refusal or ""),
+                    usage_input_tokens=(
+                        response.usage.input_tokens if response.usage else 0
+                    ),
+                    usage_output_tokens=(
+                        response.usage.output_tokens if response.usage else 0
+                    ),
+                    usage_cached_tokens=(
+                        response.usage.cached_tokens if response.usage else 0
+                    ),
+                    usage_reasoning_tokens=(
+                        response.usage.reasoning_tokens if response.usage else 0
+                    ),
                     response_extra_keys=sorted(response.extra.keys()),
                     raw_response_summary=self._raw_response_summary(
                         response.raw_response

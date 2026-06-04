@@ -381,6 +381,21 @@ class SessionRunner:
         )
         runtime_token = current_runtime_settings.set(runtime_settings)
         done_data: dict[str, Any] = {}
+        logger.debug(
+            "session_runner.run_stream_start",
+            session_id=session_id,
+            source_tag=source_tag,
+            workspace_id=workspace_id or "",
+            provider_id=provider_id or "",
+            requested_model=model or "",
+            reasoning_effort=reasoning_effort or "",
+            user_message_chars=len(user_message),
+            user_message_preview=user_message[:120],
+            attachment_count=len(attachments_for_turn),
+            attachment_kinds=[att.kind for att in attachments_for_turn],
+            stop_requested=stop_event.is_set() if stop_event is not None else False,
+            **_message_context_log_fields(message_context),
+        )
         try:
             provider_slot, selected_model = await self._resolve_provider(
                 session_id,
@@ -460,9 +475,21 @@ class SessionRunner:
             )
             if observed_context is not None:
                 history.append(observed_context)
+                logger.debug(
+                    "session_runner.group_observed_context_added",
+                    session_id=session_id,
+                    observed_context_chars=len(observed_context.content),
+                    history_count=len(history),
+                )
             relevant_memory = await self._load_relevant_memory(user_message)
             if relevant_memory:
                 history = [relevant_memory, *history]
+                logger.debug(
+                    "session_runner.relevant_memory_added",
+                    session_id=session_id,
+                    relevant_memory_chars=len(relevant_memory.content),
+                    history_count=len(history),
+                )
             tools = self._collect_tools(
                 tool_filter,
                 tool_allowlist=tool_allowlist,
@@ -555,6 +582,18 @@ class SessionRunner:
                 run_kwargs["stop_event"] = stop_event
 
             async for event in self._agent.run_stream(**run_kwargs):
+                logger.debug(
+                    "session_runner.agent_event",
+                    session_id=session_id,
+                    event_type=event.type,
+                    trace_id=event.trace_id or "",
+                    text_chars=len(event.text or ""),
+                    reasoning_chars=len(event.reasoning or ""),
+                    final_response_chars=len(event.final_response or ""),
+                    tool_names=list(event.tool_names or []),
+                    steps=event.steps,
+                    error=event.error or "",
+                )
                 if event.type == "done":
                     done_data = {
                         "final_response": event.final_response or "",
@@ -2243,7 +2282,26 @@ class SessionRunner:
     ) -> None:
         """Persist a group message as context without running the agent."""
         if self._memory is None:
+            logger.debug(
+                "session_runner.observed_persist_skipped",
+                reason="no_memory_store",
+                session_id=session_id,
+                platform=inbound.platform,
+                chat_id=inbound.chat_id,
+                message_id=inbound.message_id,
+            )
             return
+        logger.debug(
+            "session_runner.observed_persist_start",
+            session_id=session_id,
+            workspace_id=workspace_id or "",
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            message_id=inbound.message_id,
+            text_chars=len(inbound.text),
+            mentions_bot=inbound.mentions_bot,
+            mentioned_user_ids=list(inbound.mentioned_user_ids),
+        )
         await self._memory.ensure_session(session_id, workspace_id=workspace_id)
         metadata = await self._build_user_turn_metadata(
             attachments=inbound.attachments,
@@ -2267,6 +2325,14 @@ class SessionRunner:
                 metadata=metadata,
             ),
         )
+        logger.debug(
+            "session_runner.observed_persist_done",
+            session_id=session_id,
+            workspace_id=workspace_id or "",
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            message_id=inbound.message_id,
+        )
 
     async def _persist_turns(
         self,
@@ -2282,7 +2348,24 @@ class SessionRunner:
         workspace_root: Any = None,
     ) -> None:
         if self._memory is None:
+            logger.debug(
+                "session_runner.persist_turns_skipped",
+                reason="no_memory_store",
+                session_id=session_id,
+                source_tag=source_tag,
+            )
             return
+        logger.debug(
+            "session_runner.persist_turns_start",
+            session_id=session_id,
+            source_tag=source_tag,
+            workspace_id=workspace_id or "",
+            user_message_chars=len(user_message),
+            attachment_count=len(attachments),
+            attachment_kinds=[att.kind for att in attachments],
+            final_response_chars=len(str(getattr(result, "final_response", "") or "")),
+            **_message_context_log_fields(message_context),
+        )
         metadata = await self._build_user_turn_metadata(
             attachments=attachments,
             image_descriptions=image_descriptions,
@@ -2344,6 +2427,13 @@ class SessionRunner:
             assistant_message="\n\n".join(turn.content for turn in assistant_turns),
             workspace_id=workspace_id,
             workspace_root=workspace_root,
+        )
+        logger.debug(
+            "session_runner.persist_turns_done",
+            session_id=session_id,
+            source_tag=source_tag,
+            workspace_id=workspace_id or "",
+            persisted_assistant_turn_count=len(assistant_turns),
         )
 
     async def _consolidate_memory_after_turn(
@@ -2422,3 +2512,25 @@ def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
             return model
         return f"{provider_id}/{model}"
     return model
+
+
+def _message_context_log_fields(message_context: Any | None) -> dict[str, object]:
+    if message_context is None:
+        return {
+            "context_channel": "",
+            "context_chat_type": "",
+            "context_chat_id": "",
+            "context_sender_id": "",
+            "context_sender_roles": [],
+            "has_message_context": False,
+        }
+    return {
+        "context_channel": getattr(message_context, "channel", ""),
+        "context_chat_type": getattr(message_context, "chat_type", ""),
+        "context_chat_id": getattr(message_context, "chat_id", ""),
+        "context_sender_id": getattr(message_context, "sender_id", ""),
+        "context_sender_roles": list(
+            getattr(message_context, "sender_role_tags", ()) or ()
+        ),
+        "has_message_context": True,
+    }

@@ -107,7 +107,25 @@ class OneBotPlugin(Plugin):
 
         event_type = protocol.detect_event_type(event)
         if event_type is None:
+            logger.debug(
+                "onebot.event_ignored",
+                reason="unknown_event_type",
+                version=version,
+                channel=self.channel_id,
+            )
             return
+        logger.debug(
+            "onebot.event_received",
+            version=version,
+            event_type=event_type,
+            channel=self.channel_id,
+            post_type=event.get("post_type", ""),
+            message_type=event.get("message_type", ""),
+            message_id=event.get("message_id", ""),
+            group_id=event.get("group_id", ""),
+            user_id=event.get("user_id", ""),
+            self_id=event.get("self_id", ""),
+        )
 
         if not event_type.startswith("message."):
             self._handle_non_message_event(protocol, event, event_type)
@@ -126,7 +144,20 @@ class OneBotPlugin(Plugin):
             chat_type=chat_type,
         )
         if inbound is None:
+            logger.debug(
+                "onebot.message_dropped_by_converter",
+                channel=self.channel_id,
+                chat_type=chat_type,
+                chat_id=normalized.group_id if is_group else normalized.user_id,
+                message_id=normalized.message_id,
+                self_id=self._self_id,
+            )
             return
+        logger.debug(
+            "onebot.message_normalized",
+            channel=self.channel_id,
+            **_inbound_log_fields(inbound),
+        )
 
         # Cache media attachments on receive
         if self._config.cache_media_on_receive and inbound.attachments:
@@ -136,7 +167,27 @@ class OneBotPlugin(Plugin):
             mode=self._config.group_trigger_mode,
             observe_untriggered=self._config.group_context_capture,
         ).decide(inbound)
+        logger.debug(
+            "onebot.message_decision",
+            channel=self.channel_id,
+            reason=decision.reason,
+            observe=decision.observe,
+            respond=decision.respond,
+            group_trigger_mode=self._config.group_trigger_mode,
+            group_context_capture=self._config.group_context_capture,
+            **_inbound_log_fields(inbound),
+        )
         if not decision.observe:
+            logger.debug(
+                "onebot.message_filtered",
+                reason=decision.reason,
+                channel=self.channel_id,
+                chat_type=chat_type,
+                chat_id=inbound.chat_id,
+                message_id=inbound.message_id,
+                mentions_bot=inbound.mentions_bot,
+                mentioned_user_ids=list(inbound.mentioned_user_ids),
+            )
             return
 
         address = ChatAddress(
@@ -154,11 +205,25 @@ class OneBotPlugin(Plugin):
 
         session_id = MessageRouter.make_session_id(address)
         emitted_event = MessageReceived if decision.respond else MessageObserved
+        logger.debug(
+            "onebot.message_publish_start",
+            channel=self.channel_id,
+            emitted_event=emitted_event.__name__,
+            session_id=session_id,
+            **_inbound_log_fields(inbound),
+        )
         await self.api.publish_event(
             emitted_event(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="onebot",
             )
+        )
+        logger.debug(
+            "onebot.message_publish_done",
+            channel=self.channel_id,
+            emitted_event=emitted_event.__name__,
+            session_id=session_id,
+            **_inbound_log_fields(inbound),
         )
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
@@ -167,6 +232,12 @@ class OneBotPlugin(Plugin):
         Handles reasoning, text, images, voice, video, and file attachments.
         Local files are base64-encoded and inlined in the segment payload.
         """
+        logger.debug(
+            "onebot.send_start",
+            channel=self.channel_id,
+            target=target,
+            **_outbound_log_fields(message),
+        )
         conn = self._ensure_connection()
         converter = self._ensure_converter()
 
@@ -182,6 +253,13 @@ class OneBotPlugin(Plugin):
 
         segments = converter.to_outbound_segments(message)
         if not segments:
+            logger.debug(
+                "onebot.send_skipped",
+                reason="no_segments",
+                channel=self.channel_id,
+                target=target,
+                **_outbound_log_fields(message),
+            )
             return ""
 
         try:
@@ -205,6 +283,15 @@ class OneBotPlugin(Plugin):
         else:
             params["user_id"] = peer_id_int
 
+        logger.debug(
+            "onebot.send_payload_prepared",
+            channel=self.channel_id,
+            target=target,
+            message_type=message_type,
+            peer_id=peer_id,
+            segment_count=len(segments),
+            **_outbound_log_fields(message),
+        )
         try:
             result = await conn.call_action("send_msg", params)
             data = result.get("data", {})
@@ -214,6 +301,10 @@ class OneBotPlugin(Plugin):
                 target=target,
                 message_id=msg_id,
                 segment_count=len(segments),
+                channel=self.channel_id,
+                message_type=message_type,
+                peer_id=peer_id,
+                **_outbound_log_fields(message),
             )
             return msg_id
         except Exception as exc:
@@ -504,6 +595,35 @@ def _normalize_target_type(value: str) -> str:
     if value in {"friend", "user"}:
         return "private"
     raise ValueError(f"Unsupported OneBot target type: {value!r}")
+
+
+def _inbound_log_fields(inbound: Any) -> dict[str, object]:
+    return {
+        "platform": inbound.platform,
+        "chat_id": inbound.chat_id,
+        "user_id": inbound.user_id,
+        "message_id": inbound.message_id,
+        "is_group": inbound.is_group,
+        "text_chars": len(inbound.text),
+        "text_preview": inbound.text[:120],
+        "attachment_count": len(inbound.attachments),
+        "attachment_kinds": [attachment.kind for attachment in inbound.attachments],
+        "mentions_bot": inbound.mentions_bot,
+        "mentioned_user_ids": list(inbound.mentioned_user_ids),
+        "reply_to": inbound.reply_to,
+    }
+
+
+def _outbound_log_fields(message: OutboundMessage) -> dict[str, object]:
+    return {
+        "text_chars": len(message.text),
+        "text_preview": message.text[:120],
+        "reasoning_chars": len(message.reasoning),
+        "attachment_count": len(message.attachments),
+        "attachment_types": [attachment.type for attachment in message.attachments],
+        "reply_to": message.reply_to,
+        "extra_keys": sorted(message.extra.keys()),
+    }
 
 
 def _event_for_converter(normalized: Any) -> dict[str, Any]:

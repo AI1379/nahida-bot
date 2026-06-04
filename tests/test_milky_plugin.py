@@ -129,6 +129,38 @@ async def test_on_load_registers_channel_when_login_info_unavailable() -> None:
     assert client.login_calls == 1
 
 
+async def test_group_mention_drop_logs_when_self_id_unknown() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FlakyLoginClient(failures=10)
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with patch("nahida_bot.channels.milky.plugin.logger.warning") as warning:
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "group",
+                    "peer_id": 20001,
+                    "sender_id": 10001,
+                    "message_seq": 123,
+                    "time": 1700000000,
+                    "segments": [
+                        {"type": "mention", "data": {"user_id": 999, "name": "bot"}},
+                        {"type": "text", "data": {"text": " ping"}},
+                    ],
+                },
+            }
+        )
+
+    assert api.published_events == []
+    assert any(
+        call.args and call.args[0] == "milky.group_message_dropped_self_id_unknown"
+        for call in warning.call_args_list
+    )
+
+
 async def test_on_enable_retries_login_info_until_available() -> None:
     api = RecordingMockBotAPI()
     plugin = MilkyPlugin(

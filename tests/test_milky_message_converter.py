@@ -172,6 +172,39 @@ async def test_group_mention_records_target_signal() -> None:
     assert inbound.mentioned_user_ids == ("999",)
 
 
+@pytest.mark.parametrize(
+    "segment",
+    [
+        {"type": "mention", "data": {"qq": 999, "name": "bot"}},
+        {"type": "mention", "data": {"uin": "999", "name": "bot"}},
+        {"type": "at", "data": {"qq": "999", "name": "bot"}},
+    ],
+)
+async def test_group_mention_accepts_common_user_id_aliases(
+    segment: dict[str, object],
+) -> None:
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "mention"}),
+        self_id=999,
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            segments=[
+                segment,
+                {"type": "text", "data": {"text": " help"}},
+            ],
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.text == "help"
+    assert inbound.mentions_bot is True
+    assert inbound.mentioned_user_ids == ("999",)
+
+
 async def test_allowed_lists_filter_messages() -> None:
     converter = MilkyMessageConverter(parse_milky_config({"allowed_friends": ["42"]}))
 

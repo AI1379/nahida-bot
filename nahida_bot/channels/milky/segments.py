@@ -362,9 +362,9 @@ def parse_incoming_segment(raw: dict[str, Any]) -> IncomingSegment:
 
     if segment_type == "text":
         return IncomingTextSegment(text=field_str(data, "text"), raw=raw)
-    if segment_type == "mention":
+    if segment_type in {"mention", "at"}:
         return IncomingMentionSegment(
-            user_id=field_int(data, "user_id"),
+            user_id=_mention_user_id(data),
             name=field_str(data, "name"),
             raw=raw,
         )
@@ -476,6 +476,14 @@ def parse_incoming_forwarded_message(
         segments=parse_incoming_segments(raw.get("segments")),
         raw=raw,
     )
+
+
+def _mention_user_id(data: dict[str, Any]) -> int:
+    for key in ("user_id", "qq", "uin", "target_id", "id"):
+        value = field_int(data, key)
+        if value:
+            return value
+    return 0
 
 
 def outgoing_segments_to_dicts(

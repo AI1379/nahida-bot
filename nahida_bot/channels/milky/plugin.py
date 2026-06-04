@@ -148,17 +148,48 @@ class MilkyPlugin(Plugin):
                 channel=self.channel_id,
             )
             return
+        logger.debug(
+            "milky.message_event_received",
+            channel=self.channel_id,
+            **_message_data_log_fields(data),
+        )
 
         converter = self._ensure_inbound_converter()
         inbound = await converter.to_inbound(data, raw_event=event)
         if inbound is None:
+            self._log_converter_drop(data)
             return
+        logger.debug(
+            "milky.message_normalized",
+            channel=self.channel_id,
+            **_inbound_log_fields(inbound),
+        )
 
         decision = GroupInteractionPolicy(
             mode=self.config.group_trigger_mode,
             observe_untriggered=self.config.group_context_capture,
         ).decide(inbound)
+        logger.debug(
+            "milky.message_decision",
+            channel=self.channel_id,
+            reason=decision.reason,
+            observe=decision.observe,
+            respond=decision.respond,
+            group_trigger_mode=self.config.group_trigger_mode,
+            group_context_capture=self.config.group_context_capture,
+            **_inbound_log_fields(inbound),
+        )
         if not decision.observe:
+            logger.debug(
+                "milky.message_filtered",
+                reason=decision.reason,
+                channel=self.channel_id,
+                message_scene=coerce_str(data.get("message_scene")),
+                peer_id=inbound.chat_id,
+                message_seq=inbound.message_id,
+                mentions_bot=inbound.mentions_bot,
+                mentioned_user_ids=list(inbound.mentioned_user_ids),
+            )
             return
 
         scene = str(data.get("message_scene") or "")
@@ -181,11 +212,27 @@ class MilkyPlugin(Plugin):
             return
         session_id = MessageRouter.make_session_id(address)
         event_type = MessageReceived if decision.respond else MessageObserved
+        logger.debug(
+            "milky.message_publish_start",
+            channel=self.channel_id,
+            emitted_event=event_type.__name__,
+            session_id=session_id,
+            decision_reason=decision.reason,
+            **_inbound_log_fields(inbound),
+        )
         await self.api.publish_event(
             event_type(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="milky",
             )
+        )
+        logger.debug(
+            "milky.message_publish_done",
+            channel=self.channel_id,
+            emitted_event=event_type.__name__,
+            session_id=session_id,
+            decision_reason=decision.reason,
+            **_inbound_log_fields(inbound),
         )
 
     async def _handle_file_upload_event(
@@ -200,6 +247,12 @@ class MilkyPlugin(Plugin):
                 channel=self.channel_id,
             )
             return
+        logger.debug(
+            "milky.file_upload_event_received",
+            channel=self.channel_id,
+            event_type=event_type,
+            keys=sorted(data.keys()),
+        )
 
         inbound = self._file_upload_to_inbound(
             event_type,
@@ -218,7 +271,25 @@ class MilkyPlugin(Plugin):
             mode=self.config.group_trigger_mode,
             observe_untriggered=self.config.group_context_capture,
         ).decide(inbound)
+        logger.debug(
+            "milky.file_upload_decision",
+            channel=self.channel_id,
+            event_type=event_type,
+            reason=decision.reason,
+            observe=decision.observe,
+            respond=decision.respond,
+            **_inbound_log_fields(inbound),
+        )
         if not decision.observe:
+            logger.debug(
+                "milky.file_upload_filtered",
+                reason=decision.reason,
+                channel=self.channel_id,
+                peer_id=inbound.chat_id,
+                is_group=inbound.is_group,
+                message_id=inbound.message_id,
+                mentions_bot=inbound.mentions_bot,
+            )
             return
 
         scene = "group" if inbound.is_group else "friend"
@@ -230,11 +301,25 @@ class MilkyPlugin(Plugin):
         )
         session_id = MessageRouter.make_session_id(address)
         emitted_event = MessageReceived if decision.respond else MessageObserved
+        logger.debug(
+            "milky.file_upload_publish_start",
+            channel=self.channel_id,
+            emitted_event=emitted_event.__name__,
+            session_id=session_id,
+            **_inbound_log_fields(inbound),
+        )
         await self.api.publish_event(
             emitted_event(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="milky",
             )
+        )
+        logger.debug(
+            "milky.file_upload_publish_done",
+            channel=self.channel_id,
+            emitted_event=emitted_event.__name__,
+            session_id=session_id,
+            **_inbound_log_fields(inbound),
         )
 
     def _file_upload_to_inbound(
@@ -377,6 +462,12 @@ class MilkyPlugin(Plugin):
         If ``message.reasoning`` is set, it is prepended as a plain-text
         thinking block before the main content.
         """
+        logger.debug(
+            "milky.send_start",
+            channel=self.channel_id,
+            target=target,
+            **_outbound_log_fields(message),
+        )
         client = self._ensure_client()
         converter = self._ensure_outbound_converter()
 
@@ -404,6 +495,17 @@ class MilkyPlugin(Plugin):
             )
             return ""
         segments, file_uploads = converter.to_payload(message)
+        logger.debug(
+            "milky.send_payload_prepared",
+            channel=self.channel_id,
+            target=target,
+            message_scene=scene,
+            peer_id=peer_id,
+            segment_count=len(segments),
+            file_upload_count=len(file_uploads),
+            has_rich_segments=has_rich_segments(segments),
+            **_outbound_log_fields(message),
+        )
         last_id = ""
 
         if segments:
@@ -435,6 +537,16 @@ class MilkyPlugin(Plugin):
                 result = await client.upload_private_file(peer_id, upload)
             last_id = message_seq_from_send_result(result) or last_id
 
+        logger.debug(
+            "milky.send_done",
+            channel=self.channel_id,
+            target=target,
+            message_scene=scene,
+            peer_id=peer_id,
+            message_id=last_id,
+            segment_count=len(segments),
+            file_upload_count=len(file_uploads),
+        )
         return last_id
 
     async def _send_segments(
@@ -529,6 +641,31 @@ class MilkyPlugin(Plugin):
         )
         self._outbound_converter = MilkyOutboundConverter(config)
 
+    def _log_converter_drop(self, data: dict[str, Any]) -> None:
+        scene = coerce_str(data.get("message_scene"))
+        peer_id = coerce_str(data.get("peer_id"))
+        message_seq = coerce_str(data.get("message_seq"))
+        mentioned_user_ids = _raw_mention_user_ids(data.get("segments"))
+        common = {
+            "channel": self.channel_id,
+            "message_scene": scene,
+            "peer_id": peer_id,
+            "message_seq": message_seq,
+            "group_trigger_mode": self.config.group_trigger_mode,
+            "group_context_capture": self.config.group_context_capture,
+            "self_id": self._self_id,
+            "mentioned_user_ids": list(mentioned_user_ids),
+        }
+        if (
+            scene == "group"
+            and self.config.group_trigger_mode == "mention"
+            and mentioned_user_ids
+            and self._self_id <= 0
+        ):
+            logger.warning("milky.group_message_dropped_self_id_unknown", **common)
+            return
+        logger.debug("milky.message_dropped_by_converter", **common)
+
     def _remember_scene(self, peer_id: str, scene: str) -> None:
         self._scene_by_peer[peer_id] = scene
         self._scene_by_peer.move_to_end(peer_id)
@@ -574,6 +711,65 @@ def _pick_int(mapping: dict[str, Any], *keys: str) -> int:
             if parsed:
                 return parsed
     return 0
+
+
+def _raw_mention_user_ids(raw_segments: object) -> tuple[str, ...]:
+    if not isinstance(raw_segments, list):
+        return ()
+    ids: list[str] = []
+    for raw in raw_segments:
+        if not isinstance(raw, dict):
+            continue
+        if coerce_str(raw.get("type")) not in {"mention", "at"}:
+            continue
+        data = as_mapping(raw.get("data"))
+        for key in ("user_id", "qq", "uin", "target_id", "id"):
+            value = coerce_str(data.get(key))
+            if value:
+                ids.append(value)
+                break
+    return tuple(dict.fromkeys(ids))
+
+
+def _message_data_log_fields(data: dict[str, Any]) -> dict[str, object]:
+    raw_segments = data.get("segments")
+    return {
+        "message_scene": coerce_str(data.get("message_scene")),
+        "peer_id": coerce_str(data.get("peer_id")),
+        "sender_id": coerce_str(data.get("sender_id")),
+        "message_seq": coerce_str(data.get("message_seq")),
+        "segment_count": len(raw_segments) if isinstance(raw_segments, list) else 0,
+        "mentioned_user_ids": list(_raw_mention_user_ids(raw_segments)),
+    }
+
+
+def _inbound_log_fields(inbound: InboundMessage) -> dict[str, object]:
+    return {
+        "platform": inbound.platform,
+        "chat_id": inbound.chat_id,
+        "user_id": inbound.user_id,
+        "message_id": inbound.message_id,
+        "is_group": inbound.is_group,
+        "text_chars": len(inbound.text),
+        "text_preview": inbound.text[:120],
+        "attachment_count": len(inbound.attachments),
+        "attachment_kinds": [attachment.kind for attachment in inbound.attachments],
+        "mentions_bot": inbound.mentions_bot,
+        "mentioned_user_ids": list(inbound.mentioned_user_ids),
+        "reply_to": inbound.reply_to,
+    }
+
+
+def _outbound_log_fields(message: OutboundMessage) -> dict[str, object]:
+    return {
+        "text_chars": len(message.text),
+        "text_preview": message.text[:120],
+        "reasoning_chars": len(message.reasoning),
+        "attachment_count": len(message.attachments),
+        "attachment_types": [attachment.type for attachment in message.attachments],
+        "reply_to": message.reply_to,
+        "extra_keys": sorted(message.extra.keys()),
+    }
 
 
 def _render_file_upload_text(

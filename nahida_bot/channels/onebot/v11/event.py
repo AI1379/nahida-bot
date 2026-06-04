@@ -81,10 +81,15 @@ def _extract_message_segments(raw: dict[str, Any]) -> list[dict[str, Any]]:
         if segments:
             return segments
 
-    # Fallback to CQ code parsing
+    # Fallback to CQ code parsing. Some implementations provide CQ text in
+    # ``message`` without also filling ``raw_message``.
     raw_message = raw.get("raw_message")
     if isinstance(raw_message, str) and raw_message:
         cq_segments = parse_cq_code(raw_message)
+        return [{"type": seg.type, "data": seg.data} for seg in cq_segments]
+
+    if isinstance(message, str) and message:
+        cq_segments = parse_cq_code(message)
         return [{"type": seg.type, "data": seg.data} for seg in cq_segments]
 
     return []
