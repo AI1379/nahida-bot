@@ -3,7 +3,7 @@ name = "nahida-bot-sdk"
 version = "0.1.0"
 description = "Public SDK types for nahida-bot plugin development"
 readme = "README.md"
-license = { text = "WTFPL" }
+license = { text = "AGPL-3.0" }
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0.0",

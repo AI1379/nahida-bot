@@ -3,7 +3,7 @@ name = "nahida-bot"
 version = "0.1.0"
 description = "A Python-based LLM chatbot framework with Agent, Workspace, Plugin system"
 readme = "README.md"
-license = { text = "WTFPL" }
+license = { text = "AGPL-3.0" }
 requires-python = ">=3.12"
 dependencies = [
     # CLI & UI
