@@ -25,9 +25,12 @@ app.add_typer(token_app, name="tokens")
 @app.command()
 def version() -> None:
     """Show version information."""
-    from nahida_bot import __version__
+    from nahida_bot.version import get_version_info
 
-    console.print(f"Nahida Bot v{__version__}")
+    info = get_version_info()
+    console.print(f"Nahida Bot v{info['version']}")
+    if info["git_hash"]:
+        console.print(f"  git: {info['git_hash']}")
 
 
 @app.command()

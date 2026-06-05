@@ -1,6 +1,7 @@
 """Nahida Bot - A Python-based LLM chatbot framework."""
 
-__version__ = "0.1.0"
+from nahida_bot.version import BASE_VERSION as __version__  # noqa: F401
+
 __author__ = "AI1379"
 __license__ = "AGPL-3.0"
 

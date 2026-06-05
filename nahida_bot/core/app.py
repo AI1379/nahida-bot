@@ -980,13 +980,10 @@ class Application:
 
     @property
     def version(self) -> str:
-        """Return the application version from package metadata."""
-        try:
-            from importlib.metadata import version as pkg_version
+        """Return the application version (base + git hash when available)."""
+        from nahida_bot.version import get_version
 
-            return pkg_version("nahida-bot")
-        except Exception:
-            return "0.0.0"
+        return get_version()
 
 
 def _model_capabilities_from_config(raw: dict[str, Any]) -> "ModelCapabilities":
