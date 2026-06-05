@@ -45,6 +45,9 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    def unregister_tool(self, name: str) -> bool:
+        return False
+
     def register_channel(self, channel: Any) -> None:
         pass
 
@@ -126,6 +129,20 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    # ── Plugin Data Store ─────────────────────────────
+
+    async def plugin_data_get(self, key: str) -> Any | None:
+        return None
+
+    async def plugin_data_set(self, key: str, value: Any) -> None:
+        pass
+
+    async def plugin_data_delete(self, key: str) -> bool:
+        return False
+
+    async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
+        return {}
+
     async def workspace_read(self, path: str) -> str:
         return ""
 
@@ -153,6 +170,7 @@ class RecordingMockBotAPI(MockBotAPI):
         self.published_events: list[Any] = []
         self.registered_tools: dict[str, dict[str, Any]] = {}
         self.registered_channels: list[Any] = []
+        self._plugin_data: dict[str, Any] = {}
 
     def register_tool(
         self,
@@ -167,11 +185,31 @@ class RecordingMockBotAPI(MockBotAPI):
             "handler": handler,
         }
 
+    def unregister_tool(self, name: str) -> bool:
+        return self.registered_tools.pop(name, None) is not None
+
     def register_channel(self, channel: Any) -> None:
         self.registered_channels.append(channel)
 
     async def publish_event(self, event: Any) -> None:
         self.published_events.append(event)
+
+    async def plugin_data_get(self, key: str) -> Any | None:
+        return self._plugin_data.get(key)
+
+    async def plugin_data_set(self, key: str, value: Any) -> None:
+        self._plugin_data[key] = value
+
+    async def plugin_data_delete(self, key: str) -> bool:
+        return self._plugin_data.pop(key, _SENTINEL) is not _SENTINEL
+
+    async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
+        if prefix:
+            return {k: v for k, v in self._plugin_data.items() if k.startswith(prefix)}
+        return dict(self._plugin_data)
+
+
+_SENTINEL = object()
 
 
 class StubChannelService:

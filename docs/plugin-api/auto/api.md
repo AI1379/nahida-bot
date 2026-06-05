@@ -162,6 +162,10 @@ Programmatic event subscription. Returns an unsubscribe handle.
 
 Register a tool that the LLM can call during conversations.
 
+#### `unregister_tool(name: str)`
+
+Remove a previously registered tool by name. Returns `True` if found.
+
 #### `register_channel(channel: ChannelService)`
 
 Register a channel service implemented by this plugin.
@@ -241,6 +245,22 @@ Search the memory store for relevant records.
 #### `memory_store(key: str, content: str, metadata: dict[str, Any] | None = None)`
 
 Persist a record to the memory store.
+
+#### `plugin_data_get(key: str)`
+
+Read a value from this plugin's data store. Returns parsed JSON or `None`.
+
+#### `plugin_data_set(key: str, value: Any)`
+
+Write a value to this plugin's data store. Overwrites if the key exists.
+
+#### `plugin_data_delete(key: str)`
+
+Delete a key from this plugin's data store. Returns `True` if it existed.
+
+#### `plugin_data_list(prefix: str = '')`
+
+List key-value pairs, optionally filtered by key prefix.
 
 #### `workspace_read(path: str)`
 

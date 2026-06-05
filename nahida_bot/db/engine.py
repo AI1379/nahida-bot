@@ -266,6 +266,20 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_usage_session
         ON usage_events(session_id);
     """,
+    # Migration 015: plugin key-value data store
+    """
+    CREATE TABLE IF NOT EXISTS plugin_data (
+        plugin_id  TEXT    NOT NULL,
+        key        TEXT    NOT NULL,
+        value_json TEXT    NOT NULL DEFAULT '{}',
+        created_at TEXT    NOT NULL,
+        updated_at TEXT    NOT NULL,
+        PRIMARY KEY (plugin_id, key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_plugin_data_plugin
+        ON plugin_data(plugin_id);
+    """,
 ]
 
 

@@ -668,6 +668,11 @@ class MemoryPermission(BaseModel):
     write: bool = False
 
 
+class PluginDataPermission(BaseModel):
+    read: bool = False
+    write: bool = False
+
+
 class SystemPermission(BaseModel):
     env_vars: list[str] = Field(default_factory=list)
     subprocess: bool = False
@@ -678,6 +683,7 @@ class Permissions(BaseModel):
     network: NetworkPermission = Field(default_factory=NetworkPermission)
     filesystem: FilesystemPermission = Field(default_factory=FilesystemPermission)
     memory: MemoryPermission = Field(default_factory=MemoryPermission)
+    plugin_data: PluginDataPermission = Field(default_factory=PluginDataPermission)
     system: SystemPermission = Field(default_factory=SystemPermission)
 
 

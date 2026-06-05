@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
         SQLiteMessageDeliveryStore,
     )
+    from nahida_bot.db.repositories.sqlite_plugin_data_repo import (
+        SQLitePluginDataRepository,
+    )
     from nahida_bot.plugins.base import Plugin
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -72,6 +75,7 @@ class PluginManager:
         workspace_manager: WorkspaceManager | None = None,
         memory_store: MemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
+        plugin_data_repo: SQLitePluginDataRepository | None = None,
         channel_registry: Any | None = None,
         provider_manager: Any | None = None,
         model_router: Any | None = None,
@@ -82,6 +86,7 @@ class PluginManager:
         self._workspace = workspace_manager
         self._memory = memory_store
         self._message_delivery_store = message_delivery_store
+        self._plugin_data_repo = plugin_data_repo
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
         self._model_router = model_router
@@ -99,6 +104,7 @@ class PluginManager:
         workspace_manager: WorkspaceManager | None = None,
         memory_store: MemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
+        plugin_data_repo: SQLitePluginDataRepository | None = None,
         provider_manager: Any | None = None,
         model_router: Any | None = None,
         scheduler_service: Any | None = None,
@@ -108,6 +114,8 @@ class PluginManager:
         self._workspace = workspace_manager
         self._memory = memory_store
         self._message_delivery_store = message_delivery_store
+        if plugin_data_repo is not None:
+            self._plugin_data_repo = plugin_data_repo
         self._provider_manager = provider_manager
         self._model_router = model_router
         self._scheduler_service = scheduler_service
@@ -118,6 +126,7 @@ class PluginManager:
                     workspace_manager=workspace_manager,
                     memory_store=memory_store,
                     message_delivery_store=message_delivery_store,
+                    plugin_data_repo=self._plugin_data_repo,
                     provider_manager=provider_manager,
                     scheduler_service=scheduler_service,
                     orchestration_service=orchestration_service,
@@ -209,6 +218,7 @@ class PluginManager:
             workspace_manager=self._workspace,
             memory_store=self._memory,
             message_delivery_store=self._message_delivery_store,
+            plugin_data_repo=self._plugin_data_repo,
             permission_checker=checker,
             tool_registry=self._tool_registry,
             handler_registry=self._handler_registry,

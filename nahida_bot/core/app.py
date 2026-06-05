@@ -165,6 +165,7 @@ class Application:
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
+                plugin_data_repo=self._plugin_data_repo,
                 provider_manager=self._provider_manager,
                 model_router=self._model_router,
                 orchestration_service=self.orchestration_service,
@@ -180,6 +181,7 @@ class Application:
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
+                plugin_data_repo=self._plugin_data_repo,
                 provider_manager=self._provider_manager,
                 model_router=self._model_router,
                 scheduler_service=self.scheduler_service,
@@ -217,6 +219,9 @@ class Application:
         from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
             SQLiteMessageDeliveryStore,
         )
+        from nahida_bot.db.repositories.sqlite_plugin_data_repo import (
+            SQLitePluginDataRepository,
+        )
 
         # Database + Memory
         db_path = self.settings.db_path
@@ -225,6 +230,7 @@ class Application:
         self._db_engine = engine
         self.memory_store = SQLiteMemoryStore(engine)
         self.message_delivery_store = SQLiteMessageDeliveryStore(engine)
+        self._plugin_data_repo = SQLitePluginDataRepository(engine)
         logger.info("application.memory_initialized", db_path=db_path)
 
         # Build providers from config
@@ -603,6 +609,7 @@ class Application:
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
+                plugin_data_repo=self._plugin_data_repo,
                 provider_manager=self._provider_manager,
                 model_router=self._model_router,
                 scheduler_service=self.scheduler_service,

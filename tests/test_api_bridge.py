@@ -25,6 +25,7 @@ from nahida_bot.plugins.manifest import (
     MemoryPermission,
     NetworkPermission,
     Permissions,
+    PluginDataPermission,
     PluginManifest,
 )
 from nahida_bot.plugins.permissions import PermissionChecker
@@ -226,6 +227,23 @@ def _api(
         model_router=None,
     )
     return api, channel_registry, tool_registry, command_registry
+
+
+@pytest.mark.asyncio
+async def test_plugin_data_raises_when_repository_unavailable(tmp_path: Path) -> None:
+    manifest = PluginManifest(
+        id="bridge-test",
+        name="Bridge Test",
+        version="1.0.0",
+        entrypoint="x:Y",
+        permissions=Permissions(
+            plugin_data=PluginDataPermission(read=True, write=True),
+        ),
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+
+    with pytest.raises(RuntimeError, match="Plugin data store is not available"):
+        await api.plugin_data_set("key", {"value": 1})
 
 
 @pytest.mark.asyncio

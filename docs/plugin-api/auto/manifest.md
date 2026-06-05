@@ -73,6 +73,23 @@ Memory store access permissions.
 - **返回类型:** `bool`
 
 
+### PluginDataPermission
+
+Plugin data store access permissions.
+
+- **基类:** `BaseModel`
+
+**属性 (Properties):**
+
+#### read
+
+- **返回类型:** `bool`
+
+#### write
+
+- **返回类型:** `bool`
+
+
 ### SystemPermission
 
 System-level access permissions.
@@ -113,6 +130,10 @@ Aggregate permission declarations for a plugin.
 #### memory
 
 - **返回类型:** `MemoryPermission`
+
+#### plugin_data
+
+- **返回类型:** `PluginDataPermission`
 
 #### system
 

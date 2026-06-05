@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
         SQLiteMessageDeliveryStore,
     )
+    from nahida_bot.db.repositories.sqlite_plugin_data_repo import (
+        SQLitePluginDataRepository,
+    )
     from nahida_bot.plugins.manifest import PluginManifest
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -112,6 +115,7 @@ class RealBotAPI:
         scheduler_service: Any | None = None,  # SchedulerService
         orchestration_service: Any | None = None,  # AgentOrchestrator
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
+        plugin_data_repo: SQLitePluginDataRepository | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -119,6 +123,7 @@ class RealBotAPI:
         self._workspace = workspace_manager
         self._memory = memory_store
         self._message_delivery_store = message_delivery_store
+        self._plugin_data_repo = plugin_data_repo
         self._permissions = permission_checker
         self._tool_registry = tool_registry
         self._handler_registry = handler_registry
@@ -299,6 +304,21 @@ class RealBotAPI:
             self._activate_tool(name)
         self._logger.debug("tool_registered", tool_name=name)
 
+    def unregister_tool(self, name: str) -> bool:
+        """Remove a previously registered tool by name.
+
+        Returns ``True`` if the tool existed and was removed, ``False`` otherwise.
+        Only tools owned by this plugin can be unregistered.
+        """
+        entry = self._registered_tools.pop(name, None)
+        if entry is None:
+            return False
+        if name in self._active_tools:
+            self._tool_registry.unregister(name)
+            self._active_tools.discard(name)
+        self._logger.debug("tool_unregistered", tool_name=name)
+        return True
+
     # ── Service Registration ──────────────────────────
 
     def register_channel(self, channel: ChannelService) -> None:
@@ -476,6 +496,38 @@ class RealBotAPI:
                 ),
             )
         self._logger.debug("memory_store_called", key=key, backend="turns")
+
+    # ── Plugin Data Store ─────────────────────────────
+
+    async def plugin_data_get(self, key: str) -> Any | None:
+        """Read a value from this plugin's data store."""
+        self._permissions.check_plugin_data_read()
+        if self._plugin_data_repo is None:
+            raise RuntimeError("Plugin data store is not available")
+        return await self._plugin_data_repo.get(self._plugin_id, key)
+
+    async def plugin_data_set(self, key: str, value: Any) -> None:
+        """Write a value to this plugin's data store."""
+        self._permissions.check_plugin_data_write()
+        if self._plugin_data_repo is None:
+            raise RuntimeError("Plugin data store is not available")
+        await self._plugin_data_repo.set(self._plugin_id, key, value)
+
+    async def plugin_data_delete(self, key: str) -> bool:
+        """Delete a key from this plugin's data store."""
+        self._permissions.check_plugin_data_write()
+        if self._plugin_data_repo is None:
+            raise RuntimeError("Plugin data store is not available")
+        return await self._plugin_data_repo.delete(self._plugin_id, key)
+
+    async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
+        """List key-value pairs, optionally filtered by key prefix."""
+        self._permissions.check_plugin_data_read()
+        if self._plugin_data_repo is None:
+            raise RuntimeError("Plugin data store is not available")
+        if prefix:
+            return await self._plugin_data_repo.get_by_prefix(self._plugin_id, prefix)
+        return await self._plugin_data_repo.get_all(self._plugin_id)
 
     # ── Workspace ──────────────────────────────────────
 
@@ -1007,6 +1059,7 @@ class RealBotAPI:
         model_router: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
+        plugin_data_repo: SQLitePluginDataRepository | None = None,
     ) -> None:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
@@ -1016,3 +1069,5 @@ class RealBotAPI:
         self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
+        if plugin_data_repo is not None:
+            self._plugin_data_repo = plugin_data_repo

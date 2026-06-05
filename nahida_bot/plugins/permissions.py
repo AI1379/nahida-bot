@@ -70,6 +70,20 @@ class PermissionChecker:
                 f"Plugin '{self._manifest.id}' has no memory write permission"
             )
 
+    def check_plugin_data_read(self) -> None:
+        """Check if the plugin may read from the plugin data store."""
+        if not self._manifest.permissions.plugin_data.read:
+            raise PermissionDenied(
+                f"Plugin '{self._manifest.id}' has no plugin_data read permission"
+            )
+
+    def check_plugin_data_write(self) -> None:
+        """Check if the plugin may write to the plugin data store."""
+        if not self._manifest.permissions.plugin_data.write:
+            raise PermissionDenied(
+                f"Plugin '{self._manifest.id}' has no plugin_data write permission"
+            )
+
     def check_subprocess(self) -> None:
         """Check if the plugin may execute subprocesses."""
         if not self._manifest.permissions.system.subprocess:

@@ -14,6 +14,7 @@ from nahida_bot_sdk.manifest import (  # noqa: F401
     MemoryPermission,
     NetworkPermission,
     Permissions,
+    PluginDataPermission,
     PluginDependency,
     PluginManifest,
     SystemPermission,

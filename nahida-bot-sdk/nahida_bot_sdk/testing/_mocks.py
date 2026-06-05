@@ -55,6 +55,9 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    def unregister_tool(self, name: str) -> bool:
+        return False
+
     def register_channel(self, channel: Any) -> None:
         pass
 
@@ -163,6 +166,20 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    # ── Plugin Data Store ─────────────────────────────
+
+    async def plugin_data_get(self, key: str) -> Any | None:
+        return None
+
+    async def plugin_data_set(self, key: str, value: Any) -> None:
+        pass
+
+    async def plugin_data_delete(self, key: str) -> bool:
+        return False
+
+    async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
+        return {}
+
     async def workspace_read(self, path: str) -> str:
         return ""
 
@@ -196,6 +213,7 @@ class RecordingMockBotAPI(MockBotAPI):
         ] = {}
         self.registered_channels: list[Any] = []
         self.registered_provider_types: dict[str, dict[str, Any]] = {}
+        self._plugin_data: dict[str, Any] = {}
 
     def on_event(self, event_type: type) -> Callable:
         def decorator(handler: Callable[..., Awaitable[None]]) -> Callable:
@@ -227,6 +245,9 @@ class RecordingMockBotAPI(MockBotAPI):
             "parameters": parameters,
             "handler": handler,
         }
+
+    def unregister_tool(self, name: str) -> bool:
+        return self.registered_tools.pop(name, None) is not None
 
     def register_command(
         self,
@@ -274,6 +295,25 @@ class RecordingMockBotAPI(MockBotAPI):
 
     async def publish_event(self, event: Any) -> None:
         self.published_events.append(event)
+
+    # ── Plugin Data Store (in-memory) ─────────────────
+
+    async def plugin_data_get(self, key: str) -> Any | None:
+        return self._plugin_data.get(key)
+
+    async def plugin_data_set(self, key: str, value: Any) -> None:
+        self._plugin_data[key] = value
+
+    async def plugin_data_delete(self, key: str) -> bool:
+        return self._plugin_data.pop(key, _SENTINEL) is not _SENTINEL
+
+    async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
+        if prefix:
+            return {k: v for k, v in self._plugin_data.items() if k.startswith(prefix)}
+        return dict(self._plugin_data)
+
+
+_SENTINEL = object()
 
 
 class StubChannelService:
@@ -378,6 +418,9 @@ class ConsoleMockBotAPI:
             "parameters": parameters,
             "handler": handler,
         }
+
+    def unregister_tool(self, name: str) -> bool:
+        return self._tools.pop(name, None) is not None
 
     def list_tools(self) -> list[str]:
         return list(self._tools)
@@ -551,6 +594,20 @@ class ConsoleMockBotAPI:
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
     ) -> None:
         pass
+
+    # ── Plugin Data Store ─────────────────────────────
+
+    async def plugin_data_get(self, key: str) -> Any | None:
+        return None
+
+    async def plugin_data_set(self, key: str, value: Any) -> None:
+        pass
+
+    async def plugin_data_delete(self, key: str) -> bool:
+        return False
+
+    async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
+        return {}
 
     # ── Workspace ──────────────────────────────────────
 

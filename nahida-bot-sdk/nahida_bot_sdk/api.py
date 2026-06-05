@@ -166,6 +166,10 @@ class BotAPI(Protocol):
         """Register a tool that the LLM can call during conversations."""
         ...
 
+    def unregister_tool(self, name: str) -> bool:
+        """Remove a previously registered tool by name. Returns ``True`` if found."""
+        ...
+
     # ── Service Registration ──────────────────────────
 
     def register_channel(self, channel: ChannelService) -> None:
@@ -296,6 +300,24 @@ class BotAPI(Protocol):
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
     ) -> None:
         """Persist a record to the memory store."""
+        ...
+
+    # ── Plugin Data Store ─────────────────────────────
+
+    async def plugin_data_get(self, key: str) -> Any | None:
+        """Read a value from this plugin's data store. Returns parsed JSON or ``None``."""
+        ...
+
+    async def plugin_data_set(self, key: str, value: Any) -> None:
+        """Write a value to this plugin's data store. Overwrites if the key exists."""
+        ...
+
+    async def plugin_data_delete(self, key: str) -> bool:
+        """Delete a key from this plugin's data store. Returns ``True`` if it existed."""
+        ...
+
+    async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
+        """List key-value pairs, optionally filtered by key prefix."""
         ...
 
     # ── Workspace ──────────────────────────────────────

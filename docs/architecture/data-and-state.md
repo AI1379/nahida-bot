@@ -12,6 +12,39 @@
 - 对外统一通过 repository 接口，不让业务代码直接拼 SQL。
 - 文件系统读写全部经过 workspace/sandbox 统一入口。
 
+### Plugin Data Store
+
+插件需要一个通用的持久化 KV 存储来保存运行时配置和状态（例如 MCP 动态服务器配置），但不应直接接触 SQLite 层。为此增加了 `plugin_data` 表和对应的 API：
+
+```text
+┌─────────────┐     plugin_data_get/set/delete/list     ┌───────────────────────┐
+│  Plugin      │ ──────────────────────────────────────> │  RealBotAPI           │
+│  (via api)   │ <────────────────────────────────────── │  ├─ permission check  │
+└─────────────┘     scoped to plugin_id automatically    │  └─ delegates to repo │
+                                                     ┌──────────────────────────┐
+                                                     │  SQLitePluginDataRepo    │
+                                                     │  ├─ get / get_all        │
+                                                     │  ├─ get_by_prefix        │
+                                                     │  ├─ set (UPSERT)         │
+                                                     │  ├─ delete (hard)        │
+                                                     │  └─ list_keys            │
+                                                     └──────────────────────────┘
+                                                               │
+                                                     ┌──────────────────────┐
+                                                     │  plugin_data table   │
+                                                     │  (plugin_id, key,    │
+                                                     │   value_json, ...)   │
+                                                     └──────────────────────┘
+```
+
+**关键设计**：
+
+- 每个 `plugin_data_*` 方法自动注入当前插件的 `plugin_id`，插件无法访问其他插件的数据。
+- 需要在 `plugin.yaml` 中声明 `plugin_data: { read: true, write: true }` 权限。
+- `value_json` 列存储任意 JSON 可序列化对象。
+- 主键为 `(plugin_id, key)` 复合主键，自动按插件隔离。
+- 硬删除（非归档），适用于配置数据而非审计日志。
+
 ---
 
 ## Phase 2 架构细化（Agent 与 Workspace 联合阶段）

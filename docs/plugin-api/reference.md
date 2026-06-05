@@ -81,6 +81,10 @@ permissions:
     read: true                                # 可读取持久化记忆
     write: true                               # 可写入持久化记忆
 
+  plugin_data:
+    read: true                                # 可读取插件数据存储
+    write: true                               # 可写入插件数据存储
+
   system:
     env_vars: ["MY_PLUGIN_*"]                 # 可读取的环境变量（前缀匹配）
     subprocess: false                          # 是否允许执行子进程
@@ -364,7 +368,48 @@ async def memory_store(self, key: str, content: str, *, metadata: dict | None = 
 
 `MemoryRef` 包含 `key`、`content`、`score`、`metadata` 字段。
 
-### 3.7 会话管理
+### 3.7 插件数据存储
+
+插件专属的持久化 KV 存储，适合保存运行时配置和状态（不需要 config 热更新）。每个插件的数据自动隔离，无法访问其他插件的数据。
+
+```python
+async def plugin_data_get(self, key: str) -> Any | None
+async def plugin_data_set(self, key: str, value: Any) -> None
+async def plugin_data_delete(self, key: str) -> bool
+async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]
+```
+
+需要 `permissions.plugin_data.read: true` / `write: true`。
+
+**用法示例：**
+
+```python
+# 存储
+await self.api.plugin_data_set("server:my-server", {
+    "transport": "sse",
+    "url": "http://localhost:3000/sse",
+})
+
+# 读取
+config = await self.api.plugin_data_get("server:my-server")
+
+# 按前缀列出
+servers = await self.api.plugin_data_list(prefix="server:")
+# => {"server:my-server": {...}, "server:other": {...}}
+
+# 删除
+deleted = await self.api.plugin_data_delete("server:my-server")
+```
+
+**适用场景：**
+
+- 动态插件配置（如 MCP 动态服务器）
+- 运行时状态持久化
+- 跨会话共享的结构化数据
+
+**不适用：** 语义记忆（用 `memory_search`/`memory_store`）、文件存储（用 `workspace_read`/`workspace_write`）。
+
+### 3.8 会话管理
 
 ```python
 async def get_session_info(self, session_id: str) -> dict[str, Any]
@@ -377,7 +422,7 @@ def list_commands(self) -> list[CommandInfo]
 def list_models(self) -> list[dict[str, str]]
 ```
 
-### 3.8 服务注册
+### 3.9 服务注册
 
 ```python
 def register_channel(self, channel: ChannelService) -> None

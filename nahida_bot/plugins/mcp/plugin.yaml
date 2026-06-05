@@ -10,3 +10,6 @@ permissions:
       - "*"
   system:
     subprocess: true
+  plugin_data:
+    read: true
+    write: true

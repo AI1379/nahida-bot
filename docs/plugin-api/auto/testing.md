@@ -44,6 +44,8 @@ use `RecordingMockBotAPI` instead.
 
 #### `register_tool(name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Awaitable[str]])`
 
+#### `unregister_tool(name: str)`
+
 #### `register_channel(channel: Any)`
 
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
@@ -77,6 +79,14 @@ use `RecordingMockBotAPI` instead.
 #### `memory_search(query: str, limit: int = 5)`
 
 #### `memory_store(key: str, content: str, metadata: dict[str, Any] | None = None)`
+
+#### `plugin_data_get(key: str)`
+
+#### `plugin_data_set(key: str, value: Any)`
+
+#### `plugin_data_delete(key: str)`
+
+#### `plugin_data_list(prefix: str = '')`
 
 #### `workspace_read(path: str)`
 
@@ -129,6 +139,8 @@ Tracks: published events, registered tools, commands, handlers, services.
 
 #### `register_tool(name: str, description: str, parameters: dict[str, Any], handler: Any)`
 
+#### `unregister_tool(name: str)`
+
 #### `register_command(name: str, handler: Callable[..., Awaitable[Any]], description: str = '', aliases: list[str] | None = None)`
 
 #### `register_channel(channel: Any)`
@@ -136,6 +148,14 @@ Tracks: published events, registered tools, commands, handlers, services.
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
 
 #### `publish_event(event: Any)`
+
+#### `plugin_data_get(key: str)`
+
+#### `plugin_data_set(key: str, value: Any)`
+
+#### `plugin_data_delete(key: str)`
+
+#### `plugin_data_list(prefix: str = '')`
 
 
 ### StubChannelService
@@ -206,6 +226,8 @@ can print responses.
 
 #### `register_tool(name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Awaitable[str]])`
 
+#### `unregister_tool(name: str)`
+
 #### `list_tools()`
 
 #### `invoke_tool(name: str, arguments: dict[str, Any])`
@@ -247,6 +269,14 @@ Dispatch a command by name and return the result text.
 #### `memory_search(query: str, limit: int = 5)`
 
 #### `memory_store(key: str, content: str, metadata: dict[str, Any] | None = None)`
+
+#### `plugin_data_get(key: str)`
+
+#### `plugin_data_set(key: str, value: Any)`
+
+#### `plugin_data_delete(key: str)`
+
+#### `plugin_data_list(prefix: str = '')`
 
 #### `workspace_read(path: str)`
 
