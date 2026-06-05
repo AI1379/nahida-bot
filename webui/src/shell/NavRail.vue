@@ -9,6 +9,7 @@ import {
   ScrollText,
   Plug,
   Coins,
+  Brain,
 } from "lucide-vue-next";
 import { computed, type Component } from "vue";
 
@@ -29,6 +30,7 @@ const items: NavItem[] = [
   { name: "files", icon: FolderOpen, to: "/files", label: "Files" },
   { name: "logs", icon: ScrollText, to: "/logs", label: "Logs" },
   { name: "plugins", icon: Plug, to: "/plugins", label: "Plugins" },
+  { name: "skills", icon: Brain, to: "/skills", label: "Skills" },
   { name: "usage", icon: Coins, to: "/usage", label: "Usage" },
 ];
 

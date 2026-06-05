@@ -537,3 +537,19 @@ export interface TokenEventsResponse {
 export interface TokenClearResponse {
   cleared: boolean;
 }
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  file_path: string;
+}
+
+export interface SkillListResponse {
+  skills: SkillInfo[];
+  total: number;
+}
+
+export interface SkillDetailResponse {
+  name: string;
+  content: string;
+}

@@ -434,14 +434,14 @@ Use workspace_read before workspace_write.
     def test_build_context_injects_skills_after_instructions(
         self, temp_dir: Path
     ) -> None:
-        """Context order should include skills after workspace instructions."""
+        """Context order should include skill catalog after workspace instructions."""
         # Arrange
         workspace_dir = temp_dir / "ws"
         skill_dir = workspace_dir / "skills" / "files"
         skill_dir.mkdir(parents=True)
         (workspace_dir / "AGENTS.md").write_text("agents", encoding="utf-8")
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: files\n---\nskill body",
+            "---\nname: files\ndescription: Work with files.\n---\nskill body",
             encoding="utf-8",
         )
         builder = ContextBuilder()
@@ -452,14 +452,17 @@ Use workspace_read before workspace_write.
             workspace_root=workspace_dir,
         )
 
-        # Assert
+        # Assert — skills are now injected as a compact catalog, not full content
         assert [item.source for item in result] == [
             "system_baseline",
             "workspace_instruction:AGENTS.md",
-            "workspace_skill:files",
+            "skill_catalog",
         ]
         assert result[0].content == "baseline"
         assert result[1].content == "agents"
+        # Catalog listing contains skill name and description
+        assert "files" in result[2].content
+        assert "Work with files" in result[2].content
 
     def test_build_context_injects_markdown_memory(self, temp_dir: Path) -> None:
         """Context should include bounded workspace Markdown memory when present."""

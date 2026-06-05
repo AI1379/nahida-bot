@@ -70,6 +70,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_cron_tools()
         self._register_agent_tools()
         self._register_message_tool()
+        self._register_skill_tool()
 
     # ── Command Registration ────────────────────────────────
 
@@ -1833,17 +1834,97 @@ class BuiltinCommandsPlugin(Plugin):
             return "off"
         return "default"
 
+    # ── Skill Tool ───────────────────────────────────────
+
+    def _register_skill_tool(self) -> None:
+        self.api.register_tool(
+            "skill",
+            (
+                "Load the full instructions of a workspace skill by name. "
+                "Use this when the user's request matches a skill's description "
+                "but they did not explicitly invoke it via /<name>. "
+                "Returns the skill's complete instructions for you to follow."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Skill name to load (e.g. 'memory', 'milky-qq'). "
+                            "Must match an available skill from the skill catalog."
+                        ),
+                    },
+                    "args": {
+                        "type": "string",
+                        "description": "Optional context or arguments to pass to the skill.",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            self._tool_skill,
+        )
+
+    async def _tool_skill(self, name: str, args: str = "") -> str:
+        from nahida_bot.agent.context import SkillCatalog
+
+        ctx = current_session.get()
+        if ctx is None or not ctx.workspace_id:
+            return "Error: No active workspace. Skills require a workspace context."
+        wm = self.api._workspace
+        if wm is None:
+            return "Error: Workspace manager is not available."
+        workspace_root = wm.workspace_path(ctx.workspace_id)
+        content = SkillCatalog.load_skill_content(workspace_root, name)
+        if content is None:
+            available = SkillCatalog.list_skill_names(workspace_root)
+            names = ", ".join(sorted(available)) if available else "(none)"
+            return (
+                f"Error: Skill '{name}' not found in the active workspace. "
+                f"Available skills: {names}"
+            )
+        if args:
+            return f"{content}\n\n---\nUser context: {args}"
+        return content
+
     async def _cmd_help(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
+        from nahida_bot.agent.context import SkillCatalog
+
         commands = self.api.list_commands()
-        if not commands:
-            return "No commands available."
-        lines = ["Available commands:"]
-        for cmd in sorted(commands, key=lambda c: c.name):
-            aliases = f" ({', '.join(cmd.aliases)})" if cmd.aliases else ""
-            desc = f" — {cmd.description}" if cmd.description else ""
-            lines.append(f"  /{cmd.name}{aliases}{desc}")
+        lines: list[str] = []
+
+        if commands:
+            lines.append("Available commands:")
+            for cmd in sorted(commands, key=lambda c: c.name):
+                aliases = f" ({', '.join(cmd.aliases)})" if cmd.aliases else ""
+                desc = f" — {cmd.description}" if cmd.description else ""
+                lines.append(f"  /{cmd.name}{aliases}{desc}")
+
+        # Append available skills
+        ctx = current_session.get()
+        wm = getattr(self.api, "_workspace", None)
+        if ctx and ctx.workspace_id and wm is not None:
+            try:
+                workspace_root = wm.workspace_path(ctx.workspace_id)
+                skills = SkillCatalog.scan_catalog(workspace_root)
+                if skills:
+                    lines.append("")
+                    lines.append(
+                        "Available skills (use /<name> or let the agent invoke them):"
+                    )
+                    for skill in sorted(skills, key=lambda s: s.name):
+                        desc = (
+                            f" — {skill.description[:100]}" if skill.description else ""
+                        )
+                        lines.append(f"  /{skill.name}{desc}")
+            except Exception:
+                pass  # Non-critical; help still shows commands
+
+        if not lines:
+            return "No commands or skills available."
         return "\n".join(lines)
 
     async def _cmd_memory(

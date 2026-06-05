@@ -44,6 +44,8 @@ import type {
   TokenEventsResponse,
   UpdateCronRequest,
   WorkspaceListResponse,
+  SkillListResponse,
+  SkillDetailResponse,
 } from "./schemas";
 
 export function useBootstrap() {
@@ -562,5 +564,25 @@ export function useTokenClear() {
     onError(err) {
       toast.add(`Clear failed: ${toApiError(err).detail}`, "error");
     },
+  });
+}
+
+export function useSkills() {
+  return useQuery<SkillListResponse>({
+    queryKey: ["skills"],
+    queryFn: () => api.get<SkillListResponse>("/skills"),
+    staleTime: 30_000,
+  });
+}
+
+export function useSkillContent(name: Ref<string | null>) {
+  return useQuery<SkillDetailResponse | null>({
+    queryKey: ["skills", name],
+    queryFn: () => {
+      if (!name.value) return null;
+      return api.get<SkillDetailResponse>(`/skills/${encodeURIComponent(name.value)}`);
+    },
+    staleTime: 30_000,
+    enabled: computed(() => !!name.value),
   });
 }

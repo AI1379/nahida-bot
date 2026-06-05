@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -469,6 +469,19 @@ class MessageRouter:
                 command_prefix=inbound.command_prefix,
                 args_chars=len(match.args),
             )
+            # Try matching a workspace skill for unrecognized /commands
+            skill_content = self._try_match_skill(match.name, workspace_id)
+            if skill_content is not None:
+                enriched_text = (
+                    f"[Skill: {match.name}]\n{skill_content}\n\n"
+                    f"---\nUser: {inbound.text}"
+                )
+                inbound = replace(inbound, text=enriched_text)
+                logger.debug(
+                    "router.skill_matched",
+                    skill_name=match.name,
+                    session_id=session_id,
+                )
         if self._stopping:
             logger.debug(
                 "router.dispatch_skipped",
@@ -870,6 +883,23 @@ class MessageRouter:
             return None
         metadata = self._workspace.get_active_workspace()
         return metadata.workspace_id
+
+    def _try_match_skill(self, name: str, workspace_id: str | None) -> str | None:
+        """Load full skill content for a slash-command with no built-in handler."""
+        if workspace_id is None or self._workspace is None:
+            return None
+        from nahida_bot.agent.context import SkillCatalog
+
+        try:
+            workspace_root = self._workspace.workspace_path(workspace_id)
+            return SkillCatalog.load_skill_content(workspace_root, name)
+        except Exception:
+            logger.debug(
+                "router.skill_match_failed",
+                skill_name=name,
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     def make_session_id(address: ChatAddress) -> str:

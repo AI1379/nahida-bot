@@ -75,6 +75,12 @@ async def get_bootstrap(
                 "label": "Logs",
                 "scope": "operator.read",
             },
+            {
+                "id": "skills",
+                "route": "/skills",
+                "label": "Skills",
+                "scope": "operator.read",
+            },
         ],
         server_time=datetime.now(UTC).isoformat(),
     )
