@@ -241,14 +241,40 @@ class MilkyMessageConverter:
             or message_data.get("nickname")
         )
 
+        # Lagrange.Milky puts sender info in nested objects rather than
+        # top-level fields.  Check group_member (group chats) and friend
+        # (private chats) when the flat fields are empty.
         if not card:
             sender = message_data.get("sender")
             if isinstance(sender, dict):
                 card = coerce_str(sender.get("card"))
+            if not card:
+                gm = message_data.get("group_member")
+                if isinstance(gm, dict):
+                    card = coerce_str(gm.get("card"))
+
         if not nickname:
             sender = message_data.get("sender")
             if isinstance(sender, dict):
                 nickname = coerce_str(sender.get("name") or sender.get("nickname"))
+            if not nickname:
+                gm = message_data.get("group_member")
+                if isinstance(gm, dict):
+                    nickname = coerce_str(gm.get("nickname"))
+            if not nickname:
+                friend = message_data.get("friend")
+                if isinstance(friend, dict):
+                    nickname = coerce_str(friend.get("nickname"))
+
+        # TODO(milky-sender-fallback): When all sources above yield empty,
+        # consider calling the Milky API (e.g. get_group_member_info /
+        # get_stranger_info) to resolve the display name from sender_id.
+        # This would add latency per message and needs careful caching
+        # (e.g. a small TTL-based LRU keyed by group_id+sender_id for
+        # group chats, or sender_id for private chats) to avoid hitting
+        # rate limits on high-traffic groups.  The cache should live on
+        # the MilkyMessageConverter or MilkyClient instance so it is
+        # shared across messages and cleared on reconnect.
 
         if card and nickname and card != nickname:
             return f"{card}({nickname})"
