@@ -113,7 +113,7 @@
 ### 安装
 
 ```bash
-git clone https://github.com/your-org/nahida-bot.git
+git clone https://github.com/AI1379/nahida-bot.git
 cd nahida-bot
 
 # Python 后端
@@ -182,6 +182,8 @@ telegram:
 
 ## 📚 文档
 
+[文档站点](https://nahida-bot.cobaltdev.top)
+
 | 文档 | 内容 |
 | ---- | ---- |
 | [ARCHITECTURE](docs/architecture/README.md) | 系统架构、分层设计、模块协作 |
@@ -197,13 +199,11 @@ telegram:
 
 | 项目 | 参考内容 |
 |-----|-------|
-| OpenClaw | Agent + Workspace 模式、Gateway-Node 架构灵感、sentinel token 协议 |
-| AstrBot | Python LLM bot 领域的重量级项目 |
-| nonebot2 | 繁荣的插件生态、跨平台消息适配的绝佳设计 |
-| OneBot v11/v12 | QQ 平台统一协议标准，NapCat/Lagrange/LLOneBot 实现 |
-| LiteLLM | 多 Provider 模型的优雅抽象和错误兼容 |
-| aiogram | Telegram Bot API 领域建模和异步处理 |
-| Milky / Lagrange | QQ 平台接入协议与实现 |
+| [OpenClaw](https://github.com/openclaw/openclaw) | Agent + Workspace 模式、Gateway-Node 架构灵感、sentinel token 协议 |
+| [Codex](https://github.com/openai/codex) | Agent 核心的经典实现，权限管理与沙箱 |
+| [AstrBot](https://github.com/AstrBotDevs/AstrBot) / [MaiBot](https://github.com/Mai-with-u/MaiBot) | Python LLM bot 领域的老前辈 |
+| [nonebot2](https://github.com/nonebot/nonebot2) | 繁荣的插件生态、跨平台消息适配的经典设计 |
+| [Lagrange](https://github.com/LagrangeDev/LagrangeV2) / [NapCat](https://github.com/NapNeko/NapCatQQ) / [LuckyLilliaBot](https://github.com/LLOneBot/LuckyLilliaBot) | QQ 协议后端 |
 
 ## License
 
