@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import ipaddress
 import socket
 import struct
@@ -108,9 +107,12 @@ class MediaResolver:
         return base64.b64encode(data).decode("ascii")
 
     def cache_key(self, attachment: InboundAttachment) -> str:
-        """Generate a stable cache key for an attachment."""
-        raw = attachment.url or attachment.platform_id
-        return hashlib.sha256(raw.encode()).hexdigest()
+        """Generate a stable cache key for an attachment.
+
+        MediaCache hashes the key internally via SHA-256, so we pass the
+        raw identifier directly to avoid a redundant double-hash.
+        """
+        return attachment.url or attachment.platform_id
 
     # -- internal --------------------------------------------------------
 

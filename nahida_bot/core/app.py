@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from nahida_bot.agent.media.cache import MediaCache
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.config import Settings, load_settings
 from nahida_bot.core.events import (
@@ -99,6 +100,8 @@ class Application:
         self.orchestration_service: AgentOrchestrator | None = None
         self.webapi_service: WebAPIApp | None = None
         self._usage_ledger: UsageRecorder | None = None
+        self._media_cache: MediaCache | None = None
+        self._media_cleanup_task: asyncio.Task | None = None
 
         logger.debug(
             "application.instance_created",
@@ -442,7 +445,6 @@ class Application:
         """Create the SessionRunner and SchedulerService."""
         from pathlib import Path
 
-        from nahida_bot.agent.media.cache import MediaCache
         from nahida_bot.agent.media.resolver import MediaPolicy, MediaResolver
         from nahida_bot.core.session_runner import SessionRunner
         from nahida_bot.scheduler.repository import CronRepository
@@ -460,7 +462,7 @@ class Application:
         # Build media infrastructure from multimodal config
         multimodal = self.settings.multimodal
         cache_dir = str(Path(self.settings.db_path).parent / "media_cache")
-        media_cache = MediaCache(
+        self._media_cache = MediaCache(
             cache_dir, ttl_seconds=multimodal.media_cache_ttl_seconds
         )
         media_policy = MediaPolicy(
@@ -470,7 +472,7 @@ class Application:
             cache_ttl_seconds=multimodal.media_cache_ttl_seconds,
             cache_dir=cache_dir,
         )
-        media_resolver = MediaResolver(cache=media_cache, policy=media_policy)
+        media_resolver = MediaResolver(cache=self._media_cache, policy=media_policy)
 
         self.session_runner = SessionRunner(
             agent_loop=self.agent_loop,
@@ -771,6 +773,13 @@ class Application:
                 )
                 await self.scheduler_service.start()
 
+            # Start periodic media cache cleanup
+            if self._media_cache is not None:
+                self._media_cleanup_task = asyncio.create_task(
+                    self._media_cache_cleanup_loop(),
+                    name="media-cache-cleanup",
+                )
+
             # Start webapi (after scheduler)
             if self.webapi_service is not None:
                 await self.webapi_service.start()
@@ -804,6 +813,24 @@ class Application:
             )
             raise StartupError(f"Failed to start application: {e}") from e
 
+    async def _media_cache_cleanup_loop(self) -> None:
+        """Periodically purge expired entries from the media cache."""
+        cache = self._media_cache
+        if cache is None:
+            return
+        interval = max(cache._ttl, 300)  # at least every 5 min
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    removed = await cache.cleanup_expired()
+                    if removed:
+                        logger.debug("media_cache.cleanup", removed=removed)
+                except Exception:
+                    logger.warning("media_cache.cleanup_failed", exc_info=True)
+        except asyncio.CancelledError:
+            pass
+
     async def stop(self) -> None:
         """Stop the application gracefully."""
         was_started = self._started
@@ -829,6 +856,15 @@ class Application:
                 # Shut down webapi before scheduler
                 if self.webapi_service is not None:
                     await self.webapi_service.stop()
+
+                # Cancel media cache cleanup task
+                if self._media_cleanup_task is not None:
+                    self._media_cleanup_task.cancel()
+                    try:
+                        await self._media_cleanup_task
+                    except asyncio.CancelledError:
+                        pass
+                    self._media_cleanup_task = None
 
                 # Shut down scheduler before message router
                 if self.scheduler_service is not None:

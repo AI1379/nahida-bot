@@ -10,20 +10,23 @@ from pathlib import Path
 import aiofiles
 import aiofiles.os
 
+# Sentinel value stored in meta for entries written with the old
+# ``time.monotonic()`` clock.  Such entries are considered expired on the
+# next read so they are refreshed automatically.
+_MONOTONIC_SENTINEL = -1.0
+
 
 class MediaCache:
     """Disk-backed cache for downloaded media artifacts.
 
     Each entry is stored as a file named by the SHA-256 hex digest of its
     cache key, with a companion ``.<hash>_meta.json`` storing the original
-    URL and cached timestamp for TTL tracking.
+    URL, cached timestamp, and file suffix for TTL tracking.
     """
 
     def __init__(self, cache_dir: str | Path, *, ttl_seconds: int = 3600) -> None:
         self._dir = Path(cache_dir)
         self._ttl = ttl_seconds
-        # TODO(capacity): add scheduled cleanup and a max total cache size so
-        # high-cardinality media URLs cannot grow the disk cache indefinitely.
 
     async def ensure_dir(self) -> None:
         """Create cache directory if it does not exist."""
@@ -32,17 +35,22 @@ class MediaCache:
     async def get(self, cache_key: str) -> str | None:
         """Return cached file path if present and not expired, else ``None``."""
         hashed = self._hash_key(cache_key)
-        entry = self._find_entry(hashed)
-        if entry is None:
-            return None
-
         meta = await self._read_meta(cache_key)
         if meta is None:
             await self._remove_entry(cache_key)
             return None
 
         cached_at = meta.get("cached_at", 0.0)
-        if time.monotonic() - cached_at >= self._ttl:
+        # Entries that used the old monotonic clock are forced-expired.
+        if cached_at == _MONOTONIC_SENTINEL or time.time() - cached_at >= self._ttl:
+            await self._remove_entry(cache_key)
+            return None
+
+        # Reconstruct the file path from the suffix stored in meta.
+        suffix = meta.get("suffix", "")
+        entry = self._dir / f"{hashed}{suffix}"
+        if not entry.exists():
+            # File vanished out-of-band; clean up orphaned meta.
             await self._remove_entry(cache_key)
             return None
 
@@ -55,7 +63,10 @@ class MediaCache:
         async with aiofiles.open(str(entry), "wb") as f:
             await f.write(data)
 
-        await self._write_meta(cache_key, {"cached_at": time.monotonic()})
+        await self._write_meta(
+            cache_key,
+            {"cached_at": time.time(), "suffix": suffix},
+        )
         return str(entry)
 
     async def invalidate(self, cache_key: str) -> None:
@@ -68,14 +79,14 @@ class MediaCache:
             return 0
 
         removed = 0
-        now = time.monotonic()
+        now = time.time()
         for meta_file in self._dir.glob("*_meta.json"):
             try:
                 async with aiofiles.open(str(meta_file), "r", encoding="utf-8") as f:
                     raw = await f.read()
                 meta = json.loads(raw)
                 cached_at = meta.get("cached_at", 0.0)
-                if now - cached_at >= self._ttl:
+                if cached_at == _MONOTONIC_SENTINEL or now - cached_at >= self._ttl:
                     stem = meta_file.stem.removesuffix("_meta")
                     await self._remove_entry_by_stem(stem)
                     removed += 1
@@ -102,16 +113,6 @@ class MediaCache:
     def _entry_path(self, cache_key: str, *, suffix: str = "") -> Path:
         hashed = self._hash_key(cache_key)
         return self._dir / f"{hashed}{suffix}"
-
-    def _find_entry(self, hashed: str) -> Path | None:
-        """Find a cache entry file by hash prefix, skipping meta files."""
-        if not self._dir.exists():
-            return None
-        for path in self._dir.iterdir():
-            name = path.name
-            if name.startswith(hashed) and not name.endswith("_meta.json"):
-                return path
-        return None
 
     def _meta_path(self, cache_key: str) -> Path:
         hashed = self._hash_key(cache_key)
