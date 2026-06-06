@@ -334,6 +334,15 @@ class BotAPI(Protocol):
         """Resolve a workspace-relative path to an absolute local path."""
         ...
 
+    def get_workspace_root(self, workspace_id: str | None = None) -> str | None:
+        """Return the filesystem root path for a workspace.
+
+        When *workspace_id* is ``None``, uses the active workspace.
+        Returns ``None`` when the workspace manager is unavailable.
+        """
+        ...
+        ...
+
     # ── Event Publishing ───────────────────────────────
 
     async def publish_event(self, event: Any) -> None:

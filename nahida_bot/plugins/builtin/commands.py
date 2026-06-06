@@ -1872,10 +1872,11 @@ class BuiltinCommandsPlugin(Plugin):
         ctx = current_session.get()
         if ctx is None or not ctx.workspace_id:
             return "Error: No active workspace. Skills require a workspace context."
-        wm = self.api._workspace
-        if wm is None:
+        # TODO: Move the skill management to WorkspaceManager
+        workspace_root_str = self.api.get_workspace_root(ctx.workspace_id)
+        if workspace_root_str is None:
             return "Error: Workspace manager is not available."
-        workspace_root = wm.workspace_path(ctx.workspace_id)
+        workspace_root = Path(workspace_root_str)
         content = SkillCatalog.load_skill_content(workspace_root, name)
         if content is None:
             available = SkillCatalog.list_skill_names(workspace_root)
@@ -1905,10 +1906,12 @@ class BuiltinCommandsPlugin(Plugin):
 
         # Append available skills
         ctx = current_session.get()
-        wm = getattr(self.api, "_workspace", None)
-        if ctx and ctx.workspace_id and wm is not None:
+        if ctx and ctx.workspace_id:
             try:
-                workspace_root = wm.workspace_path(ctx.workspace_id)
+                workspace_root_str = self.api.get_workspace_root(ctx.workspace_id)
+                if workspace_root_str is None:
+                    raise ValueError("workspace not available")
+                workspace_root = Path(workspace_root_str)
                 skills = SkillCatalog.scan_catalog(workspace_root)
                 if skills:
                     lines.append("")

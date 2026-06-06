@@ -128,6 +128,9 @@ class _FakeAPI:
     def resolve_workspace_path(self, path: str) -> str:
         return str(self.workspace_root / path)
 
+    def get_workspace_root(self, workspace_id: str | None = None) -> str | None:
+        return str(self.workspace_root)
+
     async def get_session(self, session_id: str) -> Any:
         return None
 

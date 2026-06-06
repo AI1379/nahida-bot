@@ -553,6 +553,19 @@ class RealBotAPI:
         sandbox = self._workspace.get_sandbox()
         return str(sandbox.resolve_safe_path(path))
 
+    def get_workspace_root(self, workspace_id: str | None = None) -> str | None:
+        """Return the filesystem root path for a workspace.
+
+        When *workspace_id* is ``None``, uses the active workspace.
+        Returns ``None`` when the workspace manager is unavailable.
+        """
+        if self._workspace is None:
+            return None
+        if workspace_id is None:
+            metadata = self._workspace.get_active_workspace()
+            workspace_id = metadata.workspace_id
+        return str(self._workspace.workspace_path(workspace_id))
+
     # ── Logging ────────────────────────────────────────
 
     @property
