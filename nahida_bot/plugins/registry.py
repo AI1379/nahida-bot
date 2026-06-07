@@ -1,9 +1,12 @@
-"""Central registries for tools and event handlers."""
+"""Central registries for tools, event handlers, and prompt supplements."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from nahida_bot_sdk.messaging import MessageContext
 
 
 @dataclass(slots=True, frozen=True)
@@ -101,3 +104,61 @@ class HandlerRegistry:
     def handlers_for_plugin(self, plugin_id: str) -> list[HandlerEntry]:
         """Return all handlers owned by a plugin."""
         return [e for e in self._handlers if e.plugin_id == plugin_id]
+
+
+@dataclass(slots=True, frozen=True)
+class PromptSupplementEntry:
+    """A registered prompt supplement with conditional injection logic."""
+
+    key: str
+    instruction: str
+    plugin_id: str
+    channel: str | None = None
+    filter: Callable[["MessageContext"], bool] | None = field(default=None, repr=False)
+
+
+class PromptSupplementRegistry:
+    """Registry mapping keys to prompt supplement entries with match logic."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, PromptSupplementEntry] = {}
+
+    def register(self, entry: PromptSupplementEntry) -> None:
+        """Register a prompt supplement. Raises KeyError if the key is already taken."""
+        if entry.key in self._entries:
+            existing = self._entries[entry.key]
+            raise KeyError(
+                f"Prompt supplement '{entry.key}' is already registered by plugin "
+                f"'{existing.plugin_id}'"
+            )
+        self._entries[entry.key] = entry
+
+    def unregister(self, key: str) -> None:
+        """Remove a prompt supplement by key."""
+        self._entries.pop(key, None)
+
+    def get(self, key: str) -> PromptSupplementEntry | None:
+        """Look up a prompt supplement by key."""
+        return self._entries.get(key)
+
+    def all(self) -> list[PromptSupplementEntry]:
+        """Return all registered prompt supplements."""
+        return list(self._entries.values())
+
+    def unregister_by_plugin(self, plugin_id: str) -> int:
+        """Remove all prompt supplements owned by a plugin. Returns count removed."""
+        to_remove = [k for k, e in self._entries.items() if e.plugin_id == plugin_id]
+        for k in to_remove:
+            self._entries.pop(k, None)
+        return len(to_remove)
+
+    def get_matching(self, context: "MessageContext") -> list[str]:
+        """Return instruction strings for all entries whose conditions match."""
+        results: list[str] = []
+        for entry in self._entries.values():
+            if entry.channel is not None and entry.channel != context.channel:
+                continue
+            if entry.filter is not None and not entry.filter(context):
+                continue
+            results.append(entry.instruction)
+        return results

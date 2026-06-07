@@ -6,6 +6,7 @@
 >
 > - [memory-system.md](memory-system.md#9-配置建议) — 记忆系统总体设计，§9.0 审计中标注了 scope 缺口
 > - [chat-address-and-session-id.md](chat-address-and-session-id.md) — ChatAddress / SessionKey 类型系统
+> - [person-identity-system.md](person-identity-system.md) — Person / Account 身份映射设计
 > - [cross-session-messaging.md](cross-session-messaging.md) — 跨会话消息（依赖记忆隔离）
 > - [cron-and-webapi-optimization.md](cron-and-webapi-optimization.md) — Cron 系统（主要串线来源之一）
 
@@ -30,7 +31,7 @@
 
 ### 2.2 非目标
 
-- **不做 workspace / channel / user / session / agent scope** — V1 只做 `chat` + `global`。workspace 需要与 WorkspaceManager 集成，user scope 需要跨平台用户身份映射，当前均无基础设施。
+- **不做 workspace / channel / person / account / session / agent scope** — V1 只做 `chat` + `global`。workspace 需要与 WorkspaceManager 集成；person/account scope 见 [person-identity-system.md](person-identity-system.md)。
 - **不改 `memory_turns` / `memory_keywords`** — 对话历史已按 session_id 隔离。
 - **不改 FTS schema** — `memory_item_fts` 的 `scope_type` / `scope_id` 已是 UNINDEXED 列，scope 过滤在 repo 层的 JOIN 中完成。
 - **不做 LLM 驱动的 scope 分类** — V1 用基于 `kind` 的简单规则分类。
@@ -334,67 +335,31 @@ else:
 
 ---
 
-## 6. 后续方向：身份映射层（Post-V1）
+## 6. 与身份系统的边界
 
-V1 的 `chat` + `global` 两级 scope 解决了不同用户之间的记忆泄露。但它带来一个新问题：**同一个人在不同平台/不同账号上的记忆被隔离**。
+V1 的 `chat` + `global` 两级 scope 只解决一个问题：不同聊天入口之间的长期记忆不再互相泄露。它不能表达“这个 QQ 账号、这个 Telegram 账号、这个群成员身份是同一个人”。
 
-例如 bot 管理者在 QQ 私聊说"我喜欢用 Python"，这条偏好存在 `milky:private:10001` scope 下。当同一个人通过 Telegram 私聊（`telegram:private:12345`）与 bot 交互时，看不到这条偏好。
+这部分应由独立的身份系统处理，完整设计见 [person-identity-system.md](person-identity-system.md)。该设计引入：
 
-### 6.1 问题本质
+- `AccountKey`：一个平台账号，例如 `milky:user:10001`。
+- `Person`：bot 本地认识的一个真实聊天对象。
+- `ParticipantObservation`：某个账号在某个群/频道中的显示名、角色和出现记录。
+- `person` / `account` memory scope：个人事实和偏好不再依赖聊天入口。
 
-这不是记忆 scope 的问题，而是**身份识别**问题。Bot 只知道 chat address（聊天入口），不知道"谁是谁"。跨平台/跨账号的同一人，对 bot 来说是多个独立 chat。
+关键修正：身份系统不应只是在搜索时“把同一个人的所有 chat scope 都搜一遍”。这对私聊勉强可行，但在群聊中会把某个群成员的个人事实错误地当作整个群的共享记忆。正确方向是：
 
-### 6.2 为什么不让 LLM 决定 scope key
-
-直觉上可以让 LLM 自己给记忆分配 key，但实际不可行：
-
-1. **LLM 没有稳定的身份信号** — 它看到的只是 `milky:private:10001`，不知道背后是哪个人。它发明的 key（如 `user:arendellian`）在下次对话中不一定复用。
-2. **不可审计** — 人类和系统都难以预测 LLM 会把记忆写到哪个 key。
-3. **隔离失效** — LLM 可能将用户 A 的偏好错误地写到用户 B 的 scope，且难以发现。
-
-**记忆的 scope 归属是系统级确定性决策，不应交给概率性的 LLM。** LLM 负责提取"记住什么"，系统负责"存在哪里"。
-
-### 6.3 方案：管理员配置的身份映射
-
-在搜索 cascade 中引入可选的 identity 层：
-
-```
-identity (用户身份)        chat addresses (聊天入口)
-─────────────────         ──────────────────────
-arendellian13        ←→   milky:private:10001
-                           telegram:private:12345
-                           milky:group:20001 (作为群成员)
-
-alice                ←→   milky:private:20002
-
-(未映射)                   milky:group:20001 (其他群成员)
+```text
+ChatAddress  -> 消息在哪里
+SessionKey   -> 对话历史是哪条 lane
+AccountKey   -> 这条消息由哪个平台账号发出
+Person       -> 哪些账号属于同一个真实聊天对象
 ```
 
-**搜索 cascade 扩展为**：
+长期个人记忆应写入 `person:{person_id}` 或 `account:{account_key}`；群/频道规则才写入 `chat:{chat_key}`；系统知识写入 `global:__global__`。
 
-```
-1. 查 identity 映射 → 这个人有哪些 chat？
-2. 有 identity → 搜该 identity 关联的所有 chat scope + global
-3. 无 identity → 退回当前 chat scope + global（V1 行为不变）
-```
+LLM 仍然不负责决定具体 scope key。它最多输出受控 subject，例如 `current_sender`、`current_chat`、`global`；系统根据当前 `IdentityResolution` 把 subject 映射到确定的 scope。
 
-**写入不变** — 记忆仍然写到触发时的 chat scope。只是搜索时通过 identity 映射扩展范围。
-
-### 6.4 实施前提
-
-身份映射层依赖以下基础设施，**不适合在 V1 中实现**：
-
-1. **入站消息的用户身份识别** — 当前 `InboundMessage` 只有 `chat_id`，没有跨平台的用户 ID。需要在 channel 层提取发送者身份（如 QQ 号、Telegram user ID）。
-2. **身份配置接口** — 管理员需要一个方式声明映射关系（配置文件、管理命令、或 `/identity link` 命令）。
-3. **群聊场景的用户识别** — 群聊中消息来自多人，需要区分"这条消息是群成员 A 发的"还是"群成员 B 发的"。
-
-### 6.5 建议节奏
-
-1. **V1**（当前规划）：`chat` + `global` scope，堵住跨用户泄露。
-2. **V2**：加 identity 映射层，管理员手动配置"这几个聊天都是我"，解决跨平台共享。
-3. **V3**：入站用户身份识别 + 自助 `/identity link` 命令，让非管理员用户也能关联账号。
-
-V1 的 scope cascade 设计已为 V2 留出扩展空间——V2 只需在 cascade 中多查一层 identity 关联的 chat scope，不改变写入和存储结构。
+因此，本文档的 V1 `chat` scope 是过渡隔离层，不是最终用户身份模型。实现 person/account scope 后，`preference` / `fact` / `task` 的默认写入规则需要从“按 chat”升级为“按当前发送者 person/account”，并保留群聊隐私策略。
 
 ---
 

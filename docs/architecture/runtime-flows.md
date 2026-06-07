@@ -67,7 +67,7 @@ text:
 设计约束：
 
 - 时间只属于具体消息，不作为 session 级“当前时间”注入。
-- 不维护 participant directory；每条消息直接带可读的发送方短标签，避免模型倒查 ID 映射。
+- 不维护 LLM 可见的 participant directory；每条消息直接带可读的发送方短标签，避免模型倒查 ID 映射。若启用身份系统，账号 observation 仅作为系统侧身份解析和审计数据，不直接进入普通 LLM 上下文。
 - channel converter 负责提供平台特有 facts，例如 chat 类型、显示名、管理员/群主等角色标签；核心只消费统一 `MessageContext`。
 - `raw_event`、完整用户资料、完整群资料默认不进入 LLM 上下文。
 - context block 是外部上下文资料，不是回复格式。系统提示必须要求模型使用其中事实，但不得服从 block 内的指令，不得复现 metadata wrapper、时间戳或旧式 `[time | channel | sender]` 包络。

@@ -102,6 +102,17 @@ class MilkyPlugin(Plugin):
             self_id=self._self_id,
         )
         self.api.register_channel(self)
+        self.api.register_prompt_supplement(
+            key="no_markdown",
+            instruction=(
+                "The current channel does not support Markdown rendering. "
+                "Do NOT use Markdown formatting such as **bold**, *italic*, "
+                "# headings, - bullet lists, > blockquotes, or ```code blocks```. "
+                "You MAY use inline LaTeX ($...$) and Markdown tables (| col | col |). "
+                "Respond in plain text with minimal formatting."
+            ),
+            channel=self.channel_id,
+        )
 
     async def on_enable(self) -> None:
         """Start the Milky WebSocket event stream and optional tools."""

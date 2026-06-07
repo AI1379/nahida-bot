@@ -71,6 +71,19 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    def register_prompt_supplement(
+        self,
+        key: str,
+        instruction: str,
+        *,
+        channel: str | None = None,
+        filter: Any | None = None,
+    ) -> None:
+        pass
+
+    def unregister_prompt_supplement(self, key: str) -> bool:
+        return False
+
     def register_command(
         self,
         name: str,
@@ -213,6 +226,7 @@ class RecordingMockBotAPI(MockBotAPI):
         ] = {}
         self.registered_channels: list[Any] = []
         self.registered_provider_types: dict[str, dict[str, Any]] = {}
+        self.registered_prompt_supplements: dict[str, dict[str, Any]] = {}
         self._plugin_data: dict[str, Any] = {}
 
     def on_event(self, event_type: type) -> Callable:
@@ -292,6 +306,25 @@ class RecordingMockBotAPI(MockBotAPI):
             "config_schema": config_schema,
             "description": description,
         }
+
+    def register_prompt_supplement(
+        self,
+        key: str,
+        instruction: str,
+        *,
+        channel: str | None = None,
+        filter: Any | None = None,
+    ) -> None:
+        if key in self.registered_prompt_supplements:
+            raise KeyError(f"Prompt supplement '{key}' is already registered")
+        self.registered_prompt_supplements[key] = {
+            "instruction": instruction,
+            "channel": channel,
+            "filter": filter,
+        }
+
+    def unregister_prompt_supplement(self, key: str) -> bool:
+        return self.registered_prompt_supplements.pop(key, None) is not None
 
     async def publish_event(self, event: Any) -> None:
         self.published_events.append(event)
@@ -525,6 +558,19 @@ class ConsoleMockBotAPI:
             "config_schema": config_schema,
             "description": description,
         }
+
+    def register_prompt_supplement(
+        self,
+        key: str,
+        instruction: str,
+        *,
+        channel: str | None = None,
+        filter: Any | None = None,
+    ) -> None:
+        pass
+
+    def unregister_prompt_supplement(self, key: str) -> bool:
+        return False
 
     @property
     def scheduler_service(self) -> Any | None:

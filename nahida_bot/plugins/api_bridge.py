@@ -24,7 +24,7 @@ from nahida_bot.core.runtime_settings import (
 )
 from nahida_bot.plugins.commands import CommandEntry, CommandHandlerResult, CommandInfo
 from nahida_bot.plugins.permissions import PermissionChecker
-from nahida_bot.plugins.registry import HandlerEntry, ToolEntry
+from nahida_bot.plugins.registry import HandlerEntry, PromptSupplementEntry, ToolEntry
 from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 if TYPE_CHECKING:
@@ -116,6 +116,7 @@ class RealBotAPI:
         orchestration_service: Any | None = None,  # AgentOrchestrator
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
+        supplement_registry: Any | None = None,  # PromptSupplementRegistry
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -149,6 +150,9 @@ class RealBotAPI:
             tuple[Callable[[dict[str, Any]], ChatProvider], dict[str, Any] | None, str],
         ] = {}
         self._active_provider_types: set[str] = set()
+        self._supplement_registry = supplement_registry
+        self._registered_supplements: dict[str, PromptSupplementEntry] = {}
+        self._active_supplements: set[str] = set()
 
     # ── Messaging ──────────────────────────────────────
 
@@ -369,6 +373,56 @@ class RealBotAPI:
         if self._registrations_active:
             self._activate_provider_type(type_key)
         self._logger.debug("provider_type_registered", provider_type=type_key)
+
+    # ── Prompt Supplement Registration ─────────────────
+
+    def register_prompt_supplement(
+        self,
+        key: str,
+        instruction: str,
+        *,
+        channel: str | None = None,
+        filter: Callable[..., bool] | None = None,
+    ) -> None:
+        """Register a supplemental instruction to inject into the system prompt."""
+        global_key = f"{self._plugin_id}:{key}"
+        entry = PromptSupplementEntry(
+            key=global_key,
+            instruction=instruction,
+            plugin_id=self._plugin_id,
+            channel=channel,
+            filter=filter,
+        )
+        if global_key in self._registered_supplements:
+            raise KeyError(
+                f"Prompt supplement '{key}' is already registered by plugin "
+                f"'{self._plugin_id}'"
+            )
+        self._registered_supplements[global_key] = entry
+        if self._registrations_active:
+            self._activate_supplement(global_key)
+        self._logger.debug("prompt_supplement_registered", supplement_key=key)
+
+    def unregister_prompt_supplement(self, key: str) -> bool:
+        """Remove a previously registered prompt supplement. Returns True if found."""
+        global_key = f"{self._plugin_id}:{key}"
+        entry = self._registered_supplements.pop(global_key, None)
+        if entry is None:
+            return False
+        if global_key in self._active_supplements:
+            if self._supplement_registry is not None:
+                self._supplement_registry.unregister(global_key)
+            self._active_supplements.discard(global_key)
+        self._logger.debug("prompt_supplement_unregistered", supplement_key=key)
+        return True
+
+    def _activate_supplement(self, global_key: str) -> None:
+        if global_key in self._active_supplements:
+            return
+        if self._supplement_registry is None:
+            raise RuntimeError("Prompt supplement registry is not available")
+        self._supplement_registry.register(self._registered_supplements[global_key])
+        self._active_supplements.add(global_key)
 
     @property
     def scheduler_service(self) -> Any | None:
@@ -938,6 +992,8 @@ class RealBotAPI:
             self._activate_channel(channel_id)
         for type_key in self._registered_provider_types:
             self._activate_provider_type(type_key)
+        for global_key in self._registered_supplements:
+            self._activate_supplement(global_key)
 
     def deactivate_registrations(self) -> None:
         """Deactivate all active registrations without forgetting them."""
@@ -958,6 +1014,10 @@ class RealBotAPI:
         for type_key in list(self._active_provider_types):
             unregister_runtime_provider(type_key, owner_plugin_id=self._plugin_id)
             self._active_provider_types.discard(type_key)
+        for global_key in list(self._active_supplements):
+            if self._supplement_registry is not None:
+                self._supplement_registry.unregister(global_key)
+            self._active_supplements.discard(global_key)
         self._registrations_active = False
 
     def clear_registrations(self) -> None:
@@ -969,6 +1029,7 @@ class RealBotAPI:
         self._event_registrations.clear()
         self._registered_channels.clear()
         self._registered_provider_types.clear()
+        self._registered_supplements.clear()
         self._decorated_registrations_added = False
 
     def _activate_command(self, name: str) -> None:

@@ -13,7 +13,7 @@ from typing import (
 )
 
 from nahida_bot_sdk.chat_address import ChatAddress
-from nahida_bot_sdk.messaging import OutboundMessage
+from nahida_bot_sdk.messaging import MessageContext, OutboundMessage
 
 if TYPE_CHECKING:
     from nahida_bot_sdk.commands import CommandHandlerResult, CommandInfo
@@ -185,6 +185,35 @@ class BotAPI(Protocol):
         description: str = "",
     ) -> None:
         """Register a provider type that can be used from YAML config."""
+        ...
+
+    def register_prompt_supplement(
+        self,
+        key: str,
+        instruction: str,
+        *,
+        channel: str | None = None,
+        filter: Callable[[MessageContext], bool] | None = None,
+    ) -> None:
+        """Register a supplemental instruction to inject into the system prompt.
+
+        The supplement is appended after the base prompt and behavioral
+        instructions.  When *channel* is provided, the supplement is only
+        injected for messages originating from that channel.  When *filter*
+        is provided, it is called with the current ``MessageContext``.
+        When both are given, both must match (AND logic).  When neither is
+        provided, the supplement is always injected.
+
+        Args:
+            key: Unique identifier for this supplement within the plugin.
+            instruction: The prompt text to inject.
+            channel: Optional channel name to restrict injection to.
+            filter: Optional callable for complex matching conditions.
+        """
+        ...
+
+    def unregister_prompt_supplement(self, key: str) -> bool:
+        """Remove a previously registered prompt supplement. Returns ``True`` if found."""
         ...
 
     @property

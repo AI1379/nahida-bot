@@ -141,6 +141,7 @@ class SessionRunner:
         group_context_max_chars: int = 4000,
         media_resolver: MediaResolver | None = None,
         channel_registry: ChannelRegistry | None = None,
+        supplement_registry: Any | None = None,
         enable_silent_reply: bool = True,
     ) -> None:
         self._agent = agent_loop
@@ -167,6 +168,7 @@ class SessionRunner:
         self._group_context_max_chars = group_context_max_chars
         self._media_resolver = media_resolver
         self._channel_registry = channel_registry
+        self._supplement_registry = supplement_registry
         self._enable_silent_reply = enable_silent_reply
         self._run_tracker = ActiveRunTracker()
 
@@ -278,6 +280,14 @@ class SessionRunner:
     @tool_registry.setter
     def tool_registry(self, value: ToolRegistry | None) -> None:
         self._tools = value
+
+    @property
+    def supplement_registry(self) -> Any | None:
+        return self._supplement_registry
+
+    @supplement_registry.setter
+    def supplement_registry(self, value: Any | None) -> None:
+        self._supplement_registry = value
 
     @property
     def run_tracker(self) -> ActiveRunTracker:
@@ -2117,8 +2127,8 @@ class SessionRunner:
                     return attachment
         return None
 
-    @staticmethod
     def _build_system_prompt(
+        self,
         system_prompt: str,
         context: MessageContext | None,
         source_tag: str = "user_input",
@@ -2131,6 +2141,9 @@ class SessionRunner:
             parts.append(SILENT_REPLY_INSTRUCTION)
         if source_tag == "cron_trigger":
             parts.append(HEARTBEAT_INSTRUCTION)
+        if self._supplement_registry is not None and context is not None:
+            supplements = self._supplement_registry.get_matching(context)
+            parts.extend(supplements)
         return "\n\n".join(parts)
 
     def _resolve_workspace_root(self, workspace_id: str | None) -> Any:

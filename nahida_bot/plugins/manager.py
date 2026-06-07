@@ -16,7 +16,11 @@ from nahida_bot.plugins.commands import CommandRegistry
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.loader import PluginLoader
 from nahida_bot.plugins.manifest import PluginManifest, parse_manifest
-from nahida_bot.plugins.registry import HandlerRegistry, ToolRegistry
+from nahida_bot.plugins.registry import (
+    HandlerRegistry,
+    PromptSupplementRegistry,
+    ToolRegistry,
+)
 
 if TYPE_CHECKING:
     from nahida_bot.agent.memory.store import MemoryStore
@@ -96,6 +100,7 @@ class PluginManager:
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
         self._command_registry = CommandRegistry()
+        self._supplement_registry = PromptSupplementRegistry()
         self._records: dict[str, PluginRecord] = {}
 
     def set_runtime_services(
@@ -146,6 +151,11 @@ class PluginManager:
     def command_registry(self) -> CommandRegistry:
         """Public read-only access to the command registry."""
         return self._command_registry
+
+    @property
+    def supplement_registry(self) -> PromptSupplementRegistry:
+        """Public read-only access to the prompt supplement registry."""
+        return self._supplement_registry
 
     @property
     def scheduler_service(self) -> Any | None:
@@ -223,6 +233,7 @@ class PluginManager:
             tool_registry=self._tool_registry,
             handler_registry=self._handler_registry,
             command_registry=self._command_registry,
+            supplement_registry=self._supplement_registry,
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,
             model_router=self._model_router,
@@ -394,6 +405,7 @@ class PluginManager:
             self._tool_registry.unregister_by_plugin(plugin_id)
             self._handler_registry.unregister_by_plugin(plugin_id)
             self._command_registry.unregister_by_plugin(plugin_id)
+            self._supplement_registry.unregister_by_plugin(plugin_id)
 
     async def _safe_activate_registrations(self, record: PluginRecord) -> bool:
         """Activate remembered plugin registrations with error isolation."""

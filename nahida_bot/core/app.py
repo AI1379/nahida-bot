@@ -464,6 +464,11 @@ class Application:
             if self.plugin_manager is not None
             else None
         )
+        supplement_registry = (
+            self.plugin_manager.supplement_registry
+            if self.plugin_manager is not None
+            else None
+        )
 
         # Build media infrastructure from multimodal config
         multimodal = self.settings.multimodal
@@ -509,6 +514,7 @@ class Application:
             group_context_max_chars=self.settings.router.group_context.max_chars,
             media_resolver=media_resolver,
             channel_registry=self.channel_registry,
+            supplement_registry=supplement_registry,
             enable_silent_reply=self.settings.enable_silent_reply,
         )
 
@@ -773,6 +779,9 @@ class Application:
                 if self.session_runner is not None:
                     self.session_runner.tool_registry = (
                         self.plugin_manager.tool_registry
+                    )
+                    self.session_runner.supplement_registry = (
+                        self.plugin_manager.supplement_registry
                     )
                 self.scheduler_service.wire_runtime(
                     message_router=self.message_router,

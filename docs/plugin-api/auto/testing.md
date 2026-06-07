@@ -50,6 +50,10 @@ use `RecordingMockBotAPI` instead.
 
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
 
+#### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Any | None = None)`
+
+#### `unregister_prompt_supplement(key: str)`
+
 #### `register_command(name: str, handler: Callable[..., Awaitable[Any]], description: str = '', aliases: list[str] | None = None)`
 
 #### `get_session(session_id: str)`
@@ -131,6 +135,10 @@ Tracks: published events, registered tools, commands, handlers, services.
 
 - **返回类型:** `dict[str, dict[str, Any]]`
 
+#### registered_prompt_supplements
+
+- **返回类型:** `dict[str, dict[str, Any]]`
+
 **方法:**
 
 #### `on_event(event_type: type)`
@@ -146,6 +154,10 @@ Tracks: published events, registered tools, commands, handlers, services.
 #### `register_channel(channel: Any)`
 
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
+
+#### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Any | None = None)`
+
+#### `unregister_prompt_supplement(key: str)`
 
 #### `publish_event(event: Any)`
 
@@ -245,6 +257,10 @@ Dispatch a command by name and return the result text.
 #### `register_channel(channel: Any)`
 
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
+
+#### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Any | None = None)`
+
+#### `unregister_prompt_supplement(key: str)`
 
 #### `get_session(session_id: str)`
 

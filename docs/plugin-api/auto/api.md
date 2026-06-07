@@ -174,6 +174,27 @@ Register a channel service implemented by this plugin.
 
 Register a provider type that can be used from YAML config.
 
+#### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Callable[[MessageContext], bool] | None = None)`
+
+Register a supplemental instruction to inject into the system prompt.
+
+The supplement is appended after the base prompt and behavioral
+instructions.  When *channel* is provided, the supplement is only
+injected for messages originating from that channel.  When *filter*
+is provided, it is called with the current `MessageContext`.
+When both are given, both must match (AND logic).  When neither is
+provided, the supplement is always injected.
+
+Args:
+    key: Unique identifier for this supplement within the plugin.
+    instruction: The prompt text to inject.
+    channel: Optional channel name to restrict injection to.
+    filter: Optional callable for complex matching conditions.
+
+#### `unregister_prompt_supplement(key: str)`
+
+Remove a previously registered prompt supplement. Returns `True` if found.
+
 #### `register_command(name: str, handler: Callable[..., Awaitable[CommandHandlerResult]], description: str = '', aliases: list[str] | None = None)`
 
 Register a /command that is matched from incoming messages.
@@ -273,6 +294,13 @@ Write a file to the workspace. Subject to permission checks.
 #### `resolve_workspace_path(path: str)`
 
 Resolve a workspace-relative path to an absolute local path.
+
+#### `get_workspace_root(workspace_id: str | None = None)`
+
+Return the filesystem root path for a workspace.
+
+When *workspace_id* is `None`, uses the active workspace.
+Returns `None` when the workspace manager is unavailable.
 
 #### `publish_event(event: Any)`
 
