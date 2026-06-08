@@ -61,6 +61,12 @@ def test_milky_config_accepts_ws_url_override() -> None:
     assert config.event_ws_url == "ws://127.0.0.1:3000/custom-event"
 
 
+def test_milky_config_accepts_none_group_trigger_mode() -> None:
+    config = parse_milky_config({"group_trigger_mode": "none"})
+
+    assert config.group_trigger_mode == "none"
+
+
 def test_milky_config_rejects_invalid_group_trigger_mode() -> None:
     with pytest.raises(ValidationError):
         parse_milky_config({"group_trigger_mode": "all"})

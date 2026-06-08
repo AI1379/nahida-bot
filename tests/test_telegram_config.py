@@ -48,6 +48,12 @@ def test_telegram_config_accepts_single_chat_id() -> None:
     assert config.allowed_chats == ["-100123"]
 
 
+def test_telegram_config_accepts_none_group_trigger_mode() -> None:
+    config = parse_telegram_config({"group_trigger_mode": "none"})
+
+    assert config.group_trigger_mode == "none"
+
+
 def test_telegram_config_rejects_invalid_group_trigger_mode() -> None:
     with pytest.raises(ValidationError):
         parse_telegram_config({"group_trigger_mode": "all"})

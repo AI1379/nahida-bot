@@ -150,6 +150,45 @@ async def test_group_command_trigger_is_accepted() -> None:
     assert inbound.command_prefix == "!"
 
 
+async def test_group_command_requires_mention_in_mention_mode() -> None:
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "mention", "command_prefix": "!"}),
+        self_id=999,
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            segments=[{"type": "text", "data": {"text": "!help"}}],
+        )
+    )
+
+    assert inbound is None
+
+
+async def test_group_command_mode_accepts_plain_mention() -> None:
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "command", "command_prefix": "!"}),
+        self_id=999,
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            segments=[
+                {"type": "mention", "data": {"user_id": 999, "name": "bot"}},
+                {"type": "text", "data": {"text": " hello"}},
+            ],
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.text == "hello"
+    assert inbound.mentions_bot is True
+
+
 async def test_group_mention_records_target_signal() -> None:
     converter = MilkyMessageConverter(
         parse_milky_config({"group_trigger_mode": "mention"}),

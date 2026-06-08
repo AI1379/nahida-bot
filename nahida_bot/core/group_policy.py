@@ -7,7 +7,7 @@ from typing import Literal
 
 from nahida_bot.plugins.base import InboundMessage
 
-GroupTriggerMode = Literal["mention", "command", "always"]
+GroupTriggerMode = Literal["none", "mention", "command", "always"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,11 +45,11 @@ class GroupInteractionPolicy:
                 reason="always",
             )
 
-        if command:
+        if self.mode == "command" and (command or mention):
             return GroupInteractionDecision(
                 observe=True,
                 respond=True,
-                reason="command",
+                reason="command" if command else "mention",
             )
 
         if self.mode == "mention" and mention:

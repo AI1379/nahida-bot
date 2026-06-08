@@ -189,14 +189,15 @@ class MilkyMessageConverter:
     def _should_accept_group_message(self, segments: list[IncomingSegment]) -> bool:
         if self._config.group_trigger_mode == "always":
             return True
+        if self._config.group_trigger_mode == "none":
+            return False
+        has_mention = self._has_self_mention(segments)
         text = render_segments_plain_text(
             segments, max_forward_depth=self._config.max_forward_depth
         ).lstrip()
         if self._config.group_trigger_mode == "command":
-            return text.startswith(self._config.command_prefix)
-        return self._has_self_mention(segments) or text.startswith(
-            self._config.command_prefix
-        )
+            return has_mention or text.startswith(self._config.command_prefix)
+        return has_mention
 
     def _has_self_mention(self, segments: list[IncomingSegment]) -> bool:
         if self._self_id <= 0:

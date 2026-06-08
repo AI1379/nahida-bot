@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
-GroupTriggerMode = Literal["mention", "command", "always"]
+GroupTriggerMode = Literal["none", "mention", "command", "always"]
 
 
 class MilkyPluginConfig(BaseModel):
@@ -45,7 +45,10 @@ class MilkyPluginConfig(BaseModel):
     )
     group_trigger_mode: GroupTriggerMode = Field(
         default="mention",
-        description="How group messages trigger the bot: mention, command, or always.",
+        description=(
+            "How group messages trigger the bot: none, mention, command, or always. "
+            "'mention' requires @bot; 'command' means command prefix or @bot."
+        ),
     )
     group_context_capture: bool = Field(
         default=False,

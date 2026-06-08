@@ -464,7 +464,7 @@ telegram:
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `command_prefix` | `str` | `"/"` | 命令前缀 |
-| `group_trigger_mode` | `str` | `"mention"` | 群消息触发方式：`mention`（@机器人）、`command`（命令前缀）、`always`（全部消息） |
+| `group_trigger_mode` | `str` | `"mention"` | 群消息进入 Router/Agent 的方式：`none`（不触发）、`mention`（必须 @ 机器人，命令也需 @）、`command`（命令前缀或 @ 机器人）、`always`（全部消息） |
 | `reply_to_inbound` | `bool \| null` | `null` | 是否覆盖 `router.reply_to_inbound`；`null`/省略表示跟随全局 |
 | `allowed_friends` | `list[str]` | `[]` | QQ 好友白名单，空 = 不限制 |
 | `allowed_groups` | `list[str]` | `[]` | QQ 群白名单，空 = 不限制 |

@@ -283,7 +283,7 @@ OutboundMessage.attachment(kind="video")  → {"type": "video", "data": {"file":
 复用 Milky 的 `GroupInteractionPolicy` 模式：
 
 ```python
-GroupTriggerMode = Literal["mention", "command", "always"]
+GroupTriggerMode = Literal["none", "mention", "command", "always"]
 ```
 
 | 模式 | 行为 |
@@ -342,7 +342,7 @@ class OneBotPluginConfig(BaseModel):
 
     # --- 通用配置 ---
     command_prefix: str = "/"
-    group_trigger_mode: GroupTriggerMode = "mention"
+    group_trigger_mode: GroupTriggerMode = "mention"  # none | mention | command | always
     group_context_capture: bool = False
     reply_to_inbound: bool | None = None
 

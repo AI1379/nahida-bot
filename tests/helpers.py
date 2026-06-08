@@ -61,6 +61,19 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    def register_prompt_supplement(
+        self,
+        key: str,
+        instruction: str,
+        *,
+        channel: str | None = None,
+        filter: Callable[..., bool] | None = None,
+    ) -> None:
+        pass
+
+    def unregister_prompt_supplement(self, key: str) -> bool:
+        return False
+
     def register_command(
         self,
         name: str,
@@ -170,6 +183,7 @@ class RecordingMockBotAPI(MockBotAPI):
         self.published_events: list[Any] = []
         self.registered_tools: dict[str, dict[str, Any]] = {}
         self.registered_channels: list[Any] = []
+        self.registered_prompt_supplements: dict[str, dict[str, Any]] = {}
         self._plugin_data: dict[str, Any] = {}
 
     def register_tool(
@@ -190,6 +204,23 @@ class RecordingMockBotAPI(MockBotAPI):
 
     def register_channel(self, channel: Any) -> None:
         self.registered_channels.append(channel)
+
+    def register_prompt_supplement(
+        self,
+        key: str,
+        instruction: str,
+        *,
+        channel: str | None = None,
+        filter: Callable[..., bool] | None = None,
+    ) -> None:
+        self.registered_prompt_supplements[key] = {
+            "instruction": instruction,
+            "channel": channel,
+            "filter": filter,
+        }
+
+    def unregister_prompt_supplement(self, key: str) -> bool:
+        return self.registered_prompt_supplements.pop(key, None) is not None
 
     async def publish_event(self, event: Any) -> None:
         self.published_events.append(event)

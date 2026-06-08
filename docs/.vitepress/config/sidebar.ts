@@ -105,6 +105,10 @@ export const sidebar: DefaultTheme.Sidebar = {
           text: "跨会话消息",
           link: "/design/cross-session-messaging",
         },
+        {
+          text: "主动入话题",
+          link: "/design/conversation-joiner",
+        },
         { text: "运行时设置", link: "/design/runtime-settings" },
         {
           text: "工具产出的图片/媒体",

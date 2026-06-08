@@ -910,7 +910,7 @@ providers:
 
 - [x] 定义 `MilkyPluginConfig`：`base_url`、`access_token`、`api_prefix`、`event_path`、`command_prefix`、`allowed_friends`、`allowed_groups`。
 - [x] 定义 WebSocket 配置：`ws_url` 可选覆盖、`connect_timeout`、`heartbeat_timeout`、`reconnect_initial_delay`、`reconnect_max_delay`。
-- [x] 定义群聊触发策略：`group_trigger_mode` 支持 `mention`、`command`、`always`，默认 `mention`。
+- [x] 定义群聊触发策略：`group_trigger_mode` 支持 `none`、`mention`、`command`、`always`，默认 `mention`。
 - [x] 定义发送策略：`send_retry_attempts`、`send_retry_backoff`、`max_text_length`。
 - [x] 定义媒体策略：`media_download_dir`、`enable_media_download_tool`、`resource_url_ttl_hint`。
 
@@ -962,7 +962,7 @@ providers:
 - [x] 将 `mention` segment 转为可读 `@QQ号`；如果 mention 目标是当前 bot 且群聊触发策略需要，则剥离该 mention。
 - [x] 将图片、文件、语音、视频等媒体 segment 降级为 `[Media: type=..., resource_id=...]` 文本，原始数据保留在 `raw_event`。
 - [x] 支持 `allowed_friends` / `allowed_groups` 过滤。
-- [x] 支持 `group_trigger_mode`：群聊默认只响应 @bot 或命令前缀，避免无差别响应群消息。
+- [x] 支持 `group_trigger_mode`：群聊默认只响应 @bot；`command` 模式响应 @bot 或命令前缀，避免无差别响应群消息。
 - [x] 支持基于 `get_forwarded_messages()` 的合并转发递归解析，并受 `max_forward_depth`、`max_forward_messages`、`forward_render_max_chars` 限制。
 - [x] 对 Lagrange.Milky 暂未实现合并转发拉取的情况做容错，保留 forward 引用与 preview 文本，不中断入站消息处理。
 

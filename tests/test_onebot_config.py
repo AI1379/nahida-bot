@@ -15,6 +15,14 @@ def test_onebot_config_accepts_v11_forward_ws() -> None:
     assert config.ws_url == "ws://127.0.0.1:3001"
 
 
+def test_onebot_config_accepts_none_group_trigger_mode() -> None:
+    config = parse_onebot_config(
+        {"ws_url": "ws://127.0.0.1:3001", "group_trigger_mode": "none"}
+    )
+
+    assert config.group_trigger_mode == "none"
+
+
 def test_onebot_config_rejects_missing_ws_url() -> None:
     with pytest.raises(ValidationError, match="requires ws_url"):
         parse_onebot_config({})

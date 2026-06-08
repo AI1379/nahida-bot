@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-GroupTriggerMode = Literal["mention", "command", "always"]
+GroupTriggerMode = Literal["none", "mention", "command", "always"]
 
 
 class TelegramPluginConfig(BaseModel):
@@ -34,7 +34,10 @@ class TelegramPluginConfig(BaseModel):
 
     group_trigger_mode: GroupTriggerMode = Field(
         default="always",
-        description="How group messages trigger the bot: mention, command, or always.",
+        description=(
+            "How group messages trigger the bot: none, mention, command, or always. "
+            "'mention' requires @bot; 'command' means command prefix or @bot."
+        ),
     )
     group_context_capture: bool = Field(
         default=False,

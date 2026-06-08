@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-GroupTriggerMode = Literal["mention", "command", "always"]
+GroupTriggerMode = Literal["none", "mention", "command", "always"]
 
 
 class OneBotPluginConfig(BaseModel):
@@ -32,7 +32,13 @@ class OneBotPluginConfig(BaseModel):
 
     # --- Common ---
     command_prefix: str = Field(default="/", min_length=1)
-    group_trigger_mode: GroupTriggerMode = "mention"
+    group_trigger_mode: GroupTriggerMode = Field(
+        default="mention",
+        description=(
+            "How group messages trigger the bot: none, mention, command, or always. "
+            "'mention' requires @bot; 'command' means command prefix or @bot."
+        ),
+    )
     group_context_capture: bool = False
     reply_to_inbound: bool | None = None
 
