@@ -22,6 +22,7 @@ from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
     HEARTBEAT_INSTRUCTION,
+    PROACTIVE_JOIN_INSTRUCTION,
     SILENT_REPLY_INSTRUCTION,
     assistant_context,
     context_from_inbound,
@@ -372,6 +373,7 @@ class SessionRunner:
         tool_allowlist: AbstractSet[str] | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
+        agent_instruction: str = "",
         stop_event: asyncio.Event | None = None,
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
@@ -557,6 +559,7 @@ class SessionRunner:
                 system_prompt,
                 message_context,
                 source_tag=source_tag,
+                agent_instruction=agent_instruction,
                 enable_silent_reply=self._enable_silent_reply,
             )
 
@@ -2132,6 +2135,7 @@ class SessionRunner:
         system_prompt: str,
         context: MessageContext | None,
         source_tag: str = "user_input",
+        agent_instruction: str = "",
         enable_silent_reply: bool = True,
     ) -> str:
         parts = [system_prompt.rstrip()]
@@ -2141,6 +2145,15 @@ class SessionRunner:
             parts.append(SILENT_REPLY_INSTRUCTION)
         if source_tag == "cron_trigger":
             parts.append(HEARTBEAT_INSTRUCTION)
+        if source_tag == "proactive_join":
+            parts.append(PROACTIVE_JOIN_INSTRUCTION)
+            instruction = agent_instruction.strip()
+            if instruction:
+                parts.append(
+                    "## Conversation Joiner Instruction\n"
+                    "The joiner supplied this non-user instruction for the current "
+                    f"run:\n{instruction}"
+                )
         if self._supplement_registry is not None and context is not None:
             supplements = self._supplement_registry.get_matching(context)
             parts.extend(supplements)

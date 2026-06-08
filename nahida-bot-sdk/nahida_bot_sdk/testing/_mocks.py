@@ -38,6 +38,16 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    async def request_agent_response(
+        self,
+        message: InboundMessage,
+        *,
+        session_id: str = "",
+        reason: str = "",
+        instruction: str = "",
+    ) -> None:
+        pass
+
     def on_event(self, event_type: type) -> Callable:
         return lambda f: f
 
@@ -218,6 +228,7 @@ class RecordingMockBotAPI(MockBotAPI):
 
     def __init__(self) -> None:
         self.published_events: list[Any] = []
+        self.agent_response_requests: list[dict[str, Any]] = []
         self.registered_tools: dict[str, dict[str, Any]] = {}
         self.registered_commands: dict[str, dict[str, Any]] = {}
         self.registered_event_handlers: dict[
@@ -329,6 +340,23 @@ class RecordingMockBotAPI(MockBotAPI):
     async def publish_event(self, event: Any) -> None:
         self.published_events.append(event)
 
+    async def request_agent_response(
+        self,
+        message: InboundMessage,
+        *,
+        session_id: str = "",
+        reason: str = "",
+        instruction: str = "",
+    ) -> None:
+        self.agent_response_requests.append(
+            {
+                "message": message,
+                "session_id": session_id,
+                "reason": reason,
+                "instruction": instruction,
+            }
+        )
+
     # ── Plugin Data Store (in-memory) ─────────────────
 
     async def plugin_data_get(self, key: str) -> Any | None:
@@ -384,6 +412,7 @@ class ConsoleMockBotAPI:
 
     def __init__(self) -> None:
         self.sent_messages: list[tuple[str, OutboundMessage]] = []
+        self.agent_response_requests: list[dict[str, Any]] = []
         self._tools: dict[str, dict[str, Any]] = {}
         self._commands: dict[str, dict[str, Any]] = {}
         self._event_handlers: dict[type, list[Callable[..., Awaitable[None]]]] = {}
@@ -408,6 +437,23 @@ class ConsoleMockBotAPI:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         pass
+
+    async def request_agent_response(
+        self,
+        message: InboundMessage,
+        *,
+        session_id: str = "",
+        reason: str = "",
+        instruction: str = "",
+    ) -> None:
+        self.agent_response_requests.append(
+            {
+                "message": message,
+                "session_id": session_id,
+                "reason": reason,
+                "instruction": instruction,
+            }
+        )
 
     async def record_message_delivery(self, **kw: Any) -> str:
         return ""
@@ -500,7 +546,7 @@ class ConsoleMockBotAPI:
     def list_commands(self) -> list[dict[str, Any]]:
         seen: set[int] = set()
         result: list[dict[str, Any]] = []
-        for name, entry in self._commands.items():
+        for _name, entry in self._commands.items():
             hid = id(entry)
             if hid not in seen:
                 seen.add(hid)

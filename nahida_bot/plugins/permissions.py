@@ -113,6 +113,15 @@ class PermissionChecker:
                 f"(set permissions.llm_access: true in plugin.yaml)"
             )
 
+    def check_event_emit(self, event_name: str) -> None:
+        """Check if the plugin declared an event emission capability."""
+        allowed = set(self._manifest.capabilities.emits)
+        if event_name not in allowed:
+            raise PermissionDenied(
+                f"Plugin '{self._manifest.id}' cannot emit {event_name} "
+                f"(add capabilities.emits: [{event_name}] in plugin.yaml)"
+            )
+
     @staticmethod
     def _match_patterns(value: str, patterns: list[str]) -> bool:
         """Glob-style match of value against a list of patterns."""

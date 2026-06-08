@@ -128,9 +128,41 @@ builtin-commands:
   #   - "D:/Pictures"
   external_attachment_roots: []
 
+conversation_joiner:
+  # 主动入话题默认关闭。开启前需要对应群频道启用 group_context_capture，
+  # 让未触发消息先进入 MessageObserved。
+  enabled: false
+  model: cheap                         # model spec；没有 cheap tag 时可改成 provider/model，或留空使用默认模型
+  threshold: 0.75
+  max_context_messages: 12
+  max_context_chars: 3000
+  cooldown_seconds: 300
+  max_triggers_per_hour: 3
+  debounce_seconds: 20
+  decision_timeout_seconds: 8
+  persona_context:
+    enabled: true                   # 启用后秘书模型会读取 workspace 中的人设文件辅助判断是否自然入话题
+    files:
+      - SOUL.md
+    max_chars: 4000                 # 注入秘书模型的人设上下文总字符上限
+    cache_ttl_seconds: 60           # persona 文件缓存时间，避免每条候选消息都读文件
+  prefilter:
+    ignore_commands: true
+    ignore_mentions: true
+    min_text_chars: 4
+    keyword_hints: []
+    sample_rate: 0.15                # 普通候选消息进入秘书模型的采样概率
+    keyword_sample_rate: 1.0         # 命中 keyword_hints 后进入秘书模型的采样概率
+  groups: {}
+  # groups:
+  #   milky:group:123456789:
+  #     enabled: true
+  #     threshold: 0.78
+  #     cooldown_seconds: 300
+
 telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"
-  # group_trigger_mode: "always"      # always / mention / command
+  # group_trigger_mode: "always"      # none / mention / command / always
   # group_context_capture: false      # mention/command 模式下，是否记录未触发群消息作为上下文
   # reply_to_inbound: null            # true/false 覆盖 router.reply_to_inbound；null/省略表示跟随全局
   # proxy: "${TELEGRAM_PROXY:}"     # SOCKS5/HTTP 代理，如 socks5://127.0.0.1:1080
@@ -148,8 +180,8 @@ telegram:
 #   event_path: "/event"
 #   # ws_url: "ws://127.0.0.1:3000/event"  # 可选：覆盖由 base_url 推导出的 WS 地址
 #   command_prefix: "/"
-#   group_trigger_mode: "mention"  # mention / command / always
-#   group_context_capture: false   # true 时，未 at/非命令的群消息只记录为上下文，不触发回复
+#   group_trigger_mode: "mention"  # none / mention / command / always
+#   group_context_capture: false   # true 时，未触发群消息只记录为上下文，可供 conversation_joiner 判断
 #   reply_to_inbound: null         # true/false 覆盖 router.reply_to_inbound；null/省略表示跟随全局
 #   allowed_friends: []            # QQ 号白名单；空列表表示不限制
 #   allowed_groups: []             # 群号白名单；空列表表示不限制

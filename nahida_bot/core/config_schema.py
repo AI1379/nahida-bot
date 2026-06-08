@@ -178,6 +178,12 @@ def _plugin_config_model(plugin_id: str) -> type | None:
         from nahida_bot.channels.onebot.config import OneBotPluginConfig
 
         return OneBotPluginConfig
+    if plugin_id == "conversation_joiner":
+        from nahida_bot.plugins.conversation_joiner.config import (
+            ConversationJoinerConfig,
+        )
+
+        return ConversationJoinerConfig
     return None
 
 
@@ -316,6 +322,10 @@ def _discover_plugin_manifests(settings: Settings) -> list[Any]:
     builtin_mcp = _package_dir("nahida_bot.plugins.mcp")
     if builtin_mcp is not None:
         paths.append(builtin_mcp)
+
+    builtin_joiner = _package_dir("nahida_bot.plugins.conversation_joiner")
+    if builtin_joiner is not None:
+        paths.append(builtin_joiner)
 
     paths.extend(
         path for p in settings.plugin_paths if (path := Path(p).resolve()).is_dir()

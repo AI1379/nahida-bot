@@ -16,11 +16,17 @@ from nahida_bot.agent.providers.registry import (
 )
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryItem, MemoryRecord
 from nahida_bot.core.exceptions import PermissionDenied
-from nahida_bot.core.events import Event, EventBus, EventContext
+from nahida_bot.core.events import (
+    AgentResponseRequested,
+    Event,
+    EventBus,
+    EventContext,
+)
 from nahida_bot.plugins.api_bridge import RealBotAPI
-from nahida_bot.plugins.base import OutboundMessage
+from nahida_bot.plugins.base import ChatContext, InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import CommandRegistry
 from nahida_bot.plugins.manifest import (
+    Capabilities,
     FilesystemPermission,
     MemoryPermission,
     NetworkPermission,
@@ -481,6 +487,88 @@ async def test_event_subscription_handle_unsubscribes_permanently(
     await api.publish_event(Event(payload="after-reactivate"))
 
     assert seen == ["hello"]
+
+
+@pytest.mark.asyncio
+async def test_request_agent_response_publishes_typed_event(tmp_path: Path) -> None:
+    manifest = _manifest().model_copy(
+        update={"capabilities": Capabilities(emits=["AgentResponseRequested"])}
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+    seen: list[AgentResponseRequested] = []
+
+    async def _handler(event: AgentResponseRequested, ctx: EventContext) -> None:
+        seen.append(event)
+
+    cast(Any, api)._event_bus.subscribe(AgentResponseRequested, _handler)
+    inbound = InboundMessage(
+        message_id="m1",
+        platform="test",
+        chat_id="g1",
+        user_id="u1",
+        text="join?",
+        raw_event={},
+        is_group=True,
+        chat_context=ChatContext(platform="test", chat_type="group"),
+    )
+
+    await api.request_agent_response(
+        inbound,
+        session_id="test:group:g1",
+        reason="good moment",
+        instruction="answer briefly",
+    )
+
+    assert len(seen) == 1
+    event = seen[0]
+    assert event.source == "bridge-test"
+    assert event.payload.message is inbound
+    assert event.payload.chat_address.chat_key == "test:group:g1"
+    assert event.payload.requester_plugin_id == "bridge-test"
+    assert event.payload.reason == "good moment"
+    assert event.payload.instruction == "answer briefly"
+
+
+@pytest.mark.asyncio
+async def test_request_agent_response_requires_emit_capability(
+    tmp_path: Path,
+) -> None:
+    api, _, _, _ = _api(tmp_path)
+    inbound = InboundMessage(
+        message_id="m1",
+        platform="test",
+        chat_id="g1",
+        user_id="u1",
+        text="join?",
+        raw_event={},
+        is_group=True,
+        chat_context=ChatContext(platform="test", chat_type="group"),
+    )
+
+    with pytest.raises(PermissionDenied, match="AgentResponseRequested"):
+        await api.request_agent_response(inbound)
+
+
+@pytest.mark.asyncio
+async def test_request_agent_response_rejects_private_target(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest().model_copy(
+        update={"capabilities": Capabilities(emits=["AgentResponseRequested"])}
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+    inbound = InboundMessage(
+        message_id="m1",
+        platform="test",
+        chat_id="c1",
+        user_id="u1",
+        text="join?",
+        raw_event={},
+        chat_context=ChatContext(platform="test", chat_type="private"),
+    )
+
+    with pytest.raises(ValueError, match="typed group"):
+        await api.request_agent_response(inbound)
 
 
 @pytest.mark.asyncio

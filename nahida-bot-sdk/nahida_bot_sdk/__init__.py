@@ -64,6 +64,8 @@ from nahida_bot_sdk.manifest import (  # noqa: F401
 
 # Events
 from nahida_bot_sdk.events import (  # noqa: F401
+    AgentResponseRequested,
+    AgentResponseRequestPayload,
     AppInitializing,
     AppLifecyclePayload,
     AppStarted,
@@ -150,6 +152,8 @@ __all__ = [
     "SystemPermission",
     "parse_manifest",
     # Events
+    "AgentResponseRequested",
+    "AgentResponseRequestPayload",
     "AppInitializing",
     "AppLifecyclePayload",
     "AppStarted",

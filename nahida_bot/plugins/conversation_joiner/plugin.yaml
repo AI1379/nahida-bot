@@ -1,0 +1,43 @@
+id: conversation_joiner
+name: "Conversation Joiner"
+version: "0.1.0"
+description: "Observes group context and asks the main agent to naturally join a topic when appropriate"
+entrypoint: "nahida_bot.plugins.conversation_joiner.plugin:ConversationJoinerPlugin"
+load_phase: "post-agent"
+permissions:
+  llm_access: true
+  filesystem:
+    read:
+      - workspace
+  plugin_data:
+    read: true
+    write: true
+capabilities:
+  subscribes_to:
+    - MessageObserved
+  emits:
+    - AgentResponseRequested
+config:
+  enabled: false
+  model: cheap
+  threshold: 0.75
+  max_context_messages: 12
+  max_context_chars: 3000
+  cooldown_seconds: 300
+  max_triggers_per_hour: 3
+  debounce_seconds: 20
+  decision_timeout_seconds: 8
+  persona_context:
+    enabled: true
+    files:
+      - SOUL.md
+    max_chars: 4000
+    cache_ttl_seconds: 60
+  prefilter:
+    ignore_commands: true
+    ignore_mentions: true
+    min_text_chars: 4
+    keyword_hints: []
+    sample_rate: 0.15
+    keyword_sample_rate: 1.0
+  groups: {}

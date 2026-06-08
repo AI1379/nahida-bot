@@ -2,7 +2,7 @@
 
 > 记录时间：2026-06-08
 > 最近更新：2026-06-08
-> 状态：设计草案，Phase 0 已完成
+> 状态：Phase 0/1 已完成，Phase 2 MVP 已完成
 > 来源：GitHub Issue #4 的“随机发言”表述不准确；真实目标是让 Bot 判断是否自然加入群聊话题。
 > 相关文档：
 >
@@ -104,7 +104,9 @@ milky:
 
 ## 6. AgentResponseRequested
 
-后续新增专用事件：
+状态：已落地。
+
+已新增专用事件：
 
 ```python
 class AgentResponseRequested(Event[AgentResponseRequestPayload]):
@@ -137,10 +139,16 @@ async def request_agent_response(
 Router 订阅 `AgentResponseRequested` 后：
 
 1. 校验 target 是 typed group address。
-2. 检查同 session 是否已有 active run。
+2. 检查同 session 是否已有 active run；主动入话题请求不会排队等待已有 run。
 3. 设置 session context。
-4. 以 `source_tag="proactive_join"` 进入 `_dispatch_message()` 或后续专门的 Agent request path。
-5. 将 `instruction` 注入本轮 system/developer context，让主 Agent 知道这是主动入话题。
+4. 以 `source_tag="proactive_join"` 进入 `_dispatch_message()`，并跳过命令匹配。
+5. 将 `instruction` 注入本轮 system context，让主 Agent 知道这是主动入话题。
+
+权限边界：
+
+- `BotAPI.request_agent_response()` 是窄口，只能发布 `AgentResponseRequested`。
+- 插件必须声明 `capabilities.emits: ["AgentResponseRequested"]`。
+- 当前没有放开普通插件直接发布 `MessageReceived` 的正式能力。
 
 主 Agent 的行为约束：
 
@@ -151,6 +159,16 @@ Router 订阅 `AgentResponseRequested` 后：
 ```
 
 ## 7. ConversationJoinerPlugin
+
+状态：MVP 已落地。
+
+当前实现边界：
+
+- 作为内置插件 `conversation_joiner` 发现，默认关闭。
+- 订阅 `MessageObserved`，收到事件后创建后台任务，不阻塞 channel 入站发布。
+- 群上下文窗口、冷却、debounce、小时上限暂存在内存中；持久化和管理命令放到后续阶段。
+- 在 `group_observe_mode` 落地前，仍依赖各 channel 的 `group_context_capture` 让未触发消息进入 `MessageObserved`。
+- 秘书模型只输出 JSON decision；最终群聊回复仍由主 Agent 生成。
 
 ### 7.1 配置示例
 
@@ -166,11 +184,20 @@ conversation_joiner:
   debounce_seconds: 20
   decision_timeout_seconds: 8
 
+  persona_context:
+    enabled: true
+    files:
+      - SOUL.md
+    max_chars: 4000
+    cache_ttl_seconds: 60
+
   prefilter:
     ignore_commands: true
     ignore_mentions: true
     min_text_chars: 4
     keyword_hints: []
+    sample_rate: 0.15
+    keyword_sample_rate: 1.0
 
   groups:
     milky:group:123456789:
@@ -187,6 +214,7 @@ Observed group message
   -> update group context window
   -> debounce per group
   -> heuristic prefilter
+  -> load cached lightweight persona context
   -> call cheap secretary model
   -> parse structured decision
   -> cooldown / rate limit / active run guard
@@ -203,19 +231,28 @@ Observed group message
 - 当前 session 有 active run：跳过。
 - 处于冷却或小时上限：跳过。
 - 文本过短且无关键词提示：跳过。
+- 未通过 `sample_rate` / `keyword_sample_rate` 概率采样门禁：跳过。
 - 最近 N 秒已安排过判定：debounce。
+
+`sample_rate` 使用运行时随机 roll，不把消息内容 hash 成固定结果。这样同一类消息不会因为 message id / 文本被永久绑定为“永远触发”或“永远不触发”。测试中通过 `sample_rate=0/1` 或替换随机函数来稳定覆盖分支。
 
 ## 8. 秘书模型
 
 秘书模型只做“是否加入话题”的判定，不生成最终群聊回复。
 
-输入包括：
+当前 MVP 输入包括：
 
 - 当前消息。
 - 最近 N 条群聊观察上下文。
-- Bot 上次发言时间。
-- 当前群配置和冷却状态。
+- 轻量人设上下文，默认从 active workspace 读取 `SOUL.md`，只用于判断“主 Agent 是否适合自然加入”，不用于生成最终回复。
+- 当前群配置中的阈值和冷却参数。
 - 简短行为准则。
+
+后续可补充：
+
+- Bot 上次发言时间和最近一次主动入话题原因。
+- 当前群在时间窗口内的消息密度。
+- 剩余 cooldown / hourly budget 等运行时状态摘要。
 
 输出必须是 JSON：
 
@@ -269,6 +306,9 @@ class GroupJoinerState:
 
 ```yaml
 permissions:
+  filesystem:
+    read:
+      - workspace
   plugin_data:
     read: true
     write: true
@@ -278,7 +318,7 @@ capabilities:
     - AgentResponseRequested
 ```
 
-后续建议补事件发布权限：
+当前 MVP 使用 `capabilities.emits` 做最小 allowlist。后续如果权限模型需要更细粒度，可以再扩展为：
 
 ```yaml
 permissions:
@@ -287,7 +327,7 @@ permissions:
       - AgentResponseRequested
 ```
 
-在权限系统完善前，`request_agent_response()` 应只允许显式白名单事件，不复用完全开放的 `publish_event()`。
+`request_agent_response()` 保持为显式窄口，不复用完全开放的 `publish_event()`。
 
 ## 11. 安全与防滥用
 
@@ -316,23 +356,30 @@ permissions:
 
 ### Phase 1：观察模式与 Agent 请求事件
 
-- [ ] 设计并实现 `AgentResponseRequested` 事件。
-- [ ] 增加 `BotAPI.request_agent_response()`。
-- [ ] Router 订阅 `AgentResponseRequested` 并以 `source_tag="proactive_join"` 进入 AgentLoop。
-- [ ] 增加事件发布权限或最小 allowlist。
-- [ ] 规划 `group_observe_mode`，从 `group_context_capture` 兼容迁移。
-- [ ] 补测试：插件请求 Agent 响应、权限拒绝、source_tag 注入。
+- [x] 设计并实现 `AgentResponseRequested` 事件。
+- [x] 增加 `BotAPI.request_agent_response()`。
+- [x] Router 订阅 `AgentResponseRequested` 并以 `source_tag="proactive_join"` 进入 AgentLoop。
+- [x] 主动入话题请求跳过命令匹配，避免把观察消息当成用户命令。
+- [x] 增加 `capabilities.emits` 最小 allowlist。
+- [x] 将 proactive join 基础约束和插件 instruction 注入本轮 system prompt。
+- [x] 补测试：插件请求 Agent 响应、权限拒绝、target 拒绝、source_tag/指令注入。
+- [ ] 正式新增 `group_observe_mode`，从 `group_context_capture` 兼容迁移。
 
 ### Phase 2：ConversationJoiner MVP
 
-- [ ] 新增 `nahida_bot/plugins/conversation_joiner/`。
-- [ ] 实现配置解析。
-- [ ] 实现群上下文窗口和 debounce。
-- [ ] 实现启发式预过滤。
-- [ ] 通过 `BotAPI.llm_chat()` 调用便宜秘书模型。
-- [ ] 解析结构化 JSON decision。
-- [ ] 判定通过后调用 `request_agent_response()`。
-- [ ] 补测试：秘书模型 should_join false/true、置信度阈值、冷却、并发主 run 保护。
+- [x] 新增 `nahida_bot/plugins/conversation_joiner/`。
+- [x] 实现内置插件发现和配置 schema 暴露。
+- [x] 实现配置解析和分群覆盖。
+- [x] 实现群上下文窗口和 debounce。
+- [x] 实现启发式预过滤。
+- [x] 实现 `sample_rate` / `keyword_sample_rate` 概率采样门禁。
+- [x] 默认读取 workspace `SOUL.md` 作为秘书模型轻量人设上下文，并加 TTL 缓存。
+- [x] 通过 `BotAPI.llm_chat()` 调用便宜秘书模型。
+- [x] 解析结构化 JSON decision。
+- [x] 判定通过后调用 `request_agent_response()`。
+- [x] 补测试：秘书模型 should_join false/true、置信度阈值、冷却、并发主 run 保护。
+- [ ] 将 cooldown / hourly budget / 最近 decision 持久化到 `plugin_data`。
+- [ ] 增加 secretary failure backoff 和可观测统计。
 
 ### Phase 3：调试与管理
 

@@ -107,6 +107,15 @@ HEARTBEAT_INSTRUCTION = (
     '- You may also use {"action": "HEARTBEAT_OK"} JSON format.'
 )
 
+PROACTIVE_JOIN_INSTRUCTION = (
+    "## Proactive Conversation Join\n"
+    "This run was requested by a conversation joiner, not by a user directly "
+    "addressing you. Join the group conversation only if it is natural, useful, "
+    "and not disruptive. Keep the reply concise and grounded in the recent "
+    "context. If the moment is no longer appropriate, the context is too thin, "
+    "or replying would interrupt the users, reply exactly NO_REPLY."
+)
+
 
 def context_from_inbound(inbound: InboundMessage) -> MessageContext:
     """Build a MessageContext from normalized inbound fields and channel facts."""

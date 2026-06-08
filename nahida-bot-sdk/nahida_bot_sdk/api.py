@@ -13,7 +13,7 @@ from typing import (
 )
 
 from nahida_bot_sdk.chat_address import ChatAddress
-from nahida_bot_sdk.messaging import MessageContext, OutboundMessage
+from nahida_bot_sdk.messaging import InboundMessage, MessageContext, OutboundMessage
 
 if TYPE_CHECKING:
     from nahida_bot_sdk.commands import CommandHandlerResult, CommandInfo
@@ -120,6 +120,17 @@ class BotAPI(Protocol):
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Write a system turn into a session's history without triggering a run."""
+        ...
+
+    async def request_agent_response(
+        self,
+        message: InboundMessage,
+        *,
+        session_id: str = "",
+        reason: str = "",
+        instruction: str = "",
+    ) -> None:
+        """Ask the main router to run the agent for a group conversation."""
         ...
 
     async def record_message_delivery(

@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 from uuid import UUID, uuid4
 
+from nahida_bot_sdk.chat_address import ChatAddress
+
 PayloadT = TypeVar("PayloadT")
 EventT = TypeVar("EventT", bound="Event[Any]", contravariant=True)
 
@@ -119,6 +121,24 @@ class MessageReceived(Event[MessagePayload]):
 @dataclass(slots=True, frozen=True)
 class MessageObserved(Event[MessagePayload]):
     """Raised for inbound messages recorded as context but not handled by agent."""
+
+
+@dataclass(slots=True, frozen=True)
+class AgentResponseRequestPayload:
+    """Payload for a plugin-initiated request to run the main agent."""
+
+    message: Any  # InboundMessage — use Any to avoid circular import
+    session_id: str
+    chat_address: ChatAddress
+    requester_plugin_id: str
+    reason: str
+    instruction: str = ""
+    synthetic: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class AgentResponseRequested(Event[AgentResponseRequestPayload]):
+    """Raised when a plugin asks the router to let the agent join a chat."""
 
 
 @dataclass(slots=True, frozen=True)

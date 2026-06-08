@@ -715,6 +715,16 @@ class Application:
         except ImportError:
             pass
 
+        # Discover builtin conversation joiner plugin
+        try:
+            import nahida_bot.plugins.conversation_joiner as joiner_pkg
+
+            if joiner_pkg.__file__ is not None:
+                joiner_path = Path(joiner_pkg.__file__).parent
+                await self.plugin_manager.discover([joiner_path])
+        except ImportError:
+            pass
+
         plugin_paths = [Path(p).resolve() for p in self.settings.plugin_paths]
         await self.plugin_manager.discover(plugin_paths)
 

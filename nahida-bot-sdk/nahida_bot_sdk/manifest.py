@@ -65,6 +65,7 @@ class Capabilities(BaseModel):
 
     tools: list[dict[str, str]] = Field(default_factory=list)
     subscribes_to: list[str] = Field(default_factory=list)
+    emits: list[str] = Field(default_factory=list)
 
 
 class PluginDependency(BaseModel):

@@ -14,6 +14,7 @@ from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.chat_address import ChatAddress, classify_session_key
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
+    AgentResponseRequested,
     EventBus,
     MessagePayload,
     MessageObserved,
@@ -95,6 +96,7 @@ class MessageRouter:
         self._config = config or RouterConfig()
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
+        self._agent_response_subscription: Subscription | None = None
         # Maps deterministic session key → active session id (for /new)
         # TODO(capacity): bound or page restored active-session overrides if
         # untrusted traffic can create many distinct chat keys.
@@ -102,7 +104,10 @@ class MessageRouter:
         # Per-session queues for messages arriving while agent is busy
         # TODO(backpressure): add a per-session pending-message limit and a
         # defined drop/reject policy for bursts during long-running agent runs.
-        self._pending: dict[str, list[tuple[InboundMessage, str, str | None]]] = {}
+        self._pending: dict[
+            str,
+            list[tuple[InboundMessage, str, str | None, str, str]],
+        ] = {}
         self._stopping = False
 
     @property
@@ -150,6 +155,12 @@ class MessageRouter:
             priority=0,
             timeout=30.0,
         )
+        self._agent_response_subscription = self._event_bus.subscribe(
+            AgentResponseRequested,
+            self._handle_agent_response_requested,
+            priority=0,
+            timeout=120.0,
+        )
         await self.restore_active_sessions()
         logger.info("message_router.started")
 
@@ -162,6 +173,9 @@ class MessageRouter:
         if self._observed_subscription is not None:
             self._observed_subscription.unsubscribe()
             self._observed_subscription = None
+        if self._agent_response_subscription is not None:
+            self._agent_response_subscription.unsubscribe()
+            self._agent_response_subscription = None
 
         # Wait for active agent runs to finish, then cancel stragglers
         if self._runner is not None:
@@ -412,11 +426,81 @@ class MessageRouter:
         finally:
             current_session.reset(token)
 
+    async def _handle_agent_response_requested(
+        self, event: AgentResponseRequested, ctx: EventContext
+    ) -> None:
+        """Run the main agent when a plugin asks to join a group topic."""
+        inbound: InboundMessage = event.payload.message
+        address = event.payload.chat_address
+        if not address.is_typed or address.target_type != "group":
+            logger.warning(
+                "router.agent_response_request_rejected",
+                reason="not_typed_group",
+                source=event.source,
+                chat_address=str(address),
+                payload_session_id=event.payload.session_id,
+                requester_plugin_id=event.payload.requester_plugin_id,
+            )
+            return
+
+        runner = self._runner
+        session_id = self.get_active_session_id(address)
+        if runner is not None and runner.run_tracker.is_active(session_id):
+            logger.debug(
+                "router.agent_response_request_skipped",
+                reason="active_run",
+                source=event.source,
+                session_id=session_id,
+                requester_plugin_id=event.payload.requester_plugin_id,
+                **_inbound_log_fields(inbound),
+            )
+            return
+
+        workspace_id = self._resolve_workspace_id()
+        logger.debug(
+            "router.agent_response_requested",
+            source=event.source,
+            payload_session_id=event.payload.session_id,
+            active_session_id=session_id,
+            chat_address=str(address),
+            requester_plugin_id=event.payload.requester_plugin_id,
+            reason_chars=len(event.payload.reason),
+            instruction_chars=len(event.payload.instruction),
+            **_inbound_log_fields(inbound),
+        )
+        session_ctx = SessionContext(
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            chat_address=address,
+            user_id=inbound.user_id,
+            sender_display_name=(
+                inbound.sender_context.display_name
+                if inbound.sender_context is not None
+                else ""
+            ),
+        )
+        token = current_session.set(session_ctx)
+        try:
+            await self._dispatch_message(
+                inbound,
+                session_id,
+                workspace_id,
+                source_tag="proactive_join",
+                agent_instruction=event.payload.instruction,
+            )
+        finally:
+            current_session.reset(token)
+
     async def _dispatch_message(
         self,
         inbound: InboundMessage,
         session_id: str,
         workspace_id: str | None,
+        *,
+        source_tag: str = "user_input",
+        agent_instruction: str = "",
     ) -> None:
         """Command matching + agent execution (called within session context)."""
         logger.debug(
@@ -425,9 +509,9 @@ class MessageRouter:
             workspace_id=workspace_id or "",
             **_inbound_log_fields(inbound),
         )
-        # Step 1: Command matching
+        # Step 1: Command matching. Proactive joins are not user command invocations.
         match = self._matcher.match(inbound.text, prefix=inbound.command_prefix)
-        if match.matched:
+        if source_tag == "user_input" and match.matched:
             entry = self._commands.get(match.name)
             if entry is not None:
                 logger.debug(
@@ -512,7 +596,7 @@ class MessageRouter:
         tracker = runner.run_tracker
         if tracker.is_active(session_id):
             self._pending.setdefault(session_id, []).append(
-                (inbound, session_id, workspace_id)
+                (inbound, session_id, workspace_id, source_tag, agent_instruction)
             )
             logger.debug(
                 "router.message_queued",
@@ -525,7 +609,13 @@ class MessageRouter:
         stop_event = asyncio.Event()
         task = asyncio.create_task(
             self._run_agent_in_background(
-                runner, inbound, session_id, workspace_id, stop_event
+                runner,
+                inbound,
+                session_id,
+                workspace_id,
+                stop_event,
+                source_tag,
+                agent_instruction,
             )
         )
         tracker.start(session_id, task, stop_event)
@@ -543,6 +633,8 @@ class MessageRouter:
         session_id: str,
         workspace_id: str | None,
         stop_event: asyncio.Event,
+        source_tag: str = "user_input",
+        agent_instruction: str = "",
     ) -> None:
         """Run agent loop in background, streaming responses as they arrive."""
         tracker = runner.run_tracker
@@ -564,7 +656,8 @@ class MessageRouter:
                 workspace_id=workspace_id,
                 attachments=inbound.attachments,
                 message_context=context_from_inbound(inbound),
-                source_tag="user_input",
+                source_tag=source_tag,
+                agent_instruction=agent_instruction,
                 stop_event=stop_event,
             ):
                 logger.debug(
@@ -649,10 +742,18 @@ class MessageRouter:
         queue = self._pending.get(session_id)
         if not queue:
             return
-        next_inbound, next_sid, next_wid = queue.pop(0)
+        next_inbound, next_sid, next_wid, next_source_tag, next_instruction = queue.pop(
+            0
+        )
         if not queue:
             del self._pending[session_id]
-        await self._dispatch_message(next_inbound, next_sid, next_wid)
+        await self._dispatch_message(
+            next_inbound,
+            next_sid,
+            next_wid,
+            source_tag=next_source_tag,
+            agent_instruction=next_instruction,
+        )
 
     async def _load_reasoning_display_config(
         self, session_id: str

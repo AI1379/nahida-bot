@@ -11,6 +11,7 @@ from nahida_bot.agent.context import MessageRole
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import (
     ChannelService,
+    InboundMessage,
     MemoryRef,
     OutboundMessage,
     PluginLogger,
@@ -193,6 +194,47 @@ class RealBotAPI:
                 source=source,
                 metadata=metadata,
             ),
+        )
+
+    async def request_agent_response(
+        self,
+        message: InboundMessage,
+        *,
+        session_id: str = "",
+        reason: str = "",
+        instruction: str = "",
+    ) -> None:
+        """Ask the router to run the main agent for an observed group message."""
+        self._permissions.check_event_emit("AgentResponseRequested")
+
+        from nahida_bot.core.events import (
+            AgentResponseRequested,
+            AgentResponseRequestPayload,
+        )
+
+        address = _address_from_inbound_message(message)
+        if not address.is_typed or address.target_type != "group":
+            raise ValueError(
+                "request_agent_response() only supports typed group chat addresses"
+            )
+
+        payload = AgentResponseRequestPayload(
+            message=message,
+            session_id=session_id or address.chat_key,
+            chat_address=address,
+            requester_plugin_id=self._plugin_id,
+            reason=str(reason or "").strip(),
+            instruction=str(instruction or "").strip(),
+        )
+        await self._event_bus.publish(
+            AgentResponseRequested(payload=payload, source=self._plugin_id)
+        )
+        self._logger.debug(
+            "agent_response_requested",
+            session_id=payload.session_id,
+            chat_address=address.chat_key,
+            reason_chars=len(payload.reason),
+            instruction_chars=len(payload.instruction),
         )
 
     async def record_message_delivery(
@@ -1145,3 +1187,18 @@ class RealBotAPI:
         self._orchestration_service = orchestration_service
         if plugin_data_repo is not None:
             self._plugin_data_repo = plugin_data_repo
+
+
+def _address_from_inbound_message(message: InboundMessage) -> ChatAddress:
+    """Build a typed chat address from a normalized inbound message."""
+    chat_type = ""
+    if message.chat_context and message.chat_context.chat_type:
+        chat_type = message.chat_context.chat_type
+    elif message.message_context and message.message_context.chat_type:
+        chat_type = message.message_context.chat_type
+    return ChatAddress.from_inbound(
+        message.platform,
+        message.chat_id,
+        is_group=message.is_group,
+        chat_type=chat_type,
+    )

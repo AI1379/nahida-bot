@@ -18,6 +18,8 @@ from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.events import (
+    AgentResponseRequested,
+    AgentResponseRequestPayload,
     EventBus,
     EventContext,
     MessageObserved,
@@ -569,6 +571,75 @@ class TestMessageRouterAgentDispatch:
         assert "channel: test/private:c1" in visible_user_message
         assert "sender: u1" in visible_user_message
         assert "text:\n  what is 2+2?" in visible_user_message
+
+    async def test_agent_response_requested_dispatches_proactive_join(self) -> None:
+        from nahida_bot.plugins.base import ChatContext
+
+        memory = _MockMemoryStore()
+        agent = _MockAgentLoop(response="joining")
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+        inbound = InboundMessage(
+            message_id="m1",
+            platform="test",
+            chat_id="g1",
+            user_id="u1",
+            text="we are discussing deployments",
+            raw_event={},
+            is_group=True,
+            chat_context=ChatContext(platform="test", chat_type="group"),
+        )
+
+        await router.start()
+        await event_bus.publish(
+            AgentResponseRequested(
+                payload=AgentResponseRequestPayload(
+                    message=inbound,
+                    session_id="test:group:g1",
+                    chat_address=ChatAddress(
+                        channel="test",
+                        target_type="group",
+                        target_id="g1",
+                    ),
+                    requester_plugin_id="conversation_joiner",
+                    reason="useful context",
+                    instruction="focus on deployment status",
+                ),
+                source="conversation_joiner",
+            )
+        )
+        await router.stop()
+
+        assert len(agent.calls) == 1
+        assert "Proactive Conversation Join" in agent.calls[0]["system_prompt"]
+        assert "focus on deployment status" in agent.calls[0]["system_prompt"]
+        turns = memory.sessions["test:group:g1"]
+        assert turns[0].source == "proactive_join"
+
+    async def test_agent_response_requested_rejects_private_target(self) -> None:
+        agent = _MockAgentLoop(response="should not run")
+        router, event_bus, _, _ = _make_router(agent=agent)
+        inbound = _inbound("hello")
+
+        await router.start()
+        await event_bus.publish(
+            AgentResponseRequested(
+                payload=AgentResponseRequestPayload(
+                    message=inbound,
+                    session_id="test:private:c1",
+                    chat_address=ChatAddress(
+                        channel="test",
+                        target_type="private",
+                        target_id="c1",
+                    ),
+                    requester_plugin_id="conversation_joiner",
+                    reason="not allowed",
+                ),
+                source="conversation_joiner",
+            )
+        )
+        await router.stop()
+
+        assert agent.calls == []
 
     async def test_no_agent_no_crash(self) -> None:
         router, event_bus, _, _ = _make_router(agent=None)
