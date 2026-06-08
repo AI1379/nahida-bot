@@ -486,7 +486,8 @@ Tauri Rust side 负责：
 
 - Gateway 地址和 token 管理。
 - WebSocket 连接、重连、心跳。
-- 托盘、窗口置顶、透明窗口、拖拽、全局快捷键。
+- 托盘、窗口置顶、透明 pet window、拖拽、全局快捷键。
+- pet window 的点击穿透/交互模式切换。
 - 系统通知。
 - 本地配置和安全存储。
 - 将 Gateway 事件转发给 WebView。
@@ -503,6 +504,7 @@ WebView frontend 负责：
 - 表情和动作映射。
 - TTS 播放状态、字幕分段和口型驱动。
 - 用户模型管理 UI：导入、预览、切换、动作映射配置。
+- 渲染性能模式 UI：省电、平衡、活跃。
 - 可选的轻量设置页。
 
 ### 9.3 DisplayPlan 与 TTS/Live2D 流水线
@@ -797,6 +799,147 @@ UI 上应提供：
 - 配置语义标签到模型动作/表情的映射。
 - 检测并提示缺失的动作、表情、贴图或 lip-sync 参数。
 
+### 9.8 性能预算与渲染策略
+
+Desktop App 是常驻应用，Live2D/WebGL 渲染必须按低功耗目标设计。Tauri 本身不是主要性能风险，主要风险是 WebGL/Live2D 常驻 60fps、复杂模型和透明窗口合成。
+
+首版建议设定性能目标：
+
+| 状态 | 目标 |
+|------|------|
+| idle CPU | 尽量低于 1-3% |
+| idle GPU | 接近 0，只做低频刷新 |
+| 常驻内存 | 先控制在 150-250MB 内 |
+| speaking/active | 允许短时升高 |
+| hidden/minimized/locked | 暂停渲染 |
+
+渲染频率策略：
+
+| 模式 | 目标帧率 | 触发条件 |
+|------|----------|----------|
+| `suspended` | 0fps | 窗口隐藏、最小化、锁屏、用户暂停 |
+| `idle` | 10-15fps | 桌宠空闲、无 TTS、无动作 |
+| `speaking` | 24-30fps | TTS 播放、口型同步 |
+| `active` | 60fps | 拖拽、交互、短动作播放 |
+
+实现约束：
+
+- 不要永久无条件 `requestAnimationFrame`。
+- idle 状态降频或仅在物理/动作需要更新时渲染。
+- TTS 停止后回到 `idle`。
+- canvas 分辨率限制 `devicePixelRatio`，建议首版 cap 到 `1.5`。
+- WebGL context 默认使用低功耗配置：
+
+```ts
+{
+  alpha: true,
+  antialias: false,
+  powerPreference: "low-power"
+}
+```
+
+- 用户导入模型时限制贴图尺寸、文件数量、模型总大小。
+- 模型切换时释放旧 texture、motion、audio analyzer 和 WebGL resource。
+- 透明窗口避免大面积 blur、动态阴影和复杂 CSS filter。
+- 提供省电模式：禁用物理、降低 fps、禁用高频 idle 动作。
+
+### 9.9 Renderer 技术路线
+
+首版主线仍然使用 **Tauri + WebView + WebGL Live2D**。
+
+不建议现在切换到全 C++ app，原因：
+
+- 非桌宠 UI 会失去 Web 前端复用能力。
+- 跨平台 UI、设置页、模型管理、登录配对会显著增加成本。
+- Native renderer 的窗口、透明、DPI、点击穿透和打包复杂度更高。
+- 当前还没有真实性能数据证明 WebGL 路线不可接受。
+
+也不建议在首版通过 C++ FFI 让 WebView 直接接 Live2D Native SDK。Tauri 前端不能直接 FFI C++；可行路径是 Rust side 链接 Native SDK，再通过 Tauri IPC 暴露能力。真正困难的是 native renderer 的绘制 surface：如果 C++ Live2D 渲染到独立 OpenGL/DirectX/Metal 上下文，要和 WebView 共享窗口或纹理并不自然。
+
+推荐保留可替换 renderer 接口：
+
+```ts
+interface Live2DRenderer {
+  loadModel(manifest: Live2DModelManifest): Promise<void>;
+  setExpression(emotion: DisplayEmotion): void;
+  playMotion(motion: DisplayMotion): void;
+  setLipSync(value: number): void;
+  setFpsMode(mode: "suspended" | "idle" | "speaking" | "active"): void;
+  dispose(): void;
+}
+```
+
+首版实现：
+
+```text
+WebView UI
+  └── WebLive2DRenderer
+        └── Live2D Web SDK / WebGL
+```
+
+性能不达标时再实验：
+
+```text
+WebView UI
+  └── Tauri IPC
+        └── Rust native renderer bridge
+              └── Live2D Native SDK / C API
+```
+
+Native/C++ 路线只作为后续性能兜底，不作为首版主线。
+
+### 9.10 透明 pet window 与点击穿透
+
+Desktop App 应拆成两类窗口：
+
+| 窗口 | 说明 |
+|------|------|
+| `main` | 普通设置/聊天/模型管理 UI，可不透明 |
+| `pet` | 透明、无边框、置顶，只渲染 Live2D 桌宠 |
+
+`pet` window 的目标配置：
+
+```json
+{
+  "label": "pet",
+  "transparent": true,
+  "decorations": false,
+  "alwaysOnTop": true,
+  "skipTaskbar": true,
+  "resizable": false
+}
+```
+
+透明视觉比较容易：Tauri window 透明，WebView 背景透明，WebGL canvas 使用 alpha channel，renderer 清屏 alpha 为 0。
+
+点击穿透需要 native window 能力。CSS `pointer-events: none` 只能影响 WebView 内部事件，不能让点击穿透到操作系统下面的窗口。Tauri 的 `setIgnoreCursorEvents(true)` 可以让整个窗口忽略鼠标事件，但它不是按透明像素做自动 hit-test。
+
+首版采用 **方案 A：整窗穿透 + 手动交互模式**：
+
+```text
+默认状态：
+  pet window setIgnoreCursorEvents(true)
+  用户可以点击桌宠背后的窗口
+
+进入交互模式：
+  通过托盘、快捷键、设置页或显式命令触发
+  pet window setIgnoreCursorEvents(false)
+  用户可以拖拽桌宠、点击模型、打开快捷菜单
+
+退出交互模式：
+  超时、快捷键、菜单操作或窗口失焦
+  pet window 回到 click-through
+```
+
+首版不做 per-pixel hit-test。后续可选升级：
+
+| 方案 | 说明 | 复杂度 |
+|------|------|--------|
+| B | 模型外接矩形命中，鼠标进入大概范围时关闭穿透 | 中 |
+| C | 基于 Live2D drawable/hit area/alpha mask 的不规则命中 | 高 |
+
+方案 C 需要 Rust/native 层追踪全局鼠标位置，因为窗口处于 click-through 后 WebView 收不到 `mousemove`。该方案后置。
+
 ## 10. Gateway API 需求
 
 ### 10.1 V1 复用现有 API
@@ -849,6 +992,8 @@ Desktop Node 的能力应显式声明。
 | `desktop.tts.stop` | Gateway -> Desktop | 停止当前 TTS 播放 |
 | `desktop.notification.show` | Gateway -> Desktop | 展示系统通知 |
 | `desktop.window.focus` | Gateway -> Desktop | 聚焦窗口 |
+| `desktop.window.set_interaction_mode` | Gateway -> Desktop | 切换 pet window 整窗点击穿透/交互模式 |
+| `desktop.window.set_render_mode` | Gateway -> Desktop | 切换 `suspended` / `idle` / `speaking` / `active` 渲染模式 |
 | `desktop.input.submit` | Desktop -> Gateway | 用户从桌宠输入消息 |
 | `desktop.state.updated` | Desktop -> Gateway | 上报窗口、模型、连接状态 |
 | `desktop.model.imported` | Desktop -> Gateway | 上报用户导入模型的非敏感元数据 |
@@ -923,6 +1068,14 @@ V1 不开放这些高风险能力。
 - 语音、动作、表情映射由 Desktop 本地配置决定，LLM 不能直接指定模型内部文件路径。
 - 对普通 Channel 输出时必须剥离所有控制标签，避免泄漏给 Telegram、Milky 等平台。
 
+### 12.7 透明窗口与点击穿透安全
+
+- pet window 默认 click-through，避免长期拦截用户桌面操作。
+- 进入交互模式必须有明确触发源，例如托盘、快捷键、设置页或用户命令。
+- 交互模式应有自动超时，避免用户忘记退出后透明窗口持续拦截点击。
+- 不在首版实现全局鼠标 hook 或 per-pixel hit-test，降低权限和平台差异风险。
+- Linux/Wayland 等平台如果透明或点击穿透能力不稳定，应降级为普通窗口或手动交互模式。
+
 ## 13. 状态与持久化
 
 ### 13.1 Desktop 本地状态
@@ -940,6 +1093,9 @@ Desktop App 需要保存：
 | `display_mapping` | 语义 emotion/motion 到当前模型资源的映射 |
 | `tts_settings` | TTS voice、speed、pitch、音量等用户偏好 |
 | `window_state` | 位置、大小、置顶、透明度 |
+| `pet_window_state` | pet window 位置、大小、click-through、交互模式 |
+| `render_mode` | `suspended` / `idle` / `speaking` / `active` |
+| `performance_mode` | 省电、平衡、活跃 |
 | `preferences` | 用户设置 |
 
 ### 13.2 Gateway 节点状态
@@ -957,6 +1113,7 @@ Gateway 需要保存或维护：
 | `auth_scope` | 授权范围 |
 | `metadata` | 平台、版本等 |
 | `desktop_state` | Desktop 上报的模型 ID、TTS 状态、窗口状态摘要 |
+| `performance_state` | Desktop 上报的渲染模式、fps、资源摘要 |
 
 ## 14. 失败处理
 
@@ -971,6 +1128,10 @@ Gateway 需要保存或维护：
 | 用户模型缺少 lip-sync 参数 | 禁用口型，TTS 和字幕继续工作 |
 | DisplayPlan 解析失败 | 降级为纯文本回复，不执行动作 |
 | TTS 合成失败 | 显示文本并播放默认表情，不阻塞消息 |
+| WebGL context 丢失 | 释放并重建 renderer，失败则降级为静态状态 |
+| 透明窗口不受平台支持 | 降级为普通 pet window，提示用户 |
+| click-through 切换失败 | 保持普通窗口模式，不隐藏控制入口 |
+| idle 性能超预算 | 自动进入省电模式，降低 fps 或暂停物理 |
 | Node 重复连接 | Gateway 按 node_id 策略踢旧连接或拒绝新连接 |
 
 ## 15. 测试策略
@@ -998,6 +1159,8 @@ Gateway 需要保存或维护：
 - token 不落普通明文配置。
 - DisplayPlan 能解析为干净文本和 metadata。
 - DisplayPlan 非法枚举、过多 segments、未知字段能安全降级。
+- render mode 能正确切换 `suspended` / `idle` / `speaking` / `active`。
+- pet window 交互模式能在 click-through 与可交互之间切换。
 
 ### 15.4 视觉与交互测试
 
@@ -1008,6 +1171,9 @@ Gateway 需要保存或维护：
 - 用户导入模型后能预览表情和动作。
 - 缺失 lip-sync 参数的模型不会导致播放崩溃。
 - TTS 播放时口型参数有可见变化。
+- click-through 默认不拦截桌面点击。
+- 交互模式下可以拖拽或点击桌宠。
+- idle / speaking / active 模式下 fps 符合预算。
 
 ## 16. 实施路线
 
@@ -1025,6 +1191,9 @@ Gateway 需要保存或维护：
 - [ ] 接入 `/api/events/stream` 或 WebSocket event bridge。
 - [ ] 实现 Gateway 地址配置、登录/token 保存。
 - [ ] 实现最小 Live2D 渲染和状态映射。
+- [ ] 实现独立 `pet` transparent window。
+- [ ] 实现方案 A：整窗 click-through 与手动交互模式。
+- [ ] 实现 `suspended` / `idle` / `speaking` / `active` 渲染模式。
 - [ ] 实现用户模型导入、模型预览和当前模型切换。
 - [ ] 实现首版 emotion/motion 语义映射配置。
 
@@ -1043,6 +1212,7 @@ Gateway 需要保存或维护：
 - [ ] Gateway 调用 `desktop.live2d.play_motion`。
 - [ ] Desktop 注册 TTS capability。
 - [ ] Gateway 或 Desktop pipeline 能提交分段 TTS 播放计划。
+- [ ] Desktop 注册 window interaction/render mode capability。
 - [ ] 调用链路具备超时、错误、审计。
 - [ ] Desktop 本地允许列表生效。
 
@@ -1056,6 +1226,20 @@ Gateway 需要保存或维护：
 - [ ] TTS 音频播放时驱动 lip-sync 参数。
 - [ ] DisplayPlan 解析失败时降级为纯文本。
 
+### Phase 3.6：Live2D 动画器 Bonus（可选）
+
+本阶段不阻塞首版 Desktop App。它用于把 Live2D 表现从“直接播放已有 expression/motion”扩展为“桌宠级动画控制器”，优先服务长消息、TTS 和常驻桌面体验。
+
+- [ ] 实现 `ExpressionAnimator`，负责 `.exp3.json` 表情切换、淡入淡出、互斥和默认表情恢复。
+- [ ] 实现 `IdleAnimator`，在模型缺少 `.motion3.json` 或 idle motion 不合适时，用参数驱动呼吸、轻微摆头、眨眼和身体微动。
+- [ ] 实现 `SpeechAnimator`，首版用 Web Audio 音量驱动 `ParamMouthOpenY`，后续可接入 TTS phoneme/viseme 时间轴驱动 `ParamMouthOpenY` 和 `ParamMouthForm`。
+- [ ] 实现 `Live2DAnimationController`，统一管理 `idle`、`listening`、`thinking`、`speaking`、`interrupted`、`error` 等状态。
+- [ ] 支持动画层级和优先级：口型可叠加在表情与 idle 上，短动作可临时覆盖 idle，错误/打断状态可抢占当前表现。
+- [ ] 支持 motion fallback：优先播放模型 manifest 声明的 `.motion3.json`；缺失时扫描本地模型目录；仍不可用时降级到 procedural idle。
+- [ ] 建立模型校准配置，记录当前模型的默认表情、语义表情映射、语义动作映射、嘴部参数、头部参数、初始缩放和位置。
+- [ ] 在模型管理 UI 中增加动画预览和校准入口，便于用户导入第三方模型后手动映射表情、动作和口型参数。
+- [ ] 将动画器纳入性能模式：`suspended` 停止 ticker，`idle` 降低 fps 和参数更新频率，`speaking` 开启口型，`active` 开启完整交互动画。
+
 ### Phase 4：产品化与发布
 
 - [ ] 托盘、透明窗口、置顶、拖拽。
@@ -1063,8 +1247,22 @@ Gateway 需要保存或维护：
 - [ ] token 撤销与重新登录。
 - [ ] Live2D 模型管理。
 - [ ] TTS voice 管理。
+- [ ] 性能模式和省电模式。
+- [ ] Windows/macOS 透明 pet window 验证。
+- [ ] Linux 透明/click-through 降级策略。
 - [ ] 用户模型 manifest 导出/导入。
 - [ ] Windows/macOS/Linux 打包验证。
+
+### Phase 5：Native Renderer 实验（可选）
+
+仅当 WebGL Live2D 真实 profiling 不达标时进入本阶段。
+
+- [ ] 定义 `Live2DRenderer` 抽象接口的稳定边界。
+- [ ] 建立 `native-live2d-experiment` 分支或独立 proof-of-concept。
+- [ ] 验证 Rust side 链接 Live2D Native SDK 的构建和授权路径。
+- [ ] 验证 native renderer 与 Tauri pet window 的 surface/window 集成。
+- [ ] 比较 Web renderer 与 Native renderer 的 idle CPU/GPU/内存。
+- [ ] 只有明显收益且维护成本可接受时，才合入主线。
 
 ## 17. 拆仓库时机
 
@@ -1086,6 +1284,10 @@ Gateway 需要保存或维护：
 - DisplayPlan 应由主 LLM 直接输出，还是由回复后处理器二次生成。
 - TTS 首版使用本地引擎、系统语音，还是外部 Provider。
 - TTS 时间戳、phoneme、viseme 数据是否需要纳入统一 schema。
+- pet window 的交互模式触发源：托盘、快捷键、悬停按钮还是 Gateway 命令。
+- click-through 在 Linux/Wayland 上的支持边界和降级策略。
+- WebGL renderer 的真实性能预算是否满足常驻桌宠需求。
+- Native/C++ renderer 是否需要长期保留为实验分支。
 - 用户模型是否允许从远程 URL 安装，还是只允许本地文件导入。
 - 用户模型 manifest 是否需要支持分享，但不包含模型资源本体。
 - Desktop Node capability 是否允许被插件调用，还是只允许 core/system 调用。
@@ -1097,6 +1299,10 @@ Gateway 需要保存或维护：
 - [Live2D Cubism Editor Manual: File Types and Extensions](https://docs.live2d.com/en/cubism-editor-manual/file-type-and-extension/)：说明 `.model3.json`、`.moc3`、`.motion3.json`、`.exp3.json` 等文件角色。
 - [Live2D Cubism SDK Manual: About Models (Web)](https://docs.live2d.com/en/cubism-sdk-manual/model-web/)：说明 Web 场景从 `.model3.json` 加载模型、贴图和 renderer 的基本流程。
 - [Live2D Cubism SDK Manual: Lip-sync](https://docs.live2d.com/en/cubism-sdk-manual/lipsync/)：说明 lip-sync 参数如何从 `.model3.json` 获取，以及通过音量值或 motion 驱动嘴部开合。
+- [Live2D Cubism SDK: About SDK](https://www.live2d.com/en/sdk/about/)：说明 Native/Web 等 SDK 方向。
+- [Live2D Cubism Core API Reference](https://docs.live2d.com/en/cubism-sdk-manual/cubism-core-api-reference/)：说明 Native Core API 边界。
+- [Tauri v2 Window API](https://v2.tauri.app/reference/javascript/api/namespacewindow/)：透明窗口、窗口控制和 `setIgnoreCursorEvents` 等 API 参考。
+- [Tauri v2 Core Permissions](https://v2.tauri.app/reference/acl/core-permissions/)：window API 权限配置参考。
 
 ## 20. 结论
 
@@ -1105,3 +1311,5 @@ Desktop App 应先作为当前 monorepo 下的独立 Tauri 应用存在，通过
 Rust/Tauri 端不应通过 FFI 调 Python。Desktop App 与 Python core 的边界就是 Gateway 协议。这样可以保留分布式架构的清晰边界，也能为未来 Python node、Rust desktop node 和其他语言 node 提供一致扩展路径。
 
 长消息、TTS 和 Live2D 表现不应依赖 LLM 逐句调用工具。更合适的方式是让 LLM 或后处理器生成 DisplayPlan，由 Gateway/Router 保留干净文本，并将表现 metadata 交给 Desktop pipeline 消费。Live2D capability 继续作为底层执行能力存在，但它的调用通常来自解析后的表现流水线，而不是直接来自 LLM。
+
+性能和桌面体验方面，首版继续采用 Tauri + WebView + WebGL Live2D。Native/C++ renderer 只作为后续性能兜底实验，不作为主线。桌宠窗口采用独立透明 `pet` window，首版使用整窗 click-through + 手动交互模式，不做 per-pixel hit-test。
