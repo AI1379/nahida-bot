@@ -1,0 +1,68 @@
+id: github-notifier
+name: "GitHub Notifier"
+version: "0.1.0"
+description: "Push GitHub issue and pull request open/close events to chat addresses"
+entrypoint: "nahida_plugin_github_notifier.plugin:GitHubNotifierPlugin"
+load_phase: "post-agent"
+
+permissions:
+  network:
+    inbound: true
+    outbound:
+      - "*"
+  plugin_data:
+    read: true
+    write: true
+
+config:
+  repo: "OWNER/REPO"
+  target_chat_addresses: []
+  webhook:
+    enabled: true
+    path: "github"
+    secret: ""
+  polling:
+    enabled: true
+    interval_seconds: 60
+    api_base_url: "https://api.github.com"
+    token: ""
+  registration:
+    enabled: false
+
+config_schema:
+  type: object
+  properties:
+    repo:
+      type: string
+      description: "Repository full name, e.g. OWNER/REPO"
+    target_chat_addresses:
+      type: array
+      items:
+        type: string
+      description: "Typed chat addresses to notify"
+    webhook:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        path:
+          type: string
+        secret:
+          type: string
+    polling:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        interval_seconds:
+          type: integer
+          minimum: 10
+        api_base_url:
+          type: string
+        token:
+          type: string
+    registration:
+      type: object
+      properties:
+        enabled:
+          type: boolean

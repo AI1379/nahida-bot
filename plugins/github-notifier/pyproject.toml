@@ -1,0 +1,14 @@
+[project]
+name = "nahida-plugin-github-notifier"
+version = "0.1.0"
+description = "GitHub issue and pull request notifier plugin for nahida-bot"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.25.0",
+    "nahida-bot-sdk>=0.1.0",
+    "pydantic>=2.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

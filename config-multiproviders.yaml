@@ -128,6 +128,23 @@ builtin-commands:
   #   - "D:/Pictures"
   external_attachment_roots: []
 
+github-notifier:
+  # 目标仓库；保持 OWNER/REPO 时插件会视为未配置，不会启动 webhook/polling。
+  repo: "OWNER/REPO"
+  # typed chat address 列表，例如 milky:group:123456789 或 telegram:private:123456789。
+  target_chat_addresses: []
+  webhook:
+    enabled: true
+    path: "github"                 # 最终路径: /webhooks/github
+    secret: "${GITHUB_WEBHOOK_SECRET}"
+  polling:
+    enabled: true                  # webhook 不可用时的 fallback；首次轮询只建立基线
+    interval_seconds: 60
+    api_base_url: "https://api.github.com"
+    token: "${GITHUB_TOKEN}"       # 私有仓库或更高 rate limit 时填写
+  registration:
+    enabled: false                 # 开启后可在聊天中使用 /github_watch 动态订阅
+
 conversation_joiner:
   # 主动入话题默认关闭。开启前需要对应群频道启用 group_context_capture，
   # 让未触发消息先进入 MessageObserved。
