@@ -19,6 +19,7 @@ from nahida_bot.plugins.manifest import PluginManifest, parse_manifest
 from nahida_bot.plugins.registry import (
     HandlerRegistry,
     PromptSupplementRegistry,
+    StatusProviderRegistry,
     ToolRegistry,
 )
 
@@ -101,6 +102,7 @@ class PluginManager:
         self._handler_registry = HandlerRegistry()
         self._command_registry = CommandRegistry()
         self._supplement_registry = PromptSupplementRegistry()
+        self._status_provider_registry = StatusProviderRegistry()
         self._records: dict[str, PluginRecord] = {}
 
     def set_runtime_services(
@@ -156,6 +158,11 @@ class PluginManager:
     def supplement_registry(self) -> PromptSupplementRegistry:
         """Public read-only access to the prompt supplement registry."""
         return self._supplement_registry
+
+    @property
+    def status_provider_registry(self) -> StatusProviderRegistry:
+        """Public read-only access to the status provider registry."""
+        return self._status_provider_registry
 
     @property
     def scheduler_service(self) -> Any | None:
@@ -234,6 +241,7 @@ class PluginManager:
             handler_registry=self._handler_registry,
             command_registry=self._command_registry,
             supplement_registry=self._supplement_registry,
+            status_provider_registry=self._status_provider_registry,
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,
             model_router=self._model_router,
@@ -406,6 +414,7 @@ class PluginManager:
             self._handler_registry.unregister_by_plugin(plugin_id)
             self._command_registry.unregister_by_plugin(plugin_id)
             self._supplement_registry.unregister_by_plugin(plugin_id)
+            self._status_provider_registry.unregister_by_plugin(plugin_id)
 
     async def _safe_activate_registrations(self, record: PluginRecord) -> bool:
         """Activate remembered plugin registrations with error isolation."""

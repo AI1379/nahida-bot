@@ -15,6 +15,7 @@ permissions:
 capabilities:
   subscribes_to:
     - MessageObserved
+    - MessageSent
   emits:
     - AgentResponseRequested
 config:
@@ -40,4 +41,31 @@ config:
     keyword_hints: []
     sample_rate: 0.15
     keyword_sample_rate: 1.0
+  engagement:
+    enabled: false
+    join_state_ttl_seconds: 600
+    idle_exit_seconds: 180
+    max_engaged_seconds: 1800
+    response_cooldown_seconds: 45
+    engagement_score_alpha: 0.2
+    engagement_score_exit_threshold: 0.2
+    score_decay_half_life_seconds: 600
+    score_decay_floor: 0.0
+    batching:
+      window_seconds: 8
+      max_messages: 6
+      max_chars: 2000
+      flush_on_mention: true
+    continue_gate:
+      enabled: true
+      model: cheap
+      threshold: 0.55
+      min_messages: 1
+      evaluate_interval_seconds: 8
+    exit_gate:
+      enabled: true
+      low_value_threshold: 0.35
+      low_value_strikes: 3
+      min_messages_per_window: 1
+      activity_window_seconds: 120
   groups: {}

@@ -511,12 +511,26 @@ async def test_request_agent_response_publishes_typed_event(tmp_path: Path) -> N
         is_group=True,
         chat_context=ChatContext(platform="test", chat_type="group"),
     )
+    observed = (
+        InboundMessage(
+            message_id="m2",
+            platform="test",
+            chat_id="g1",
+            user_id="u2",
+            text="follow-up",
+            raw_event={},
+            is_group=True,
+            chat_context=ChatContext(platform="test", chat_type="group"),
+        ),
+    )
 
     await api.request_agent_response(
         inbound,
         session_id="test:group:g1",
         reason="good moment",
         instruction="answer briefly",
+        observed_messages=observed,
+        reply_to_message_id="m2",
     )
 
     assert len(seen) == 1
@@ -527,6 +541,36 @@ async def test_request_agent_response_publishes_typed_event(tmp_path: Path) -> N
     assert event.payload.requester_plugin_id == "bridge-test"
     assert event.payload.reason == "good moment"
     assert event.payload.instruction == "answer briefly"
+    assert event.payload.observed_messages == observed
+    assert event.payload.reply_to_message_id == "m2"
+
+
+@pytest.mark.asyncio
+async def test_request_agent_response_raises_on_router_rejection(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest().model_copy(
+        update={"capabilities": Capabilities(emits=["AgentResponseRequested"])}
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+
+    async def _handler(event: AgentResponseRequested, ctx: EventContext) -> None:
+        raise RuntimeError("active_run:test:group:g1")
+
+    cast(Any, api)._event_bus.subscribe(AgentResponseRequested, _handler)
+    inbound = InboundMessage(
+        message_id="m1",
+        platform="test",
+        chat_id="g1",
+        user_id="u1",
+        text="join?",
+        raw_event={},
+        is_group=True,
+        chat_context=ChatContext(platform="test", chat_type="group"),
+    )
+
+    with pytest.raises(RuntimeError, match="active_run:test:group:g1"):
+        await api.request_agent_response(inbound, session_id="test:group:g1")
 
 
 @pytest.mark.asyncio

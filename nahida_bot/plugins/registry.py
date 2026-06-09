@@ -162,3 +162,45 @@ class PromptSupplementRegistry:
                 continue
             results.append(entry.instruction)
         return results
+
+
+@dataclass(slots=True, frozen=True)
+class StatusProviderEntry:
+    """A registered status provider that contributes text to /status output."""
+
+    key: str
+    label: str
+    handler: Callable[..., Awaitable[str | None]]
+    plugin_id: str
+
+
+class StatusProviderRegistry:
+    """Registry mapping keys to status provider entries."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, StatusProviderEntry] = {}
+
+    def register(self, entry: StatusProviderEntry) -> None:
+        """Register a status provider. Raises KeyError if key is taken."""
+        if entry.key in self._entries:
+            existing = self._entries[entry.key]
+            raise KeyError(
+                f"Status provider '{entry.key}' is already registered by plugin "
+                f"'{existing.plugin_id}'"
+            )
+        self._entries[entry.key] = entry
+
+    def unregister(self, key: str) -> None:
+        """Remove a status provider by key."""
+        self._entries.pop(key, None)
+
+    def all(self) -> list[StatusProviderEntry]:
+        """Return all registered status providers."""
+        return list(self._entries.values())
+
+    def unregister_by_plugin(self, plugin_id: str) -> int:
+        """Remove all status providers owned by a plugin. Returns count removed."""
+        to_remove = [k for k, e in self._entries.items() if e.plugin_id == plugin_id]
+        for k in to_remove:
+            self._entries.pop(k, None)
+        return len(to_remove)

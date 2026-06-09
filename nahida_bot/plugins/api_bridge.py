@@ -118,6 +118,7 @@ class RealBotAPI:
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
         supplement_registry: Any | None = None,  # PromptSupplementRegistry
+        status_provider_registry: Any | None = None,  # StatusProviderRegistry
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -154,6 +155,11 @@ class RealBotAPI:
         self._supplement_registry = supplement_registry
         self._registered_supplements: dict[str, PromptSupplementEntry] = {}
         self._active_supplements: set[str] = set()
+        self._status_provider_registry = status_provider_registry
+        self._registered_status_providers: dict[
+            str, Any
+        ] = {}  # global_key -> StatusProviderEntry
+        self._active_status_providers: set[str] = set()
 
     # ── Messaging ──────────────────────────────────────
 
@@ -203,6 +209,8 @@ class RealBotAPI:
         session_id: str = "",
         reason: str = "",
         instruction: str = "",
+        observed_messages: tuple[InboundMessage, ...] = (),
+        reply_to_message_id: str | None = None,
     ) -> None:
         """Ask the router to run the main agent for an observed group message."""
         self._permissions.check_event_emit("AgentResponseRequested")
@@ -225,10 +233,18 @@ class RealBotAPI:
             requester_plugin_id=self._plugin_id,
             reason=str(reason or "").strip(),
             instruction=str(instruction or "").strip(),
+            observed_messages=tuple(observed_messages or ()),
+            reply_to_message_id=reply_to_message_id,
         )
-        await self._event_bus.publish(
+        result = await self._event_bus.publish(
             AgentResponseRequested(payload=payload, source=self._plugin_id)
         )
+        if result.failures:
+            first = result.failures[0]
+            raise RuntimeError(
+                "AgentResponseRequested was rejected by "
+                f"{first.handler_name}: {first.error}"
+            )
         self._logger.debug(
             "agent_response_requested",
             session_id=payload.session_id,
@@ -465,6 +481,84 @@ class RealBotAPI:
             raise RuntimeError("Prompt supplement registry is not available")
         self._supplement_registry.register(self._registered_supplements[global_key])
         self._active_supplements.add(global_key)
+
+    # ── Status Provider Registration ──────────────────
+
+    def register_status_provider(
+        self,
+        key: str,
+        handler: Callable[..., Awaitable[str | None]],
+        *,
+        label: str = "",
+    ) -> None:
+        """Register a provider that contributes text to /status output."""
+        from nahida_bot.plugins.registry import StatusProviderEntry
+
+        global_key = f"{self._plugin_id}:{key}"
+        entry = StatusProviderEntry(
+            key=global_key,
+            label=label or key,
+            handler=handler,
+            plugin_id=self._plugin_id,
+        )
+        if global_key in self._registered_status_providers:
+            raise KeyError(
+                f"Status provider '{key}' is already registered by plugin "
+                f"'{self._plugin_id}'"
+            )
+        self._registered_status_providers[global_key] = entry
+        if self._registrations_active:
+            self._activate_status_provider(global_key)
+        self._logger.debug("status_provider_registered", provider_key=key)
+
+    def unregister_status_provider(self, key: str) -> bool:
+        """Remove a previously registered status provider. Returns True if found."""
+        global_key = f"{self._plugin_id}:{key}"
+        entry = self._registered_status_providers.pop(global_key, None)
+        if entry is None:
+            return False
+        if global_key in self._active_status_providers:
+            if self._status_provider_registry is not None:
+                self._status_provider_registry.unregister(global_key)
+            self._active_status_providers.discard(global_key)
+        self._logger.debug("status_provider_unregistered", provider_key=key)
+        return True
+
+    def _activate_status_provider(self, global_key: str) -> None:
+        if global_key in self._active_status_providers:
+            return
+        if self._status_provider_registry is None:
+            raise RuntimeError("Status provider registry is not available")
+        self._status_provider_registry.register(
+            self._registered_status_providers[global_key]
+        )
+        self._active_status_providers.add(global_key)
+
+    async def collect_status_providers(
+        self,
+        *,
+        session_id: str,
+        chat_key: str,
+    ) -> list[str]:
+        """Collect text blocks from all registered status providers.
+
+        Returns a list of non-None text blocks, one per provider.
+        """
+        if self._status_provider_registry is None:
+            return []
+        results: list[str] = []
+        for entry in self._status_provider_registry.all():
+            try:
+                text = await entry.handler(session_id=session_id, chat_key=chat_key)
+                if text:
+                    results.append(text)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning(
+                    "status_provider_error",
+                    provider_key=entry.key,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        return results
 
     @property
     def scheduler_service(self) -> Any | None:
@@ -712,6 +806,13 @@ class RealBotAPI:
             new_session_id=new_id,
         )
         return new_id
+
+    def get_active_session_id(self, address: ChatAddress) -> str:
+        """Return the active session id for a typed chat address."""
+        router = self._event_bus.context.app.message_router
+        if router is None or not address.is_typed:
+            return address.chat_key if address.is_typed else address.legacy_key
+        return router.get_active_session_id(address)
 
     def list_commands(self) -> list[CommandInfo]:
         """List registered commands without exposing registry internals."""
@@ -1036,6 +1137,8 @@ class RealBotAPI:
             self._activate_provider_type(type_key)
         for global_key in self._registered_supplements:
             self._activate_supplement(global_key)
+        for global_key in self._registered_status_providers:
+            self._activate_status_provider(global_key)
 
     def deactivate_registrations(self) -> None:
         """Deactivate all active registrations without forgetting them."""
@@ -1060,6 +1163,10 @@ class RealBotAPI:
             if self._supplement_registry is not None:
                 self._supplement_registry.unregister(global_key)
             self._active_supplements.discard(global_key)
+        for global_key in list(self._active_status_providers):
+            if self._status_provider_registry is not None:
+                self._status_provider_registry.unregister(global_key)
+            self._active_status_providers.discard(global_key)
         self._registrations_active = False
 
     def clear_registrations(self) -> None:
@@ -1072,6 +1179,7 @@ class RealBotAPI:
         self._registered_channels.clear()
         self._registered_provider_types.clear()
         self._registered_supplements.clear()
+        self._registered_status_providers.clear()
         self._decorated_registrations_added = False
 
     def _activate_command(self, name: str) -> None:

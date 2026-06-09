@@ -45,6 +45,8 @@ class MockBotAPI:
         session_id: str = "",
         reason: str = "",
         instruction: str = "",
+        observed_messages: tuple[InboundMessage, ...] = (),
+        reply_to_message_id: str | None = None,
     ) -> None:
         pass
 
@@ -129,6 +131,9 @@ class MockBotAPI:
 
     async def start_new_session(self, address: ChatAddress) -> str | None:
         return None
+
+    def get_active_session_id(self, address: ChatAddress) -> str:
+        return address.chat_key
 
     async def get_session_info(self, session_id: str) -> dict[str, Any]:
         return {}
@@ -347,6 +352,8 @@ class RecordingMockBotAPI(MockBotAPI):
         session_id: str = "",
         reason: str = "",
         instruction: str = "",
+        observed_messages: tuple[InboundMessage, ...] = (),
+        reply_to_message_id: str | None = None,
     ) -> None:
         self.agent_response_requests.append(
             {
@@ -354,6 +361,8 @@ class RecordingMockBotAPI(MockBotAPI):
                 "session_id": session_id,
                 "reason": reason,
                 "instruction": instruction,
+                "observed_messages": observed_messages,
+                "reply_to_message_id": reply_to_message_id,
             }
         )
 
@@ -372,6 +381,26 @@ class RecordingMockBotAPI(MockBotAPI):
         if prefix:
             return {k: v for k, v in self._plugin_data.items() if k.startswith(prefix)}
         return dict(self._plugin_data)
+
+    def register_status_provider(
+        self,
+        key: str,
+        handler: Any,
+        *,
+        label: str = "",
+    ) -> None:
+        pass
+
+    def unregister_status_provider(self, key: str) -> bool:
+        return False
+
+    async def collect_status_providers(
+        self,
+        *,
+        session_id: str,
+        chat_key: str,
+    ) -> list[str]:
+        return []
 
 
 _SENTINEL = object()
@@ -445,6 +474,8 @@ class ConsoleMockBotAPI:
         session_id: str = "",
         reason: str = "",
         instruction: str = "",
+        observed_messages: tuple[InboundMessage, ...] = (),
+        reply_to_message_id: str | None = None,
     ) -> None:
         self.agent_response_requests.append(
             {
@@ -452,6 +483,8 @@ class ConsoleMockBotAPI:
                 "session_id": session_id,
                 "reason": reason,
                 "instruction": instruction,
+                "observed_messages": observed_messages,
+                "reply_to_message_id": reply_to_message_id,
             }
         )
 
@@ -632,6 +665,9 @@ class ConsoleMockBotAPI:
 
     async def start_new_session(self, address: ChatAddress) -> str | None:
         return "console:private:test:new"
+
+    def get_active_session_id(self, address: ChatAddress) -> str:
+        return address.chat_key
 
     async def get_session_info(self, session_id: str) -> dict[str, Any]:
         return {}

@@ -13,12 +13,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.core.events import MessageObserved
+from nahida_bot.core.events import MessageObserved, MessageSent
 from nahida_bot.plugins.base import InboundMessage, Plugin
 from nahida_bot.plugins.conversation_joiner.config import (
     EffectiveJoinerConfig,
+    EngagementConfig,
     effective_group_config,
     parse_conversation_joiner_config,
+)
+from nahida_bot.plugins.conversation_joiner.state import (
+    EngagementStateMachine,
 )
 
 
@@ -37,12 +41,20 @@ class _SecretaryDecision:
     reason: str
     entry_style: str = ""
     focus: str = ""
+    reply_mode: str = ""
+    reply_anchor_message_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)
 class _PersonaContextCache:
     text: str
     loaded_at: float
+
+
+@dataclass(slots=True, frozen=True)
+class _PendingRequest:
+    requested_at: float
+    session_id: str
 
 
 class ConversationJoinerPlugin(Plugin):
@@ -60,19 +72,43 @@ class ConversationJoinerPlugin(Plugin):
         self._persona_context_cache: _PersonaContextCache | None = None
         self._persona_context_lock = asyncio.Lock()
         self._sample_random = random.random
+        self._sm: EngagementStateMachine | None = None
+        self._pending_requests: dict[str, _PendingRequest] = {}
+        self._monitor_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def on_load(self) -> None:
         self.api.subscribe(MessageObserved, self._on_message_observed)
+        if self._has_any_engagement_enabled():
+            self._sm = EngagementStateMachine(self.api.logger)
+            self.api.subscribe(MessageSent, self._on_message_sent)
+        self.api.register_status_provider(
+            "engagement",
+            self._status_provider,
+            label="Conversation Engagement",
+        )
         self.api.logger.info(
             "conversation_joiner.loaded",
             enabled=self._config.enabled,
+            engagement=self._config.engagement.enabled,
             group_count=len(self._config.groups),
         )
 
+    def _has_any_engagement_enabled(self) -> bool:
+        if self._config.engagement.enabled:
+            return True
+        return any(
+            group.engagement is not None and group.engagement.enabled
+            for group in self._config.groups.values()
+        )
+
     async def on_unload(self) -> None:
+        if self._sm is not None:
+            self._sm.cancel_all_timers()
         await self._cancel_tasks()
 
     async def on_disable(self) -> None:
+        if self._sm is not None:
+            self._sm.cancel_all_timers()
         await self._cancel_tasks()
 
     async def _cancel_tasks(self) -> None:
@@ -82,6 +118,7 @@ class ConversationJoinerPlugin(Plugin):
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        self._monitor_tasks.clear()
 
     async def _on_message_observed(self, event: MessageObserved) -> None:
         message: InboundMessage = event.payload.message
@@ -117,13 +154,34 @@ class ConversationJoinerPlugin(Plugin):
         lock = self._locks.setdefault(chat_key, asyncio.Lock())
         async with lock:
             message: InboundMessage = event.payload.message
-            session_id = event.payload.session_id or chat_key
+            session_id = self._resolve_active_session_id(
+                address,
+                fallback=event.payload.session_id or chat_key,
+            )
             now = time.monotonic()
 
             self._remember_context(chat_key, message, cfg)
 
             text = message.text.strip()
             keyword_hit = _has_keyword_hint(text, cfg.prefilter.keyword_hints)
+
+            # --- Engagement state machine path ---
+            sm = self._sm
+            if sm is not None and cfg.engagement.enabled:
+                await self._handle_with_state_machine(
+                    event,
+                    address,
+                    cfg,
+                    sm,
+                    chat_key,
+                    session_id,
+                    now,
+                    message,
+                    keyword_hit,
+                )
+                return
+
+            # --- Original single-trigger path (engagement disabled) ---
             skip_reason = self._prefilter_skip_reason(
                 message,
                 cfg,
@@ -137,6 +195,8 @@ class ConversationJoinerPlugin(Plugin):
                     message_id=message.message_id,
                 )
                 return
+
+            # --- Original single-trigger path (engagement disabled) ---
             if self._is_active_run(session_id):
                 self.api.logger.debug(
                     "conversation_joiner.prefilter_skipped",
@@ -216,6 +276,770 @@ class ConversationJoinerPlugin(Plugin):
                 confidence=decision.confidence,
                 reason=decision.reason[:200],
             )
+
+    async def _handle_with_state_machine(
+        self,
+        event: MessageObserved,
+        address: ChatAddress,
+        cfg: EffectiveJoinerConfig,
+        sm: EngagementStateMachine,
+        chat_key: str,
+        session_id: str,
+        now: float,
+        message: InboundMessage,
+        keyword_hit: bool,
+    ) -> None:
+        """Handle an observed message through the engagement state machine."""
+        engagement_cfg = cfg.engagement
+        state = sm.get_state(chat_key)
+        sm.decay_engagement_score(chat_key, now, engagement_cfg)
+
+        # Check exit conditions BEFORE updating observation timestamp,
+        # so idle detection uses the previous observation gap.
+        if state.state in ("engaged", "cooling"):
+            exit_reason = sm.check_exit_conditions(chat_key, now, engagement_cfg)
+            if exit_reason:
+                self.api.logger.info(
+                    "conversation_joiner.engagement_exit",
+                    chat_key=chat_key,
+                    reason=exit_reason,
+                    prev_state=state.state,
+                )
+                sm.transition_to_observing(chat_key, now, reason=exit_reason)
+                state = sm.get_state(chat_key)
+
+        sm.record_observation(
+            chat_key,
+            now,
+            max_age_seconds=engagement_cfg.exit_gate.activity_window_seconds,
+        )
+
+        current_state = state.state
+
+        if current_state == "observing":
+            # Prefilter only gates the join gate, not observation bookkeeping.
+            skip_reason = self._prefilter_skip_reason(
+                message,
+                cfg,
+                keyword_hit=keyword_hit,
+            )
+            if skip_reason:
+                self.api.logger.debug(
+                    "conversation_joiner.prefilter_skipped",
+                    reason=skip_reason,
+                    chat_key=chat_key,
+                    message_id=message.message_id,
+                )
+                return
+            await self._handle_observing_state(
+                event,
+                address,
+                cfg,
+                sm,
+                engagement_cfg,
+                chat_key,
+                session_id,
+                now,
+                message,
+                keyword_hit,
+            )
+
+        elif current_state == "joining":
+            # Stale joining — if no active run, reset to observing.
+            if not self._is_active_run(session_id):
+                sm.transition_to_observing(
+                    chat_key,
+                    now,
+                    reason="stale_joining",
+                )
+
+        elif current_state == "engaged":
+            # Engaged: always append to batch regardless of prefilter.
+            batch_full = sm.append_to_batch(chat_key, message, engagement_cfg, now)
+
+            # flush_on_mention: if the bot is mentioned, flush immediately.
+            if engagement_cfg.batching.flush_on_mention and message.mentions_bot:
+                await self._flush_batch(
+                    chat_key, address, cfg, engagement_cfg, session_id
+                )
+                return
+
+            # Batch full: flush immediately.
+            if batch_full:
+                self.api.logger.debug(
+                    "conversation_joiner.batch_full",
+                    chat_key=chat_key,
+                )
+                await self._flush_batch(
+                    chat_key, address, cfg, engagement_cfg, session_id
+                )
+                return
+
+            # Schedule a window timer if one is not already pending.
+            if not sm.has_window_timer(chat_key):
+                sm.schedule_window_flush(
+                    chat_key,
+                    engagement_cfg.batching.window_seconds,
+                    lambda ck=chat_key: self._start_window_flush_task(
+                        ck, address, cfg, engagement_cfg, session_id
+                    ),
+                )
+
+        elif current_state == "cooling":
+            # Cooling: always append to batch regardless of prefilter.
+            sm.append_to_batch(chat_key, message, engagement_cfg, now)
+            # Check if the cooling period has elapsed.
+            if sm.try_transition_from_cooling(
+                chat_key,
+                now,
+                engagement_cfg.response_cooldown_seconds,
+            ):
+                self.api.logger.debug(
+                    "conversation_joiner.cooling_to_engaged",
+                    chat_key=chat_key,
+                )
+                # Transitioned back to engaged — schedule a flush if batch has messages.
+                batch = sm.get_batch(chat_key)
+                if batch and batch.messages and not sm.has_window_timer(chat_key):
+                    sm.schedule_window_flush(
+                        chat_key,
+                        engagement_cfg.batching.window_seconds,
+                        lambda ck=chat_key: self._start_window_flush_task(
+                            ck, address, cfg, engagement_cfg, session_id
+                        ),
+                    )
+
+    async def _flush_batch(
+        self,
+        chat_key: str,
+        address: ChatAddress,
+        cfg: EffectiveJoinerConfig,
+        engagement_cfg: EngagementConfig,
+        session_id: str,
+    ) -> None:
+        """Flush the current engagement batch through continue_gate and optionally
+        request the agent."""
+        sm = self._sm
+        if sm is None:
+            return
+        batch = sm.get_batch(chat_key)
+        if batch is None or not batch.messages:
+            sm.clear_batch(chat_key)
+            return
+
+        # Guard: an accepted request for this chat is already awaiting feedback.
+        if chat_key in self._pending_requests:
+            self._reschedule_flush(
+                chat_key,
+                address,
+                cfg,
+                engagement_cfg,
+                session_id,
+                cfg.decision_timeout_seconds,
+            )
+            return
+
+        # Guard: active run.
+        if self._is_active_run(session_id):
+            self._reschedule_flush(
+                chat_key,
+                address,
+                cfg,
+                engagement_cfg,
+                session_id,
+                cfg.decision_timeout_seconds,
+            )
+            return
+
+        # Guard: response cooldown — only applies when the bot has already made
+        # a proactive engaged-state reply (tracked by state_updated_at in cooling).
+        # The initial join has its own cooldown; we don't want to block the first
+        # engaged flush for another 45 seconds after the agent already replied.
+        state = sm.get_state(chat_key)
+        now = time.monotonic()
+        sm.decay_engagement_score(chat_key, now, engagement_cfg)
+        cooldown = engagement_cfg.response_cooldown_seconds
+        if state.state == "cooling" and now - state.state_updated_at < cooldown:
+            # Still cooling from a previous proactive reply — reschedule.
+            remaining = cooldown - (now - state.state_updated_at)
+            self._reschedule_flush(
+                chat_key, address, cfg, engagement_cfg, session_id, remaining
+            )
+            return
+
+        if not self._has_hourly_budget(chat_key, cfg, now):
+            self.api.logger.debug(
+                "conversation_joiner.batch_budget_exhausted",
+                chat_key=chat_key,
+                batch_size=len(batch.messages),
+            )
+            sm.clear_batch(chat_key)
+            return
+
+        # Run continue_gate if enabled and enough messages.
+        continue_cfg = engagement_cfg.continue_gate
+        if continue_cfg.enabled:
+            if len(batch.messages) < continue_cfg.min_messages:
+                self._reschedule_flush(
+                    chat_key,
+                    address,
+                    cfg,
+                    engagement_cfg,
+                    session_id,
+                    continue_cfg.evaluate_interval_seconds,
+                )
+                return
+            decision = await self._ask_continue_gate(
+                batch, chat_key, cfg, engagement_cfg
+            )
+            if decision is None:
+                # Secretary call failed; keep buffering and retry later.
+                self._reschedule_flush(
+                    chat_key,
+                    address,
+                    cfg,
+                    engagement_cfg,
+                    session_id,
+                    continue_cfg.evaluate_interval_seconds,
+                )
+                return
+            reply_mode = decision.reply_mode.strip().lower()
+            if (
+                not decision.should_join
+                or decision.confidence < continue_cfg.threshold
+                or reply_mode == "no_reply"
+            ):
+                # continue_gate says no.
+                sm.update_engagement_score(
+                    chat_key,
+                    decision.confidence * 0.5,
+                    engagement_cfg.engagement_score_alpha,
+                    now,
+                )
+                if (
+                    engagement_cfg.exit_gate.enabled
+                    and decision.confidence
+                    < engagement_cfg.exit_gate.low_value_threshold
+                ):
+                    sm.increment_low_value_strike(chat_key)
+                self.api.logger.debug(
+                    "conversation_joiner.continue_gate_rejected",
+                    chat_key=chat_key,
+                    confidence=decision.confidence,
+                    threshold=continue_cfg.threshold,
+                    reply_mode=reply_mode,
+                )
+                sm.clear_batch(chat_key)
+                return
+            # continue_gate passed.
+            anchor, reply_to_message_id = _select_batch_reply_anchor(
+                batch,
+                decision,
+            )
+            instruction = _build_continue_agent_instruction(decision, batch)
+        else:
+            # continue_gate disabled — flush with last message.
+            anchor = batch.messages[-1]
+            reply_to_message_id = None
+            instruction = _build_engaged_batch_instruction(batch)
+
+        batch_size = len(batch.messages)
+        triggered_now = time.monotonic()
+        self._last_triggered_at[chat_key] = triggered_now
+        self._triggered_at.setdefault(chat_key, []).append(triggered_now)
+        state = sm.get_state(chat_key)
+        state.last_triggered_at = triggered_now
+        state.triggered_timestamps.append(triggered_now)
+        self._pending_requests[chat_key] = _PendingRequest(
+            requested_at=triggered_now,
+            session_id=session_id,
+        )
+        self._start_monitor(
+            chat_key,
+            session_id,
+            timeout=cfg.decision_timeout_seconds * 3,
+            interval=cfg.decision_timeout_seconds * 3,
+        )
+
+        try:
+            await self.api.request_agent_response(
+                anchor,
+                session_id=session_id,
+                reason=f"engaged continue (batch of {batch_size})",
+                instruction=instruction,
+                observed_messages=tuple(batch.messages),
+                reply_to_message_id=reply_to_message_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._clear_pending_request(chat_key)
+            self._reschedule_flush(
+                chat_key,
+                address,
+                cfg,
+                engagement_cfg,
+                session_id,
+                cfg.decision_timeout_seconds,
+            )
+            self.api.logger.warning(
+                "conversation_joiner.engaged_agent_request_failed",
+                chat_key=chat_key,
+                session_id=session_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+
+        sm.clear_batch(chat_key)
+
+        self.api.logger.info(
+            "conversation_joiner.engaged_agent_requested",
+            chat_key=chat_key,
+            session_id=session_id,
+            batch_size=batch_size,
+        )
+
+    def _start_window_flush_task(
+        self,
+        chat_key: str,
+        address: ChatAddress,
+        cfg: EffectiveJoinerConfig,
+        engagement_cfg: EngagementConfig,
+        session_id: str,
+    ) -> None:
+        task = asyncio.create_task(
+            self._window_flush_callback(
+                chat_key,
+                address,
+                cfg,
+                engagement_cfg,
+                session_id,
+            )
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+
+    async def _window_flush_callback(
+        self,
+        chat_key: str,
+        address: ChatAddress,
+        cfg: EffectiveJoinerConfig,
+        engagement_cfg: EngagementConfig,
+        session_id: str,
+    ) -> None:
+        """Called by the asyncio timer when the batch window expires."""
+        sm = self._sm
+        if sm is not None:
+            sm.mark_window_timer_fired(chat_key)
+        # Run flush under the per-chat-key lock to avoid races.
+        lock = self._locks.setdefault(chat_key, asyncio.Lock())
+        async with lock:
+            await self._flush_batch(chat_key, address, cfg, engagement_cfg, session_id)
+
+    def _reschedule_flush(
+        self,
+        chat_key: str,
+        address: ChatAddress,
+        cfg: EffectiveJoinerConfig,
+        engagement_cfg: EngagementConfig,
+        session_id: str,
+        delay_seconds: float,
+    ) -> None:
+        """Reschedule a window flush after a short delay (used when blocked by
+        cooldown or active run)."""
+        sm = self._sm
+        if sm is None:
+            return
+        state = sm.get_state(chat_key)
+        # Only reschedule if still in a state that would flush.
+        if state.state not in ("engaged", "cooling"):
+            return
+        sm.schedule_window_flush(
+            chat_key,
+            delay_seconds,
+            lambda ck=chat_key: self._start_window_flush_task(
+                ck, address, cfg, engagement_cfg, session_id
+            ),
+        )
+        self.api.logger.debug(
+            "conversation_joiner.flush_rescheduled",
+            chat_key=chat_key,
+            delay_seconds=round(delay_seconds, 1),
+        )
+
+    async def _ask_continue_gate(
+        self,
+        batch: Any,  # ObservedMessageBatch
+        chat_key: str,
+        cfg: EffectiveJoinerConfig,
+        engagement_cfg: EngagementConfig,
+    ) -> _SecretaryDecision | None:
+        """Run the cheaper continue gate on a batch of buffered messages."""
+        persona_context = await self._load_persona_context(cfg)
+        prompt = self._build_continue_gate_prompt(
+            batch, chat_key, cfg, persona_context=persona_context
+        )
+        try:
+            response = await asyncio.wait_for(
+                self.api.llm_chat(
+                    [
+                        {"role": "system", "content": _CONTINUE_GATE_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    model=engagement_cfg.continue_gate.model,
+                    temperature=0.0,
+                    max_tokens=200,
+                    tools=[],
+                ),
+                timeout=cfg.decision_timeout_seconds,
+            )
+        except TimeoutError:
+            self.api.logger.debug(
+                "conversation_joiner.continue_gate_timeout",
+                chat_key=chat_key,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self.api.logger.warning(
+                "conversation_joiner.continue_gate_failed",
+                chat_key=chat_key,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return _parse_decision(str(getattr(response, "content", "") or ""))
+
+    def _build_continue_gate_prompt(
+        self,
+        batch: Any,
+        chat_key: str,
+        cfg: EffectiveJoinerConfig,
+        *,
+        persona_context: str = "",
+    ) -> str:
+        context = _format_context(self._contexts.get(chat_key, ()), cfg)
+        lines: list[str] = []
+        for msg in batch.messages:
+            sender = msg.user_id
+            if msg.sender_context is not None:
+                sender = (
+                    msg.sender_context.display_name
+                    or msg.sender_context.platform_user_id
+                    or msg.user_id
+                )
+            text = msg.text.strip() if msg.text else ""
+            msg_id = msg.message_id or "(no-message-id)"
+            lines.append(f"- [{msg_id}] {sender}: {text}")
+        batch_text = "\n".join(lines)
+        return (
+            f"Chat: {chat_key}\n"
+            "Bot persona context for judging whether continuing fits:\n"
+            f"{persona_context or '(none)'}\n\n"
+            f"Recent context:\n{context or '(none)'}\n\n"
+            f"Batch of {len(batch.messages)} new messages:\n{batch_text}\n\n"
+            "Decide whether the bot should respond now."
+        )
+
+    async def _handle_observing_state(
+        self,
+        event: MessageObserved,
+        address: ChatAddress,
+        cfg: EffectiveJoinerConfig,
+        sm: EngagementStateMachine,
+        engagement_cfg: EngagementConfig,
+        chat_key: str,
+        session_id: str,
+        now: float,
+        message: InboundMessage,
+        keyword_hit: bool,
+    ) -> None:
+        """Run the join gate pipeline when in the observing state."""
+        if self._is_active_run(session_id):
+            return
+        if self._is_debounced(chat_key, cfg, now):
+            return
+        if self._is_in_cooldown(chat_key, cfg, now):
+            return
+        if not self._has_hourly_budget(chat_key, cfg, now):
+            return
+        sample_rate = (
+            cfg.prefilter.keyword_sample_rate
+            if keyword_hit
+            else cfg.prefilter.sample_rate
+        )
+        sample_passed, sample_roll = _sample_gate_passes(
+            sample_rate,
+            self._sample_random,
+        )
+        if not sample_passed:
+            self.api.logger.debug(
+                "conversation_joiner.sample_skipped",
+                chat_key=chat_key,
+                message_id=message.message_id,
+                sample_rate=sample_rate,
+                sample_roll=round(sample_roll, 6),
+                keyword_hit=keyword_hit,
+            )
+            return
+
+        self._last_decision_at[chat_key] = now
+        decision = await self._ask_secretary(message, chat_key, cfg)
+        if decision is None:
+            return
+        if not decision.should_join:
+            self.api.logger.debug(
+                "conversation_joiner.decision_skipped",
+                reason="should_join_false",
+                chat_key=chat_key,
+                confidence=decision.confidence,
+            )
+            return
+        if decision.confidence < cfg.threshold or not decision.reason:
+            self.api.logger.debug(
+                "conversation_joiner.decision_skipped",
+                reason="below_threshold_or_empty_reason",
+                chat_key=chat_key,
+                confidence=decision.confidence,
+                threshold=cfg.threshold,
+            )
+            return
+
+        # Double-check guards after the async secretary call.
+        now = time.monotonic()
+        if self._is_active_run(session_id):
+            return
+        if self._is_in_cooldown(chat_key, cfg, now):
+            return
+        if not self._has_hourly_budget(chat_key, cfg, now):
+            return
+
+        # Transition to joining and request the agent.
+        sm.transition_to_joining(chat_key, now)
+        instruction = _build_agent_instruction(decision)
+        triggered_now = time.monotonic()
+        self._last_triggered_at[chat_key] = triggered_now
+        self._triggered_at.setdefault(chat_key, []).append(triggered_now)
+        state = sm.get_state(chat_key)
+        state.last_triggered_at = triggered_now
+        state.triggered_timestamps.append(triggered_now)
+        self._pending_requests[chat_key] = _PendingRequest(
+            requested_at=triggered_now,
+            session_id=session_id,
+        )
+        self._start_monitor(
+            chat_key,
+            session_id,
+            timeout=cfg.decision_timeout_seconds * 3,
+            interval=cfg.decision_timeout_seconds * 3,
+        )
+
+        try:
+            await self.api.request_agent_response(
+                message,
+                session_id=session_id,
+                reason=decision.reason,
+                instruction=instruction,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._clear_pending_request(chat_key)
+            sm.transition_to_observing(
+                chat_key, time.monotonic(), reason="request_failed"
+            )
+            self.api.logger.warning(
+                "conversation_joiner.agent_request_failed",
+                chat_key=chat_key,
+                session_id=session_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+
+        self.api.logger.info(
+            "conversation_joiner.agent_requested",
+            chat_key=chat_key,
+            session_id=session_id,
+            confidence=decision.confidence,
+            reason=decision.reason[:200],
+            engagement_state="joining",
+        )
+
+    async def _on_message_sent(self, event: MessageSent) -> None:
+        """Detect agent replies and update engagement state accordingly."""
+        sm = self._sm
+        if sm is None:
+            return
+
+        payload = event.payload
+        chat_key = self._pending_chat_key_for_sent(
+            payload.message,
+            payload.session_id,
+        )
+        if chat_key is None:
+            return
+
+        now = time.monotonic()
+        state = sm.get_state(chat_key)
+
+        if state.state == "joining":
+            sm.transition_to_engaged(chat_key, now)
+            self.api.logger.info(
+                "conversation_joiner.engagement_confirmed",
+                chat_key=chat_key,
+                session_id=payload.session_id,
+                state="engaged",
+            )
+        elif state.state in ("engaged", "cooling"):
+            engagement_cfg = effective_group_config(self._config, chat_key).engagement
+            sm.decay_engagement_score(
+                chat_key,
+                now,
+                engagement_cfg,
+            )
+            sm.reset_low_value_strikes(chat_key)
+            sm.update_engagement_score(
+                chat_key,
+                0.8,
+                engagement_cfg.engagement_score_alpha,
+                now,
+            )
+            state.last_agent_reply_at = now
+            if state.state == "engaged":
+                sm.transition_to_cooling(chat_key, now)
+
+        self._clear_pending_request(chat_key)
+
+    def _start_monitor(
+        self,
+        chat_key: str,
+        session_id: str,
+        *,
+        timeout: float,
+        interval: float,
+    ) -> None:
+        """Start or replace the NO_REPLY monitor for one chat."""
+        self._cancel_monitor(chat_key)
+        monitor = asyncio.create_task(
+            self._monitor_agent_run(
+                chat_key,
+                session_id,
+                timeout=timeout,
+                interval=interval,
+            ),
+        )
+        self._monitor_tasks[chat_key] = monitor
+        self._tasks.add(monitor)
+        monitor.add_done_callback(
+            lambda task, ck=chat_key: self._on_monitor_done(ck, task)
+        )
+
+    def _on_monitor_done(self, chat_key: str, task: asyncio.Task[None]) -> None:
+        if self._monitor_tasks.get(chat_key) is task:
+            self._monitor_tasks.pop(chat_key, None)
+        self._on_task_done(task)
+
+    def _cancel_monitor(self, chat_key: str) -> None:
+        monitor = self._monitor_tasks.pop(chat_key, None)
+        if monitor is not None and not monitor.done():
+            monitor.cancel()
+
+    def _clear_pending_request(
+        self,
+        chat_key: str,
+        *,
+        cancel_monitor: bool = True,
+    ) -> None:
+        self._pending_requests.pop(chat_key, None)
+        if cancel_monitor:
+            self._cancel_monitor(chat_key)
+
+    def _pending_chat_key_for_sent(
+        self,
+        message: InboundMessage,
+        session_id: str,
+    ) -> str | None:
+        address = _address_from_message(message)
+        if address is not None:
+            chat_key = address.chat_key
+            pending = self._pending_requests.get(chat_key)
+            if pending is not None and (
+                not session_id or pending.session_id == session_id
+            ):
+                return chat_key
+            if pending is not None and session_id:
+                active_session_id = self._resolve_active_session_id(
+                    address,
+                    fallback=chat_key,
+                )
+                if active_session_id == session_id:
+                    return chat_key
+
+        if session_id:
+            for chat_key, pending in self._pending_requests.items():
+                if pending.session_id == session_id:
+                    return chat_key
+
+        return None
+
+    async def _monitor_agent_run(
+        self,
+        chat_key: str,
+        session_id: str,
+        timeout: float,
+        interval: float,
+    ) -> None:
+        """Wait for an agent run to complete, then detect NO_REPLY.
+
+        The monitor keeps polling while the run is active.  It is cancelled
+        immediately when a matching MessageSent confirms a visible reply.
+        """
+        await asyncio.sleep(timeout)
+        sm = self._sm
+        if sm is None:
+            return
+
+        while chat_key in self._pending_requests and self._is_active_run(session_id):
+            await asyncio.sleep(interval)
+
+        # Run finished without MessageSent → treat as NO_REPLY.
+        if chat_key not in self._pending_requests:
+            return
+
+        now = time.monotonic()
+        state = sm.get_state(chat_key)
+
+        if state.state == "joining":
+            engagement_cfg = effective_group_config(self._config, chat_key).engagement
+            sm.transition_to_observing(chat_key, now, reason="agent_no_reply")
+            sm.update_engagement_score(
+                chat_key,
+                0.1,
+                engagement_cfg.engagement_score_alpha,
+                now,
+            )
+            self.api.logger.info(
+                "conversation_joiner.no_reply_detected",
+                chat_key=chat_key,
+                session_id=session_id,
+                from_state="joining",
+            )
+        elif state.state in ("engaged", "cooling"):
+            engagement_cfg = effective_group_config(self._config, chat_key).engagement
+            sm.decay_engagement_score(
+                chat_key,
+                now,
+                engagement_cfg,
+            )
+            sm.increment_low_value_strike(chat_key)
+            sm.update_engagement_score(
+                chat_key,
+                0.1,
+                engagement_cfg.engagement_score_alpha,
+                now,
+            )
+            self.api.logger.debug(
+                "conversation_joiner.no_reply_detected",
+                chat_key=chat_key,
+                session_id=session_id,
+                from_state=state.state,
+            )
+
+        self._clear_pending_request(chat_key, cancel_monitor=False)
 
     def _remember_context(
         self,
@@ -444,12 +1268,49 @@ class ConversationJoinerPlugin(Plugin):
         self._triggered_at[chat_key] = recent
         return len(recent) < cfg.max_triggers_per_hour
 
+    def _resolve_active_session_id(
+        self,
+        address: ChatAddress,
+        *,
+        fallback: str,
+    ) -> str:
+        resolver = getattr(self.api, "get_active_session_id", None)
+        if not callable(resolver):
+            return fallback
+        try:
+            resolved = resolver(address)
+        except Exception:  # noqa: BLE001
+            return fallback
+        return str(resolved or fallback)
+
     def _is_active_run(self, session_id: str) -> bool:
         try:
             status = self.api.get_session_run_status(session_id)
         except Exception:  # noqa: BLE001
             return False
         return bool(status.get("active"))
+
+    async def _status_provider(self, *, session_id: str, chat_key: str) -> str | None:
+        """Return engagement state info for /status."""
+        sm = self._sm
+        if sm is None:
+            return None
+        state = sm._states.get(chat_key)
+        if state is None:
+            return None
+        cfg = effective_group_config(self._config, chat_key)
+        if not cfg.engagement.enabled:
+            return None
+        sm.decay_engagement_score(chat_key, time.monotonic(), cfg.engagement)
+        lines = [f"Engagement: {state.state}"]
+        if state.state not in ("observing",):
+            lines.append(f"  Score: {state.engagement_score:.2f}")
+            lines.append(f"  Low-value strikes: {state.low_value_strikes}")
+            batch = sm.get_batch(chat_key)
+            batch_count = len(batch.messages) if batch else 0
+            lines.append(f"  Batch messages: {batch_count}")
+            lines.append(f"  Pending request: {chat_key in self._pending_requests}")
+        return "\n".join(lines)
 
 
 _SECRETARY_SYSTEM_PROMPT = (
@@ -458,6 +1319,20 @@ _SECRETARY_SYSTEM_PROMPT = (
     "the final message. Return only valid JSON with keys: should_join boolean, "
     "confidence number from 0 to 1, reason string, entry_style string, focus "
     "string. Prefer false unless joining is timely and useful."
+)
+
+_CONTINUE_GATE_SYSTEM_PROMPT = (
+    "You are a cheap conversation continuation gate for a group-chat bot that is "
+    "already engaged in a topic. You receive a batch of recent messages and decide "
+    "whether the bot should respond NOW. The bot has already joined; you only "
+    "decide timing. Return only valid JSON with keys: should_join boolean, "
+    "confidence number from 0 to 1, reason string, entry_style string, focus "
+    "string, reply_mode string, reply_anchor_message_id string. reply_mode must "
+    "be direct_reply, group_comment, or no_reply. Use direct_reply when the bot "
+    "should answer one specific batch message and set reply_anchor_message_id to "
+    "that message id. Use group_comment for an ambient contribution to the whole "
+    "batch and leave reply_anchor_message_id empty. Prefer false unless the batch "
+    "contains something the bot should directly address."
 )
 
 
@@ -539,6 +1414,8 @@ def _parse_decision(content: str) -> _SecretaryDecision | None:
         reason=str(data.get("reason") or "").strip(),
         entry_style=str(data.get("entry_style") or "").strip(),
         focus=str(data.get("focus") or "").strip(),
+        reply_mode=str(data.get("reply_mode") or "").strip(),
+        reply_anchor_message_id=str(data.get("reply_anchor_message_id") or "").strip(),
     )
 
 
@@ -580,3 +1457,55 @@ def _build_agent_instruction(decision: _SecretaryDecision) -> str:
         parts.append(f"Focus: {decision.focus}")
     parts.append("Keep it short. If the moment has passed, reply NO_REPLY.")
     return "\n".join(parts)
+
+
+def _build_continue_agent_instruction(
+    decision: _SecretaryDecision,
+    batch: Any,
+) -> str:
+    parts = [
+        "You are continuing in an ongoing group conversation. The bot was already "
+        "engaged and the system collected recent messages that may warrant a response.",
+        f"Continue gate reason: {decision.reason}",
+    ]
+    if decision.focus:
+        parts.append(f"Focus: {decision.focus}")
+    parts.append(
+        f"The batch contains {len(batch.messages)} recent messages. "
+        "Respond to what's relevant. If the moment has passed, reply NO_REPLY."
+    )
+    return "\n".join(parts)
+
+
+def _select_batch_reply_anchor(
+    batch: Any,
+    decision: _SecretaryDecision,
+) -> tuple[InboundMessage, str | None]:
+    messages = list(batch.messages)
+    fallback = messages[-1]
+    by_id = {msg.message_id: msg for msg in messages if msg.message_id}
+    mode = decision.reply_mode.strip().lower()
+    anchor_id = decision.reply_anchor_message_id.strip()
+
+    if mode == "direct_reply":
+        if anchor_id and anchor_id in by_id:
+            return by_id[anchor_id], anchor_id
+        if not anchor_id and len(messages) == 1 and fallback.message_id:
+            return fallback, fallback.message_id
+        return fallback, ""
+
+    if mode == "group_comment" or mode == "no_reply":
+        return fallback, ""
+
+    if anchor_id and anchor_id in by_id:
+        return by_id[anchor_id], anchor_id
+
+    return fallback, ""
+
+
+def _build_engaged_batch_instruction(batch: Any) -> str:
+    return (
+        "You are continuing in an ongoing group conversation. The system collected "
+        f"{len(batch.messages)} recent messages that may warrant a response. "
+        "Respond to what's relevant. If the moment has passed, reply NO_REPLY."
+    )

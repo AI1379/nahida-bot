@@ -206,6 +206,19 @@ class _FakeAPI:
     def list_commands(self) -> list[Any]:
         return [entry.to_info() for entry in self.command_registry.all_commands()]
 
+    def register_status_provider(
+        self, key: str, handler: Any, *, label: str = ""
+    ) -> None:
+        pass
+
+    def unregister_status_provider(self, key: str) -> bool:
+        return False
+
+    async def collect_status_providers(
+        self, *, session_id: str, chat_key: str
+    ) -> list[str]:
+        return []
+
 
 @pytest.mark.asyncio
 async def test_on_load_registers_commands_and_workspace_tools() -> None:

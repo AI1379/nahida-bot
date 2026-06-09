@@ -2,7 +2,7 @@
 
 > 记录时间：2026-06-08
 > 最近更新：2026-06-08
-> 状态：Phase 0/1 已完成，Phase 2 MVP 已完成
+> 状态：Phase 0/1 已完成，Phase 2 单次触发 MVP 已完成；后续目标是 conversation engagement 状态机
 > 来源：GitHub Issue #4 的“随机发言”表述不准确；真实目标是让 Bot 判断是否自然加入群聊话题。
 > 相关文档：
 >
@@ -18,6 +18,8 @@
 
 实际需要的是 **conversation joiner**：当群聊有新消息进入时，Bot 观察最近上下文，通过规则、关键词和便宜秘书模型判断“现在是否适合自然加入话题”。如果适合，则触发主 Agent 进入 AgentLoop，由主 Agent 根据上下文组织回复；如果不适合，则保持沉默。
 
+Phase 2 MVP 已经实现“单条 observed message 触发一次 Agent 响应请求”。这只是入话题能力的第一步。更自然的目标行为是：Bot 触发一次后进入当前话题，在后续一小段时间内持续旁听并择机接话，直到话题冷却、相关度下降或达到时间上限后退出。
+
 因此本文档不再设计确定性主动投递、消息池随机抽取或直接发送预设消息。
 
 ## 2. 目标与非目标
@@ -29,6 +31,8 @@
 3. 判断通过后，通过专用事件请求主 Agent 响应，而不是伪造普通用户消息。
 4. 保留现有 mention / command / always / none 硬触发模式。
 5. 通过冷却、频率上限、置信度阈值和并发保护避免刷屏。
+6. 后续支持 per group/session 的 conversation engagement 状态机：入场、持续参与、降频、退出。
+7. 后续支持将一段时间窗口内的多条 observed message 打包给主 Agent，而不是只围绕单条消息回复。
 
 ### 2.2 非目标
 
@@ -37,6 +41,7 @@
 3. 不让秘书模型生成最终群聊回复。
 4. 不让普通插件直接发布 `MessageReceived` 作为正式触发入口。
 5. 不把重型 LLM 判定放进 Router 同步路径。
+6. 不把主动聊天策略硬编码进 Router 核心；核心只提供观察、上下文和 Agent request 基础设施。
 
 ## 3. 总体架构
 
@@ -46,13 +51,14 @@ Channel normalized inbound message
       -> hard trigger: MessageReceived -> Router command / AgentLoop
       -> observe only: MessageObserved / observed inbound stream
   -> ConversationJoinerPlugin async worker
-      -> heuristic prefilter
-      -> cheap secretary model
-      -> should_join=false: do nothing
-      -> should_join=true: AgentResponseRequested
+      -> state machine per group/session
+          -> observing: heuristic prefilter + join gate
+          -> joining: AgentResponseRequested
+          -> engaged: buffer observed messages + continue/exit gate
+          -> cooling: rate limit; exit returns to observing
   -> Router handles AgentResponseRequested
       -> source_tag="proactive_join"
-      -> main Agent builds final response
+      -> main Agent builds final response from current message or message batch
       -> Agent may still return NO_REPLY
 ```
 
@@ -60,8 +66,9 @@ Channel normalized inbound message
 
 - Router 只处理硬触发和正式 Agent 请求。
 - Conversation joiner 异步观察，不阻塞 channel 入站和 Router。
-- 秘书模型只做 gating；主 Agent 负责最终表达。
+- 便宜 gate 模型只做入场、续聊和退出判定；主 Agent 负责最终表达。
 - 主 Agent 必须知道这是“主动加入话题”，不是用户直接点名。
+- 策略先保留在内置插件里；核心只补通用能力。
 
 ## 4. 群聊触发基础语义
 
@@ -136,6 +143,27 @@ async def request_agent_response(
 ) -> None: ...
 ```
 
+当前已落地版本只表达“围绕单条 message 请求一次 Agent 响应”。后续进入 `engaged` 状态后，需要支持 message batch。建议在保持兼容的前提下扩展 payload，而不是把多条消息拼成一条 synthetic text：
+
+```python
+@dataclass(slots=True, frozen=True)
+class AgentResponseRequestPayload:
+    message: InboundMessage
+    session_id: str
+    chat_address: ChatAddress
+    requester_plugin_id: str
+    reason: str
+    instruction: str = ""
+    synthetic: bool = False
+    observed_messages: tuple[InboundMessage, ...] = ()
+```
+
+语义：
+
+- `message` 仍然是触发本次 Agent run 的锚点消息，兼容当前 Router。
+- `observed_messages` 是可选的附加群聊消息批次，用于让主 Agent 理解一小段后续对话。
+- Router 注入 batch 时必须保留每条消息的 sender、timestamp、text 和 message_id，不应只做字符串拼接。
+
 Router 订阅 `AgentResponseRequested` 后：
 
 1. 校验 target 是 typed group address。
@@ -166,6 +194,7 @@ Router 订阅 `AgentResponseRequested` 后：
 
 - 作为内置插件 `conversation_joiner` 发现，默认关闭。
 - 订阅 `MessageObserved`，收到事件后创建后台任务，不阻塞 channel 入站发布。
+- 当前 Phase 2 MVP 仍是单次触发：一条 observed message 通过 join gate 后请求主 Agent 响应一次；后续消息会重新走观察和判定。
 - 群上下文窗口、冷却、debounce、小时上限暂存在内存中；持久化和管理命令放到后续阶段。
 - 在 `group_observe_mode` 落地前，仍依赖各 channel 的 `group_context_capture` 让未触发消息进入 `MessageObserved`。
 - 秘书模型只输出 JSON decision；最终群聊回复仍由主 Agent 生成。
@@ -206,6 +235,40 @@ conversation_joiner:
       cooldown_seconds: 300
 ```
 
+后续状态机配置草案：
+
+```yaml
+conversation_joiner:
+  engagement:
+    enabled: true
+    join_state_ttl_seconds: 600       # 进入话题后的默认持续观察窗口
+    idle_exit_seconds: 180            # 窗口内无足够消息时退出
+    max_engaged_seconds: 1800         # 单次话题参与绝对上限
+    response_cooldown_seconds: 45     # engaged 状态下两次主动回复之间的最小间隔
+
+    batching:
+      window_seconds: 8               # 收集后续消息的短窗口
+      max_messages: 6
+      max_chars: 2000
+      flush_on_mention: true
+
+    continue_gate:
+      enabled: true
+      model: cheap
+      threshold: 0.55
+      min_messages: 1
+      evaluate_interval_seconds: 8
+
+    exit_gate:
+      enabled: true
+      low_value_threshold: 0.35
+      low_value_strikes: 3
+      min_messages_per_window: 1
+      activity_window_seconds: 120
+```
+
+这些配置不应让 Bot 在 `engaged` 状态中回复每一条消息。它们的职责是让 Bot 更像“正在参与话题但保持克制”：收集短窗口消息，判断是否现在接话，必要时退出。
+
 ### 7.2 处理流程
 
 ```text
@@ -236,9 +299,111 @@ Observed group message
 
 `sample_rate` 使用运行时随机 roll，不把消息内容 hash 成固定结果。这样同一类消息不会因为 message id / 文本被永久绑定为“永远触发”或“永远不触发”。测试中通过 `sample_rate=0/1` 或替换随机函数来稳定覆盖分支。
 
-## 8. 秘书模型
+## 8. Conversation Engagement 状态机
 
-秘书模型只做“是否加入话题”的判定，不生成最终群聊回复。
+状态机按 typed group chat key 维护。它不替代硬触发；mention / command / always 仍然由 Router 直接处理，但硬触发可以反向刷新 joiner 的最近上下文和参与状态。
+
+| 状态 | 含义 | 进入条件 | 退出条件 |
+|------|------|----------|----------|
+| `observing` | 只旁听，不主动回复 | 默认状态；退出话题后回到这里 | `join_gate` 判定通过 |
+| `joining` | 已决定加入，正在请求主 Agent | `join_gate.should_join=true` 且通过 cooldown / active run guard | Agent run 完成后进入 `engaged` 或回到 `observing` |
+| `engaged` | 已加入当前话题，持续观察并择机接话 | 主 Agent 成功回复，或显式硬触发表明 Bot 正在参与 | 退出条件满足，或进入 `cooling` |
+| `cooling` | 刚刚主动回复过，短暂降频 | `engaged` 中发起一次主动回复后 | cooldown 结束后回到 `engaged`，或退出到 `observing` |
+
+核心转移：
+
+```text
+observing
+  -> join_gate true
+  -> joining
+  -> AgentResponseRequested
+  -> Agent sends message: engaged
+  -> Agent returns NO_REPLY: observing
+
+engaged
+  -> collect observed messages into batch
+  -> continue_gate false: stay engaged, keep listening
+  -> continue_gate true: AgentResponseRequested(batch)
+  -> after response: cooling
+
+engaged / cooling
+  -> idle timeout / low value strikes / max duration / low activity
+  -> observing
+```
+
+### 8.1 Engaged 状态下的消息批处理
+
+进入 `engaged` 后，不应每条新消息都请求秘书模型，也不应每条消息都请求主 Agent。推荐流程：
+
+```text
+Observed group message
+  -> append to engagement buffer
+  -> if hard trigger: let Router handle, refresh engagement state
+  -> if buffer window not ready: wait
+  -> if active run or response cooldown: wait
+  -> cheap continue_gate on buffered messages
+  -> if continue_gate true: AgentResponseRequested(observed_messages=batch)
+  -> clear or partially retain buffer
+```
+
+批处理原则：
+
+- 使用短窗口，例如 5-12 秒，避免主 Agent 对每条消息碎片化回复。
+- 使用 `max_messages` / `max_chars` 防止 batch 过大。
+- mention 或命令仍然走硬触发，可以同时刷新 engaged 状态，但不由 joiner 吞掉。
+- 如果窗口内用户已经换话题，continue gate 可以返回 false 或要求退出。
+- 主 Agent 仍可返回 `NO_REPLY`，这会降低 engagement score。
+
+### 8.2 退出策略
+
+退出不应只靠一个固定时间。建议组合多种信号：
+
+| 信号 | 说明 |
+|------|------|
+| 固定 TTL | `join_state_ttl_seconds` 到期后退出或重新评估 |
+| 空闲超时 | `idle_exit_seconds` 内没有足够新消息则退出 |
+| 绝对上限 | `max_engaged_seconds` 防止单次话题无限持续 |
+| 消息密度 | `activity_window_seconds` 内消息数低于阈值时退出 |
+| 价值下降 | 连续 `continue_gate=false`、低置信度或主 Agent `NO_REPLY` 累积为 low value strike |
+| active run | 主 Agent 已在跑时不新增主动请求，只继续缓冲或丢弃过期 batch |
+
+`engagement_score` 可以用简单 EWMA 表示，不需要一开始就训练复杂模型：
+
+```text
+score = score * 0.8 + signal * 0.2
+```
+
+其中 `signal` 可以来自 continue gate 置信度、主 Agent 是否 `NO_REPLY`、用户是否继续围绕 Bot 回复等。低于阈值连续 N 次后退出。
+
+### 8.3 是否进入核心
+
+状态机策略先保留在 `conversation_joiner` 这个内置插件里。原因：
+
+- 加入、续聊、退出的阈值和人格化策略会频繁调整，放在插件里更容易实验。
+- Router 应保持清晰：处理硬触发、命令、Agent run 和上下文注入，不直接决定 Bot 是否主动聊天。
+- 不同 Bot 人设可能需要不同 engagement 策略，核心不应把某一种策略固定为默认行为。
+
+但核心需要提供更强的通用能力：
+
+- 正式的 `group_observe_mode`，让观察和触发彻底分离。
+- 可查询的 observed group context buffer。
+- `AgentResponseRequested` 的 batch 扩展。
+- 主 Agent `NO_REPLY` / delivery result 对 joiner 的反馈事件，便于更新 engagement score。
+- per session active run / pending 状态查询保持稳定。
+
+因此推荐边界是：**策略在插件，基础设施在核心**。等状态机稳定后，可以把它提升为 core service，但仍不应进入 Router 的同步触发判断路径。
+
+## 9. Gate 模型与秘书模型
+
+秘书模型不生成最终群聊回复。它在后续状态机里应扩展为多个 cheap gate：
+
+| Gate | 使用状态 | 职责 |
+|------|----------|------|
+| `join_gate` | `observing` | 判断是否进入当前话题 |
+| `continue_gate` | `engaged` | 判断 buffered messages 是否值得现在回复 |
+| `exit_gate` | `engaged` / `cooling` | 判断话题是否已经冷却或不适合继续参与 |
+
+当前 MVP 只实现了 `join_gate`，并且是单次触发。
 
 当前 MVP 输入包括：
 
@@ -281,14 +446,15 @@ Observed group message
 - 置信度不足：跳过。
 - 秘书模型建议加入但主 Agent 返回 `NO_REPLY`：正常记录，不视为失败。
 
-## 9. 状态持久化
+## 10. 状态持久化
 
 使用 `plugin_data`，key namespace 属于 `conversation_joiner`。
 
 | Key | Value | 说明 |
 |-----|-------|------|
 | `group:{chat_key}` | `GroupJoinerConfig` | 动态分群配置覆盖 |
-| `state:{chat_key}` | `GroupJoinerState` | 冷却、最近触发、失败退避 |
+| `state:{chat_key}` | `GroupJoinerState` | 冷却、最近触发、失败退避、当前 engagement 状态 |
+| `buffer:{chat_key}` | `ObservedMessageBatch` | 可选的短期消息 buffer，默认可只保留内存 |
 | `decision:{chat_key}:{message_id}` | `SecretaryDecision` | 可选调试记录，默认短期保留 |
 
 `GroupJoinerState`：
@@ -296,13 +462,31 @@ Observed group message
 ```python
 class GroupJoinerState:
     chat_key: str
+    engagement_state: Literal["observing", "joining", "engaged", "cooling"]
+    topic_started_at: float
+    state_updated_at: float
     last_decision_at: float
     last_triggered_at: float
+    last_agent_reply_at: float
     triggered_timestamps: list[float]
     failure_backoff_until: float
+    low_value_strikes: int
+    engagement_score: float
 ```
 
-## 10. 权限
+`ObservedMessageBatch` 至少包含：
+
+```python
+class ObservedMessageBatch:
+    chat_key: str
+    started_at: float
+    messages: list[InboundMessage]
+    total_chars: int
+```
+
+第一版状态机可以只在内存里保存 batch；持久化 `GroupJoinerState` 更重要，因为它影响冷却、退出和重启后的刷屏风险。
+
+## 11. 权限
 
 ```yaml
 permissions:
@@ -329,7 +513,7 @@ permissions:
 
 `request_agent_response()` 保持为显式窄口，不复用完全开放的 `publish_event()`。
 
-## 11. 安全与防滥用
+## 12. 安全与防滥用
 
 1. 全局默认关闭，分群默认关闭。
 2. 只支持 typed group address。
@@ -340,8 +524,10 @@ permissions:
 7. 主 Agent 仍可用 `NO_REPLY` 二次否决。
 8. active run 期间不重复触发。
 9. 管理命令写操作必须配置管理员。
+10. `engaged` 状态仍必须遵守 cooldown、小时上限和最大参与时长。
+11. batch 请求必须有 `max_messages` / `max_chars`，不能把无限群聊记录塞给主 Agent。
 
-## 12. 实施 checklist
+## 13. 实施 checklist
 
 ### Phase 0：群触发基础语义
 
@@ -363,9 +549,9 @@ permissions:
 - [x] 增加 `capabilities.emits` 最小 allowlist。
 - [x] 将 proactive join 基础约束和插件 instruction 注入本轮 system prompt。
 - [x] 补测试：插件请求 Agent 响应、权限拒绝、target 拒绝、source_tag/指令注入。
-- [ ] 正式新增 `group_observe_mode`，从 `group_context_capture` 兼容迁移。
+- [x] 保持 `group_context_capture` 兼容观察路径；正式 `group_observe_mode` 迁移放到 Phase 6。
 
-### Phase 2：ConversationJoiner MVP
+### Phase 2：ConversationJoiner 单次触发 MVP
 
 - [x] 新增 `nahida_bot/plugins/conversation_joiner/`。
 - [x] 实现内置插件发现和配置 schema 暴露。
@@ -378,38 +564,68 @@ permissions:
 - [x] 解析结构化 JSON decision。
 - [x] 判定通过后调用 `request_agent_response()`。
 - [x] 补测试：秘书模型 should_join false/true、置信度阈值、冷却、并发主 run 保护。
-- [ ] 将 cooldown / hourly budget / 最近 decision 持久化到 `plugin_data`。
-- [ ] 增加 secretary failure backoff 和可观测统计。
 
-### Phase 3：调试与管理
+### Phase 3：Conversation Engagement 状态机
+
+- [ ] 增加 `engagement` 配置模型：TTL、idle exit、max duration、response cooldown、batching、continue gate、exit gate。
+- [ ] 增加 per group `GroupJoinerState`：`observing` / `joining` / `engaged` / `cooling`。
+- [ ] `join_gate` 通过后从 `observing` 进入 `joining`，主 Agent 成功回复后进入 `engaged`。
+- [ ] 主 Agent 返回 `NO_REPLY` 时降低 engagement score，并按策略回到 `observing` 或保留短暂 listening 状态。
+- [ ] `engaged` 状态下维护 observed message buffer，不再每条消息都走 join gate。
+- [ ] 实现 batching：短窗口、最大消息数、最大字符数、mention flush。
+- [ ] 实现 `continue_gate`：对 buffered messages 判断是否现在回复。
+- [ ] 实现 `exit_gate` / 规则退出：固定 TTL、idle timeout、消息密度、low value strikes、绝对上限。
+- [ ] active run / cooldown 期间只缓冲或丢弃过期 batch，不重复请求 Agent。
+- [ ] 将 cooldown / hourly budget / engagement state 持久化到 `plugin_data`。
+- [ ] 补测试：状态转移、NO_REPLY 退出、batch flush、continue false 保持沉默、idle/TTL 退出、active run 保护。
+
+### Phase 4：Batch Agent Request 与核心基础能力
+
+- [ ] 扩展 `AgentResponseRequestPayload`，支持 `observed_messages` batch。
+- [ ] 扩展 `BotAPI.request_agent_response()` 或新增窄口 helper，允许插件传入 batch。
+- [ ] Router 注入 batch 时保留 sender、timestamp、message_id、text，而不是简单拼接。
+- [ ] SessionRunner 的 proactive instruction 区分单条主动入话题和 batch 接话。
+- [ ] 增加主 Agent `NO_REPLY` / delivery result 反馈事件，供 joiner 更新 engagement score。
+- [ ] 提供核心 observed group context 查询 API，避免各插件重复维护窗口。
+- [ ] 补测试：batch payload 权限、Router 注入、NO_REPLY 反馈、上下文大小限制。
+
+### Phase 5：调试与管理
 
 - [ ] 管理命令：`/conversation_joiner status|enable|disable|test`。
-- [ ] 可选记录最近 decision，用于调试。
-- [ ] WebUI 展示分群配置、最近 decision、触发原因。
+- [ ] 可选记录最近 join/continue/exit decision，用于调试。
+- [ ] WebUI 展示分群配置、当前 engagement state、最近 decision、触发原因。
 - [ ] 增加 cost/latency 统计。
+- [ ] 增加 secretary / gate failure backoff 和可观测统计。
 
-### Phase 4：观察模式重构
+### Phase 6：观察模式重构
 
 - [ ] 正式新增 `group_observe_mode`。
 - [ ] 减少 channel converter 内的早期策略过滤。
 - [ ] 让普通群消息可被观察，但不默认进入 AgentLoop。
 - [ ] 迁移配置文档和 channel plugin 测试。
 
-## 13. 测试矩阵
+## 14. 测试矩阵
 
 | 测试 | 重点 |
 |------|------|
 | 触发模式 | `none`、严格 `mention`、`command` 合并语义、`always` |
 | 观察模式 | 未触发消息可进入观察路径，但不进 AgentLoop |
 | Agent request | 插件通过专用事件请求 Agent 响应 |
+| Batch request | 多条 observed message 能作为 batch 注入主 Agent |
 | Secretary model | JSON 解析、置信度、超时、失败退避 |
+| Engagement state | observing/joining/engaged/cooling 状态转移 |
+| Continue gate | engaged 状态下 batch 通过/拒绝后行为正确 |
+| Exit gate | TTL、idle、低消息密度、low value strikes 触发退出 |
 | 安全 | 裸 id 拒绝、private 拒绝、非管理员写操作拒绝 |
 | 并发 | active run 时不重复触发 |
 | NO_REPLY | 主 Agent 二次否决后不发送消息 |
 
-## 14. 风险
+## 15. 风险
 
 1. 在 `group_observe_mode` 落地前，未触发群消息仍依赖 `group_context_capture` 才能被插件看到。
 2. `conversation_joiner` 会增加 LLM 调用成本，必须有启发式预过滤和速率限制。
 3. 如果直接复用 `MessageReceived`，会混淆真实入站与插件主动触发，必须避免。
 4. 当前事件系统不收集 handler 返回值，不适合作为同步 routing decision hook。
+5. 状态机如果直接一次性做全，会显著增加行为复杂度；应先实现 in-memory MVP，再持久化和上 WebUI。
+6. batch 注入如果只拼字符串，会丢失 sender/timestamp/message_id，影响主 Agent 判断和审计。
+7. `engaged` 状态可能让 Bot 显得过度参与，必须有 TTL、idle exit、低价值退出和小时上限。

@@ -30,6 +30,7 @@ from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage,
 
 from nahida_bot.core.chat_address import (
     ChatAddress,
+    SessionKey,
     classify_session_key,
 )
 from nahida_bot.core.context import current_session
@@ -1665,6 +1666,20 @@ class BuiltinCommandsPlugin(Plugin):
                 f"Reasoning effort: {reasoning_effort}",
             ]
         )
+
+        # Collect supplementary status from registered providers.
+        try:
+            chat_key = SessionKey.parse(session_id).address.chat_key
+        except ValueError:
+            chat_key = ""
+        provider_blocks = await self.api.collect_status_providers(
+            session_id=session_id,
+            chat_key=chat_key,
+        )
+        for block in provider_blocks:
+            lines.append("")
+            lines.append(block)
+
         return "\n".join(lines)
 
     @staticmethod

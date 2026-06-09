@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from nahida_bot.agent.loop import LoopEvent
@@ -614,6 +614,192 @@ class TestMessageRouterAgentDispatch:
         assert "focus on deployment status" in agent.calls[0]["system_prompt"]
         turns = memory.sessions["test:group:g1"]
         assert turns[0].source == "proactive_join"
+
+    async def test_agent_response_requested_batch_context_and_reply_anchor(
+        self,
+    ) -> None:
+        from nahida_bot.plugins.base import ChatContext, SenderContext
+
+        agent = _MockAgentLoop(response="agent reply")
+        memory = _MockMemoryStore()
+        router, event_bus, channel_registry, _ = _make_router(
+            agent=agent,
+            memory=memory,
+            config=RouterConfig(reply_to_inbound=True),
+        )
+        inbound = InboundMessage(
+            message_id="m2",
+            platform="test",
+            chat_id="g1",
+            user_id="u2",
+            text="but will it spam?",
+            raw_event={},
+            is_group=True,
+            chat_context=ChatContext(platform="test", chat_type="group"),
+            sender_context=SenderContext(display_name="Bob", platform_user_id="u2"),
+        )
+        batch = (
+            InboundMessage(
+                message_id="m1",
+                platform="test",
+                chat_id="g1",
+                user_id="u1",
+                text="should we enable this?",
+                raw_event={},
+                is_group=True,
+                chat_context=ChatContext(platform="test", chat_type="group"),
+                sender_context=SenderContext(
+                    display_name="Alice",
+                    platform_user_id="u1",
+                ),
+            ),
+            inbound,
+            InboundMessage(
+                message_id="m3",
+                platform="test",
+                chat_id="g1",
+                user_id="u3",
+                text="cooldown may handle it",
+                raw_event={},
+                is_group=True,
+                chat_context=ChatContext(platform="test", chat_type="group"),
+                sender_context=SenderContext(
+                    display_name="Carol",
+                    platform_user_id="u3",
+                ),
+            ),
+        )
+
+        await router.start()
+        await event_bus.publish(
+            AgentResponseRequested(
+                payload=AgentResponseRequestPayload(
+                    message=inbound,
+                    session_id="test:group:g1",
+                    chat_address=ChatAddress(
+                        channel="test",
+                        target_type="group",
+                        target_id="g1",
+                    ),
+                    requester_plugin_id="conversation_joiner",
+                    reason="batch",
+                    instruction="focus on the spam concern",
+                    observed_messages=batch,
+                    reply_to_message_id="m2",
+                ),
+                source="conversation_joiner",
+            )
+        )
+        await router.stop()
+
+        system_prompt = agent.calls[0]["system_prompt"]
+        user_message = agent.calls[0]["user_message"]
+        assert "Conversation Joiner Batch Context" not in system_prompt
+        assert "Conversation Joiner Batch Context" in user_message
+        assert "Batch message_id: m1" in user_message
+        assert "Batch message_id: m2" in user_message
+        assert "Batch message_id: m3" in user_message
+        assert (
+            '<message_context trust="untrusted" role="batch_message">' in user_message
+        )
+        assert "Reply anchor message_id: m2" in user_message
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].reply_to == "m2"
+
+    async def test_agent_response_requested_batch_can_disable_reply_anchor(
+        self,
+    ) -> None:
+        from nahida_bot.plugins.base import ChatContext
+
+        agent = _MockAgentLoop(response="agent reply")
+        router, event_bus, channel_registry, _ = _make_router(
+            agent=agent,
+            config=RouterConfig(reply_to_inbound=True),
+        )
+        inbound = InboundMessage(
+            message_id="m2",
+            platform="test",
+            chat_id="g1",
+            user_id="u2",
+            text="ambient topic",
+            raw_event={},
+            is_group=True,
+            chat_context=ChatContext(platform="test", chat_type="group"),
+        )
+
+        await router.start()
+        await event_bus.publish(
+            AgentResponseRequested(
+                payload=AgentResponseRequestPayload(
+                    message=inbound,
+                    session_id="test:group:g1",
+                    chat_address=ChatAddress(
+                        channel="test",
+                        target_type="group",
+                        target_id="g1",
+                    ),
+                    requester_plugin_id="conversation_joiner",
+                    reason="batch",
+                    observed_messages=(inbound,),
+                    reply_to_message_id="",
+                ),
+                source="conversation_joiner",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].reply_to == ""
+
+    async def test_agent_response_requested_active_run_reports_failure(self) -> None:
+        from nahida_bot.plugins.base import ChatContext
+
+        agent = _MockAgentLoop(response="agent reply")
+        router, event_bus, _, _ = _make_router(agent=agent)
+        inbound = InboundMessage(
+            message_id="m1",
+            platform="test",
+            chat_id="g1",
+            user_id="u1",
+            text="topic",
+            raw_event={},
+            is_group=True,
+            chat_context=ChatContext(platform="test", chat_type="group"),
+        )
+
+        await router.start()
+        task = asyncio.create_task(asyncio.sleep(60))
+        runner = cast(Any, router)._runner
+        runner.run_tracker.start("test:group:g1", task, asyncio.Event())
+        try:
+            result = await event_bus.publish(
+                AgentResponseRequested(
+                    payload=AgentResponseRequestPayload(
+                        message=inbound,
+                        session_id="test:group:g1",
+                        chat_address=ChatAddress(
+                            channel="test",
+                            target_type="group",
+                            target_id="g1",
+                        ),
+                        requester_plugin_id="conversation_joiner",
+                        reason="batch",
+                    ),
+                    source="conversation_joiner",
+                )
+            )
+        finally:
+            runner.run_tracker.finish("test:group:g1")
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await router.stop()
+
+        assert result.failures
+        assert "active_run:test:group:g1" in result.failures[0].error
+        assert agent.calls == []
 
     async def test_agent_response_requested_rejects_private_target(self) -> None:
         agent = _MockAgentLoop(response="should not run")

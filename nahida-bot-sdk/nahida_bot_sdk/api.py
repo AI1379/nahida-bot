@@ -129,6 +129,8 @@ class BotAPI(Protocol):
         session_id: str = "",
         reason: str = "",
         instruction: str = "",
+        observed_messages: tuple[InboundMessage, ...] = (),
+        reply_to_message_id: str | None = None,
     ) -> None:
         """Ask the main router to run the agent for a group conversation."""
         ...
@@ -227,6 +229,37 @@ class BotAPI(Protocol):
         """Remove a previously registered prompt supplement. Returns ``True`` if found."""
         ...
 
+    # ── Status Provider Registration ──────────────────
+
+    def register_status_provider(
+        self,
+        key: str,
+        handler: Callable[..., Awaitable[str | None]],
+        *,
+        label: str = "",
+    ) -> None:
+        """Register a provider that contributes text to ``/status`` output.
+
+        The *handler* is an async callable invoked with keyword arguments
+        ``session_id`` and ``chat_key``.  It should return a short text
+        block describing the plugin's state for that chat, or ``None`` to
+        contribute nothing.
+        """
+        ...
+
+    def unregister_status_provider(self, key: str) -> bool:
+        """Remove a previously registered status provider. Returns ``True`` if found."""
+        ...
+
+    async def collect_status_providers(
+        self,
+        *,
+        session_id: str,
+        chat_key: str,
+    ) -> list[str]:
+        """Collect text blocks from all registered status providers."""
+        ...
+
     @property
     def scheduler_service(self) -> Any | None:
         """Scheduler service exposed to plugins that provide scheduler tools."""
@@ -257,6 +290,10 @@ class BotAPI(Protocol):
 
     async def start_new_session(self, address: ChatAddress) -> str | None:
         """Switch the active chat to a new session and return its id."""
+        ...
+
+    def get_active_session_id(self, address: ChatAddress) -> str:
+        """Return the current active session id for a chat address."""
         ...
 
     async def get_session_info(self, session_id: str) -> dict[str, Any]:

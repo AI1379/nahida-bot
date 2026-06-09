@@ -134,6 +134,8 @@ class AgentResponseRequestPayload:
     reason: str
     instruction: str = ""
     synthetic: bool = False
+    observed_messages: tuple[Any, ...] = ()
+    reply_to_message_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
