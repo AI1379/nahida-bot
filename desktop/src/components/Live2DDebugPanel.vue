@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 
+import type { DisplayMotion } from "@/domain/displayPlan";
 import type { Live2DDebugSnapshot } from "@/renderers/live2dRenderer";
 
 const props = defineProps<{
@@ -17,7 +18,12 @@ const emit = defineEmits<{
   resetParameterValue: [index: number];
   setExpression: [name: string];
   resetExpression: [];
-  playMotion: [payload: { group: string; index: number }];
+  playMotion: [payload: {
+    source: "model" | "procedural";
+    group: string;
+    index: number;
+    motion?: DisplayMotion;
+  }];
 }>();
 
 const activeTab = ref<"playback" | "parts" | "parameters" | "drawables">(
@@ -69,7 +75,7 @@ const filteredMotions = computed(() => {
   const motions = props.snapshot?.motions ?? [];
   if (!normalizedQuery.value) return motions;
   return motions.filter((motion) =>
-    `${motion.group} ${motion.index} ${motion.file}`
+    `${motion.source} ${motion.group} ${motion.index} ${motion.name} ${motion.file}`
       .toLowerCase()
       .includes(normalizedQuery.value),
   );
@@ -174,16 +180,24 @@ function readNumericInput(event: Event): number {
           <div class="debug-button-grid">
             <button
               v-for="motion in filteredMotions"
-              :key="`${motion.group}:${motion.index}`"
+              :key="`${motion.source}:${motion.group}:${motion.index}`"
               type="button"
               @click="
                 emit('playMotion', {
+                  source: motion.source,
                   group: motion.group,
                   index: motion.index,
+                  motion: motion.motion,
                 })
               "
             >
-              <strong>{{ motion.group }} #{{ motion.index }}</strong>
+              <strong>
+                {{
+                  motion.source === "procedural"
+                    ? `Base ${motion.name}`
+                    : motion.name
+                }}
+              </strong>
               <span v-if="motion.file">{{ motion.file }}</span>
             </button>
           </div>

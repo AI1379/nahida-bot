@@ -3,7 +3,9 @@ import { computed, onBeforeUnmount, onMounted, watch } from "vue";
 
 import ControlPanel from "@/components/ControlPanel.vue";
 import DisplayPlanPanel from "@/components/DisplayPlanPanel.vue";
+import ExpressionMappingPanel from "@/components/ExpressionMappingPanel.vue";
 import Live2DStage from "@/components/Live2DStage.vue";
+import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import { useDesktopStore } from "@/stores/desktop";
 
@@ -93,9 +95,15 @@ onBeforeUnmount(() => {
     <section class="workspace">
       <Live2DStage
         :emotion="store.currentEmotion"
+        :expression-key="store.currentExpressionKey"
         :motion="store.currentMotion"
         :model="store.model"
         :speaking="store.speaking"
+        :caption-text="activeSegment?.text ?? ''"
+        :expression-map-version="store.expressionMapVersion"
+        :motion-map-version="store.motionMapVersion"
+        @expressions-loaded="store.setModelExpressions"
+        @motions-loaded="store.setModelMotions"
       />
 
       <aside class="side-rail">
@@ -105,10 +113,25 @@ onBeforeUnmount(() => {
           @connect="store.startMockBackend"
           @disconnect="store.stopMockBackend"
           @submit="store.submitUserMessage"
+          @submit-mock-llm-result="store.submitMockLlmResult"
         />
         <DisplayPlanPanel
           :plan="store.activePlan"
           :active-index="store.currentSegmentIndex"
+        />
+        <ExpressionMappingPanel
+          :model="store.model"
+          :expressions="store.expressionOptions"
+          @add-mapping="store.addExpressionKeywordMapping"
+          @remove-mapping="store.removeExpressionKeywordMapping"
+          @update-mapping="store.setExpressionKeywordMapping"
+          @preview="store.previewExpressionKeyword"
+        />
+        <MotionMappingPanel
+          :model="store.model"
+          :motions="store.motionOptions"
+          @update-mapping="store.setMotionMapping"
+          @preview="store.previewMotion"
         />
         <TranscriptPanel :entries="store.transcript" />
       </aside>

@@ -1,4 +1,8 @@
-import { normalizeDisplayPlan, planFromText } from "@/domain/displayPlan";
+import {
+  normalizeDisplayPlan,
+  planFromLlmOutput,
+  planFromText,
+} from "@/domain/displayPlan";
 import type { DisplayPlan } from "@/domain/displayPlan";
 
 export type MockGatewayEvent =
@@ -27,18 +31,19 @@ export type MockGatewayEventHandler = (event: MockGatewayEvent) => void;
 
 const demoPlan = normalizeDisplayPlan({
   version: "1.0",
-  text: "我已经连接到 mock backend。现在可以先验证桌宠动作、TTS 分段和表现计划解析。",
+  text: "我已经连接到 mock backend。现在可以先验证桌宠表情、文本分段和表现计划解析。",
   segments: [
     {
       text: "我已经连接到 mock backend。",
       emotion: "happy",
-      motion: "wave",
+      motion: "nod",
       pauseAfterMs: 250,
       voice: { style: "bright", speed: 1 },
     },
     {
-      text: "现在可以先验证桌宠动作、TTS 分段和表现计划解析。",
+      text: "现在可以先验证桌宠表情、文本分段和表现计划解析。",
       emotion: "thinking",
+      expression: "star",
       motion: "point",
       voice: { style: "calm", speed: 0.95 },
     },
@@ -89,6 +94,26 @@ export class MockBackend {
         ),
       });
     }, 900);
+    this.timers.push(timer);
+  }
+
+  submitMockLlmResult(rawOutput: string): void {
+    if (!this.connected) return;
+    const sessionId = "desktop:private:mock-user";
+    this.emit({
+      type: "agent.message.started",
+      at: new Date().toISOString(),
+      sessionId,
+    });
+
+    const timer = setTimeout(() => {
+      this.emit({
+        type: "agent.message.completed",
+        at: new Date().toISOString(),
+        sessionId,
+        displayPlan: planFromLlmOutput(rawOutput),
+      });
+    }, 180);
     this.timers.push(timer);
   }
 

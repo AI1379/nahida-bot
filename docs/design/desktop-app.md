@@ -558,6 +558,7 @@ DisplayPlan 示例：
     {
       "text": "先处理配置问题，然后再看桌宠协议。",
       "emotion": "thinking",
+      "expression": "star",
       "motion": "point",
       "pause_after_ms": 0,
       "voice": {
@@ -572,12 +573,28 @@ DisplayPlan 示例：
 
 关键约束：
 
-- LLM 只输出语义层标签，例如 `emotion="happy"`、`motion="nod"`、`voice.style="calm"`。
+- LLM 只输出语义层标签，例如 `emotion="happy"`、`expression="star"`、`motion="nod"`、`voice.style="calm"`。
 - LLM 不允许输出文件路径、shell 命令、原始 capability 名称或任意执行参数。
 - parser 使用严格 schema 校验，未知字段和非法枚举丢弃或降级。
 - `OutboundMessage.text` 始终是干净文本，不包含控制标签。
 - 非 Desktop Channel 忽略 `display_plan`，继续只发送纯文本。
 - Desktop Channel 可以使用 `display_plan`，但必须在本地做 capability allowlist 校验。
+
+当前前端 mock 落地约定：
+
+- mock 阶段不连接 Gateway，由前端面板直接输入 mock LLM 返回结果。
+- 输入可以是纯文本、完整 `DisplayPlan` JSON、`metadata.display_plan` 包装结构，或 provider envelope 中的 `choices[0].message.content`。
+- 外部 wire format 优先使用 snake_case，例如 `pause_after_ms`；前端内部状态统一为 camelCase，例如 `pauseAfterMs`。
+- `emotion` 保持少量内置基础状态；`expression` 是可由用户在 Expression Map 面板维护的 DisplayPlan 关键词，用来映射当前模型的具体 expression。
+- `motion` 优先播放模型 manifest 中声明的 `.motion3.json`；缺失或播放失败时，前端用常见 Live2D 参数执行 nod/point/wave/notify/speaking 的基础 fallback。
+- 当前模型的 `DisplayPlan keyword -> expression` 映射由前端 Expression Map 面板维护，mock 阶段保存到本地浏览器存储；后续 Tauri 版本迁移到 app data 配置。
+- 解析失败或非法枚举时降级为纯文本 + `neutral` 表情，不阻塞字幕和 transcript。
+
+真实 Gateway 接入时不建议强制主 Agent 把用户可见回复直接写成 JSON。更稳妥的边界是：
+
+- 主 Agent 的 assistant message 保持自然语言，进入 transcript、memory 和普通 Channel 的都是干净文本。
+- DisplayPlan 由回复后处理器、规则推导器或独立轻量 planner 生成，并作为 `OutboundMessage.metadata.display_plan` 附着。
+- 如果为了节省一次模型调用而让主 Agent 同时产出结构化结果，也应在 router 边界立即拆成 `text` 与 `metadata.display_plan`，不要把 JSON envelope 当作对话正文长期存入记忆。
 
 DisplayPlan 的生成方式可分阶段演进：
 

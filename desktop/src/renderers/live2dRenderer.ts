@@ -2,7 +2,11 @@ import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display/cubism4";
 
 import type { DisplayEmotion, DisplayMotion } from "@/domain/displayPlan";
-import type { Live2DModelManifest } from "@/domain/live2d";
+import type {
+  Live2DExpressionOption,
+  Live2DModelManifest,
+  Live2DMotionOption,
+} from "@/domain/live2d";
 
 declare global {
   interface Window {
@@ -15,7 +19,10 @@ export type RenderMode = "suspended" | "idle" | "speaking" | "active";
 
 export interface Live2DRenderer {
   loadModel(manifest: Live2DModelManifest): Promise<void>;
-  setExpression(emotion: DisplayEmotion): Promise<void>;
+  setExpression(
+    expressionKey: string,
+    fallbackEmotion?: DisplayEmotion,
+  ): Promise<void>;
   playMotion(motion: DisplayMotion): Promise<void>;
   setLipSync(value: number): void;
   setFpsMode(mode: RenderMode): void;
@@ -58,17 +65,9 @@ export interface Live2DDrawableDebugInfo {
   } | null;
 }
 
-export interface Live2DExpressionDebugInfo {
-  index: number;
-  name: string;
-  file: string;
-}
+export interface Live2DExpressionDebugInfo extends Live2DExpressionOption {}
 
-export interface Live2DMotionDebugInfo {
-  group: string;
-  index: number;
-  file: string;
-}
+export interface Live2DMotionDebugInfo extends Live2DMotionOption {}
 
 export interface Live2DDebugSnapshot {
   modelName: string;
@@ -123,6 +122,46 @@ interface DebugOverride {
   original: number;
 }
 
+type CommonParameterRole =
+  | "headX"
+  | "headY"
+  | "headZ"
+  | "bodyX"
+  | "bodyY"
+  | "bodyZ"
+  | "eyeX"
+  | "eyeY"
+  | "browY"
+  | "mouthOpen"
+  | "mouthForm";
+
+interface ProceduralMotionTarget {
+  role: CommonParameterRole;
+  value: number;
+}
+
+interface ProceduralMotionKeyframe {
+  atMs: number;
+  targets: ProceduralMotionTarget[];
+}
+
+interface ProceduralMotionProfile {
+  durationMs: number;
+  keyframes: ProceduralMotionKeyframe[];
+}
+
+interface RuntimeParameterKeyframe {
+  atMs: number;
+  value: number;
+}
+
+interface RuntimeParameterOverride {
+  original: number;
+  keyframes: RuntimeParameterKeyframe[];
+  startedAt: number;
+  durationMs: number;
+}
+
 const fpsByMode: Record<RenderMode, number> = {
   suspended: 0,
   idle: 15,
@@ -130,14 +169,164 @@ const fpsByMode: Record<RenderMode, number> = {
   active: 60,
 };
 
+const commonParameterIds: Record<CommonParameterRole, string[]> = {
+  headX: ["ParamAngleX", "PARAM_ANGLE_X"],
+  headY: ["ParamAngleY", "PARAM_ANGLE_Y"],
+  headZ: ["ParamAngleZ", "PARAM_ANGLE_Z"],
+  bodyX: ["ParamBodyAngleX", "PARAM_BODY_ANGLE_X"],
+  bodyY: ["ParamBodyAngleY", "PARAM_BODY_ANGLE_Y"],
+  bodyZ: ["ParamBodyAngleZ", "PARAM_BODY_ANGLE_Z"],
+  eyeX: ["ParamEyeBallX", "PARAM_EYE_BALL_X"],
+  eyeY: ["ParamEyeBallY", "PARAM_EYE_BALL_Y"],
+  browY: ["ParamBrowLY", "ParamBrowRY", "PARAM_BROW_L_Y", "PARAM_BROW_R_Y"],
+  mouthOpen: ["ParamMouthOpenY", "PARAM_MOUTH_OPEN_Y"],
+  mouthForm: ["ParamMouthForm", "PARAM_MOUTH_FORM"],
+};
+
+const proceduralMotionProfiles: Partial<
+  Record<DisplayMotion, ProceduralMotionProfile>
+> = {
+  nod: {
+    durationMs: 1180,
+    keyframes: [
+      {
+        atMs: 240,
+        targets: [
+          { role: "headY", value: 12 },
+          { role: "bodyY", value: 1.2 },
+        ],
+      },
+      {
+        atMs: 520,
+        targets: [
+          { role: "headY", value: -5 },
+          { role: "bodyY", value: -0.5 },
+        ],
+      },
+      {
+        atMs: 780,
+        targets: [
+          { role: "headY", value: 5.5 },
+          { role: "bodyY", value: 0.55 },
+        ],
+      },
+    ],
+  },
+  point: {
+    durationMs: 1320,
+    keyframes: [
+      {
+        atMs: 260,
+        targets: [
+          { role: "headX", value: -8 },
+          { role: "bodyX", value: -1.2 },
+          { role: "eyeX", value: -0.18 },
+        ],
+      },
+      {
+        atMs: 700,
+        targets: [
+          { role: "headX", value: -10 },
+          { role: "bodyX", value: -1.8 },
+          { role: "eyeX", value: -0.28 },
+          { role: "browY", value: 0.25 },
+        ],
+      },
+    ],
+  },
+  wave: {
+    durationMs: 1440,
+    keyframes: [
+      {
+        atMs: 240,
+        targets: [
+          { role: "headZ", value: 7 },
+          { role: "bodyZ", value: 1.2 },
+          { role: "eyeX", value: 0.12 },
+        ],
+      },
+      {
+        atMs: 560,
+        targets: [
+          { role: "headZ", value: -6 },
+          { role: "bodyZ", value: -0.9 },
+          { role: "eyeX", value: -0.1 },
+        ],
+      },
+      {
+        atMs: 880,
+        targets: [
+          { role: "headZ", value: 6 },
+          { role: "bodyZ", value: 0.9 },
+          { role: "eyeX", value: 0.1 },
+        ],
+      },
+    ],
+  },
+  notify: {
+    durationMs: 1120,
+    keyframes: [
+      {
+        atMs: 220,
+        targets: [
+          { role: "headY", value: -8 },
+          { role: "eyeY", value: 0.14 },
+          { role: "browY", value: 0.35 },
+          { role: "mouthOpen", value: 0.22 },
+        ],
+      },
+      {
+        atMs: 580,
+        targets: [
+          { role: "headY", value: -4 },
+          { role: "eyeY", value: 0.08 },
+          { role: "browY", value: 0.2 },
+          { role: "mouthOpen", value: 0.12 },
+        ],
+      },
+    ],
+  },
+  speaking: {
+    durationMs: 1040,
+    keyframes: [
+      {
+        atMs: 240,
+        targets: [
+          { role: "headY", value: -2.6 },
+          { role: "bodyY", value: -0.25 },
+          { role: "mouthForm", value: 0.15 },
+        ],
+      },
+      {
+        atMs: 560,
+        targets: [
+          { role: "headY", value: 1.8 },
+          { role: "bodyY", value: 0.18 },
+          { role: "mouthForm", value: 0.05 },
+        ],
+      },
+    ],
+  },
+};
+
+const proceduralMotionDebugEntries = Object.keys(
+  proceduralMotionProfiles,
+) as DisplayMotion[];
+
 export class WebLive2DRenderer implements Live2DRenderer {
   private app: PIXI.Application | null = null;
   private model: Live2DModelInstance | null = null;
   private manifest: Live2DModelManifest | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private renderMode: RenderMode = "idle";
+  private motionBoostUntil = 0;
   private readonly host: HTMLElement;
   private readonly parameterOverrides = new Map<number, DebugOverride>();
   private readonly partOpacityOverrides = new Map<number, DebugOverride>();
+  private readonly runtimeParameterOverrides = new Map<
+    number,
+    RuntimeParameterOverride
+  >();
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -173,6 +362,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
     model.interactive = false;
     app.stage.addChild(model);
     this.model = model;
+    app.ticker.add(this.applyRuntimeParameterMotion);
     app.ticker.add(this.applyDebugOverrides);
 
     this.resizeObserver = new ResizeObserver(() => this.fitModel());
@@ -181,35 +371,71 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.setFpsMode("idle");
   }
 
-  async setExpression(emotion: DisplayEmotion): Promise<void> {
+  async setExpression(
+    expressionKey: string,
+    fallbackEmotion?: DisplayEmotion,
+  ): Promise<void> {
     if (!this.model || !this.manifest) return;
-    const expression = this.manifest.emotionMap[emotion]?.[0];
-    if (!expression) return;
-    try {
-      await this.model.expression(expression);
-    } catch {
-      // Some user models have expression files that are not declared or compatible.
+    const expressionNames = [
+      ...(this.manifest.emotionMap[expressionKey] ?? []),
+      ...(fallbackEmotion && fallbackEmotion !== expressionKey
+        ? (this.manifest.emotionMap[fallbackEmotion] ?? [])
+        : []),
+    ];
+    for (const expression of expressionNames) {
+      if (!expression) continue;
+      try {
+        await this.model.expression(expression);
+        return;
+      } catch {
+        // Some user models have expression files that are not declared or compatible.
+      }
     }
   }
 
   async playMotion(motion: DisplayMotion): Promise<void> {
     if (!this.model || !this.manifest) return;
     const target = this.manifest.motionMap[motion];
-    if (!target) return;
-    try {
-      await this.model.motion(target.group, target.index);
-    } catch {
-      // The current Nahida test model does not declare motions in model3.json.
+    if (motion === "idle") {
+      this.runtimeParameterOverrides.clear();
+      this.applyLipSyncValue(0);
+      return;
     }
+    if (target?.source === "none") return;
+    if (target?.source === "procedural") {
+      this.playProceduralMotion(target.motion);
+      return;
+    }
+    if (target?.source === "model") {
+      try {
+        await this.model.motion(target.group, target.index);
+        return;
+      } catch {
+        // User models often expose semantic motions in UI but omit .motion3.json.
+      }
+    }
+    this.playProceduralMotion(motion);
   }
 
-  setLipSync(_value: number): void {
-    // TODO: wire to Cubism core parameters after TTS audio envelope is available.
+  setLipSync(value: number): void {
+    this.applyLipSyncValue(this.clamp(value, 0, 1));
   }
 
   setFpsMode(mode: RenderMode): void {
     if (!this.app) return;
-    const fps = fpsByMode[mode];
+    this.renderMode = mode;
+    if (mode !== "speaking") {
+      this.applyLipSyncValue(0);
+    }
+    this.applyTickerFps();
+  }
+
+  private applyTickerFps(): void {
+    if (!this.app) return;
+    const fps =
+      this.motionBoostUntil > performance.now()
+        ? fpsByMode.active
+        : fpsByMode[this.renderMode];
     if (fps <= 0) {
       this.app.ticker.stop();
       return;
@@ -296,8 +522,20 @@ export class WebLive2DRenderer implements Live2DRenderer {
     internalModel?.motionManager?.expressionManager?.resetExpression?.();
   }
 
-  async playDebugMotion(group: string, index: number): Promise<void> {
+  async playDebugMotion(
+    group: string,
+    index: number,
+    source: Live2DMotionOption["source"] = "model",
+    motion?: DisplayMotion,
+  ): Promise<void> {
     if (!this.model || !group) return;
+    if (source === "procedural") {
+      const targetMotion = motion ?? proceduralMotionDebugEntries[index];
+      if (targetMotion) {
+        this.playProceduralMotion(targetMotion);
+      }
+      return;
+    }
     await this.model.motion(group, index, 3);
   }
 
@@ -379,8 +617,10 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.resetDebugOverrides();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    this.motionBoostUntil = 0;
     this.parameterOverrides.clear();
     this.partOpacityOverrides.clear();
+    this.runtimeParameterOverrides.clear();
 
     if (this.model) {
       this.model.destroy({ children: true, texture: true, baseTexture: true });
@@ -404,6 +644,35 @@ export class WebLive2DRenderer implements Live2DRenderer {
     }
     for (const [index, override] of this.partOpacityOverrides) {
       coreModel.setPartOpacityByIndex?.(index, override.value);
+    }
+  };
+
+  private readonly applyRuntimeParameterMotion = (): void => {
+    const coreModel = this.getCoreModel();
+    if (!coreModel) return;
+
+    const now = performance.now();
+    for (const [index, override] of this.runtimeParameterOverrides) {
+      const elapsed = now - override.startedAt;
+      if (elapsed >= override.durationMs) {
+        this.runtimeParameterOverrides.delete(index);
+        continue;
+      }
+      coreModel.setParameterValueByIndex?.(
+        index,
+        this.valueAtRuntimeKeyframe(override, elapsed),
+        1,
+      );
+    }
+
+    if (this.motionBoostUntil > 0 && now >= this.motionBoostUntil) {
+      this.motionBoostUntil = 0;
+      this.applyTickerFps();
+    }
+
+    if (this.renderMode === "speaking") {
+      const pulse = (Math.sin(now / 150) + 1) / 2;
+      this.applyLipSyncValue(0.12 + pulse * 0.32);
     }
   };
 
@@ -438,6 +707,137 @@ export class WebLive2DRenderer implements Live2DRenderer {
     return internalModel?.settings ?? null;
   }
 
+  private playProceduralMotion(motion: DisplayMotion): boolean {
+    const coreModel = this.getCoreModel();
+    const profile = proceduralMotionProfiles[motion];
+    if (!coreModel || !profile) return false;
+
+    const now = performance.now();
+    this.motionBoostUntil = Math.max(
+      this.motionBoostUntil,
+      now + profile.durationMs + 180,
+    );
+    this.applyTickerFps();
+
+    let applied = false;
+    const targetsByRole = this.groupProceduralTargets(profile);
+    for (const [role, targets] of targetsByRole) {
+      for (const index of this.parameterIndicesForRole(role)) {
+        const current =
+          coreModel.getParameterValueByIndex?.(index) ??
+          coreModel.getParameterDefaultValue?.(index) ??
+          0;
+        const minimum = coreModel.getParameterMinimumValue?.(index) ?? current;
+        const maximum = coreModel.getParameterMaximumValue?.(index) ?? current;
+        const keyframes = [
+          { atMs: 0, value: current },
+          ...targets.map((target) => ({
+            atMs: target.atMs,
+            value: this.clamp(target.value, minimum, maximum),
+          })),
+          { atMs: profile.durationMs, value: current },
+        ].sort((left, right) => left.atMs - right.atMs);
+
+        this.runtimeParameterOverrides.set(index, {
+          original: current,
+          keyframes,
+          startedAt: now,
+          durationMs: profile.durationMs,
+        });
+        applied = true;
+      }
+    }
+
+    return applied;
+  }
+
+  private getProceduralMotionDebugInfo(): Live2DMotionDebugInfo[] {
+    return proceduralMotionDebugEntries.map((motion, index) => ({
+      source: "procedural",
+      group: "Base",
+      index,
+      name: motion,
+      file: "common Live2D parameters",
+      motion,
+    }));
+  }
+
+  private groupProceduralTargets(
+    profile: ProceduralMotionProfile,
+  ): Map<CommonParameterRole, RuntimeParameterKeyframe[]> {
+    const grouped = new Map<CommonParameterRole, RuntimeParameterKeyframe[]>();
+    for (const keyframe of profile.keyframes) {
+      for (const target of keyframe.targets) {
+        const values = grouped.get(target.role) ?? [];
+        values.push({
+          atMs: keyframe.atMs,
+          value: target.value,
+        });
+        grouped.set(target.role, values);
+      }
+    }
+    return grouped;
+  }
+
+  private valueAtRuntimeKeyframe(
+    override: RuntimeParameterOverride,
+    elapsedMs: number,
+  ): number {
+    const keyframes = override.keyframes;
+    if (keyframes.length === 0) return override.original;
+
+    let previous = keyframes[0];
+    let next = keyframes[keyframes.length - 1];
+    for (let index = 1; index < keyframes.length; index += 1) {
+      next = keyframes[index];
+      if (elapsedMs <= next.atMs) break;
+      previous = next;
+    }
+
+    const duration = Math.max(next.atMs - previous.atMs, 1);
+    const progress = this.smoothstep((elapsedMs - previous.atMs) / duration);
+    return this.lerp(previous.value, next.value, progress);
+  }
+
+  private applyLipSyncValue(value: number): void {
+    const coreModel = this.getCoreModel();
+    if (!coreModel || !this.manifest?.lipSync.enabled) return;
+
+    const parameterIds = this.manifest.lipSync.parameterIds.length
+      ? this.manifest.lipSync.parameterIds
+      : commonParameterIds.mouthOpen;
+
+    for (const id of parameterIds) {
+      const index = this.parameterIndexById(id);
+      if (index === null || this.parameterOverrides.has(index)) continue;
+      const minimum = coreModel.getParameterMinimumValue?.(index) ?? 0;
+      const maximum = coreModel.getParameterMaximumValue?.(index) ?? 1;
+      const nextValue = /form/i.test(id) ? value * 0.25 : value;
+      coreModel.setParameterValueByIndex?.(
+        index,
+        this.clamp(nextValue, minimum, maximum),
+        1,
+      );
+    }
+  }
+
+  private parameterIndicesForRole(role: CommonParameterRole): number[] {
+    return commonParameterIds[role].flatMap((id) => {
+      const index = this.parameterIndexById(id);
+      return index === null ? [] : [index];
+    });
+  }
+
+  private parameterIndexById(id: string): number | null {
+    const coreModel = this.getCoreModel();
+    if (!coreModel) return null;
+    const ids = this.readIdList(coreModel._parameterIds);
+    const index = ids.findIndex(
+      (candidate) => candidate.toLowerCase() === id.toLowerCase(),
+    );
+    return index >= 0 ? index : null;
+  }
+
   private getExpressionDebugInfo(
     settings: ModelSettingsDebugApi | null,
   ): Live2DExpressionDebugInfo[] {
@@ -465,13 +865,17 @@ export class WebLive2DRenderer implements Live2DRenderer {
     const groups =
       settings?.motions ?? settings?.json?.FileReferences?.Motions ?? {};
 
-    return Object.entries(groups).flatMap(([group, definitions]) =>
+    const modelMotions = Object.entries(groups).flatMap(([group, definitions]) =>
       (definitions ?? []).map((definition, index) => ({
+        source: "model" as const,
         group,
         index,
+        name: `${group} #${index}`,
         file: this.stringField(definition, ["File", "file"]) ?? "",
       })),
     );
+
+    return [...modelMotions, ...this.getProceduralMotionDebugInfo()];
   }
 
   private getDrawableBounds(
@@ -570,5 +974,14 @@ export class WebLive2DRenderer implements Live2DRenderer {
   private clamp(value: number, minimum: number, maximum: number): number {
     if (!Number.isFinite(value)) return minimum;
     return Math.min(Math.max(value, minimum), maximum);
+  }
+
+  private lerp(start: number, end: number, progress: number): number {
+    return start + (end - start) * this.clamp(progress, 0, 1);
+  }
+
+  private smoothstep(progress: number): number {
+    const clamped = this.clamp(progress, 0, 1);
+    return clamped * clamped * (3 - 2 * clamped);
   }
 }

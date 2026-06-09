@@ -1,16 +1,50 @@
-import type { DisplayEmotion, DisplayMotion } from "./displayPlan";
+import type { DisplayMotion } from "./displayPlan";
 
-export interface Live2DMotionTarget {
+export type Live2DMotionSource = "model" | "procedural" | "none";
+
+export interface Live2DModelMotionTarget {
+  source: "model";
   group: string;
   index: number;
 }
+
+export interface Live2DProceduralMotionTarget {
+  source: "procedural";
+  motion: DisplayMotion;
+}
+
+export interface Live2DNoneMotionTarget {
+  source: "none";
+}
+
+export type Live2DMotionTarget =
+  | Live2DModelMotionTarget
+  | Live2DProceduralMotionTarget
+  | Live2DNoneMotionTarget;
+
+export interface Live2DMotionOption {
+  source: Exclude<Live2DMotionSource, "none">;
+  group: string;
+  index: number;
+  name: string;
+  file: string;
+  motion?: DisplayMotion;
+}
+
+export interface Live2DExpressionOption {
+  index: number;
+  name: string;
+  file: string;
+}
+
+export type Live2DExpressionMap = Record<string, string[]>;
 
 export interface Live2DModelManifest {
   id: string;
   name: string;
   entry: string;
   source: "bundled" | "user_import";
-  emotionMap: Partial<Record<DisplayEmotion, string[]>>;
+  emotionMap: Live2DExpressionMap;
   motionMap: Partial<Record<DisplayMotion, Live2DMotionTarget>>;
   lipSync: {
     enabled: boolean;
@@ -38,12 +72,12 @@ const nahidaModelManifest: Live2DModelManifest = {
     offline: ["hei.exp3.json"],
   },
   motionMap: {
-    idle: { group: "Idle", index: 0 },
-    nod: { group: "Gesture", index: 0 },
-    point: { group: "Gesture", index: 0 },
-    wave: { group: "Gesture", index: 0 },
-    notify: { group: "Gesture", index: 0 },
-    speaking: { group: "Gesture", index: 0 },
+    idle: { source: "model", group: "Idle", index: 0 },
+    nod: { source: "model", group: "Gesture", index: 0 },
+    point: { source: "model", group: "Gesture", index: 0 },
+    wave: { source: "model", group: "Gesture", index: 0 },
+    notify: { source: "model", group: "Gesture", index: 0 },
+    speaking: { source: "model", group: "Gesture", index: 0 },
   },
   lipSync: {
     enabled: true,
@@ -63,14 +97,19 @@ const nahida1080ModelManifest: Live2DModelManifest = {
     worried: ["Sad1", "Sad2"],
     error: ["Angry"],
     offline: ["black"],
+    hand: ["HandChange"],
+    kusa: ["kusa"],
+    shy: ["Shy"],
+    star: ["StarEye"],
+    wink: ["Wink"],
   },
   motionMap: {
-    idle: { group: "Idle", index: 0 },
-    nod: { group: "Gesture", index: 0 },
-    point: { group: "Gesture", index: 1 },
-    wave: { group: "Gesture", index: 2 },
-    notify: { group: "Notification", index: 0 },
-    speaking: { group: "Talk", index: 0 },
+    idle: { source: "procedural", motion: "idle" },
+    nod: { source: "procedural", motion: "nod" },
+    point: { source: "procedural", motion: "point" },
+    wave: { source: "procedural", motion: "wave" },
+    notify: { source: "procedural", motion: "notify" },
+    speaking: { source: "procedural", motion: "speaking" },
   },
   lipSync: {
     enabled: true,

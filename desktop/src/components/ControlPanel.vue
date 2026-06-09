@@ -3,6 +3,7 @@ import { ref } from "vue";
 
 const emit = defineEmits<{
   submit: [text: string];
+  submitMockLlmResult: [rawOutput: string];
   connect: [];
   disconnect: [];
 }>();
@@ -13,10 +14,31 @@ defineProps<{
 }>();
 
 const text = ref("演示一条带 TTS 和 Live2D 表现计划的回复。");
+const mockLlmResult = ref(`{
+  "text": "今天的计划已经整理好了。先处理配置问题，然后再看桌宠协议。",
+  "segments": [
+    {
+      "text": "今天的计划已经整理好了。",
+      "emotion": "happy",
+      "motion": "nod",
+      "pause_after_ms": 250
+    },
+    {
+      "text": "先处理配置问题，然后再看桌宠协议。",
+      "emotion": "thinking",
+      "expression": "star",
+      "motion": "point"
+    }
+  ]
+}`);
 
 function submit() {
   emit("submit", text.value);
   text.value = "";
+}
+
+function submitMockLlmResult() {
+  emit("submitMockLlmResult", mockLlmResult.value);
 }
 </script>
 
@@ -51,6 +73,20 @@ function submit() {
       ></textarea>
       <button type="submit" :disabled="!connected || !text.trim()">
         Send Mock Message
+      </button>
+    </form>
+
+    <form class="controls__form" @submit.prevent="submitMockLlmResult">
+      <label for="mock-llm-result">Mock LLM Result</label>
+      <textarea
+        id="mock-llm-result"
+        v-model="mockLlmResult"
+        :disabled="!connected"
+        rows="9"
+        spellcheck="false"
+      ></textarea>
+      <button type="submit" :disabled="!connected || !mockLlmResult.trim()">
+        Apply Mock LLM Result
       </button>
     </form>
   </section>

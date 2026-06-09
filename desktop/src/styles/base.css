@@ -180,9 +180,14 @@ input[type="range"] {
 }
 
 .stage__status,
-.stage__caption {
+.stage__caption,
+.stage__subtitle {
   position: absolute;
   z-index: 3;
+}
+
+.stage__status,
+.stage__caption {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -207,6 +212,22 @@ input[type="range"] {
 .stage__caption {
   right: 16px;
   bottom: 16px;
+}
+
+.stage__subtitle {
+  left: 50%;
+  bottom: 62px;
+  width: min(620px, calc(100% - 32px));
+  margin: 0;
+  border: 1px solid rgb(255 255 255 / 78%);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgb(255 255 255 / 82%);
+  color: #203129;
+  line-height: 1.5;
+  text-align: center;
+  transform: translateX(-50%);
+  box-shadow: 0 10px 26px rgb(22 32 26 / 10%);
 }
 
 .stage__debug-toggle {
@@ -573,7 +594,7 @@ input[type="range"] {
 .side-rail {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(160px, 1fr);
+  grid-template-rows: auto auto auto auto minmax(160px, 1fr);
   gap: 12px;
 }
 
@@ -632,6 +653,91 @@ input[type="range"] {
 
 .controls__buttons {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.expression-map__list,
+.motion-map__list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 14px 14px;
+  list-style: none;
+}
+
+.expression-map__summary,
+.expression-map__empty {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.expression-map__empty {
+  padding-bottom: 14px;
+}
+
+.expression-map__list li,
+.motion-map__list li {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px;
+  background: #fbfcfa;
+}
+
+.expression-map__label,
+.expression-map__controls,
+.motion-map__label,
+.motion-map__controls {
+  display: grid;
+  gap: 8px;
+}
+
+.expression-map__label {
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+}
+
+.expression-map__label label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.expression-map__controls {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.expression-map__controls button {
+  min-width: 68px;
+}
+
+.motion-map__label {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.motion-map__label strong {
+  color: #1f3529;
+}
+
+.motion-map__label span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motion-map__controls {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.motion-map__controls button {
+  min-width: 68px;
 }
 
 .plan__empty,
@@ -758,6 +864,6 @@ input[type="range"] {
   }
 
   .side-rail {
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto auto auto auto auto;
   }
 }

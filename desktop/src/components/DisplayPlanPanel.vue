@@ -24,7 +24,7 @@ defineProps<{
         :class="{ 'is-active': index === activeIndex }"
       >
         <div>
-          <strong>{{ segment.emotion ?? "neutral" }}</strong>
+          <strong>{{ segment.expression ?? segment.emotion ?? "neutral" }}</strong>
           <span>{{ segment.motion ?? "speaking" }}</span>
         </div>
         <p>{{ segment.text }}</p>
