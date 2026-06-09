@@ -37,6 +37,8 @@ from nahida_bot.plugins.manifest import (
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerRegistry, ToolRegistry
 from nahida_bot.workspace.manager import WorkspaceManager
+from nahida_bot.gateway.services.webhost import WebHostService
+from nahida_bot_sdk import WebhookResponse
 
 from .helpers import StubChannelService
 
@@ -216,6 +218,7 @@ def _api(
     workspace = WorkspaceManager(tmp_path / "workspace")
     workspace.initialize()
     channel_registry = _ChannelRegistry()
+    webhost_service = WebHostService()
     tool_registry = ToolRegistry()
     command_registry = CommandRegistry()
     api = RealBotAPI(
@@ -229,6 +232,7 @@ def _api(
         handler_registry=HandlerRegistry(),
         command_registry=command_registry,
         channel_registry=channel_registry,
+        webhost_service=webhost_service,
         provider_manager=_ProviderManager(),
         model_router=None,
     )
@@ -412,6 +416,75 @@ def test_register_channel_requires_inbound_permission(tmp_path: Path) -> None:
 
     with pytest.raises(PermissionDenied, match="inbound network permission"):
         api.register_channel(StubChannelService(channel_id="custom"))
+
+
+@pytest.mark.asyncio
+async def test_webhook_endpoint_registration_lifecycle(tmp_path: Path) -> None:
+    api, _, _, _ = _api(tmp_path)
+
+    async def _handler(request):
+        return WebhookResponse(status_code=202, body=request.path)
+
+    api.register_webhook_endpoint("github", _handler)
+    webhost = cast(Any, api)._webhost_service
+
+    not_active = await webhost.dispatch(
+        path="github",
+        method="POST",
+        headers={},
+        query={},
+        body=b"",
+    )
+    assert not_active.status_code == 404
+
+    api.activate_registrations()
+    active = await webhost.dispatch(
+        path="github",
+        method="POST",
+        headers={},
+        query={},
+        body=b"",
+    )
+    assert active.status_code == 202
+    assert active.body == "github"
+
+    api.deactivate_registrations()
+    inactive = await webhost.dispatch(
+        path="github",
+        method="POST",
+        headers={},
+        query={},
+        body=b"",
+    )
+    assert inactive.status_code == 404
+
+    api.activate_registrations()
+    api.clear_registrations()
+    cleared = await webhost.dispatch(
+        path="github",
+        method="POST",
+        headers={},
+        query={},
+        body=b"",
+    )
+    assert cleared.status_code == 404
+
+
+def test_register_webhook_requires_inbound_permission(tmp_path: Path) -> None:
+    manifest = _manifest().model_copy(
+        update={
+            "permissions": Permissions(
+                network=NetworkPermission(outbound=["chat-*"], inbound=False),
+            )
+        }
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+
+    async def _handler(request):
+        return WebhookResponse()
+
+    with pytest.raises(PermissionDenied, match="inbound network permission"):
+        api.register_webhook_endpoint("github", _handler)
 
 
 def test_register_provider_type_requires_pre_agent_phase(tmp_path: Path) -> None:

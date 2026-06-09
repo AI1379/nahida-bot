@@ -61,6 +61,15 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    def register_webhook_endpoint(
+        self,
+        path: str,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        methods: tuple[str, ...] = ("POST",),
+    ) -> Any:
+        return _MockWebhookHandle()
+
     def register_prompt_supplement(
         self,
         key: str,
@@ -183,6 +192,7 @@ class RecordingMockBotAPI(MockBotAPI):
         self.published_events: list[Any] = []
         self.registered_tools: dict[str, dict[str, Any]] = {}
         self.registered_channels: list[Any] = []
+        self.registered_webhooks: dict[str, dict[str, Any]] = {}
         self.registered_prompt_supplements: dict[str, dict[str, Any]] = {}
         self._plugin_data: dict[str, Any] = {}
 
@@ -204,6 +214,21 @@ class RecordingMockBotAPI(MockBotAPI):
 
     def register_channel(self, channel: Any) -> None:
         self.registered_channels.append(channel)
+
+    def register_webhook_endpoint(
+        self,
+        path: str,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        methods: tuple[str, ...] = ("POST",),
+    ) -> Any:
+        if path in self.registered_webhooks:
+            raise KeyError(f"Webhook endpoint '{path}' is already registered")
+        self.registered_webhooks[path] = {
+            "handler": handler,
+            "methods": tuple(methods),
+        }
+        return _MockWebhookHandle(lambda: self.registered_webhooks.pop(path, None))
 
     def register_prompt_supplement(
         self,
@@ -241,6 +266,19 @@ class RecordingMockBotAPI(MockBotAPI):
 
 
 _SENTINEL = object()
+
+
+class _MockWebhookHandle:
+    def __init__(self, unsubscribe: Callable[[], None] | None = None) -> None:
+        self._unsubscribe = unsubscribe
+        self.unsubscribed = False
+
+    def unsubscribe(self) -> None:
+        if self.unsubscribed:
+            return
+        self.unsubscribed = True
+        if self._unsubscribe is not None:
+            self._unsubscribe()
 
 
 class StubChannelService:

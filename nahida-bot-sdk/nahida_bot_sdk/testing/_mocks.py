@@ -83,6 +83,15 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    def register_webhook_endpoint(
+        self,
+        path: str,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        methods: tuple[str, ...] = ("POST",),
+    ) -> Any:
+        return _MockWebhookHandle()
+
     def register_prompt_supplement(
         self,
         key: str,
@@ -242,6 +251,7 @@ class RecordingMockBotAPI(MockBotAPI):
         ] = {}
         self.registered_channels: list[Any] = []
         self.registered_provider_types: dict[str, dict[str, Any]] = {}
+        self.registered_webhooks: dict[str, dict[str, Any]] = {}
         self.registered_prompt_supplements: dict[str, dict[str, Any]] = {}
         self._plugin_data: dict[str, Any] = {}
 
@@ -322,6 +332,25 @@ class RecordingMockBotAPI(MockBotAPI):
             "config_schema": config_schema,
             "description": description,
         }
+
+    def register_webhook_endpoint(
+        self,
+        path: str,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        methods: tuple[str, ...] = ("POST",),
+    ) -> Any:
+        if path in self.registered_webhooks:
+            raise KeyError(f"Webhook endpoint '{path}' is already registered")
+        self.registered_webhooks[path] = {
+            "handler": handler,
+            "methods": tuple(methods),
+        }
+
+        def _unsubscribe() -> None:
+            self.registered_webhooks.pop(path, None)
+
+        return _MockWebhookHandle(_unsubscribe)
 
     def register_prompt_supplement(
         self,
@@ -638,6 +667,15 @@ class ConsoleMockBotAPI:
             "description": description,
         }
 
+    def register_webhook_endpoint(
+        self,
+        path: str,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        methods: tuple[str, ...] = ("POST",),
+    ) -> Any:
+        return _MockWebhookHandle()
+
     def register_prompt_supplement(
         self,
         key: str,
@@ -784,6 +822,19 @@ class _MockSubHandle:
     def unsubscribe(self) -> None:
         if self._handler in self._handlers:
             self._handlers.remove(self._handler)
+
+
+class _MockWebhookHandle:
+    def __init__(self, unsubscribe: Callable[[], None] | None = None) -> None:
+        self._unsubscribe = unsubscribe
+        self.unsubscribed = False
+
+    def unsubscribe(self) -> None:
+        if self.unsubscribed:
+            return
+        self.unsubscribed = True
+        if self._unsubscribe is not None:
+            self._unsubscribe()
 
 
 def _format_command_result(result: Any) -> str:

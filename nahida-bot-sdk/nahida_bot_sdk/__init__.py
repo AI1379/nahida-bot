@@ -35,6 +35,9 @@ from nahida_bot_sdk.api import (  # noqa: F401
     PluginLogger,
     SubagentResult,
     SubscriptionHandle,
+    WebhookHandle,
+    WebhookRequest,
+    WebhookResponse,
 )
 
 # Plugin base
@@ -132,6 +135,9 @@ __all__ = [
     "PluginLogger",
     "SubagentResult",
     "SubscriptionHandle",
+    "WebhookHandle",
+    "WebhookRequest",
+    "WebhookResponse",
     # Plugin base
     "MemoryRef",
     "Plugin",

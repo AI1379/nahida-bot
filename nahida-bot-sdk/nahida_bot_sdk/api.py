@@ -74,6 +74,33 @@ class SubscriptionHandle(Protocol):
     def unsubscribe(self) -> None: ...
 
 
+class WebhookHandle(Protocol):
+    """Handle returned by register_webhook_endpoint()."""
+
+    def unsubscribe(self) -> None: ...
+
+
+@dataclass(slots=True, frozen=True)
+class WebhookRequest:
+    """Raw HTTP request delivered to a plugin-owned webhook endpoint."""
+
+    method: str
+    path: str
+    headers: dict[str, str]
+    query: dict[str, str]
+    body: bytes
+    client_host: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class WebhookResponse:
+    """Raw HTTP response returned by a plugin-owned webhook endpoint."""
+
+    status_code: int = 204
+    body: bytes | str = b""
+    headers: dict[str, str] = field(default_factory=dict)
+
+
 @runtime_checkable
 class ChannelService(Protocol):
     """Runtime contract for a channel service exposed by a plugin.
@@ -198,6 +225,16 @@ class BotAPI(Protocol):
         description: str = "",
     ) -> None:
         """Register a provider type that can be used from YAML config."""
+        ...
+
+    def register_webhook_endpoint(
+        self,
+        path: str,
+        handler: Callable[[WebhookRequest], Awaitable[WebhookResponse | None]],
+        *,
+        methods: tuple[str, ...] = ("POST",),
+    ) -> WebhookHandle:
+        """Register a plugin-owned raw HTTP webhook endpoint."""
         ...
 
     def register_prompt_supplement(

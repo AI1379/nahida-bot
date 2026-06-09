@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.orchestration import AgentOrchestrator
     from nahida_bot.agent.usage import UsageRecorder
     from nahida_bot.gateway.app import WebAPIApp
+    from nahida_bot.gateway.services.webhost import WebHostService
 
 logger = structlog.get_logger(__name__)
 
@@ -99,6 +100,9 @@ class Application:
         self.scheduler_service: SchedulerService | None = None
         self.orchestration_service: AgentOrchestrator | None = None
         self.webapi_service: WebAPIApp | None = None
+        from nahida_bot.gateway.services.webhost import WebHostService
+
+        self.webhost_service: WebHostService = WebHostService()
         self._usage_ledger: UsageRecorder | None = None
         self._media_cache: MediaCache | None = None
         self._media_cleanup_task: asyncio.Task | None = None
@@ -146,6 +150,7 @@ class Application:
             self.plugin_manager = PluginManager(
                 event_bus=self.event_bus,
                 channel_registry=self.channel_registry,
+                webhost_service=self.webhost_service,
             )
             await self._discover_plugins()
             self._inject_plugin_configs()

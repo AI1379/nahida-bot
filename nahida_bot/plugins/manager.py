@@ -86,6 +86,7 @@ class PluginManager:
         model_router: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
+        webhost_service: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
@@ -97,6 +98,7 @@ class PluginManager:
         self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
+        self._webhost_service = webhost_service
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -116,6 +118,7 @@ class PluginManager:
         model_router: Any | None = None,
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
+        webhost_service: Any | None = None,
     ) -> None:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
@@ -127,6 +130,8 @@ class PluginManager:
         self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
+        if webhost_service is not None:
+            self._webhost_service = webhost_service
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
@@ -137,6 +142,7 @@ class PluginManager:
                     provider_manager=provider_manager,
                     scheduler_service=scheduler_service,
                     orchestration_service=orchestration_service,
+                    webhost_service=self._webhost_service,
                 )
 
     @property
@@ -242,6 +248,7 @@ class PluginManager:
             command_registry=self._command_registry,
             supplement_registry=self._supplement_registry,
             status_provider_registry=self._status_provider_registry,
+            webhost_service=self._webhost_service,
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,
             model_router=self._model_router,

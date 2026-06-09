@@ -7,6 +7,9 @@ from nahida_bot_sdk.api import (  # noqa: F401
     ChannelService,
     PluginLogger,
     SubscriptionHandle,
+    WebhookHandle,
+    WebhookRequest,
+    WebhookResponse,
 )
 from nahida_bot_sdk.chat_address import ChatAddress  # noqa: F401
 from nahida_bot_sdk.commands import (  # noqa: F401

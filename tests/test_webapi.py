@@ -55,6 +55,7 @@ def _make_mock_app(
             "channel_registry",
             "scheduler_service",
             "webapi_service",
+            "webhost_service",
             "workspace_manager",
             "plugin_manager",
             "_provider_manager",
@@ -76,6 +77,9 @@ def _make_mock_app(
     mock.channel_registry._channels = {}
     mock.scheduler_service = None
     mock.webapi_service = None
+    from nahida_bot.gateway.services.webhost import WebHostService
+
+    mock.webhost_service = WebHostService()
     mock.workspace_manager = None
     mock.plugin_manager = None
     mock._provider_manager = None
@@ -365,6 +369,50 @@ async def test_no_auth_means_open(client_no_auth: AsyncClient) -> None:
     resp = await client_no_auth.get("/api/sessions")
     # 503 = auth passed (no token needed), but memory_store not initialized
     assert resp.status_code == 503
+
+
+async def test_plugin_webhook_dispatch_does_not_require_api_token(
+    client_with_auth: AsyncClient,
+) -> None:
+    from nahida_bot_sdk import WebhookResponse
+
+    app = client_with_auth._transport.app  # type: ignore[attr-defined]
+    mock_app = app.state.application
+    seen: dict[str, object] = {}
+
+    async def _handler(request):
+        seen["method"] = request.method
+        seen["path"] = request.path
+        seen["body"] = request.body
+        seen["headers"] = dict(request.headers)
+        return WebhookResponse(status_code=202, body="accepted")
+
+    mock_app.webhost_service.register(
+        plugin_id="test",
+        path="github",
+        handler=_handler,
+        methods=("POST",),
+    )
+
+    resp = await client_with_auth.post(
+        "/webhooks/github?x=1",
+        content=b'{"ok": true}',
+        headers={"X-Test-Header": "yes"},
+    )
+
+    assert resp.status_code == 202
+    assert resp.text == "accepted"
+    assert seen["method"] == "POST"
+    assert seen["path"] == "github"
+    assert seen["body"] == b'{"ok": true}'
+    assert seen["headers"]["x-test-header"] == "yes"
+
+
+async def test_plugin_webhook_unknown_path_returns_404(
+    client_no_auth: AsyncClient,
+) -> None:
+    resp = await client_no_auth.post("/webhooks/missing", content=b"{}")
+    assert resp.status_code == 404
 
 
 # -- WebUI ----------------------------------------------------------------

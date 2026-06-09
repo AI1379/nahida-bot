@@ -121,6 +121,32 @@ class WebAPIApp:
         app.include_router(bootstrap_router)
         app.include_router(auth_router)
 
+        @app.api_route(
+            "/webhooks/{path:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        )
+        async def plugin_webhook_dispatch(path: str, request: Request) -> Response:
+            webhost = getattr(self._application, "webhost_service", None)
+            if webhost is None:
+                return Response(
+                    content="Webhook host is not available",
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            client_host = request.client.host if request.client is not None else ""
+            webhook_response = await webhost.dispatch(
+                path=path,
+                method=request.method,
+                headers={k.lower(): v for k, v in request.headers.items()},
+                query=dict(request.query_params),
+                body=await request.body(),
+                client_host=client_host,
+            )
+            return Response(
+                content=webhook_response.body,
+                status_code=webhook_response.status_code,
+                headers=webhook_response.headers,
+            )
+
         # Authenticated routes
         app.include_router(webui_system_router, dependencies=[Depends(require_token)])
         app.include_router(status_router, dependencies=[Depends(require_token)])

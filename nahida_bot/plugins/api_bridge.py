@@ -17,6 +17,9 @@ from nahida_bot.plugins.base import (
     PluginLogger,
     SessionInfo,
     SubscriptionHandle,
+    WebhookHandle,
+    WebhookRequest,
+    WebhookResponse,
 )
 from nahida_bot.core.runtime_settings import (
     RUNTIME_META_KEY,
@@ -54,6 +57,15 @@ class _EventRegistration:
     active: bool = False
 
 
+@dataclass(slots=True)
+class _WebhookRegistration:
+    path: str
+    handler: Callable[[WebhookRequest], Awaitable[WebhookResponse | None]]
+    methods: tuple[str, ...]
+    service_handle: Any | None = None
+    active: bool = False
+
+
 class _StoredSubscriptionHandle:
     """Stable handle for an event registration remembered by RealBotAPI."""
 
@@ -66,6 +78,21 @@ class _StoredSubscriptionHandle:
         if self._unsubscribed:
             return
         self._api._remove_event_registration(self._registration)
+        self._unsubscribed = True
+
+
+class _StoredWebhookHandle:
+    """Stable handle for a webhook endpoint remembered by RealBotAPI."""
+
+    def __init__(self, api: "RealBotAPI", registration: _WebhookRegistration) -> None:
+        self._api = api
+        self._registration = registration
+        self._unsubscribed = False
+
+    def unsubscribe(self) -> None:
+        if self._unsubscribed:
+            return
+        self._api._remove_webhook_registration(self._registration)
         self._unsubscribed = True
 
 
@@ -119,6 +146,7 @@ class RealBotAPI:
         plugin_data_repo: SQLitePluginDataRepository | None = None,
         supplement_registry: Any | None = None,  # PromptSupplementRegistry
         status_provider_registry: Any | None = None,  # StatusProviderRegistry
+        webhost_service: Any | None = None,  # WebHostService
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -156,10 +184,12 @@ class RealBotAPI:
         self._registered_supplements: dict[str, PromptSupplementEntry] = {}
         self._active_supplements: set[str] = set()
         self._status_provider_registry = status_provider_registry
+        self._webhost_service = webhost_service
         self._registered_status_providers: dict[
             str, Any
         ] = {}  # global_key -> StatusProviderEntry
         self._active_status_providers: set[str] = set()
+        self._webhook_registrations: list[_WebhookRegistration] = []
 
     # ── Messaging ──────────────────────────────────────
 
@@ -403,6 +433,30 @@ class RealBotAPI:
         if self._registrations_active:
             self._activate_channel(channel_id)
         self._logger.debug("channel_registered", channel_id=channel_id)
+
+    def register_webhook_endpoint(
+        self,
+        path: str,
+        handler: Callable[[WebhookRequest], Awaitable[WebhookResponse | None]],
+        *,
+        methods: tuple[str, ...] = ("POST",),
+    ) -> WebhookHandle:
+        """Register a plugin-owned raw HTTP webhook endpoint."""
+        self._permissions.check_network_inbound()
+        registration = _WebhookRegistration(
+            path=path,
+            handler=handler,
+            methods=tuple(methods),
+        )
+        self._webhook_registrations.append(registration)
+        if self._registrations_active:
+            self._activate_webhook_registration(registration)
+        self._logger.debug(
+            "webhook_endpoint_registered",
+            path=path,
+            methods=list(methods),
+        )
+        return _StoredWebhookHandle(self, registration)
 
     def register_provider_type(
         self,
@@ -1133,6 +1187,8 @@ class RealBotAPI:
             self._activate_event_registration(registration)
         for channel_id in self._registered_channels:
             self._activate_channel(channel_id)
+        for registration in self._webhook_registrations:
+            self._activate_webhook_registration(registration)
         for type_key in self._registered_provider_types:
             self._activate_provider_type(type_key)
         for global_key in self._registered_supplements:
@@ -1153,6 +1209,7 @@ class RealBotAPI:
             if self._channel_registry is not None:
                 self._channel_registry.unregister(channel_id)
             self._active_channels.discard(channel_id)
+        self._deactivate_webhook_registrations(clear=False)
 
         from nahida_bot.agent.providers.registry import unregister_runtime_provider
 
@@ -1177,6 +1234,7 @@ class RealBotAPI:
         self._registered_tools.clear()
         self._event_registrations.clear()
         self._registered_channels.clear()
+        self._webhook_registrations.clear()
         self._registered_provider_types.clear()
         self._registered_supplements.clear()
         self._registered_status_providers.clear()
@@ -1226,6 +1284,21 @@ class RealBotAPI:
         self._channel_registry.register(self._registered_channels[channel_id])
         self._active_channels.add(channel_id)
 
+    def _activate_webhook_registration(
+        self, registration: _WebhookRegistration
+    ) -> None:
+        if registration.active:
+            return
+        if self._webhost_service is None:
+            raise RuntimeError("WebHost service is not available")
+        registration.service_handle = self._webhost_service.register(
+            plugin_id=self._plugin_id,
+            path=registration.path,
+            handler=registration.handler,
+            methods=registration.methods,
+        )
+        registration.active = True
+
     def _activate_provider_type(self, type_key: str) -> None:
         if type_key in self._active_provider_types:
             return
@@ -1256,6 +1329,14 @@ class RealBotAPI:
         if registration in self._event_registrations:
             self._event_registrations.remove(registration)
 
+    def _remove_webhook_registration(self, registration: _WebhookRegistration) -> None:
+        if registration.active and registration.service_handle is not None:
+            registration.service_handle.unsubscribe()
+        registration.service_handle = None
+        registration.active = False
+        if registration in self._webhook_registrations:
+            self._webhook_registrations.remove(registration)
+
     def _deactivate_event_registrations(self, *, clear: bool) -> None:
         for registration in list(self._event_registrations):
             if registration.subscription is not None:
@@ -1266,6 +1347,15 @@ class RealBotAPI:
         self._handler_registry.unregister_by_plugin(self._plugin_id)
         if clear:
             self._event_registrations.clear()
+
+    def _deactivate_webhook_registrations(self, *, clear: bool) -> None:
+        for registration in list(self._webhook_registrations):
+            if registration.service_handle is not None:
+                registration.service_handle.unsubscribe()
+            registration.service_handle = None
+            registration.active = False
+        if clear:
+            self._webhook_registrations.clear()
 
     # ── Cleanup ────────────────────────────────────────
 
@@ -1284,6 +1374,7 @@ class RealBotAPI:
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
+        webhost_service: Any | None = None,
     ) -> None:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
@@ -1293,6 +1384,8 @@ class RealBotAPI:
         self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
+        if webhost_service is not None:
+            self._webhost_service = webhost_service
         if plugin_data_repo is not None:
             self._plugin_data_repo = plugin_data_repo
 
