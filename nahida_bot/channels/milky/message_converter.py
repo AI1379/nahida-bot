@@ -111,11 +111,7 @@ class MilkyMessageConverter:
             platform="milky",
             chat_type="group" if is_group else "private",
             platform_chat_id=peer_id,
-            display_name=coerce_str(
-                message_data.get("group_name")
-                or message_data.get("peer_name")
-                or message_data.get("friend_name")
-            ),
+            display_name=self._chat_display_name(message_data, is_group),
         )
 
         inbound = InboundMessage(
@@ -231,6 +227,24 @@ class MilkyMessageConverter:
         ]
 
     @staticmethod
+    def _chat_display_name(message_data: dict[str, Any], is_group: bool) -> str:
+        """Extract the display name for a chat from the message data.
+
+        Lagrange.Milky nests group metadata inside a ``group`` object
+        rather than at the top level, so we check both locations.
+        """
+        display_name = coerce_str(
+            message_data.get("group_name")
+            or message_data.get("peer_name")
+            or message_data.get("friend_name")
+        )
+        if not display_name and is_group:
+            group_obj = message_data.get("group")
+            if isinstance(group_obj, dict):
+                display_name = coerce_str(group_obj.get("group_name"))
+        return display_name
+
+    @staticmethod
     def _sender_display_name(message_data: dict[str, Any]) -> str:
         # Group card (群名片) vs QQ nickname: when they differ in a group
         # chat, show both as "GroupCard(QQNick)" so the LLM can tell them
@@ -303,6 +317,13 @@ class MilkyMessageConverter:
             ).lower()
             if nested_role in {"owner", "admin", "administrator"}:
                 tags.append("owner" if nested_role == "owner" else "admin")
+        # Lagrange.Milky puts role info in the ``group_member`` nested object.
+        if not tags:
+            gm = message_data.get("group_member")
+            if isinstance(gm, dict):
+                gm_role = coerce_str(gm.get("role")).lower()
+                if gm_role in {"owner", "admin", "administrator"}:
+                    tags.append("owner" if gm_role == "owner" else "admin")
         return tuple(dict.fromkeys(tags))
 
     @staticmethod

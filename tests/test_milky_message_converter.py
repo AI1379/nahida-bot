@@ -360,3 +360,116 @@ async def test_forward_resolution_failure_keeps_reference_text() -> None:
     assert inbound is not None
     assert "[Forward: id=forward-1" in inbound.text
     assert "Alice: hello" in inbound.text
+
+
+async def test_group_name_from_nested_group_object() -> None:
+    """Lagrange.Milky puts group_name inside a nested ``group`` dict."""
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "always"}),
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=592546053,
+            sender_id=2846390592,
+            group={
+                "group_id": 592546053,
+                "group_name": "崩崩崩希儿有羽毛和翅膀",
+            },
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.chat_context is not None
+    assert inbound.chat_context.display_name == "崩崩崩希儿有羽毛和翅膀"
+    assert inbound.message_context is not None
+    assert inbound.message_context.chat_display_name == "崩崩崩希儿有羽毛和翅膀"
+
+
+async def test_group_name_from_top_level_takes_priority() -> None:
+    """Top-level ``group_name`` should still work if present."""
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "always"}),
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            group_name="TopLevelGroup",
+            group={"group_id": 20001, "group_name": "NestedGroup"},
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.chat_context is not None
+    assert inbound.chat_context.display_name == "TopLevelGroup"
+
+
+async def test_group_name_falls_back_to_nested_when_top_level_empty() -> None:
+    """When top-level is empty string, nested ``group.group_name`` is used."""
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "always"}),
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            group_name="",
+            group={"group_id": 20001, "group_name": "NestedGroup"},
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.chat_context is not None
+    assert inbound.chat_context.display_name == "NestedGroup"
+
+
+async def test_group_member_role_from_nested_object() -> None:
+    """Lagrange.Milky puts role info inside ``group_member.role``."""
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "always"}),
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            sender_id=10001,
+            group_member={
+                "user_id": 10001,
+                "nickname": "TestUser",
+                "role": "admin",
+            },
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.sender_context is not None
+    assert "admin" in inbound.sender_context.role_tags
+
+
+async def test_group_member_owner_role() -> None:
+    """Owner role from ``group_member.role`` is correctly extracted."""
+    converter = MilkyMessageConverter(
+        parse_milky_config({"group_trigger_mode": "always"}),
+    )
+
+    inbound = await converter.to_inbound(
+        _message(
+            message_scene="group",
+            peer_id=20001,
+            sender_id=10001,
+            group_member={
+                "user_id": 10001,
+                "nickname": "Owner",
+                "role": "owner",
+            },
+        )
+    )
+
+    assert inbound is not None
+    assert inbound.sender_context is not None
+    assert "owner" in inbound.sender_context.role_tags
