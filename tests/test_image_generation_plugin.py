@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -106,6 +107,7 @@ def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
                 "model": "image-model",
                 "size": "1024x1024",
                 "quality": "auto",
+                "max_images_per_request": 3,
             }
         },
         "output_dir": "generated/images",
@@ -185,6 +187,7 @@ async def test_client_decodes_base64_image_response() -> None:
     assert images[0].revised_prompt == "revised"
     assert requests[0].url == "https://images.example/v1/images/generations"
     assert requests[0].headers["authorization"] == "Bearer key"
+    assert requests[0].headers["connection"] == "close"
     payload = json.loads(requests[0].content)
     assert payload["prompt"] == "a cat"
     assert payload["model"] == "image-model"
@@ -256,7 +259,14 @@ async def test_draw_command_generates_saves_and_sends(tmp_path: Path) -> None:
     finally:
         current_session.reset(token)
 
-    assert result.startswith("Generated 1 image(s). Sent: msg-1.")
+    assert (
+        result
+        == "Image generation started. Generated image will be sent to this chat when ready."
+    )
+    tasks = list(plugin._background_tasks)
+    assert len(tasks) == 1
+    await asyncio.gather(*tasks)
+
     assert fake_client.calls[0]["prompt"] == "a small green house"
     generated_dir = tmp_path / "generated" / "images"
     generated_files = list(generated_dir.glob("*.png"))
@@ -309,6 +319,23 @@ async def test_tool_can_generate_without_sending(tmp_path: Path) -> None:
     assert fake_client.calls[0]["n"] == 2
     assert fake_client.calls[0]["size"] == "1536x1024"
     assert fake_client.calls[0]["quality"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_tool_enforces_24h_image_limit(tmp_path: Path) -> None:
+    api = _ImageAPI(tmp_path)
+    plugin, fake_client = await _load_plugin(api, {"max_images_per_24h": 1})
+
+    raw_ok = await plugin._tool_image_generate("a quiet garden", send=False)
+    ok_payload = json.loads(raw_ok)
+    assert ok_payload["status"] == "ok"
+
+    raw_error = await plugin._tool_image_generate("another quiet garden", send=False)
+    error_payload = json.loads(raw_error)
+
+    assert error_payload["status"] == "error"
+    assert "quota exceeded" in error_payload["error"]
+    assert len(fake_client.calls) == 1
 
 
 @pytest.mark.asyncio

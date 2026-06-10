@@ -23,6 +23,8 @@ class OpenAIImagesBackendConfig(BaseModel):
     output_format: str = ""
     timeout_seconds: float = Field(default=120.0, ge=0.1)
     download_timeout_seconds: float = Field(default=60.0, ge=0.1)
+    trust_env: bool = False
+    force_close_connections: bool = True
     max_concurrency: int = Field(default=1, ge=1, le=16)
     max_images_per_request: int = Field(default=1, ge=1, le=10)
     extra_body: dict[str, Any] = Field(default_factory=dict)
@@ -42,6 +44,7 @@ class ImageGenerationConfig(BaseModel):
     auto_send: bool = True
     command_names: list[str] = Field(default_factory=lambda: ["draw", "生图"])
     caption_template: str = ""
+    max_images_per_24h: int = Field(default=0, ge=0)
 
     @model_validator(mode="before")
     @classmethod
@@ -61,6 +64,8 @@ class ImageGenerationConfig(BaseModel):
             "output_format",
             "timeout_seconds",
             "download_timeout_seconds",
+            "trust_env",
+            "force_close_connections",
             "max_concurrency",
             "max_images_per_request",
             "extra_body",

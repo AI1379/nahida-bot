@@ -26,6 +26,7 @@ config:
     - draw
     - 生图
   caption_template: ""
+  max_images_per_24h: 0
   backends:
     default:
       type: "openai-images"
@@ -39,6 +40,8 @@ config:
       output_format: ""
       timeout_seconds: 120
       download_timeout_seconds: 60
+      trust_env: false
+      force_close_connections: true
       max_concurrency: 1
       max_images_per_request: 1
       extra_body: {}
@@ -71,6 +74,11 @@ config_schema:
       type: string
       default: ""
       description: Optional attachment caption template with prompt, model, path, revised_prompt.
+    max_images_per_24h:
+      type: integer
+      default: 0
+      minimum: 0
+      description: Maximum generated image slots allowed in a rolling 24 hour window; 0 disables the limit.
     backends:
       type: object
       description: Image generation backends keyed by provider name.
@@ -124,6 +132,14 @@ config_schema:
             type: number
             default: 60
             minimum: 0.1
+          trust_env:
+            type: boolean
+            default: false
+            description: Whether httpx should use proxy and certificate settings from environment variables.
+          force_close_connections:
+            type: boolean
+            default: true
+            description: Disable HTTP keepalive and send Connection close for relay compatibility.
           max_concurrency:
             type: integer
             default: 1

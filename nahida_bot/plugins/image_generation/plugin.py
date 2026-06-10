@@ -7,13 +7,14 @@ import hashlib
 import json
 import mimetypes
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.core.context import current_session
+from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage, Plugin
 from nahida_bot.plugins.image_generation.client import (
     GeneratedImage,
@@ -38,14 +39,29 @@ class SavedGeneratedImage:
     source: str = ""
 
 
+@dataclass(slots=True, frozen=True)
+class ImageQuotaReservation:
+    """In-memory reservation for image generation quota slots."""
+
+    reservation_id: str
+    count: int
+
+
 class ImageGenerationPlugin(Plugin):
     """Generate images through an OpenAI-compatible backend."""
+
+    _QUOTA_WINDOW_SECONDS = 24 * 60 * 60
 
     def __init__(self, api: Any, manifest: Any) -> None:
         super().__init__(api, manifest)
         self._config = parse_image_generation_config(self.manifest.config)
         self._clients: dict[str, OpenAIImageGenerationClient] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        # TODO: Persist this quota ledger if 24h limits need to survive restarts.
+        self._image_quota_events: deque[tuple[float, str]] = deque()
+        self._image_quota_lock = asyncio.Lock()
+        self._image_quota_next_id = 0
 
     async def on_load(self) -> None:
         if not self._config.enabled:
@@ -60,9 +76,11 @@ class ImageGenerationPlugin(Plugin):
         )
 
     async def on_disable(self) -> None:
+        await self._stop_background_tasks()
         await self._close_clients()
 
     async def on_unload(self) -> None:
+        await self._stop_background_tasks()
         await self._close_clients()
 
     def _register_command(self) -> None:
@@ -70,7 +88,7 @@ class ImageGenerationPlugin(Plugin):
         self.api.register_command(
             names[0],
             self._cmd_draw,
-            description="Generate an image from a prompt and send it to this chat",
+            description="Start image generation from a prompt and send it to this chat",
             aliases=names[1:],
         )
 
@@ -137,19 +155,87 @@ class ImageGenerationPlugin(Plugin):
         prompt = args.strip()
         if not prompt:
             return "Usage: /draw <prompt>"
-        result = await self._generate_and_maybe_send(
-            prompt=prompt,
-            n=1,
-            send=True,
-            caption="",
-            provider="",
-        )
+        session_ctx = current_session.get()
+        if session_ctx is None:
+            return "Error: No active session context; cannot send generated image."
+        self._spawn_task(self._run_draw_job(prompt=prompt, session_ctx=session_ctx))
+        return "Image generation started. Generated image will be sent to this chat when ready."
+
+    async def _run_draw_job(self, *, prompt: str, session_ctx: SessionContext) -> None:
+        try:
+            token = current_session.set(session_ctx)
+            try:
+                result = await self._generate_and_maybe_send(
+                    prompt=prompt,
+                    n=1,
+                    send=True,
+                    caption="",
+                    provider="",
+                )
+            finally:
+                current_session.reset(token)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self.api.logger.exception(
+                "image_generation.draw_failed",
+                error=str(exc),
+            )
+            await self._send_text_to_session(
+                session_ctx,
+                f"Error: Image generation failed: {exc}",
+            )
+            return
+
         if isinstance(result, str):
-            return result
-        count = len(result["images"])
-        message_ids = result.get("sent_message_ids") or []
-        sent = f" Sent: {', '.join(message_ids)}." if message_ids else ""
-        return f"Generated {count} image(s).{sent}"
+            await self._send_text_to_session(session_ctx, result)
+            return
+        self.api.logger.info(
+            "image_generation.draw_completed",
+            image_count=len(result["images"]),
+            sent_message_ids=result.get("sent_message_ids") or [],
+        )
+
+    def _spawn_task(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _discard(done: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done)
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                self.api.logger.exception(
+                    "image_generation.background_task_failed",
+                    error=str(exc),
+                )
+
+        task.add_done_callback(_discard)
+
+    async def _stop_background_tasks(self) -> None:
+        tasks = list(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+
+    async def _send_text_to_session(
+        self,
+        session_ctx: SessionContext,
+        text: str,
+    ) -> None:
+        extra: dict[str, Any] = {}
+        address = _typed_address_from_session_context(session_ctx)
+        if address is not None:
+            extra["chat_address"] = address.chat_key
+        await self.api.send_message(
+            session_ctx.chat_id,
+            OutboundMessage(text=text, extra=extra),
+            channel=session_ctx.platform,
+        )
 
     async def _tool_image_generate(
         self,
@@ -246,19 +332,30 @@ class ImageGenerationPlugin(Plugin):
         provider: str,
     ) -> tuple[list[SavedGeneratedImage], OpenAIImagesBackendConfig]:
         backend = self._config.backend(provider)
-        client = self._client_for(provider, backend)
-        semaphore = self._semaphore_for(provider, backend)
-        async with semaphore:
-            generated = await client.generate(
-                prompt,
-                model=model,
-                size=size,
-                quality=quality,
-                n=n,
-            )
-
         output_dir, relative_dir = self._resolve_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
+        client = self._client_for(provider, backend)
+        semaphore = self._semaphore_for(provider, backend)
+        image_count = _bounded_image_count(n, backend.max_images_per_request)
+        reservation = await self._reserve_image_quota(image_count)
+        try:
+            async with semaphore:
+                generated = await client.generate(
+                    prompt,
+                    model=model,
+                    size=size,
+                    quality=quality,
+                    n=image_count,
+                )
+        except Exception:  # noqa: BLE001
+            await self._release_image_quota(reservation)
+            raise
+        if len(generated) < image_count:
+            await self._release_image_quota(
+                reservation,
+                count=image_count - len(generated),
+            )
+
         saved: list[SavedGeneratedImage] = []
         for index, image in enumerate(generated, start=1):
             filename = self._build_filename(prompt, image, index, backend)
@@ -276,6 +373,69 @@ class ImageGenerationPlugin(Plugin):
                 )
             )
         return saved, backend
+
+    async def _reserve_image_quota(
+        self,
+        count: int,
+    ) -> ImageQuotaReservation | None:
+        limit = self._config.max_images_per_24h
+        if limit <= 0:
+            return None
+        now = time.time()
+        async with self._image_quota_lock:
+            self._prune_image_quota_events(now)
+            used = len(self._image_quota_events)
+            remaining = max(0, limit - used)
+            if count > remaining:
+                retry_after = self._image_quota_retry_after_seconds(now)
+                raise ImageGenerationError(
+                    "image_generation_quota_exceeded",
+                    (
+                        "Image generation quota exceeded: "
+                        f"{used}/{limit} images used in the last 24 hours; "
+                        f"requested {count}. "
+                        f"Try again in about {_format_duration(retry_after)}."
+                    ),
+                )
+            self._image_quota_next_id += 1
+            reservation_id = str(self._image_quota_next_id)
+            for _ in range(count):
+                self._image_quota_events.append((now, reservation_id))
+            return ImageQuotaReservation(reservation_id=reservation_id, count=count)
+
+    async def _release_image_quota(
+        self,
+        reservation: ImageQuotaReservation | None,
+        *,
+        count: int | None = None,
+    ) -> None:
+        if reservation is None:
+            return
+        release_count = reservation.count if count is None else max(0, count)
+        if release_count <= 0:
+            return
+        async with self._image_quota_lock:
+            remaining: deque[tuple[float, str]] = deque()
+            removed = 0
+            for event in self._image_quota_events:
+                if event[1] == reservation.reservation_id and removed < release_count:
+                    removed += 1
+                    continue
+                remaining.append(event)
+            self._image_quota_events = remaining
+
+    def _prune_image_quota_events(self, now: float) -> None:
+        cutoff = now - self._QUOTA_WINDOW_SECONDS
+        while self._image_quota_events and self._image_quota_events[0][0] <= cutoff:
+            self._image_quota_events.popleft()
+
+    def _image_quota_retry_after_seconds(self, now: float) -> float:
+        if not self._image_quota_events:
+            return float(self._QUOTA_WINDOW_SECONDS)
+        return max(
+            0.0,
+            self._image_quota_events[0][0] + self._QUOTA_WINDOW_SECONDS - now,
+        )
 
     async def _send_images(
         self,
@@ -451,6 +611,21 @@ def _extension_for_mime(mime_type: str, configured_format: str = "") -> str:
         return "jpg" if configured == "jpeg" else configured
     guessed = mimetypes.guess_extension(mime_type or "")
     return guessed.lstrip(".") if guessed else "png"
+
+
+def _bounded_image_count(raw_count: int, max_images_per_request: int) -> int:
+    return max(1, min(int(raw_count), max_images_per_request))
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = (remainder + 59) // 60
+    if hours and minutes:
+        return f"{hours}h {minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{max(1, minutes)}m"
 
 
 def _configured_command_names(raw_names: list[str]) -> list[str]:

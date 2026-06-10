@@ -100,6 +100,8 @@ class OpenAIImageGenerationClient:
         )
         endpoint = f"{self._config.base_url.rstrip('/')}/images/generations"
         headers = {"Content-Type": "application/json"}
+        if self._config.force_close_connections:
+            headers["Connection"] = "close"
         if self._config.api_key:
             headers["Authorization"] = f"Bearer {self._config.api_key}"
 
@@ -137,7 +139,14 @@ class OpenAIImageGenerationClient:
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient()
+            self._client = httpx.AsyncClient(
+                limits=httpx.Limits(
+                    max_keepalive_connections=0
+                    if self._config.force_close_connections
+                    else None
+                ),
+                trust_env=self._config.trust_env,
+            )
             self._owns_client = True
         return self._client
 

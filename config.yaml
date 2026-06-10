@@ -143,8 +143,13 @@ builtin-commands:
 #       api_key: "${IMAGE_API_KEY}"
 #       base_url: "${IMAGE_BASE_URL}"
 #       model: "gpt-image-1"
+#       timeout_seconds: 600
+#       download_timeout_seconds: 120
+#       trust_env: false
+#       force_close_connections: true
 #   output_dir: "generated/images"
 #   auto_send: true
+#   max_images_per_24h: 20
 
 github-notifier:
   # 目标仓库；保持 OWNER/REPO 时插件会视为未配置，不会启动 webhook/polling。
