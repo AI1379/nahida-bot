@@ -687,16 +687,7 @@ class Application:
         if self.plugin_manager is None:
             return
 
-        # Discover builtin commands from nahida_bot/plugins/builtin/
-        try:
-            import nahida_bot.plugins.builtin as builtin_pkg
-
-            builtin_file = builtin_pkg.__file__
-            if builtin_file is not None:
-                builtin_path = Path(builtin_file).parent
-                await self.plugin_manager.discover([builtin_path])
-        except ImportError:
-            pass
+        await self._discover_builtin_plugin_module("nahida_bot.plugins.builtin")
 
         # Discover builtin channels from nahida_bot/channels/
         if self.settings.discover_builtin_channels:
@@ -710,28 +701,29 @@ class Application:
             except ImportError:
                 pass
 
-        # Discover builtin MCP integration plugin
-        try:
-            import nahida_bot.plugins.mcp as mcp_pkg
-
-            if mcp_pkg.__file__ is not None:
-                mcp_path = Path(mcp_pkg.__file__).parent
-                await self.plugin_manager.discover([mcp_path])
-        except ImportError:
-            pass
-
-        # Discover builtin conversation joiner plugin
-        try:
-            import nahida_bot.plugins.conversation_joiner as joiner_pkg
-
-            if joiner_pkg.__file__ is not None:
-                joiner_path = Path(joiner_pkg.__file__).parent
-                await self.plugin_manager.discover([joiner_path])
-        except ImportError:
-            pass
+        builtin_plugin_modules = (
+            "nahida_bot.plugins.mcp",
+            "nahida_bot.plugins.conversation_joiner",
+            "nahida_bot.plugins.image_generation",
+        )
+        for module_name in builtin_plugin_modules:
+            await self._discover_builtin_plugin_module(module_name)
 
         plugin_paths = [Path(p).resolve() for p in self.settings.plugin_paths]
         await self.plugin_manager.discover(plugin_paths)
+
+    async def _discover_builtin_plugin_module(self, module_name: str) -> None:
+        """Discover one built-in plugin package by module name."""
+        if self.plugin_manager is None:
+            return
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            return
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            return
+        await self.plugin_manager.discover([Path(module_file).parent])
 
     def _inject_plugin_configs(self) -> None:
         """Merge config.yaml top-level plugin config into discovered manifests."""

@@ -33,18 +33,30 @@ app_name: "Nahida Bot"
 log_level: "INFO"
 
 providers:
-  default:
-    type: "openai-compatible"
-    api_key: "${LLM_API_KEY}"
-    base_url: "${LLM_BASE_URL}"
+  deepseek-main:
+    type: deepseek
+    api_key: "${DEEPSEEK_LLM_API_KEY:}"
+    base_url: "${DEEPSEEK_LLM_BASE_URL:https://api.deepseek.com}"
     stream_responses: true
     models:
-      - "${LLM_MODEL}"
+      - name: "deepseek-v4-pro"
+        tags: [primary]
 
-default_provider: default
+  siliconflow:
+    type: "openai-compatible"
+    api_key: "${SILICONFLOW_LLM_API_KEY:}"
+    base_url: "${SILICONFLOW_LLM_BASE_URL:https://api.siliconflow.cn/v1}"
+    stream_responses: true
+    models:
+      - name: "Qwen/Qwen3.6-35B-A3B"
+        tags: [vision]
+        capabilities:
+          image_input: true
+
+default_provider: deepseek-main
 
 telegram:
-  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  bot_token: "${TELEGRAM_BOT_TOKEN:}"
 ```
 
 配置支持 `${VAR}` 和 `${VAR:default}` 环境变量插值，可选 `.env` 文件加载。完整配置参考请参阅 [配置参考](./configuration.md)。

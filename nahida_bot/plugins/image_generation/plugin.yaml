@@ -1,0 +1,140 @@
+id: image_generation
+name: "Image Generation"
+version: "0.1.0"
+description: "Generate images through an OpenAI-compatible Images API backend"
+entrypoint: "nahida_bot.plugins.image_generation.plugin:ImageGenerationPlugin"
+load_phase: "post-agent"
+permissions:
+  filesystem:
+    read:
+      - workspace
+    write:
+      - workspace
+  network:
+    outbound:
+      - "*"
+capabilities:
+  tools:
+    - name: image_generate
+      description: Generate images from a text prompt and optionally send them to the current chat
+config:
+  enabled: false
+  provider: "default"
+  output_dir: "generated/images"
+  auto_send: true
+  command_names:
+    - draw
+    - 生图
+  caption_template: ""
+  backends:
+    default:
+      type: "openai-images"
+      base_url: "https://api.openai.com/v1"
+      api_key: ""
+      require_api_key: true
+      model: "gpt-image-1"
+      size: "1024x1024"
+      quality: "auto"
+      response_format: ""
+      output_format: ""
+      timeout_seconds: 120
+      download_timeout_seconds: 60
+      max_concurrency: 1
+      max_images_per_request: 1
+      extra_body: {}
+config_schema:
+  type: object
+  properties:
+    enabled:
+      type: boolean
+      default: false
+      description: Enable the image generation command and tool.
+    provider:
+      type: string
+      default: "default"
+      description: Default image generation backend key.
+    output_dir:
+      type: string
+      default: "generated/images"
+      description: Workspace-relative directory used to save generated images; created automatically with parents.
+    auto_send:
+      type: boolean
+      default: true
+      description: Send generated images to the current chat when the tool is called.
+    command_names:
+      type: array
+      items:
+        type: string
+      default: ["draw", "生图"]
+      description: Slash command name followed by aliases.
+    caption_template:
+      type: string
+      default: ""
+      description: Optional attachment caption template with prompt, model, path, revised_prompt.
+    backends:
+      type: object
+      description: Image generation backends keyed by provider name.
+      additionalProperties:
+        type: object
+        properties:
+          type:
+            type: string
+            default: "openai-images"
+            enum:
+              - openai-images
+            description: Backend protocol type.
+          base_url:
+            type: string
+            default: "https://api.openai.com/v1"
+            description: OpenAI-compatible API base URL, without the images path.
+          api_key:
+            type: string
+            default: ""
+            secret: true
+            description: API key for this image backend.
+          require_api_key:
+            type: boolean
+            default: true
+            description: Require a non-empty API key before sending requests.
+          model:
+            type: string
+            default: "gpt-image-1"
+            description: Default image model.
+          size:
+            type: string
+            default: "1024x1024"
+            description: Default image size.
+          quality:
+            type: string
+            default: "auto"
+            description: Default image quality value passed to the backend.
+          response_format:
+            type: string
+            default: ""
+            description: Optional response_format override, for example b64_json or url.
+          output_format:
+            type: string
+            default: ""
+            description: Optional output format for compatible GPT Image backends.
+          timeout_seconds:
+            type: number
+            default: 120
+            minimum: 0.1
+          download_timeout_seconds:
+            type: number
+            default: 60
+            minimum: 0.1
+          max_concurrency:
+            type: integer
+            default: 1
+            minimum: 1
+            maximum: 16
+          max_images_per_request:
+            type: integer
+            default: 1
+            minimum: 1
+            maximum: 10
+          extra_body:
+            type: object
+            default: {}
+            description: Additional admin-controlled request fields sent to this backend.

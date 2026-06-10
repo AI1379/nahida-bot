@@ -28,56 +28,93 @@ plugin_paths:
 system_prompt: "You are a helpful assistant."
 
 # ── LLM Providers（dict 格式，key 即 provider id）───
-# 支持多 provider 配置，每个 provider 有独立的 api_key 和 models 列表。
+# 默认配置已经是多 provider。每个 provider 有独立的 api_key、base_url 和 models。
 # models 的第一个元素是该 provider 的默认模型；每个模型可以是字符串，
-# 也可以是 {name, capabilities} 对象。通过 /model 命令可在聊天中切换模型。
+# 也可以是 {name, tags, capabilities} 对象。通过 /model 命令可在聊天中切换模型。
 #
-# providers:
-#   deepseek-main:
-#     type: deepseek
-#     api_key: "${DEEPSEEK_API_KEY}"
-#     # 内部使用 SSE 接收并聚合，降低长推理被误判为读超时的概率。
-#     # 不会改变 channel 的发送方式；仍由 AgentLoop 聚合后返回。
-#     stream_responses: true
-#     # thinking_enabled: false   # 关闭 DeepSeek thinking mode
-#     models: ["deepseek-chat", "deepseek-reasoner"]
-#   glm:
-#     type: glm
-#     api_key: "${GLM_API_KEY}"
-#     models: ["glm-4-flash", "glm-4-plus"]
-#   vision:
-#     type: openai-compatible
-#     api_key: "${VISION_API_KEY}"
-#     base_url: "${VISION_BASE_URL}"
-#     models:
-#       - name: "vision-model"
-#         capabilities:
-#           image_input: true
-#           max_image_count: 4
-#
-# default_provider: deepseek-main   # 可选，默认使用第一个 key
-
+# 没有配置 api_key 的 provider 会在启动时被跳过；因此可以只填写实际使用的后端。
 providers:
-  default:
+  deepseek-main:
+    type: deepseek
+    api_key: "${DEEPSEEK_LLM_API_KEY:}"
+    base_url: "${DEEPSEEK_LLM_BASE_URL:https://api.deepseek.com}"
+    # 内部使用 SSE 接收并聚合，可避免长推理期间普通读超时误判。
+    stream_responses: true
+    # thinking_enabled: false   # 关闭 DeepSeek thinking mode
+    models:
+      - name: "deepseek-v4-pro"
+        tags: [primary]
+      - name: "deepseek-v4-flash"
+        tags: [cheap, memory]
+
+  siliconflow:
     type: "openai-compatible"
-    api_key: "${LLM_API_KEY}"
-    base_url: "${LLM_BASE_URL}"
-    # 建议开启：provider 内部流式接收并聚合返回，适合长推理/重任务。
-    # 支持 openai-compatible/deepseek/glm/groq/anthropic/minimax/openai-responses。
+    api_key: "${SILICONFLOW_LLM_API_KEY:}"
+    base_url: "${SILICONFLOW_LLM_BASE_URL:https://api.siliconflow.cn/v1}"
+    merge_system_messages: true
     stream_responses: true
     models:
-      - "${LLM_MODEL}"
+      - name: "Qwen/Qwen3-Embedding-8B"
+        tags: [embedding]
+      - name: "Pro/zai-org/GLM-5"
+        tags: [vision]
+      - name: "Qwen/Qwen3.6-35B-A3B"
+        tags: [vision]
+        capabilities:
+          image_input: true
+          max_image_count: 4
+          max_image_bytes: 10485760
 
-default_provider: default
+  minimax:
+    type: minimax
+    api_key: "${MINIMAX_LLM_API_KEY:}"
+    base_url: "https://api.minimaxi.com/anthropic"
+    max_tokens: 16000
+    stream_responses: true
+    models:
+      - name: "MiniMax-M2.5"
+        tags: [cheap]
+      - name: "MiniMax-M2.7"
+
+  # OpenAI Responses API（可选）
+  # 使用 /responses 端点，支持内置工具（web_search、image_generation 等）
+  # 和有状态对话链（previous_response_id）。Reasoning 摘要可通过
+  # reasoning_effort 参数控制深度。
+  # stream_responses=true 时同样在 provider 内部流式接收并聚合返回。
+  openai:
+    type: "openai-responses"
+    api_key: "${OPENAI_API_KEY:}"
+    base_url: "${OPENAI_API_BASE_URL:https://api.openai.com/v1}"
+    store_responses: true
+    use_previous_response_id: false
+    stream_responses: true
+    reasoning_effort: "medium"
+    # built_in_tools: ["web_search", "image_generation"]
+    models:
+      - name: "gpt-5.4"
+        capabilities:
+          image_input: true
+          image_generation: true
+          web_search: true
+          tool_calling: true
+          reasoning: true
+
+default_provider: deepseek-main   # 可选，默认使用 providers 中的第一个 key
 
 # ── 多模态 / 图片理解 ─────────────────────────────────
-# 主模型有 models[].capabilities.image_input=true 时会直接传图；
-# 主模型没有 image_input 时，按 image_fallback_mode 决定是否调用 fallback vision。
+# image_fallback_mode:
+#   auto: 主模型不支持 image_input 时，自动调用 fallback vision 模型生成描述
+#   tool: 主模型不支持 image_input 时，注入 image_understand 工具，由主模型按需调用
+#   off:  不处理图片，只保留普通文本
+# media_context_policy:
+#   cache_aware: 最近图片尽量保留原生内容块，旧图片降级为描述
+#   native_recent: 仅最近图片保留原生内容块
+#   description_only: 历史图片只使用描述
 multimodal:
-  image_fallback_mode: "auto"        # auto / tool / off
-  media_context_policy: "cache_aware" # cache_aware / native_recent / description_only
-  image_fallback_provider: ""        # Legacy；建议留空
-  image_fallback_model: ""           # model spec；空则默认找 vision tag
+  image_fallback_mode: "auto"
+  media_context_policy: "cache_aware"
+  image_fallback_provider: ""  # Legacy；建议把 provider 写进 image_fallback_model
+  image_fallback_model: "siliconflow/Qwen/Qwen3.6-35B-A3B"
   max_images_per_turn: 4
   max_image_bytes: 10485760
   media_cache_ttl_seconds: 3600
@@ -95,6 +132,20 @@ builtin-commands:
   #   - "D:/Pictures"
   external_attachment_roots: []
 
+# OpenAI-compatible 图片生成（可选）
+# 启用后注册 /draw、/生图 命令和 image_generate tool。
+# image_generation:
+#   enabled: true
+#   provider: default
+#   backends:
+#     default:
+#       type: openai-images
+#       api_key: "${IMAGE_API_KEY}"
+#       base_url: "${IMAGE_BASE_URL}"
+#       model: "gpt-image-1"
+#   output_dir: "generated/images"
+#   auto_send: true
+
 github-notifier:
   # 目标仓库；保持 OWNER/REPO 时插件会视为未配置，不会启动 webhook/polling。
   repo: "OWNER/REPO"
@@ -103,12 +154,12 @@ github-notifier:
   webhook:
     enabled: true
     path: "github"                 # 最终路径: /webhooks/github
-    secret: "${GITHUB_WEBHOOK_SECRET}"
+    secret: "${GITHUB_WEBHOOK_SECRET:}"
   polling:
     enabled: true                  # webhook 不可用时的 fallback；首次轮询只建立基线
     interval_seconds: 60
     api_base_url: "https://api.github.com"
-    token: "${GITHUB_TOKEN}"       # 私有仓库或更高 rate limit 时填写
+    token: "${GITHUB_TOKEN:}"      # 私有仓库或更高 rate limit 时填写
   registration:
     enabled: false                 # 开启后可在聊天中使用 /github_watch 动态订阅
 
@@ -143,13 +194,40 @@ conversation_joiner:
   #     enabled: true
   #     threshold: 0.78
   #     cooldown_seconds: 300
+  engagement:
+    enabled: false                  # 打开后进入 observing/joining/engaged/cooling 状态机
+    join_state_ttl_seconds: 600
+    idle_exit_seconds: 180
+    max_engaged_seconds: 1800
+    response_cooldown_seconds: 45
+    engagement_score_alpha: 0.2
+    engagement_score_exit_threshold: 0.2
+    score_decay_half_life_seconds: 600
+    score_decay_floor: 0.0
+    batching:
+      window_seconds: 8             # 后续群消息进入 batch 的短窗口
+      max_messages: 6               # 窗口内消息过多时提前 flush
+      max_chars: 2000
+      flush_on_mention: true
+    continue_gate:
+      enabled: true                 # 每个 flushed batch 交给秘书模型判断是否继续接话
+      model: cheap
+      threshold: 0.55
+      min_messages: 1
+      evaluate_interval_seconds: 8
+    exit_gate:
+      enabled: true
+      low_value_threshold: 0.35
+      low_value_strikes: 3
+      min_messages_per_window: 1
+      activity_window_seconds: 120
 
 telegram:
-  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  bot_token: "${TELEGRAM_BOT_TOKEN:}"
   # group_trigger_mode: "always"      # none / mention / command / always
   # group_context_capture: false      # mention/command 模式下，是否记录未触发群消息作为上下文
   # reply_to_inbound: null            # true/false 覆盖 router.reply_to_inbound；null/省略表示跟随全局
-  # proxy: "${TELEGRAM_PROXY:}"     # SOCKS5/HTTP 代理，如 socks5://127.0.0.1:1080
+  # proxy: "${TELEGRAM_PROXY:}"       # SOCKS5/HTTP 代理，如 socks5://127.0.0.1:1080
   # polling_timeout: 30
   # allowed_chats: []
 
@@ -159,7 +237,7 @@ telegram:
 #
 # milky:
 #   base_url: "http://127.0.0.1:3000"
-#   access_token: "${MILKY_ACCESS_TOKEN}"
+#   access_token: "${MILKY_ACCESS_TOKEN:}"
 #   api_prefix: "/api"
 #   event_path: "/event"
 #   # ws_url: "ws://127.0.0.1:3000/event"  # 可选：覆盖由 base_url 推导出的 WS 地址
@@ -223,30 +301,41 @@ telegram:
 #   poll_interval_seconds: 1.0          # 调度轮询间隔（秒）
 #   max_concurrent_fires: 5             # 最大并发执行数
 #   job_timeout_seconds: 120.0          # 单任务超时（秒）
-#   min_interval_seconds: 60            # cron 最小间隔（秒）
+#   min_interval_seconds: 60            # cron 最小间隔
 #   max_prompt_chars: 12000             # 定时任务 prompt 最大字符数
 #   max_jobs_per_chat: 20               # 每个会话最大任务数
 #   failure_retry_seconds: 300          # 失败重试等待（秒）
 #   max_consecutive_failures: 3         # 连续失败上限
 #   memory_dreaming_enabled: true       # 是否启用内部记忆 dreaming
 #   memory_dreaming_interval_seconds: 3600       # dreaming 周期（秒）
-#   memory_dreaming_initial_delay_seconds: 300   # 启动后首次 dreaming 延迟（秒）
+#   memory_dreaming_initial_delay_seconds: 300   # 启动后首次 dreaming 延迟
 #   memory_dreaming_session_limit: 20            # 单次最多扫描会话数
 #   memory_dreaming_recent_turn_limit: 40        # 单会话最多读取 turns 数
 #   memory_dreaming_provider_id: ""     # Legacy；建议改用 memory_dreaming_model
 #   memory_dreaming_model: ""           # model spec；空则默认找 memory tag，失败后走会话模型
 
+# ── Router ─────────────────────────────────────────────
+# 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。
+# 以下均为默认值，不写则使用默认值。
+#
+# router:
+#   # system_prompt: "..."              # 与顶层 system_prompt 重复，优先使用顶层字段
+#   max_history_turns: 200              # 最大历史轮数
+#   agent_enabled: true                 # 是否启用 Agent
+#   command_timeout_seconds: 30.0       # 命令执行超时（秒）
+#   command_timeout_message: "Command timed out. Please try again later."
+#   reply_to_inbound: true              # 默认是否引用回复触发消息；平台插件可覆盖
+#   group_context:
+#     enabled: true                     # 是否在触发时注入 observed-only 群上下文
+#     max_messages: 20                  # 最多注入最近多少条未触发群消息
+#     ttl_seconds: 900                  # 只注入最近 N 秒内的群上下文；0 表示不按时间过滤
+#     max_chars: 4000                   # 群上下文注入块最大字符数
+
 # ── Model Tags / Specs ─────────────────────────────────
-# providers 的 models 中可以用 tags 字段标记模型角色。
+# providers 的 models 中用 tags 字段标记模型角色：
+# primary / cheap / memory / embedding / reranker / vision
 # 需要内部模型的配置项都接受一个 model spec 字符串；这个字符串可以是 tag，
 # 也可以是 provider/model 或裸模型名。
-#   models:
-#     - name: deepseek-chat
-#       tags: [primary]          # 主对话模型（隐式：每个 provider 的第一个模型）
-#     - name: deepseek-chat-lite
-#       tags: [cheap, memory]    # 低成本后台任务 / 记忆 dreaming
-#
-# 可用 tags: primary / cheap / memory / embedding / reranker / vision
 
 # ── Memory ─────────────────────────────────────────────
 # 长期记忆检索和 embedding 配置。默认只启用 SQLite FTS；vector/hybrid
@@ -269,20 +358,3 @@ telegram:
 #     embed_after_consolidation: true
 #   consolidation:
 #     rule_based_enabled: true     # 是否启用每轮对话后的规则抽取；false 时只保留 dreaming/显式写入
-
-# ── Router ─────────────────────────────────────────────
-# 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。
-# 以下均为默认值，不写则使用默认值。
-#
-# router:
-#   # system_prompt: "..."              # 与顶层 system_prompt 重复，优先使用顶层字段
-#   max_history_turns: 200              # 最大历史轮数
-#   agent_enabled: true                 # 是否启用 Agent
-#   command_timeout_seconds: 30.0       # 命令执行超时（秒）
-#   command_timeout_message: "Command timed out. Please try again later."
-#   reply_to_inbound: true              # 默认是否引用回复触发消息；平台插件可覆盖
-#   group_context:
-#     enabled: true                     # 是否在触发时注入 observed-only 群上下文
-#     max_messages: 20                  # 最多注入最近多少条未触发群消息
-#     ttl_seconds: 900                  # 只注入最近 N 秒内的群上下文；0 表示不按时间过滤
-#     max_chars: 4000                   # 群上下文注入块最大字符数

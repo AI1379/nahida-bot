@@ -161,15 +161,15 @@ models:
 providers:
   deepseek-main:
     type: deepseek
-    api_key: "${DEEPSEEK_LLM_API_KEY}"
-    base_url: "${DEEPSEEK_LLM_BASE_URL}"
+    api_key: "${DEEPSEEK_LLM_API_KEY:}"
+    base_url: "${DEEPSEEK_LLM_BASE_URL:https://api.deepseek.com}"
     stream_responses: true
     models: ["deepseek-v4-pro", "deepseek-v4-flash"]
 
   siliconflow:
     type: "openai-compatible"
-    api_key: "${SILICONFLOW_LLM_API_KEY}"
-    base_url: "${SILICONFLOW_LLM_BASE_URL}"
+    api_key: "${SILICONFLOW_LLM_API_KEY:}"
+    base_url: "${SILICONFLOW_LLM_BASE_URL:https://api.siliconflow.cn/v1}"
     merge_system_messages: true
     stream_responses: true
     models:
@@ -182,15 +182,15 @@ providers:
 
   minimax:
     type: minimax
-    api_key: "${MINIMAX_LLM_API_KEY}"
+    api_key: "${MINIMAX_LLM_API_KEY:}"
     base_url: "https://api.minimaxi.com/anthropic"
     stream_responses: true
     models: ["MiniMax-M2.5"]
 
   openai:
     type: "openai-responses"
-    api_key: "${OPENAI_API_KEY}"
-    base_url: "https://api.openai.com"
+    api_key: "${OPENAI_API_KEY:}"
+    base_url: "${OPENAI_API_BASE_URL:https://api.openai.com/v1}"
     store_responses: true
     use_previous_response_id: false
     stream_responses: true
@@ -525,6 +525,11 @@ milky:
 | `SILICONFLOW_LLM_BASE_URL` | SiliconFlow provider | API 基础 URL |
 | `MINIMAX_LLM_API_KEY` | Minimax provider | API 密钥 |
 | `OPENAI_API_KEY` | OpenAI Responses provider | API 密钥 |
+| `OPENAI_API_BASE_URL` | OpenAI Responses provider | API 基础 URL |
+| `IMAGE_API_KEY` | image_generation 插件 | 图片生成 API 密钥 |
+| `IMAGE_BASE_URL` | image_generation 插件 | 图片生成 API 基础 URL |
+| `GITHUB_WEBHOOK_SECRET` | GitHub notifier 插件 | GitHub webhook 签名密钥 |
+| `GITHUB_TOKEN` | GitHub notifier 插件 | GitHub API token |
 | `MILKY_ACCESS_TOKEN` | Milky 频道 | 访问令牌 |
 | `ENV_PATH` | 配置加载器 | 覆盖 `.env` 文件路径 |
 
@@ -534,7 +539,7 @@ milky:
 
 ## 完整示例
 
-多 provider 的完整配置示例见项目根目录的 [`config-multiproviders.yaml`](../config-multiproviders.yaml)。
+项目根目录的 [`config.yaml`](../../config.yaml) 已是多 provider 的完整配置模板。
 
 ```yaml
 app_name: "Nahida Bot"
@@ -550,8 +555,8 @@ enable_silent_reply: true
 providers:
   deepseek-main:
     type: deepseek
-    api_key: "${DEEPSEEK_LLM_API_KEY}"
-    base_url: "${DEEPSEEK_LLM_BASE_URL}"
+    api_key: "${DEEPSEEK_LLM_API_KEY:}"
+    base_url: "${DEEPSEEK_LLM_BASE_URL:https://api.deepseek.com}"
     stream_responses: true
     models:
       - name: "deepseek-v4-pro"
@@ -561,8 +566,8 @@ providers:
 
   siliconflow:
     type: "openai-compatible"
-    api_key: "${SILICONFLOW_LLM_API_KEY}"
-    base_url: "${SILICONFLOW_LLM_BASE_URL}"
+    api_key: "${SILICONFLOW_LLM_API_KEY:}"
+    base_url: "${SILICONFLOW_LLM_BASE_URL:https://api.siliconflow.cn/v1}"
     merge_system_messages: true
     stream_responses: true
     models:

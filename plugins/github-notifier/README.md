@@ -15,12 +15,12 @@ github-notifier:
   webhook:
     enabled: true
     path: "github"
-    secret: "${GITHUB_WEBHOOK_SECRET}"
+    secret: "${GITHUB_WEBHOOK_SECRET:}"
   polling:
     enabled: true
     interval_seconds: 60
     api_base_url: "https://api.github.com"
-    token: "${GITHUB_TOKEN}"
+    token: "${GITHUB_TOKEN:}"
   registration:
     enabled: false
 ```

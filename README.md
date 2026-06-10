@@ -158,18 +158,33 @@ log_file: "./data/logs/nahida.log"
 log_file_level: "DEBUG"
 
 providers:
-  default:
-    type: "openai-compatible"
-    api_key: "${LLM_API_KEY}"
-    base_url: "${LLM_BASE_URL}"
+  deepseek-main:
+    type: deepseek
+    api_key: "${DEEPSEEK_LLM_API_KEY:}"
+    base_url: "${DEEPSEEK_LLM_BASE_URL:https://api.deepseek.com}"
     stream_responses: true
     models:
-      - "${LLM_MODEL}"
+      - name: "deepseek-v4-pro"
+        tags: [primary]
+      - name: "deepseek-v4-flash"
+        tags: [cheap, memory]
 
-default_provider: default
+  siliconflow:
+    type: "openai-compatible"
+    api_key: "${SILICONFLOW_LLM_API_KEY:}"
+    base_url: "${SILICONFLOW_LLM_BASE_URL:https://api.siliconflow.cn/v1}"
+    stream_responses: true
+    models:
+      - name: "Qwen/Qwen3.6-35B-A3B"
+        tags: [vision]
+        capabilities:
+          image_input: true
+          max_image_count: 4
+
+default_provider: deepseek-main
 
 telegram:
-  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  bot_token: "${TELEGRAM_BOT_TOKEN:}"
 
 # Milky QQ Channel（可选）
 # milky:
