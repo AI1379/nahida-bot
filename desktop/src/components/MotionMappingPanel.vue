@@ -93,7 +93,7 @@ function encodeTarget(target: Live2DMotionTarget): string {
 function targetFromValue(value: string): Live2DMotionTarget {
   if (value === "none") return { source: "none" };
 
-  const [source, rawGroupOrMotion, rawIndex] = value.split(":");
+  const [source, rawGroupOrMotion, rawIndex] = value.split(":", 3);
   if (source === "procedural" && isDisplayMotion(rawGroupOrMotion)) {
     return {
       source: "procedural",

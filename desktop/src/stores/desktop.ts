@@ -6,6 +6,20 @@ import type {
   DisplayPlan,
 } from "@/domain/displayPlan";
 import { displayEmotions, displayMotions } from "@/domain/displayPlan";
+import {
+  createDefaultLocalDesktopConfig,
+  modelMappingConfigFromManifest,
+} from "@/domain/config";
+import type { LocalDesktopConfig } from "@/domain/config";
+import {
+  createInitialPetRuntimeState,
+  renderModeForPerformanceMode,
+} from "@/domain/runtime";
+import type {
+  DesktopEvent,
+  PetRuntimeState,
+  PresentationPlan,
+} from "@/domain/runtime";
 import { availableModelManifests, mockModelManifest } from "@/domain/live2d";
 import type {
   Live2DExpressionOption,
@@ -13,8 +27,9 @@ import type {
   Live2DMotionOption,
   Live2DMotionTarget,
 } from "@/domain/live2d";
+import { mockGatewayEventAdapter } from "@/services/gatewayEventAdapter";
 import { mockBackend } from "@/services/mockBackend";
-import type { MockGatewayEvent } from "@/services/mockBackend";
+import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
 
 export interface TranscriptEntry {
   id: string;
@@ -102,6 +117,7 @@ function sanitizeExpressionMap(value: unknown): ExpressionKeywordMap {
         return [[keyword, expression ? [expression] : []]];
       }
       const expression = cleanExpressionName(raw);
+      // raw === "" means the user explicitly cleared the mapping for this keyword
       if (expression || raw === "") return [[keyword, expression ? [expression] : []]];
       return [];
     }),
@@ -200,6 +216,30 @@ function applyPersistedMotionMap(
   };
 }
 
+function withModelMappingConfig(
+  config: LocalDesktopConfig,
+  model: Live2DModelManifest,
+): LocalDesktopConfig {
+  const existing =
+    config.modelConfigs[model.id] ?? modelMappingConfigFromManifest(model);
+  return {
+    ...config,
+    selectedModelId: model.id,
+    modelConfigs: {
+      ...config.modelConfigs,
+      [model.id]: {
+        ...existing,
+        expressionMap: { ...model.emotionMap },
+        motionMap: { ...model.motionMap },
+        lipSync: {
+          enabled: model.lipSync.enabled,
+          parameterIds: [...model.lipSync.parameterIds],
+        },
+      },
+    },
+  };
+}
+
 function nextCustomExpressionKeyword(map: ExpressionKeywordMap): string {
   const base = "custom";
   if (!Object.prototype.hasOwnProperty.call(map, base)) return base;
@@ -228,17 +268,21 @@ export const useDesktopStore = defineStore("desktop", {
       models.find((model) => model.id === mockModelManifest.id) ??
       models[0] ??
       fallbackModel;
+    const petRuntime = createInitialPetRuntimeState();
 
     return {
       connected: false,
       gatewayUrl: "mock://backend",
       sessionId: "desktop:private:mock-user",
-      currentEmotion: "neutral" as DisplayEmotion,
-      currentExpressionKey: "neutral",
-      currentMotion: "idle" as DisplayMotion,
-      speaking: false,
+      currentEmotion: petRuntime.emotion,
+      currentExpressionKey: petRuntime.expressionKey,
+      currentMotion: petRuntime.motion,
+      speaking: petRuntime.speaking,
       activePlan: null as DisplayPlan | null,
-      currentSegmentIndex: 0,
+      activePresentation: null as PresentationPlan | null,
+      currentSegmentIndex: petRuntime.currentSegmentIndex,
+      petRuntime,
+      localConfig: createDefaultLocalDesktopConfig(selectedModel),
       models,
       selectedModelId: selectedModel.id,
       model: selectedModel,
@@ -251,26 +295,44 @@ export const useDesktopStore = defineStore("desktop", {
     };
   },
   actions: {
+    syncPetRuntime(partial: Partial<PetRuntimeState>) {
+      const nextRuntime = {
+        ...this.petRuntime,
+        ...partial,
+      };
+      this.petRuntime = nextRuntime;
+      this.currentEmotion = nextRuntime.emotion;
+      this.currentExpressionKey = nextRuntime.expressionKey;
+      this.currentMotion = nextRuntime.motion;
+      this.speaking = nextRuntime.speaking;
+      this.currentSegmentIndex = nextRuntime.currentSegmentIndex;
+    },
     startMockBackend() {
       if (this.unsubscribe) return;
-      this.unsubscribe = mockBackend.subscribe((event) =>
-        this.applyGatewayEvent(event),
-      );
+      this.unsubscribe = mockBackend.subscribe((event) => {
+        const desktopEvent = mockGatewayEventAdapter.toDesktopEvent(event);
+        if (desktopEvent) {
+          this.applyDesktopEvent(desktopEvent);
+        }
+      });
       mockBackend.connect();
     },
     stopMockBackend() {
       mockBackend.disconnect();
       this.unsubscribe?.();
       this.unsubscribe = null;
+      this.activePlan = null;
+      this.activePresentation = null;
     },
     submitUserMessage(text: string) {
       const trimmed = text.trim();
       if (!trimmed) return;
-      this.transcript.unshift({
-        id: crypto.randomUUID(),
-        role: "user",
-        text: trimmed,
+      this.applyDesktopEvent({
+        type: "user.message.submitted",
+        source: "local",
         at: new Date().toISOString(),
+        sessionId: this.sessionId,
+        text: trimmed,
       });
       mockBackend.submitUserMessage(trimmed);
     },
@@ -284,17 +346,31 @@ export const useDesktopStore = defineStore("desktop", {
       const segment = this.activePlan.segments[index];
       if (!segment) return;
       const expressionKey = segment.expression ?? segment.emotion ?? "neutral";
-      this.currentSegmentIndex = index;
-      this.currentEmotion =
+      const emotion =
         segment.emotion ??
         (isDisplayEmotion(expressionKey) ? expressionKey : "neutral");
-      this.currentExpressionKey = expressionKey;
-      this.currentMotion = segment.motion ?? "speaking";
-      this.speaking = true;
+      this.syncPetRuntime({
+        status: "speaking",
+        renderMode: "speaking",
+        emotion,
+        expressionKey,
+        motion: segment.motion ?? "speaking",
+        speaking: true,
+        currentSegmentIndex: index,
+        activePresentationId: this.activePresentation?.id ?? null,
+        bubbleText: segment.text,
+        lastEventAt: new Date().toISOString(),
+      });
     },
     finishSpeaking() {
-      this.speaking = false;
-      this.currentMotion = "idle";
+      this.syncPetRuntime({
+        status: "emerged",
+        renderMode: renderModeForPerformanceMode(
+          this.localConfig.performanceMode,
+        ),
+        motion: "idle",
+        speaking: false,
+      });
     },
     selectModel(modelId: string) {
       const model = this.models.find((candidate) => candidate.id === modelId);
@@ -305,9 +381,15 @@ export const useDesktopStore = defineStore("desktop", {
       this.motionOptions = [];
       this.expressionMapVersion += 1;
       this.motionMapVersion += 1;
-      this.currentMotion = "idle";
-      this.currentExpressionKey = this.currentEmotion;
-      this.speaking = false;
+      this.localConfig = withModelMappingConfig(this.localConfig, model);
+      this.syncPetRuntime({
+        renderMode: renderModeForPerformanceMode(
+          this.localConfig.performanceMode,
+        ),
+        motion: "idle",
+        expressionKey: this.currentEmotion,
+        speaking: false,
+      });
     },
     setModelExpressions(expressions: Live2DExpressionOption[]) {
       this.expressionOptions = expressions;
@@ -346,9 +428,10 @@ export const useDesktopStore = defineStore("desktop", {
       this.models = this.models.map((model) =>
         model.id === nextModel.id ? nextModel : model,
       );
+      this.localConfig = withModelMappingConfig(this.localConfig, nextModel);
       writePersistedExpressionMap(nextModel.id, nextExpressionMap);
       if (this.currentExpressionKey === previousKeyword) {
-        this.currentExpressionKey = cleanKeyword;
+        this.syncPetRuntime({ expressionKey: cleanKeyword });
       }
       this.expressionMapVersion += 1;
     },
@@ -372,9 +455,10 @@ export const useDesktopStore = defineStore("desktop", {
       this.models = this.models.map((model) =>
         model.id === nextModel.id ? nextModel : model,
       );
+      this.localConfig = withModelMappingConfig(this.localConfig, nextModel);
       writePersistedExpressionMap(nextModel.id, nextExpressionMap);
       if (this.currentExpressionKey === cleanKeyword) {
-        this.currentExpressionKey = this.currentEmotion;
+        this.syncPetRuntime({ expressionKey: this.currentEmotion });
       }
       this.expressionMapVersion += 1;
     },
@@ -387,9 +471,17 @@ export const useDesktopStore = defineStore("desktop", {
       this.currentEmotion = isDisplayEmotion(cleanKeyword)
         ? cleanKeyword
         : "neutral";
-      this.currentExpressionKey = cleanKeyword;
-      this.currentMotion = "idle";
-      this.speaking = false;
+      this.syncPetRuntime({
+        status: "emerged",
+        renderMode: renderModeForPerformanceMode(
+          this.localConfig.performanceMode,
+        ),
+        emotion: this.currentEmotion,
+        expressionKey: cleanKeyword,
+        motion: "idle",
+        speaking: false,
+        lastEventAt: new Date().toISOString(),
+      });
       this.expressionMapVersion += 1;
     },
     previewEmotion(emotion: DisplayEmotion) {
@@ -410,63 +502,131 @@ export const useDesktopStore = defineStore("desktop", {
       this.models = this.models.map((model) =>
         model.id === nextModel.id ? nextModel : model,
       );
+      this.localConfig = withModelMappingConfig(this.localConfig, nextModel);
       writePersistedMotionMap(nextModel.id, nextMotionMap);
       this.motionMapVersion += 1;
     },
     previewMotion(motion: DisplayMotion) {
       if (!displayMotions.includes(motion)) return;
-      this.currentMotion = motion;
-      this.speaking = motion !== "idle";
+      const speaking = motion !== "idle";
+      this.syncPetRuntime({
+        status: speaking ? "speaking" : "emerged",
+        renderMode: renderModeForPerformanceMode(
+          this.localConfig.performanceMode,
+          speaking,
+        ),
+        motion,
+        speaking,
+        lastEventAt: new Date().toISOString(),
+      });
       this.motionMapVersion += 1;
     },
-    applyGatewayEvent(event: MockGatewayEvent) {
+    applyDesktopEvent(event: DesktopEvent) {
       switch (event.type) {
-        case "gateway.connected":
-          this.connected = true;
-          this.currentEmotion = "happy";
-          this.currentExpressionKey = "happy";
-          this.currentMotion = "idle";
-          this.transcript.unshift({
-            id: crypto.randomUUID(),
-            role: "system",
-            text: "Mock backend connected.",
-            at: event.at,
+        case "connection.changed":
+          this.connected = event.connected;
+          if (event.connected) {
+            this.syncPetRuntime({
+              status: "emerged",
+              renderMode: renderModeForPerformanceMode(
+                this.localConfig.performanceMode,
+              ),
+              emotion: "happy",
+              expressionKey: "happy",
+              motion: "idle",
+              speaking: false,
+              lastEventAt: event.at,
+            });
+            this.transcript.unshift({
+              id: crypto.randomUUID(),
+              role: "system",
+              text: "Mock backend connected.",
+              at: event.at,
+            });
+          } else {
+            this.syncPetRuntime({
+              status: "error",
+              renderMode: renderModeForPerformanceMode(
+                this.localConfig.performanceMode,
+              ),
+              emotion: "offline",
+              expressionKey: "offline",
+              motion: "idle",
+              speaking: false,
+              lastEventAt: event.at,
+            });
+          }
+          break;
+        case "message.started":
+          this.sessionId = event.sessionId;
+          this.syncPetRuntime({
+            status: "emerged",
+            renderMode: renderModeForPerformanceMode(
+              this.localConfig.performanceMode,
+            ),
+            emotion: "thinking",
+            expressionKey: "thinking",
+            motion: "idle",
+            speaking: false,
+            lastEventAt: event.at,
           });
           break;
-        case "gateway.disconnected":
-          this.connected = false;
-          this.currentEmotion = "offline";
-          this.currentExpressionKey = "offline";
-          this.currentMotion = "idle";
-          this.speaking = false;
-          break;
-        case "agent.message.started":
-          this.currentEmotion = "thinking";
-          this.currentExpressionKey = "thinking";
-          this.currentMotion = "idle";
-          this.speaking = false;
-          break;
-        case "agent.message.completed":
-          this.activePlan = event.displayPlan;
-          this.currentSegmentIndex = 0;
+        case "message.completed": {
+          const presentation = presentationPlanFromDesktopEvent(event);
+          if (!presentation) return;
+          this.sessionId = event.sessionId;
+          this.activePresentation = presentation;
+          this.activePlan = presentation.displayPlan;
           this.transcript.unshift({
             id: crypto.randomUUID(),
             role: "assistant",
-            text: event.displayPlan.text,
+            text: presentation.displayPlan.text,
             at: event.at,
-            displayPlan: event.displayPlan,
+            displayPlan: presentation.displayPlan,
           });
           this.setSegment(0);
           break;
-        case "plugin.error":
-          this.currentEmotion = "error";
-          this.currentExpressionKey = "error";
-          this.currentMotion = "idle";
+        }
+        case "notification.error": {
+          const presentation = presentationPlanFromDesktopEvent(event);
+          this.activePresentation = presentation;
+          this.activePlan = presentation?.displayPlan ?? this.activePlan;
+          if (presentation) {
+            this.syncPetRuntime({
+              status: "error",
+              renderMode: renderModeForPerformanceMode(
+                this.localConfig.performanceMode,
+              ),
+              emotion: "error",
+              expressionKey: "error",
+              motion: "idle",
+              speaking: false,
+              currentSegmentIndex: 0,
+              activePresentationId: presentation.id,
+              bubbleText: presentation.bubbleText,
+              lastEventAt: event.at,
+            });
+          }
           this.transcript.unshift({
             id: crypto.randomUUID(),
             role: "system",
             text: event.message,
             at: event.at,
+          });
+          break;
+        }
+        case "user.message.submitted":
+          this.sessionId = event.sessionId;
+          this.transcript.unshift({
+            id: crypto.randomUUID(),
+            role: "user",
+            text: event.text,
+            at: event.at,
+          });
+          this.syncPetRuntime({
+            status: "chat",
+            renderMode: "active",
+            lastEventAt: event.at,
           });
           break;
       }

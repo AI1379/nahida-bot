@@ -42,7 +42,22 @@ function hasMotionReferences(
   return Object.values(motions ?? {}).some((items) => items.length > 0);
 }
 
+const modelJsonCache = new Map<string, { mtime: number; result: string | null }>();
+
 function modelJsonWithLocalReferences(filePath: string): string | null {
+  const stat = statSync(filePath);
+  const cached = modelJsonCache.get(filePath);
+  if (cached && cached.mtime === stat.mtimeMs) return cached.result;
+
+  const result = modelJsonWithLocalReferencesInner(filePath, stat.mtimeMs);
+  return result;
+}
+
+function modelJsonWithLocalReferencesInner(
+  filePath: string,
+  mtime: number,
+): string | null {
+  let result: string | null = null;
   try {
     const source = JSON.parse(readFileSync(filePath, "utf8")) as {
       FileReferences?: {
@@ -96,11 +111,15 @@ function modelJsonWithLocalReferences(filePath: string): string | null {
     }
 
     if (!patched && !refs.Expressions?.length && !hasMotionReferences(refs.Motions)) {
+      modelJsonCache.set(filePath, { mtime, result: null });
       return null;
     }
 
-    return JSON.stringify(source);
+    result = JSON.stringify(source);
+    modelJsonCache.set(filePath, { mtime, result });
+    return result;
   } catch {
+    modelJsonCache.set(filePath, { mtime, result: null });
     return null;
   }
 }

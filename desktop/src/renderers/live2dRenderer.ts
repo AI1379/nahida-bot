@@ -2,6 +2,7 @@ import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display/cubism4";
 
 import type { DisplayEmotion, DisplayMotion } from "@/domain/displayPlan";
+import type { RenderMode } from "@/domain/runtime";
 import type {
   Live2DExpressionOption,
   Live2DModelManifest,
@@ -14,8 +15,6 @@ declare global {
     Live2DCubismCore?: unknown;
   }
 }
-
-export type RenderMode = "suspended" | "idle" | "speaking" | "active";
 
 export interface Live2DRenderer {
   loadModel(manifest: Live2DModelManifest): Promise<void>;
@@ -621,6 +620,12 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.parameterOverrides.clear();
     this.partOpacityOverrides.clear();
     this.runtimeParameterOverrides.clear();
+
+    // Remove ticker callbacks before destroying to prevent post-dispose ticks
+    if (this.app) {
+      this.app.ticker.remove(this.applyRuntimeParameterMotion);
+      this.app.ticker.remove(this.applyDebugOverrides);
+    }
 
     if (this.model) {
       this.model.destroy({ children: true, texture: true, baseTexture: true });

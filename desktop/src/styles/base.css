@@ -69,7 +69,8 @@ textarea {
   background: #fbfcfa;
 }
 
-input[type="search"] {
+input[type="search"],
+input[type="text"] {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -114,6 +115,28 @@ input[type="range"] {
   justify-content: flex-end;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.view-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.view-switch button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 0;
+  padding-inline: 12px;
+  background: transparent;
+}
+
+.view-switch button.is-active {
+  color: #153a27;
+  background: #e5f5ea;
 }
 
 .hero-band p,
@@ -164,6 +187,38 @@ input[type="range"] {
   display: grid;
   grid-template-columns: minmax(420px, 1fr) minmax(340px, 420px);
   gap: 16px;
+}
+
+.pet-runtime {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: grid;
+}
+
+.pet-runtime .stage {
+  min-height: calc(100vh - 128px);
+}
+
+.pet-runtime__composer {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 7;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: min(560px, calc(100% - 36px));
+  border: 1px solid rgb(255 255 255 / 78%);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgb(255 255 255 / 86%);
+  box-shadow: 0 14px 34px rgb(22 32 26 / 14%);
+  transform: translateX(-50%);
+}
+
+.pet-runtime__composer input {
+  min-height: 38px;
 }
 
 .stage {

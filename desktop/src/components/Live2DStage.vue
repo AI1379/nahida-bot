@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import type { DisplayEmotion, DisplayMotion } from "@/domain/displayPlan";
+import type { RenderMode } from "@/domain/runtime";
 import type {
   Live2DExpressionOption,
   Live2DModelManifest,
@@ -11,16 +12,22 @@ import Live2DDebugPanel from "@/components/Live2DDebugPanel.vue";
 import type { Live2DDebugSnapshot } from "@/renderers/live2dRenderer";
 import { WebLive2DRenderer } from "@/renderers/live2dRenderer";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   emotion: DisplayEmotion;
   expressionKey: string;
   motion: DisplayMotion;
+  renderMode: RenderMode;
   model: Live2DModelManifest;
   speaking: boolean;
   captionText: string;
   expressionMapVersion: number;
   motionMapVersion: number;
-}>();
+  debugEnabled?: boolean;
+  devChrome?: boolean;
+}>(), {
+  debugEnabled: true,
+  devChrome: true,
+});
 
 const emit = defineEmits<{
   expressionsLoaded: [expressions: Live2DExpressionOption[]];
@@ -32,7 +39,8 @@ const renderer = ref<WebLive2DRenderer | null>(null);
 const loadState = ref<"loading" | "ready" | "fallback">("loading");
 const loadError = ref("");
 const debugOpen = ref(
-  new URLSearchParams(window.location.search).get("debugLive2D") === "1",
+  props.debugEnabled &&
+    new URLSearchParams(window.location.search).get("debugLive2D") === "1",
 );
 const debugSnapshot = ref<Live2DDebugSnapshot | null>(null);
 
@@ -65,7 +73,7 @@ async function loadLive2D() {
     renderer.value = live2dRenderer;
     await live2dRenderer.loadModel(props.model);
     await live2dRenderer.setExpression(props.expressionKey, props.emotion);
-    live2dRenderer.setFpsMode(props.speaking ? "speaking" : "idle");
+    live2dRenderer.setFpsMode(props.renderMode);
     loadState.value = "ready";
     refreshDebugSnapshot();
   } catch (error) {
@@ -148,21 +156,22 @@ watch(
   () => {
     void renderer.value
       ?.setExpression(props.expressionKey, props.emotion)
-      .then(refreshDebugSnapshot);
+      .then(refreshDebugSnapshot)
+      .catch(() => {});
   },
 );
 
 watch(
   () => [props.motion, props.motionMapVersion] as const,
   () => {
-    void renderer.value?.playMotion(props.motion).then(refreshDebugSnapshot);
+    void renderer.value?.playMotion(props.motion).then(refreshDebugSnapshot).catch(() => {});
   },
 );
 
 watch(
-  () => props.speaking,
+  () => props.renderMode,
   () => {
-    renderer.value?.setFpsMode(props.speaking ? "speaking" : "idle");
+    renderer.value?.setFpsMode(props.renderMode);
   },
 );
 
@@ -179,7 +188,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="stage" aria-label="Live2D preview stage">
-    <div class="stage__status">
+    <div v-if="props.devChrome" class="stage__status">
       <span>{{ props.model.name }}</span>
       <span>{{ props.expressionKey }}</span>
       <span>{{ expressionLabel }}</span>
@@ -189,6 +198,7 @@ onBeforeUnmount(() => {
     <div ref="live2dHost" class="live2d-host" :data-state="loadState"></div>
 
     <button
+      v-if="props.debugEnabled"
       type="button"
       class="stage__debug-toggle"
       :disabled="loadState !== 'ready'"
@@ -198,7 +208,7 @@ onBeforeUnmount(() => {
     </button>
 
     <Live2DDebugPanel
-      v-if="debugOpen"
+      v-if="props.debugEnabled && debugOpen"
       :snapshot="debugSnapshot"
       @close="debugOpen = false"
       @refresh="refreshDebugSnapshot"
@@ -236,7 +246,7 @@ onBeforeUnmount(() => {
       <span>{{ loadError || props.model.entry }}</span>
     </div>
 
-    <div class="stage__caption">
+    <div v-if="props.devChrome" class="stage__caption">
       <strong>{{ props.emotion }}</strong>
       <span>{{ props.expressionKey }}</span>
       <span>{{ props.speaking ? "TTS speaking" : "idle" }}</span>

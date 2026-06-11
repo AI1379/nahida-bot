@@ -1,0 +1,100 @@
+import type { PerformanceMode } from "./config";
+import type { DisplayEmotion, DisplayMotion, DisplayPlan } from "./displayPlan";
+
+export type DesktopEventSource = "local" | "mock" | "gateway";
+export type RenderMode = "suspended" | "idle" | "speaking" | "active";
+
+export type PetRuntimeStatus =
+  | "hidden"
+  | "peek"
+  | "emerging"
+  | "emerged"
+  | "speaking"
+  | "chat"
+  | "retreating"
+  | "error";
+
+interface DesktopEventBase {
+  source: DesktopEventSource;
+  at: string;
+  sessionId?: string;
+}
+
+export type DesktopEvent =
+  | (DesktopEventBase & {
+      type: "connection.changed";
+      connected: boolean;
+      reason?: string;
+    })
+  | (DesktopEventBase & {
+      type: "message.started";
+      sessionId: string;
+    })
+  | (DesktopEventBase & {
+      type: "message.completed";
+      sessionId: string;
+      displayPlan: DisplayPlan;
+    })
+  | (DesktopEventBase & {
+      type: "notification.error";
+      message: string;
+    })
+  | (DesktopEventBase & {
+      type: "user.message.submitted";
+      source: "local";
+      sessionId: string;
+      text: string;
+    });
+
+export interface PresentationPlan {
+  id: string;
+  source: DesktopEventSource;
+  targetSessionId?: string;
+  displayPlan: DisplayPlan;
+  bubbleText: string;
+  ttsEnabled: boolean;
+  interruption: "replace" | "queue";
+  createdAt: string;
+}
+
+export interface PetRuntimeState {
+  status: PetRuntimeStatus;
+  renderMode: RenderMode;
+  emotion: DisplayEmotion;
+  expressionKey: string;
+  motion: DisplayMotion;
+  speaking: boolean;
+  currentSegmentIndex: number;
+  activePresentationId: string | null;
+  bubbleText: string;
+  clickThrough: boolean;
+  interactionMode: "click_through" | "interactive";
+  lastEventAt: string | null;
+}
+
+export function createInitialPetRuntimeState(): PetRuntimeState {
+  return {
+    status: "hidden",
+    renderMode: "idle",
+    emotion: "neutral",
+    expressionKey: "neutral",
+    motion: "idle",
+    speaking: false,
+    currentSegmentIndex: 0,
+    activePresentationId: null,
+    bubbleText: "",
+    clickThrough: true,
+    interactionMode: "click_through",
+    lastEventAt: null,
+  };
+}
+
+export function renderModeForPerformanceMode(
+  performanceMode: PerformanceMode,
+  speaking = false,
+): RenderMode {
+  if (speaking) return "speaking";
+  if (performanceMode === "power_saver") return "suspended";
+  if (performanceMode === "active") return "active";
+  return "idle";
+}

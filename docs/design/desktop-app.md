@@ -13,6 +13,8 @@
 
 Nahida Bot 当前已经具备 Python core、FastAPI Gateway、Vue WebUI、插件系统和多 Channel 接入。后续计划增加一个 Desktop App，作为常驻桌面端入口，与 Nahida Bot 建立连接，并通过 Live2D 实现桌宠形态。
 
+Desktop App 的产品形态不是 WebUI 的运维面板，也不是单纯的 Live2D 调试器。首版应更接近一个边缘隐藏式桌面助手：平时贴在屏幕角落或边缘，只露出一个小的提示部件；当鼠标靠近、Gateway 推送通知、CRON 消息到达、番茄钟到点等事件发生时，再从屏幕边缘唤出 Live2D、气泡文本和轻量输入框。
+
 Desktop App 的技术方向暂定为：
 
 - **Tauri + Rust**：负责原生窗口、托盘、系统权限、配置存储、WebSocket 连接与打包。
@@ -33,6 +35,9 @@ Desktop App 的技术方向暂定为：
 - 为 Python node、Rust/Tauri desktop node、未来其他语言 node 预留一致协议。
 - 支持 Live2D 桌宠能力通过 capability 暴露给 Nahida Bot，例如设置表情、播放动作、展示通知。
 - 保持 Desktop App 与现有 WebUI 共享 Gateway API、事件模型和必要的 TypeScript client。
+- 提供边缘隐藏、鼠标靠近唤出、通知唤出、气泡对话和轻量输入体验，而不是默认显示完整控制台。
+- 支持 Desktop 本地轻量功能，例如番茄钟提醒；更高风险的摄像头/OpenCV 久坐提醒应作为后续可选能力单独授权。
+- 实施顺序上优先完成纯本地 Live2D 桌宠闭环，再接入 Gateway Client 和 Gateway-Node，降低与 Gateway 分支并行开发时的冲突。
 
 ### 2.2 非目标
 
@@ -41,6 +46,8 @@ Desktop App 的技术方向暂定为：
 - 不把 Desktop App 做成 WebUI 的换皮版本。WebUI 是运维面板，Desktop App 是常驻交互端。
 - 不在协议未稳定前引入复杂二进制协议、protobuf 或跨语言代码生成流水线。
 - 不在 V1 中开放高权限本机执行能力。Desktop Node 的 capability 必须显式声明、显式授权和可审计。
+- 不在首版承诺任意第三方 Live2D 模型自动具备挥手、指向、特殊姿态等动作；缺失贴图、ArtMesh 或参数时只能降级表现。
+- 不实现逐帧 Live2D 参数曲线编辑器。Desktop 只提供语义映射、预览和少量校准工具，不复刻 Cubism Editor。
 
 ## 3. 仓库组织决策
 
@@ -109,14 +116,62 @@ packages:
 
 ## 4. 产品与架构边界
 
-Desktop App 有两个阶段性的角色：
+Desktop App 有三个阶段性的角色。前两个是产品可用路径，第三个是长期架构形态：
 
 | 阶段 | 角色 | 通信方式 | 说明 |
 |------|------|----------|------|
-| V1 | Gateway Client | REST + SSE | 连接已有 Gateway，发送消息、读取状态、接收实时事件，驱动 Live2D 表现 |
+| Local | Desktop Local Runtime | Mock/local events | 不连接 Gateway，先完成 Live2D、贴边窗口、气泡、TTS、番茄钟和配置体验 |
+| V1 | Gateway Client | REST + SSE | 连接已有 Gateway，发送消息、读取状态、接收实时事件，驱动边缘桌宠与 Live2D 表现 |
 | V2 | Desktop Node | WebSocket Gateway-Node | 注册节点能力，接受 Gateway 调用，向 Gateway 上报本机状态和桌宠事件 |
 
-V1 不需要等待完整 Gateway-Node 实现，可以复用现有 Gateway 能力快速形成桌宠体验。V2 再将桌宠能力纳入统一 node capability 体系。
+开发顺序应先做 Local，再接 V1 Gateway Client，最后升级 V2 Desktop Node。这样 Live2D 表现、窗口状态机、模型映射和本地提醒都能在一个分支里独立收敛；Gateway 接入只作为事件源和消息发送适配层接进来，避免在桌宠体验还不稳定时同时修改 Gateway-Node 协议导致频繁 merge。
+
+V1 不需要等待完整 Gateway-Node 实现，可以复用现有 Gateway 能力形成真实消息体验。V2 再将桌宠能力纳入统一 node capability 体系。
+
+### 4.1 首版产品形态
+
+首版产品目标应围绕一个常驻但低打扰的桌面助手，而不是全屏或常显控制面板：
+
+```text
+hidden at edge
+      │
+      ├── mouse near edge / tray action
+      ├── Gateway notification / CRON delivery
+      ├── local pomodoro timer
+      ▼
+peek / emerge animation
+      │
+      ▼
+Live2D + speech bubble + compact input
+      │
+      ├── optional TTS playback
+      ├── lip-sync parameter animation
+      ├── DisplayPlan expression/motion
+      └── send user reply into current session
+      │
+      ▼
+auto retreat / stay pinned by user
+```
+
+建议首版固定默认模型和默认窗口位置，先把“贴边隐藏、唤出、通知气泡、TTS/口型、输入框回复同一 session”做通。当前 Live2D Debug、Expression Map 和 Motion Map 属于设置/调试能力，应退到配置界面，而不是主体验第一屏。
+
+Local 阶段不应等待 Gateway。它需要提供一套本地事件源和 mock 回复能力，让以下体验可以独立调通：
+
+- 手动触发通知、回复、错误、思考中、TTS 播放等状态。
+- 本地番茄钟触发提醒。
+- 直接输入一段文本或 DisplayPlan，验证气泡、TTS、口型、expression、motion 和收回逻辑。
+- 用 Debug/Mapping 面板调整模型表现，但主体验仍然是边缘桌宠。
+
+Gateway Client 后续只需要把 Gateway 事件转换成同一种 `DesktopEvent`，并把气泡输入框里的用户回复发送回当前 session。Live2D renderer、pet window 状态机和 TTS pipeline 不应直接依赖 Gateway API。
+
+本地功能可以分层处理：
+
+| 功能 | 首版策略 |
+|------|----------|
+| Gateway 消息通知 | 触发唤出、气泡、可选 TTS |
+| CRON 消息投送 | 作为 Gateway/插件事件进入同一通知 pipeline |
+| 番茄钟 | Desktop 本地轻量功能，可直接触发桌宠提醒 |
+| 久坐/摄像头提醒 | 后置能力，需要显式权限、隐私提示和可关闭设置 |
 
 整体结构：
 
@@ -486,9 +541,10 @@ Tauri Rust side 负责：
 
 - Gateway 地址和 token 管理。
 - WebSocket 连接、重连、心跳。
-- 托盘、窗口置顶、透明 pet window、拖拽、全局快捷键。
-- pet window 的点击穿透/交互模式切换。
+- 托盘、窗口置顶、透明 pet window、贴边隐藏、拖拽、全局快捷键。
+- pet window 的点击穿透、交互模式、鼠标靠近唤出、自动收回。
 - 系统通知。
+- 本地轻量定时器，例如番茄钟。
 - 本地配置和安全存储。
 - 将 Gateway 事件转发给 WebView。
 - 将 WebView 操作转为 Gateway request。
@@ -498,12 +554,12 @@ Tauri Rust side 负责：
 WebView frontend 负责：
 
 - Live2D WebGL 渲染。
-- 桌宠状态机：idle、thinking、speaking、error、disconnected。
-- 简单输入框或快捷命令。
+- 桌宠状态机：hidden、peek、emerging、idle、thinking、speaking、chat、retreating、error、disconnected。
+- 贴边提示部件、气泡文本、紧凑输入框或快捷命令。
 - 连接状态、当前 session、消息提示。
 - 表情和动作映射。
 - TTS 播放状态、字幕分段和口型驱动。
-- 用户模型管理 UI：导入、预览、切换、动作映射配置。
+- 模型调试与映射配置 UI：表情预览、动作预览、语义标签映射。
 - 渲染性能模式 UI：省电、平衡、活跃。
 - 可选的轻量设置页。
 
@@ -586,8 +642,9 @@ DisplayPlan 示例：
 - 输入可以是纯文本、完整 `DisplayPlan` JSON、`metadata.display_plan` 包装结构，或 provider envelope 中的 `choices[0].message.content`。
 - 外部 wire format 优先使用 snake_case，例如 `pause_after_ms`；前端内部状态统一为 camelCase，例如 `pauseAfterMs`。
 - `emotion` 保持少量内置基础状态；`expression` 是可由用户在 Expression Map 面板维护的 DisplayPlan 关键词，用来映射当前模型的具体 expression。
-- `motion` 优先播放模型 manifest 中声明的 `.motion3.json`；缺失或播放失败时，前端用常见 Live2D 参数执行 nod/point/wave/notify/speaking 的基础 fallback。
+- `motion` 通过 Motion Map 面板映射到模型原生 `.motion3.json`、Base 参数动作或 None；缺失或播放失败时可降级到常见 Live2D 参数动作。
 - 当前模型的 `DisplayPlan keyword -> expression` 映射由前端 Expression Map 面板维护，mock 阶段保存到本地浏览器存储；后续 Tauri 版本迁移到 app data 配置。
+- 当前模型的 `DisplayPlan motion -> model/base/none` 映射由前端 Motion Map 面板维护，mock 阶段保存到本地浏览器存储；后续 Tauri 版本迁移到 app data 配置。
 - 解析失败或非法枚举时降级为纯文本 + `neutral` 表情，不阻塞字幕和 transcript。
 
 真实 Gateway 接入时不建议强制主 Agent 把用户可见回复直接写成 JSON。更稳妥的边界是：
@@ -733,7 +790,22 @@ motion_map:
 
 ### 9.7 用户自定义模型
 
-Desktop App 应支持用户导入自己的 Live2D 模型，但必须做安全和兼容性约束。
+用户自定义模型应作为可选扩展能力，而不是首版主体验的前置条件。首版建议先固定默认模型，把贴边隐藏、唤出、通知、气泡、TTS 和输入框体验做完整；用户导入模型可以在后续版本加入。
+
+兼容性边界必须明确：Desktop App 可以帮助用户加载模型、预览表情和动作、配置 expression/motion/lip-sync 映射，但不能让模型拥有作者没有制作的贴图、ArtMesh、参数或 motion。第三方模型如果要完整适配 Nahida Desktop，需要模型作者或用户自行提供相应动作、表情、参数命名或映射配置。
+
+因此用户模型支持采取 **best-effort** 策略：
+
+| 能力 | 策略 |
+|------|------|
+| 加载模型 | 支持标准 Cubism `.model3.json` 入口 |
+| 表情 | 扫描 `.exp3.json`，用户通过 Expression Map 映射语义关键词 |
+| 动作 | 扫描 `.motion3.json`，用户通过 Motion Map 映射语义动作 |
+| Base 动作 | 使用常见参数做轻量降级，例如点头、提示、说话姿态 |
+| 口型 | 优先读 lip-sync 声明，再尝试 `ParamMouthOpenY` 等常见参数 |
+| 缺失能力 | 明确提示，不自动生成缺失贴图或复杂动作 |
+
+不应把参数曲线编辑做成逐帧编辑器。可接受的校准粒度是：参数选择、强度、方向、时长、默认缩放和位置。逐帧曲线、复杂部件变形和贴图制作仍应交给 Cubism Editor 或模型作者处理。
 
 导入流程：
 
@@ -796,8 +868,10 @@ Desktop App 应支持用户导入自己的 Live2D 模型，但必须做安全和
     "worried": ["sad"]
   },
   "motion_map": {
-    "idle": { "group": "Idle", "index": 0 },
-    "wave": { "group": "Gesture", "index": 0 }
+    "idle": { "source": "model", "group": "Idle", "index": 0 },
+    "wave": { "source": "model", "group": "Gesture", "index": 0 },
+    "nod": { "source": "procedural", "motion": "nod" },
+    "point": { "source": "none" }
   },
   "lip_sync": {
     "enabled": true,
@@ -813,7 +887,9 @@ UI 上应提供：
 - 切换当前模型。
 - 预览表情。
 - 预览动作。
-- 配置语义标签到模型动作/表情的映射。
+- 配置 DisplayPlan keyword 到模型 expression 的映射。
+- 配置 DisplayPlan motion 到模型原生 motion、Base 动作或 None 的映射。
+- 校准口型参数、默认缩放、默认位置和贴边露出区域。
 - 检测并提示缺失的动作、表情、贴图或 lip-sync 参数。
 
 ### 9.8 性能预算与渲染策略
@@ -931,6 +1007,52 @@ Desktop App 应拆成两类窗口：
 
 点击穿透需要 native window 能力。CSS `pointer-events: none` 只能影响 WebView 内部事件，不能让点击穿透到操作系统下面的窗口。Tauri 的 `setIgnoreCursorEvents(true)` 可以让整个窗口忽略鼠标事件，但它不是按透明像素做自动 hit-test。
 
+`pet` window 的默认产品状态不是完整显示，而是贴边隐藏：
+
+```text
+hidden
+  - 窗口贴在屏幕右下角或用户选择的边缘
+  - 只露出小叶子、发饰、气泡点或其它轻量提示部件
+  - 低 fps 或暂停 Live2D 主渲染
+
+peek
+  - 鼠标靠近边缘、托盘点击、快捷键或事件触发
+  - 短动画露出提示部件和小气泡
+
+emerged
+  - Live2D 主体从边缘滑出
+  - 显示气泡文本、TTS/口型、DisplayPlan 表情和动作
+
+chat
+  - 用户点击气泡或输入框后进入交互模式
+  - 当前消息发送到关联 session
+  - 暂时关闭 click-through，允许输入和拖拽
+
+retreat
+  - TTS 结束、气泡超时、失焦或用户关闭后收回边缘
+  - 回到 hidden 或 peek
+```
+
+通知 pipeline 建议统一处理 Gateway 事件、本地番茄钟和后续其它本地提醒：
+
+```text
+DesktopEvent
+  ├── gateway message / CRON delivery
+  ├── local pomodoro timer
+  └── future posture reminder
+        │
+        ▼
+Notification presentation plan
+        │
+        ├── bubble text
+        ├── optional TTS
+        ├── display_plan
+        └── target session
+        │
+        ▼
+pet window emerge + speak + compact reply box
+```
+
 首版采用 **方案 A：整窗穿透 + 手动交互模式**：
 
 ```text
@@ -956,6 +1078,42 @@ Desktop App 应拆成两类窗口：
 | C | 基于 Live2D drawable/hit area/alpha mask 的不规则命中 | 高 |
 
 方案 C 需要 Rust/native 层追踪全局鼠标位置，因为窗口处于 click-through 后 WebView 收不到 `mousemove`。该方案后置。
+
+### 9.11 本地优先运行时边界
+
+为了避免 Desktop 与 Gateway-Node 分支互相阻塞，Desktop 前几轮实现应把 Gateway 看成可插拔事件源，而不是核心依赖。推荐内部先形成下面这条本地 pipeline：
+
+```text
+Local trigger / mock DisplayPlan / pomodoro
+      │
+      ▼
+DesktopEvent
+      │
+      ▼
+PresentationPlanner
+      │
+      ▼
+PetRuntime state machine
+      │
+      ├── pet window position / hidden / peek / emerged / retreat
+      ├── bubble text / compact input
+      ├── TTS playback / lip-sync
+      └── Live2D expression / motion / render mode
+```
+
+核心模块边界建议如下：
+
+| 模块 | 职责 |
+|------|------|
+| `DesktopEventBus` | 接收本地 mock、番茄钟、用户输入和后续 Gateway 事件 |
+| `PresentationPlanner` | 把事件转换成气泡、TTS、DisplayPlan、目标 session 和打断策略 |
+| `PetRuntime` | 管理 hidden、peek、emerging、speaking、chat、retreating 等状态 |
+| `Live2DPresentationController` | 统一调度 expression、motion、lip-sync、idle 和渲染模式 |
+| `ModelMappingStore` | 保存当前模型的 expression map、motion map、口型参数、缩放和贴边露出配置 |
+| `LocalTtsAdapter` | 首版可使用系统语音或 Web Speech，失败时只显示字幕 |
+| `GatewayEventAdapter` | 后续把 Gateway REST/SSE/WebSocket 事件转换成同一种 `DesktopEvent` |
+
+这样可以先在纯本地环境完成可视表现、窗口行为和调试工具，再把真实 Gateway 消息接入同一入口。Gateway 接入不应修改 Live2D renderer 的核心逻辑，也不应让 pet window 状态机直接读取 Gateway store。
 
 ## 10. Gateway API 需求
 
@@ -1110,9 +1268,11 @@ Desktop App 需要保存：
 | `display_mapping` | 语义 emotion/motion 到当前模型资源的映射 |
 | `tts_settings` | TTS voice、speed、pitch、音量等用户偏好 |
 | `window_state` | 位置、大小、置顶、透明度 |
-| `pet_window_state` | pet window 位置、大小、click-through、交互模式 |
+| `pet_window_state` | pet window 位置、大小、贴边方向、露出尺寸、click-through、交互模式 |
 | `render_mode` | `suspended` / `idle` / `speaking` / `active` |
 | `performance_mode` | 省电、平衡、活跃 |
+| `notification_preferences` | 是否自动唤出、是否自动 TTS、气泡停留时长 |
+| `pomodoro_settings` | 番茄钟时长、休息时长、提醒文案和启用状态 |
 | `preferences` | 用户设置 |
 
 ### 13.2 Gateway 节点状态
@@ -1143,6 +1303,7 @@ Gateway 需要保存或维护：
 | Live2D 渲染失败 | UI 退回简化状态，不影响 Gateway 连接 |
 | 用户模型缺少动作 | fallback 到 idle 或 neutral，提示用户配置映射 |
 | 用户模型缺少 lip-sync 参数 | 禁用口型，TTS 和字幕继续工作 |
+| 用户模型不具备某动作所需贴图或 ArtMesh | 明确标记该动作不可用或降级为 Base 动作 |
 | DisplayPlan 解析失败 | 降级为纯文本回复，不执行动作 |
 | TTS 合成失败 | 显示文本并播放默认表情，不阻塞消息 |
 | WebGL context 丢失 | 释放并重建 renderer，失败则降级为静态状态 |
@@ -1188,41 +1349,101 @@ Gateway 需要保存或维护：
 - 用户导入模型后能预览表情和动作。
 - 缺失 lip-sync 参数的模型不会导致播放崩溃。
 - TTS 播放时口型参数有可见变化。
+- hidden / peek / emerged / chat / retreat 状态切换符合预期。
+- Gateway 通知、CRON 投送和番茄钟提醒能进入同一气泡展示 pipeline。
+- 气泡输入框能向当前 session 发送回复。
 - click-through 默认不拦截桌面点击。
 - 交互模式下可以拖拽或点击桌宠。
 - idle / speaking / active 模式下 fps 符合预算。
 
 ## 16. 实施路线
 
-### Phase 0：设计与协议草案
+当前实施顺序调整为 **Local-first**。Phase 1 到 Phase 4 不依赖 Gateway，也不修改 Gateway-Node 协议；它们只在 `desktop/` 内把 Live2D 桌宠体验做成可本地验证的闭环。Gateway Client 和 Gateway-Node 放到后续阶段，以减少与协议分支并行开发时的冲突。
+
+### Phase 0：当前分支收敛
+
+- [x] 保留已有 Live2D renderer、Debug Panel、Expression Map、Motion Map 和 DisplayPlan mock 能力。
+- [x] 把现有工作台定位为开发/设置界面，不再作为主产品第一屏。
+- [x] 明确 Desktop 内部事件模型：`DesktopEvent`、`PresentationPlan`、`PetRuntimeState`。
+- [x] 明确本地配置边界：模型 manifest、expression map、motion map、lip-sync、窗口位置和性能模式。
+- [x] 将后续 Gateway 接入定义为 `GatewayEventAdapter`，不让 renderer 或 pet state machine 直接依赖 Gateway API。
+
+验收口径：不连接 Gateway 时，开发者仍可通过本地 mock 面板完整预览文本、DisplayPlan、表情、动作和口型。
+
+### Phase 1：纯本地 Live2D 表现层
+
+- [ ] 收敛 `Live2DPresentationController`，统一管理 expression、motion、lip-sync 和 render mode。
+- [ ] 继续调优 Base 参数动作，例如 `nod`、`notify`、`speaking`、`peek`、`emerge`、`retreat`、`bounce`。
+- [ ] 明确 Base 动作边界：只用常见参数制造头部、身体、视线、眉毛、口型和物理惯性；不承诺生成模型没有的手臂或贴图动作。
+- [ ] 支持 motion fallback：优先模型原生 `.motion3.json`，其次 Base 参数动作，最后 None。
+- [ ] 支持 expression fallback：优先 DisplayPlan keyword 映射，其次 emotion 映射，最后 neutral 或保持当前表情。
+- [ ] 让 Debug Panel 同时展示模型原生 motion、Base motion、expression 和关键参数，便于调试当前模型。
+- [ ] 将动作参数从 renderer 中进一步整理成可维护 profile，避免在渲染器里堆大量临时常量。
+
+验收口径：输入一段本地 DisplayPlan 后，模型能稳定完成表情、动作、说话口型和 idle 恢复；动作速度、幅度和身体/头部比例可继续调参。
+
+### Phase 2：本地 Pet Window 与状态机
+
+- [ ] 新增或完善独立 `pet` transparent window。
+- [ ] 实现 `hidden`、`peek`、`emerging`、`emerged`、`speaking`、`chat`、`retreating`、`error` 状态机。
+- [ ] 将“从屏幕边缘爬出来”拆成两层：窗口/容器滑出动画负责位移，Live2D Base motion 负责头发、身体、头部和视线的惯性表现。
+- [ ] 实现贴边隐藏、露出部件、鼠标靠近唤出、自动收回。
+- [ ] 实现整窗 click-through 与手动交互模式，首版不做 per-pixel hit-test。
+- [ ] 实现主体验气泡文本和紧凑输入框；本阶段输入可先接本地 mock session。
+- [ ] 实现渲染模式切换：`suspended`、`idle`、`speaking`、`active`。
+
+验收口径：不连接 Gateway 时，桌宠可以贴边隐藏、被 hover/mock 事件唤出、展示气泡、进入输入模式、超时收回，并且默认不长期拦截桌面点击。
+
+### Phase 3：本地 DisplayPlan、TTS 与提醒 pipeline
+
+- [ ] 定义 Desktop 本地可消费的 `DisplayPlan` schema 和 parser。
+- [ ] 支持纯文本、完整 DisplayPlan、`metadata.display_plan` 包装结构和 provider envelope 的本地输入。
+- [ ] 实现 `PresentationPlanner`，把本地事件转换为气泡、TTS、DisplayPlan、目标 session 和打断策略。
+- [ ] 接入首版 `LocalTtsAdapter`，可先使用系统语音或 Web Speech；失败时降级为字幕。
+- [ ] 用音频音量或播放状态驱动 lip-sync 参数。
+- [ ] 实现通知队列、打断、合并和自动收回策略，避免多个提醒互相覆盖。
+- [ ] 实现本地番茄钟设置与提醒，让它进入同一 DesktopEvent pipeline。
+
+验收口径：本地番茄钟或 mock 通知能触发桌宠唤出、气泡、可选 TTS、口型、表情和动作；TTS 失败不会影响文本展示。
+
+### Phase 4：模型配置与导入
+
+- [ ] 固化默认模型 manifest，包含 expression map、motion map、lip-sync、缩放、位置和贴边露出配置。
+- [ ] 将 Expression Map、Motion Map、lip-sync 参数、默认缩放和默认位置迁移到 Tauri app data 配置。
+- [ ] 增加模型校准 UI：表情预览、动作预览、口型参数测试、Base motion 强度/方向/时长校准。
+- [ ] 支持导出/导入当前模型的本地 manifest，但 manifest 不包含模型资源本体。
+- [ ] 实现 best-effort 用户模型导入：扫描 `.model3.json`、校验路径安全、复制到受控目录、生成 manifest。
+- [ ] 对缺失动作、缺失表情、缺失 lip-sync 参数或缺失贴图的模型给出明确提示。
+
+验收口径：默认模型体验完整；第三方模型可以加载、预览、配置映射，并在能力缺失时清晰降级。
+
+### Phase 5：Gateway Client 集成
+
+- [ ] 连接现有 Gateway REST API。
+- [ ] 接入 `/api/events/stream` 或临时 WebSocket event bridge。
+- [ ] 实现 Gateway 地址配置、登录/token 保存和断线状态展示。
+- [ ] 将 Gateway message、CRON delivery、agent started/completed/error 等事件转换为 `DesktopEvent`。
+- [ ] 将气泡输入框里的用户回复发送到当前 Gateway session。
+- [ ] 保持本地 mock event source 可用，作为离线调试入口。
+- [ ] 确认普通 Channel 只收到干净文本，Desktop 只消费 `metadata.display_plan`。
+
+验收口径：Gateway 未启动时本地桌宠仍可用；Gateway 启动后，真实消息和本地提醒进入同一展示 pipeline。
+
+### Phase 6：Gateway-Node WebSocket 基线
 
 - [ ] 新增 `docs/architecture/gateway-node-protocol.md`。
 - [ ] 定义 envelope、错误码、认证、心跳、注册、capability 调用。
 - [ ] 增加 `tests/fixtures/gateway_node/*.json`。
 - [ ] Python 侧 Pydantic models 能 parse fixtures。
-
-### Phase 1：Desktop Gateway Client
-
-- [ ] 新增 `desktop/` Tauri 工程。
-- [ ] 连接现有 Gateway REST API。
-- [ ] 接入 `/api/events/stream` 或 WebSocket event bridge。
-- [ ] 实现 Gateway 地址配置、登录/token 保存。
-- [ ] 实现最小 Live2D 渲染和状态映射。
-- [ ] 实现独立 `pet` transparent window。
-- [ ] 实现方案 A：整窗 click-through 与手动交互模式。
-- [ ] 实现 `suspended` / `idle` / `speaking` / `active` 渲染模式。
-- [ ] 实现用户模型导入、模型预览和当前模型切换。
-- [ ] 实现首版 emotion/motion 语义映射配置。
-
-### Phase 2：Gateway-Node WebSocket 基线
-
 - [ ] 新增 `/api/nodes/ws`。
 - [ ] 实现 node auth、node.register、heartbeat。
 - [ ] Gateway 维护在线节点 registry。
 - [ ] Desktop Rust side 实现 WebSocket client。
 - [ ] Rust side 通过 fixtures 与 Python 协议对齐。
 
-### Phase 3：Desktop Capability
+验收口径：Desktop 可以作为 node 连接、鉴权、注册 capability、心跳重连，但 capability 调用仍可先只做 no-op 或日志记录。
+
+### Phase 7：Desktop Capability 与远程表现控制
 
 - [ ] Desktop 注册 Live2D capability。
 - [ ] Gateway 调用 `desktop.live2d.set_expression`。
@@ -1232,45 +1453,24 @@ Gateway 需要保存或维护：
 - [ ] Desktop 注册 window interaction/render mode capability。
 - [ ] 调用链路具备超时、错误、审计。
 - [ ] Desktop 本地允许列表生效。
-
-### Phase 3.5：DisplayPlan 与 TTS/Live2D 表现层
-
-- [ ] 定义 `DisplayPlan` schema。
 - [ ] Agent 输出或后处理器能生成 `DisplayPlan`。
 - [ ] Router 将 `DisplayPlan` 拆为 `OutboundMessage.text` 与 `metadata.display_plan`。
-- [ ] 普通 Channel 只收到干净文本。
-- [ ] Desktop Channel 消费 `display_plan`，驱动 TTS、字幕、表情和动作。
-- [ ] TTS 音频播放时驱动 lip-sync 参数。
-- [ ] DisplayPlan 解析失败时降级为纯文本。
 
-### Phase 3.6：Live2D 动画器 Bonus（可选）
+验收口径：Gateway 能通过 capability 控制桌宠表现，但常规长回复仍优先走 DisplayPlan pipeline，而不是让 LLM 逐句直接调用底层能力。
 
-本阶段不阻塞首版 Desktop App。它用于把 Live2D 表现从“直接播放已有 expression/motion”扩展为“桌宠级动画控制器”，优先服务长消息、TTS 和常驻桌面体验。
+### Phase 8：产品化与发布
 
-- [ ] 实现 `ExpressionAnimator`，负责 `.exp3.json` 表情切换、淡入淡出、互斥和默认表情恢复。
-- [ ] 实现 `IdleAnimator`，在模型缺少 `.motion3.json` 或 idle motion 不合适时，用参数驱动呼吸、轻微摆头、眨眼和身体微动。
-- [ ] 实现 `SpeechAnimator`，首版用 Web Audio 音量驱动 `ParamMouthOpenY`，后续可接入 TTS phoneme/viseme 时间轴驱动 `ParamMouthOpenY` 和 `ParamMouthForm`。
-- [ ] 实现 `Live2DAnimationController`，统一管理 `idle`、`listening`、`thinking`、`speaking`、`interrupted`、`error` 等状态。
-- [ ] 支持动画层级和优先级：口型可叠加在表情与 idle 上，短动作可临时覆盖 idle，错误/打断状态可抢占当前表现。
-- [ ] 支持 motion fallback：优先播放模型 manifest 声明的 `.motion3.json`；缺失时扫描本地模型目录；仍不可用时降级到 procedural idle。
-- [ ] 建立模型校准配置，记录当前模型的默认表情、语义表情映射、语义动作映射、嘴部参数、头部参数、初始缩放和位置。
-- [ ] 在模型管理 UI 中增加动画预览和校准入口，便于用户导入第三方模型后手动映射表情、动作和口型参数。
-- [ ] 将动画器纳入性能模式：`suspended` 停止 ticker，`idle` 降低 fps 和参数更新频率，`speaking` 开启口型，`active` 开启完整交互动画。
-
-### Phase 4：产品化与发布
-
-- [ ] 托盘、透明窗口、置顶、拖拽。
+- [ ] 托盘、透明窗口、置顶、拖拽和快捷入口。
 - [ ] 配对流程。
 - [ ] token 撤销与重新登录。
-- [ ] Live2D 模型管理。
 - [ ] TTS voice 管理。
 - [ ] 性能模式和省电模式。
 - [ ] Windows/macOS 透明 pet window 验证。
 - [ ] Linux 透明/click-through 降级策略。
-- [ ] 用户模型 manifest 导出/导入。
 - [ ] Windows/macOS/Linux 打包验证。
+- [ ] 隐私与权限提示：摄像头/OpenCV 久坐提醒作为实验能力，默认关闭。
 
-### Phase 5：Native Renderer 实验（可选）
+### Phase 9：Native Renderer 实验（可选）
 
 仅当 WebGL Live2D 真实 profiling 不达标时进入本阶段。
 
@@ -1295,13 +1495,16 @@ Gateway 需要保存或维护：
 
 ## 18. 待决问题
 
-- Desktop App 首版是否需要内置聊天输入，还是只做 Live2D 状态和通知。
+- 首版气泡输入框是否只回复当前 active session，还是允许切换 session。
 - Gateway 是否需要为 Desktop 单独提供 WebSocket event stream，替代 SSE 的鉴权限制。
 - Live2D 情绪应该由 Agent 显式输出 DisplayPlan，还是由 Desktop 本地规则推导。
 - DisplayPlan 应由主 LLM 直接输出，还是由回复后处理器二次生成。
 - TTS 首版使用本地引擎、系统语音，还是外部 Provider。
 - TTS 时间戳、phoneme、viseme 数据是否需要纳入统一 schema。
 - pet window 的交互模式触发源：托盘、快捷键、悬停按钮还是 Gateway 命令。
+- 贴边隐藏默认位置、露出部件和唤出距离如何配置。
+- 番茄钟属于 Desktop 本地设置，还是需要同步到 Gateway scheduler。
+- 摄像头/OpenCV 久坐提醒是否进入首个公开版本，还是作为实验 capability。
 - click-through 在 Linux/Wayland 上的支持边界和降级策略。
 - WebGL renderer 的真实性能预算是否满足常驻桌宠需求。
 - Native/C++ renderer 是否需要长期保留为实验分支。
@@ -1323,10 +1526,12 @@ Gateway 需要保存或维护：
 
 ## 20. 结论
 
-Desktop App 应先作为当前 monorepo 下的独立 Tauri 应用存在，通过公开 Gateway API 接入 Nahida Bot。Gateway-Node 协议应定义为语言无关的 JSON over WebSocket 协议，Python 和 Rust 各实现一份轻量 SDK，通过 fixtures 和 contract tests 保持一致。
+Desktop App 应先作为当前 monorepo 下的独立 Tauri 应用存在，通过公开 Gateway API 接入 Nahida Bot。首版产品形态应聚焦边缘隐藏式桌面助手：平时低打扰地贴在屏幕边缘，事件到达时唤出 Live2D、气泡、TTS 和紧凑输入框，而不是把 Live2D 调试器或 WebUI 控制台作为主界面。
 
 Rust/Tauri 端不应通过 FFI 调 Python。Desktop App 与 Python core 的边界就是 Gateway 协议。这样可以保留分布式架构的清晰边界，也能为未来 Python node、Rust desktop node 和其他语言 node 提供一致扩展路径。
 
 长消息、TTS 和 Live2D 表现不应依赖 LLM 逐句调用工具。更合适的方式是让 LLM 或后处理器生成 DisplayPlan，由 Gateway/Router 保留干净文本，并将表现 metadata 交给 Desktop pipeline 消费。Live2D capability 继续作为底层执行能力存在，但它的调用通常来自解析后的表现流水线，而不是直接来自 LLM。
 
 性能和桌面体验方面，首版继续采用 Tauri + WebView + WebGL Live2D。Native/C++ renderer 只作为后续性能兜底实验，不作为主线。桌宠窗口采用独立透明 `pet` window，首版使用整窗 click-through + 手动交互模式，不做 per-pixel hit-test。
+
+用户模型支持采用 best-effort 策略。Desktop 提供导入、安全校验、Expression Map、Motion Map、口型参数和位置校准工具，但不承诺让任意模型自动拥有作者未制作的贴图、ArtMesh、参数或动作。完整适配应由模型作者或用户通过模型资源和本地 manifest 配置完成。

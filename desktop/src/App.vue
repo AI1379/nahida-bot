@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import ControlPanel from "@/components/ControlPanel.vue";
-import DisplayPlanPanel from "@/components/DisplayPlanPanel.vue";
-import ExpressionMappingPanel from "@/components/ExpressionMappingPanel.vue";
-import Live2DStage from "@/components/Live2DStage.vue";
-import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
-import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import { useDesktopStore } from "@/stores/desktop";
+import PetRuntimeView from "@/views/PetRuntimeView.vue";
+import WorkbenchView from "@/views/WorkbenchView.vue";
 
 const store = useDesktopStore();
+const activeView = ref<"runtime" | "workbench">("runtime");
 
 const activeSegment = computed(() =>
   store.activePlan?.segments[store.currentSegmentIndex] ?? null,
+);
+
+const title = computed(() =>
+  activeView.value === "runtime" ? "Pet Runtime" : "Development Workbench",
 );
 
 let segmentTimer: ReturnType<typeof setTimeout> | null = null;
@@ -67,9 +68,25 @@ onBeforeUnmount(() => {
     <section class="hero-band">
       <div>
         <p>Nahida Desktop</p>
-        <h1>Live2D Runtime Scaffold</h1>
+        <h1>{{ title }}</h1>
       </div>
       <div class="hero-band__actions">
+        <div class="view-switch" role="tablist" aria-label="Desktop view">
+          <button
+            type="button"
+            :class="{ 'is-active': activeView === 'runtime' }"
+            @click="activeView = 'runtime'"
+          >
+            Runtime
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-active': activeView === 'workbench' }"
+            @click="activeView = 'workbench'"
+          >
+            Workbench
+          </button>
+        </div>
         <label class="model-picker" for="live2d-model-picker">
           <span>Model</span>
           <select
@@ -87,54 +104,12 @@ onBeforeUnmount(() => {
           </select>
         </label>
         <div class="connection-pill" :data-connected="store.connected">
-          {{ store.connected ? "Mock backend connected" : "Disconnected" }}
+          {{ store.connected ? store.petRuntime.status : "Disconnected" }}
         </div>
       </div>
     </section>
 
-    <section class="workspace">
-      <Live2DStage
-        :emotion="store.currentEmotion"
-        :expression-key="store.currentExpressionKey"
-        :motion="store.currentMotion"
-        :model="store.model"
-        :speaking="store.speaking"
-        :caption-text="activeSegment?.text ?? ''"
-        :expression-map-version="store.expressionMapVersion"
-        :motion-map-version="store.motionMapVersion"
-        @expressions-loaded="store.setModelExpressions"
-        @motions-loaded="store.setModelMotions"
-      />
-
-      <aside class="side-rail">
-        <ControlPanel
-          :connected="store.connected"
-          :gateway-url="store.gatewayUrl"
-          @connect="store.startMockBackend"
-          @disconnect="store.stopMockBackend"
-          @submit="store.submitUserMessage"
-          @submit-mock-llm-result="store.submitMockLlmResult"
-        />
-        <DisplayPlanPanel
-          :plan="store.activePlan"
-          :active-index="store.currentSegmentIndex"
-        />
-        <ExpressionMappingPanel
-          :model="store.model"
-          :expressions="store.expressionOptions"
-          @add-mapping="store.addExpressionKeywordMapping"
-          @remove-mapping="store.removeExpressionKeywordMapping"
-          @update-mapping="store.setExpressionKeywordMapping"
-          @preview="store.previewExpressionKeyword"
-        />
-        <MotionMappingPanel
-          :model="store.model"
-          :motions="store.motionOptions"
-          @update-mapping="store.setMotionMapping"
-          @preview="store.previewMotion"
-        />
-        <TranscriptPanel :entries="store.transcript" />
-      </aside>
-    </section>
+    <PetRuntimeView v-if="activeView === 'runtime'" />
+    <WorkbenchView v-else />
   </main>
 </template>
