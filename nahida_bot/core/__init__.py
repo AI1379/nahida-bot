@@ -30,6 +30,7 @@ from nahida_bot.core.events import (
     PluginErrorPayload,
 )
 from nahida_bot.core.logging import configure_logging
+from nahida_bot.core.tasks import TaskManager, TaskInfo
 
 __all__ = [
     "NahidaBotError",
@@ -58,4 +59,6 @@ __all__ = [
     "PluginErrorOccurred",
     "PluginPayload",
     "PluginErrorPayload",
+    "TaskManager",
+    "TaskInfo",
 ]

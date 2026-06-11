@@ -8,6 +8,7 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Coroutine,
     Protocol,
     runtime_checkable,
 )
@@ -468,4 +469,36 @@ class BotAPI(Protocol):
     @property
     def logger(self) -> PluginLogger:
         """Structured logger scoped to this plugin."""
+        ...
+
+    # ── Task Management ──────────────────────────────
+
+    def spawn_task(
+        self,
+        name: str,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        kind: str = "oneshot",
+    ) -> None:
+        """Spawn a named background task owned by this plugin.
+
+        The task is automatically cancelled when the plugin is disabled.
+        The coroutine runs in the bot's event loop.  Uncaught exceptions
+        are logged automatically.
+        """
+        ...
+
+    def cancel_task(self, name: str) -> bool:
+        """Cancel a previously spawned task by name.  Returns ``True`` if found."""
+        ...
+
+    def spawn_interval_task(
+        self,
+        name: str,
+        func: Callable[[], Awaitable[None]],
+        *,
+        interval_seconds: float,
+        initial_delay: float = 0.0,
+    ) -> None:
+        """Spawn a periodic task owned by this plugin."""
         ...

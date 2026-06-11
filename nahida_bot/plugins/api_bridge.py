@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
 
 import structlog
 
@@ -147,6 +147,7 @@ class RealBotAPI:
         supplement_registry: Any | None = None,  # PromptSupplementRegistry
         status_provider_registry: Any | None = None,  # StatusProviderRegistry
         webhost_service: Any | None = None,  # WebHostService
+        task_manager: Any | None = None,  # TaskManager
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -185,6 +186,7 @@ class RealBotAPI:
         self._active_supplements: set[str] = set()
         self._status_provider_registry = status_provider_registry
         self._webhost_service = webhost_service
+        self._task_manager = task_manager
         self._registered_status_providers: dict[
             str, Any
         ] = {}  # global_key -> StatusProviderEntry
@@ -1375,6 +1377,7 @@ class RealBotAPI:
         orchestration_service: Any | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
         webhost_service: Any | None = None,
+        task_manager: Any | None = None,
     ) -> None:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
@@ -1388,6 +1391,48 @@ class RealBotAPI:
             self._webhost_service = webhost_service
         if plugin_data_repo is not None:
             self._plugin_data_repo = plugin_data_repo
+        if task_manager is not None:
+            self._task_manager = task_manager
+
+    # ── Task Management ──────────────────────────────
+
+    def spawn_task(
+        self,
+        name: str,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        kind: str = "oneshot",
+    ) -> None:
+        """Spawn a named background task owned by this plugin."""
+        if self._task_manager is None:
+            coro.close()
+            raise RuntimeError("TaskManager is not available")
+        self._task_manager.spawn(name=name, coro=coro, owner=self._plugin_id, kind=kind)
+
+    def cancel_task(self, name: str) -> bool:
+        """Cancel a task by name within this plugin's scope."""
+        if self._task_manager is None:
+            return False
+        return self._task_manager.cancel(f"{self._plugin_id}:{name}")
+
+    def spawn_interval_task(
+        self,
+        name: str,
+        func: Callable[[], Awaitable[None]],
+        *,
+        interval_seconds: float,
+        initial_delay: float = 0.0,
+    ) -> None:
+        """Spawn a periodic task owned by this plugin."""
+        if self._task_manager is None:
+            raise RuntimeError("TaskManager is not available")
+        self._task_manager.spawn_interval(
+            name=name,
+            func=func,
+            owner=self._plugin_id,
+            interval_seconds=interval_seconds,
+            initial_delay=initial_delay,
+        )
 
 
 def _address_from_inbound_message(message: InboundMessage) -> ChatAddress:

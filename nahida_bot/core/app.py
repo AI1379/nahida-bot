@@ -26,6 +26,7 @@ from nahida_bot.core.events import (
 from nahida_bot.core.exceptions import ApplicationError, StartupError
 from nahida_bot.core.logging import configure_logging
 from nahida_bot.core.router import MessageRouter, RouterConfig
+from nahida_bot.core.tasks import TaskManager
 from nahida_bot.plugins.commands import CommandMatcher
 
 if TYPE_CHECKING:
@@ -105,7 +106,7 @@ class Application:
         self.webhost_service: WebHostService = WebHostService()
         self._usage_ledger: UsageRecorder | None = None
         self._media_cache: MediaCache | None = None
-        self._media_cleanup_task: asyncio.Task | None = None
+        self.task_manager = TaskManager()
 
         logger.debug(
             "application.instance_created",
@@ -151,6 +152,7 @@ class Application:
                 event_bus=self.event_bus,
                 channel_registry=self.channel_registry,
                 webhost_service=self.webhost_service,
+                task_manager=self.task_manager,
             )
             await self._discover_plugins()
             self._inject_plugin_configs()
@@ -174,6 +176,7 @@ class Application:
                 provider_manager=self._provider_manager,
                 model_router=self._model_router,
                 orchestration_service=self.orchestration_service,
+                task_manager=self.task_manager,
             )
             if self.agent_loop is not None:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
@@ -191,6 +194,7 @@ class Application:
                 model_router=self._model_router,
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
+                task_manager=self.task_manager,
             )
 
             # Initialize webapi
@@ -625,6 +629,7 @@ class Application:
                 model_router=self._model_router,
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
+                task_manager=self.task_manager,
             )
         logger.info("application.scheduler_initialized")
 
@@ -798,9 +803,11 @@ class Application:
 
             # Start periodic media cache cleanup
             if self._media_cache is not None:
-                self._media_cleanup_task = asyncio.create_task(
-                    self._media_cache_cleanup_loop(),
-                    name="media-cache-cleanup",
+                self.task_manager.spawn_interval(
+                    "media-cache-cleanup",
+                    self._media_cache_cleanup_once,
+                    owner="core.media",
+                    interval_seconds=max(self._media_cache._ttl, 300),
                 )
 
             # Start webapi (after scheduler)
@@ -836,23 +843,17 @@ class Application:
             )
             raise StartupError(f"Failed to start application: {e}") from e
 
-    async def _media_cache_cleanup_loop(self) -> None:
-        """Periodically purge expired entries from the media cache."""
+    async def _media_cache_cleanup_once(self) -> None:
+        """Purge expired entries from the media cache (single pass)."""
         cache = self._media_cache
         if cache is None:
             return
-        interval = max(cache._ttl, 300)  # at least every 5 min
         try:
-            while True:
-                await asyncio.sleep(interval)
-                try:
-                    removed = await cache.cleanup_expired()
-                    if removed:
-                        logger.debug("media_cache.cleanup", removed=removed)
-                except Exception:
-                    logger.warning("media_cache.cleanup_failed", exc_info=True)
-        except asyncio.CancelledError:
-            pass
+            removed = await cache.cleanup_expired()
+            if removed:
+                logger.debug("media_cache.cleanup", removed=removed)
+        except Exception:
+            logger.warning("media_cache.cleanup_failed", exc_info=True)
 
     async def stop(self) -> None:
         """Stop the application gracefully."""
@@ -880,14 +881,8 @@ class Application:
                 if self.webapi_service is not None:
                     await self.webapi_service.stop()
 
-                # Cancel media cache cleanup task
-                if self._media_cleanup_task is not None:
-                    self._media_cleanup_task.cancel()
-                    try:
-                        await self._media_cleanup_task
-                    except asyncio.CancelledError:
-                        pass
-                    self._media_cleanup_task = None
+                # Cancel managed background tasks (media cleanup, etc.)
+                await self.task_manager.shutdown(timeout=10.0)
 
                 # Shut down scheduler before message router
                 if self.scheduler_service is not None:

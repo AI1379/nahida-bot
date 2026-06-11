@@ -87,6 +87,7 @@ class PluginManager:
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
         webhost_service: Any | None = None,
+        task_manager: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
@@ -99,6 +100,7 @@ class PluginManager:
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
         self._webhost_service = webhost_service
+        self._task_manager = task_manager
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -119,6 +121,7 @@ class PluginManager:
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
         webhost_service: Any | None = None,
+        task_manager: Any | None = None,
     ) -> None:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
@@ -132,6 +135,8 @@ class PluginManager:
         self._orchestration_service = orchestration_service
         if webhost_service is not None:
             self._webhost_service = webhost_service
+        if task_manager is not None:
+            self._task_manager = task_manager
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
@@ -143,6 +148,7 @@ class PluginManager:
                     scheduler_service=scheduler_service,
                     orchestration_service=orchestration_service,
                     webhost_service=self._webhost_service,
+                    task_manager=self._task_manager,
                 )
 
     @property
@@ -254,6 +260,7 @@ class PluginManager:
             model_router=self._model_router,
             scheduler_service=self._scheduler_service,
             orchestration_service=self._orchestration_service,
+            task_manager=self._task_manager,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)
@@ -317,12 +324,16 @@ class PluginManager:
     # ── Disabling ──────────────────────────────────────
 
     async def disable(self, plugin_id: str) -> None:
-        """Disable an enabled plugin: remove handlers, call on_disable."""
+        """Disable an enabled plugin: remove handlers, cancel tasks, call on_disable."""
         record = self._require_record(plugin_id)
         self._require_state(record, PluginState.ENABLED)
 
         if record.api_bridge is not None:
             record.api_bridge.deactivate_registrations()
+
+        # Cancel all background tasks owned by this plugin
+        if self._task_manager is not None:
+            await self._task_manager.cancel_by_owner_and_await(plugin_id, timeout=5.0)
 
         if record.instance is not None:
             await self._safe_invoke(record.instance, "on_disable")
@@ -364,6 +375,10 @@ class PluginManager:
             await self._safe_invoke(record.instance, "on_unload")
         if record.api_bridge is not None:
             record.api_bridge.clear_registrations()
+
+        # Cancel any remaining background tasks owned by this plugin
+        if self._task_manager is not None:
+            await self._task_manager.cancel_by_owner_and_await(plugin_id, timeout=5.0)
 
         self._loader.unload(record.manifest)
         record.instance = None

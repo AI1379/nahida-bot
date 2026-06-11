@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Coroutine
 from unittest.mock import MagicMock
 
 from nahida_bot_sdk.chat_address import ChatAddress
@@ -233,6 +233,30 @@ class MockBotAPI:
     def logger(self) -> Any:
         return MagicMock()
 
+    # ── Task Management ──────────────────────────────
+
+    def spawn_task(
+        self,
+        name: str,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        kind: str = "oneshot",
+    ) -> None:
+        coro.close()
+
+    def cancel_task(self, name: str) -> bool:
+        return False
+
+    def spawn_interval_task(
+        self,
+        name: str,
+        func: Callable[[], Awaitable[None]],
+        *,
+        interval_seconds: float,
+        initial_delay: float = 0.0,
+    ) -> None:
+        pass
+
 
 class RecordingMockBotAPI(MockBotAPI):
     """Stateful BotAPI mock that records calls for assertion.
@@ -253,6 +277,7 @@ class RecordingMockBotAPI(MockBotAPI):
         self.registered_provider_types: dict[str, dict[str, Any]] = {}
         self.registered_webhooks: dict[str, dict[str, Any]] = {}
         self.registered_prompt_supplements: dict[str, dict[str, Any]] = {}
+        self.spawned_tasks: dict[str, dict[str, Any]] = {}
         self._plugin_data: dict[str, Any] = {}
 
     def on_event(self, event_type: type) -> Callable:
@@ -431,6 +456,36 @@ class RecordingMockBotAPI(MockBotAPI):
     ) -> list[str]:
         return []
 
+    # ── Task Management ──────────────────────────────
+
+    def spawn_task(
+        self,
+        name: str,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        kind: str = "oneshot",
+    ) -> None:
+        self.spawned_tasks[name] = {"kind": kind}
+        coro.close()
+
+    def cancel_task(self, name: str) -> bool:
+        return self.spawned_tasks.pop(name, None) is not None
+
+    def spawn_interval_task(
+        self,
+        name: str,
+        func: Callable[[], Awaitable[None]],
+        *,
+        interval_seconds: float,
+        initial_delay: float = 0.0,
+    ) -> None:
+        self.spawned_tasks[name] = {
+            "kind": "interval",
+            "func": func,
+            "interval_seconds": interval_seconds,
+            "initial_delay": initial_delay,
+        }
+
 
 _SENTINEL = object()
 
@@ -477,6 +532,7 @@ class ConsoleMockBotAPI:
         self._channels: list[Any] = []
         self._provider_types: dict[str, dict[str, Any]] = {}
         self._workspace: dict[str, str] = {}
+        self.spawned_tasks: dict[str, dict[str, Any]] = {}
 
     # ── Messaging ──────────────────────────────────────
 
@@ -794,6 +850,36 @@ class ConsoleMockBotAPI:
     @property
     def logger(self) -> Any:
         return MagicMock()
+
+    # ── Task Management ──────────────────────────────
+
+    def spawn_task(
+        self,
+        name: str,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        kind: str = "oneshot",
+    ) -> None:
+        self.spawned_tasks[name] = {"kind": kind}
+        coro.close()
+
+    def cancel_task(self, name: str) -> bool:
+        return self.spawned_tasks.pop(name, None) is not None
+
+    def spawn_interval_task(
+        self,
+        name: str,
+        func: Callable[[], Awaitable[None]],
+        *,
+        interval_seconds: float,
+        initial_delay: float = 0.0,
+    ) -> None:
+        self.spawned_tasks[name] = {
+            "kind": "interval",
+            "func": func,
+            "interval_seconds": interval_seconds,
+            "initial_delay": initial_delay,
+        }
 
     # ── Console helpers ───────────────────────────────
 

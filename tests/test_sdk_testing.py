@@ -57,6 +57,10 @@ def _manifest() -> PluginManifest:
     )
 
 
+async def _noop_task() -> None:
+    pass
+
+
 def test_decorated_command_rejects_name_alias_conflicts() -> None:
     with pytest.raises(ValueError, match="Duplicate @register_command"):
 
@@ -113,3 +117,27 @@ async def test_console_mock_command_and_event_contracts() -> None:
     )
 
     assert api.sent_messages[0][1].text == "seen: hello event"
+
+
+def test_recording_mock_records_spawned_tasks_and_closes_coroutines() -> None:
+    api = RecordingMockBotAPI()
+    coro = _noop_task()
+
+    api.spawn_task("job", coro, kind="oneshot")
+
+    assert api.spawned_tasks["job"]["kind"] == "oneshot"
+    assert coro.cr_frame is None
+    assert api.cancel_task("job") is True
+    assert api.cancel_task("job") is False
+
+
+def test_console_mock_records_spawned_tasks_and_closes_coroutines() -> None:
+    api = ConsoleMockBotAPI()
+    coro = _noop_task()
+
+    api.spawn_task("job", coro, kind="oneshot")
+    api.spawn_interval_task("ticker", _noop_task, interval_seconds=1.0)
+
+    assert api.spawned_tasks["job"]["kind"] == "oneshot"
+    assert api.spawned_tasks["ticker"]["kind"] == "interval"
+    assert coro.cr_frame is None

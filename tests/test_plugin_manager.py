@@ -10,6 +10,7 @@ from nahida_bot.core.events import (
     EventContext,
 )
 from nahida_bot.core.exceptions import PluginStateError
+from nahida_bot.core.tasks import TaskManager
 from nahida_bot.plugins.manager import PluginManager, PluginState
 from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -603,6 +604,60 @@ class EnableToolPlugin(Plugin):
         entry = manager.tool_registry.get("cycle_tool")
         assert entry is not None
         assert entry.plugin_id == "enable_tool_plugin"
+
+    async def test_spawned_task_can_reenable_with_same_name(
+        self, tmp_path: Path
+    ) -> None:
+        plugin_dir = tmp_path / "task_plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest = """
+id: task_plugin
+name: Task Plugin
+version: "1.0.0"
+entrypoint: "plugin:TaskPlugin"
+"""
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+
+        code = """
+import asyncio
+
+from nahida_bot.plugins.base import Plugin
+
+class TaskPlugin(Plugin):
+    async def on_enable(self) -> None:
+        self.api.spawn_task("worker", self._worker())
+
+    async def _worker(self) -> None:
+        await asyncio.Event().wait()
+"""
+        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+
+        task_manager = TaskManager()
+        manager = PluginManager(event_bus=_make_event_bus(), task_manager=task_manager)
+        await manager.discover([tmp_path])
+        await manager.load("task_plugin")
+        await manager.enable("task_plugin")
+
+        info = task_manager.get_task("task_plugin:worker")
+        assert info is not None
+        assert info.status == "running"
+
+        await manager.disable("task_plugin")
+        info = task_manager.get_task("task_plugin:worker")
+        assert info is not None
+        assert info.status == "cancelled"
+
+        await manager.enable("task_plugin")
+
+        record = manager.get_record("task_plugin")
+        assert record is not None
+        assert record.state == PluginState.ENABLED
+        info = task_manager.get_task("task_plugin:worker")
+        assert info is not None
+        assert info.status == "running"
+
+        await manager.disable("task_plugin")
 
     async def test_builtin_workspace_tools_are_registered_and_execute(
         self, tmp_path: Path
