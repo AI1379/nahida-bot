@@ -30,13 +30,15 @@ export const mockControlDefaults: {
       "text": "今天的计划已经整理好了。",
       "emotion": "happy",
       "motion": "nod",
-      "pause_after_ms": 250
+      "pause_after_ms": 250,
+      "voice": { "style": "bright", "speed": 1.0, "pitch": 0 }
     },
     {
       "text": "先处理配置问题，然后再看桌宠协议。",
       "emotion": "thinking",
       "expression": "star",
-      "motion": "point"
+      "motion": "point",
+      "voice": { "style": "calm", "speed": 0.95, "pitch": -1 }
     }
   ]
 }`,

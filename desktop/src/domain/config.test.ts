@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createDefaultLocalDesktopConfig,
   configuredModelFromManifest,
   modelMappingConfigFromManifest,
 } from "./config";
@@ -23,6 +24,17 @@ const manifest: Live2DModelManifest = {
 };
 
 describe("configuredModelFromManifest", () => {
+  it("defaults system TTS to Chinese automatic voice selection", () => {
+    expect(createDefaultLocalDesktopConfig(manifest).ttsSettings).toEqual({
+      language: "zh-CN",
+      voiceUri: "",
+      preferFemale: true,
+      rate: 1,
+      pitch: 0,
+      volume: 1,
+    });
+  });
+
   it("uses the local model config as the runtime source of truth", () => {
     const config = modelMappingConfigFromManifest(manifest);
     config.expressionMap = { happy: ["custom-happy"] };

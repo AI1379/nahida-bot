@@ -4,7 +4,10 @@ import type {
   Live2DModelManifest,
   Live2DMotionTarget,
 } from "./live2d";
-import { desktopWindowDefaults } from "@/config/desktopRuntimeDefaults";
+import {
+  desktopWindowDefaults,
+  ttsDefaults,
+} from "@/config/desktopRuntimeDefaults";
 
 export type PerformanceMode = "power_saver" | "balanced" | "active";
 export type PetWindowEdge = "left" | "right" | "top" | "bottom";
@@ -36,11 +39,21 @@ export interface ModelMappingConfig {
   edgeExposedPx: number;
 }
 
+export interface TtsSettings {
+  language: string;
+  voiceUri: string;
+  preferFemale: boolean;
+  rate: number;
+  pitch: number;
+  volume: number;
+}
+
 export interface LocalDesktopConfig {
   selectedModelId: string;
   modelConfigs: Record<string, ModelMappingConfig>;
   windowState: DesktopWindowState;
   performanceMode: PerformanceMode;
+  ttsSettings: TtsSettings;
 }
 
 export function modelMappingConfigFromManifest(
@@ -85,6 +98,7 @@ export function createDefaultLocalDesktopConfig(
       interactionMode: desktopWindowDefaults.interactionMode,
     },
     performanceMode: desktopWindowDefaults.performanceMode,
+    ttsSettings: { ...ttsDefaults },
   };
 }
 

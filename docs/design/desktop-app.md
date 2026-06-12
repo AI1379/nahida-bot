@@ -587,7 +587,8 @@ Desktop 端再执行：
 ```text
 display_plan.segments
       │
-      ├── TTS 分段合成
+      ├── 选择远程 SpeechArtifact 或本地 fallback
+      ├── 音频分段播放、队列、打断和暂停
       ├── 字幕/当前句高亮
       ├── 音频音量或时间戳驱动口型
       └── emotion/motion 映射到 Live2D expression/motion
@@ -667,6 +668,71 @@ DisplayPlan 的生成方式可分阶段演进：
 - Desktop TTS 模式下先等待完整回复，再解析 DisplayPlan。
 - 普通文本 Channel 继续走现有回复路径。
 - 后续再做按句增量解析和 TTS 队列。
+
+#### 9.3.1 统一 TTS Provider 与音频分发边界
+
+高质量 TTS 通常依赖 GPT-SoVITS、IndexTTS 或云厂商 Few Shot TTS。这些 Provider 的鉴权、音色管理、请求参数、重试、格式转换和错误处理不应在 Python backend 与 Desktop 各实现一遍。统一边界如下：
+
+```text
+DisplayPlan / Channel voice request
+              │
+              ▼
+Python SpeechService
+              │
+              ├── TtsProvider registry
+              │     ├── GPT-SoVITS
+              │     ├── IndexTTS
+              │     └── cloud TTS providers
+              │
+              ▼
+SpeechArtifactStore
+              │
+              ├── Channel 读取本地 artifact 并发送语音
+              └── Gateway Media API 暴露受鉴权的 HTTP 下载地址
+                                    │
+                                    ▼
+                         Desktop AudioPlaybackAdapter
+```
+
+设计决策：
+
+- 高质量 `TtsProvider` 只在 Python backend 适配一次，Desktop 不直接持有 Provider API key，也不理解 GPT-SoVITS、IndexTTS 或云厂商私有协议。
+- Desktop 负责下载、播放、停止、打断、字幕同步和 lip-sync；系统语音或 Web Speech 只作为本地开发与离线 fallback。
+- Gateway-Node WebSocket 只传 `SpeechArtifactRef` 和播放控制消息，不传 base64 或原始音频二进制。
+- `SpeechArtifactRef.download_url` 必须指向 Desktop 当前连接的 Gateway Media API，不能直接暴露内部 TTS Provider URL。
+- GPU TTS 服务可以位于无公网 IP 的机器上。Gateway 通过 SSH tunnel、FRP 或其他私网链路调用它，生成后把音频拉取并缓存到 Gateway 可管理的 artifact store。
+- Desktop 和 Channel 复用同一个合成 artifact，避免对相同文本、音色和参数重复合成。
+- Gateway 下载接口使用流式文件响应，不把完整音频读入内存；缓存具有 TTL、容量上限和清理策略。
+- 如果后续规模增大，可以把 artifact store 替换为 S3、R2、OSS 等对象存储，并由 Gateway 签发短期下载地址；首版使用 Gateway 本地磁盘缓存即可。
+
+建议的统一请求与引用：
+
+```json
+{
+  "text": "今天的计划已经整理好了。",
+  "profile": "nahida-default",
+  "style": "bright",
+  "speed": 1.0,
+  "pitch": 0,
+  "output_formats": ["audio/ogg", "audio/mpeg"]
+}
+```
+
+```json
+{
+  "artifact_id": "speech_abc123",
+  "download_url": "/api/media/speech/speech_abc123",
+  "mime_type": "audio/ogg",
+  "duration_ms": 8420,
+  "size_bytes": 126400,
+  "expires_at": "2026-06-13T00:00:00Z",
+  "alignment": null
+}
+```
+
+缓存键至少包含规范化文本、Provider、voice/profile、参考音频版本、style、speed、pitch、输出 codec 和 Provider 配置版本。`artifact_id` 是不透明 ID，不能包含服务器文件路径。
+
+首版允许等待完整音频生成后再播放。当前产品可以接受秒级到几十秒的 TTS 延迟，因此不需要为了流式首包延迟过早引入音频 chunk 协议。文本和气泡应立即显示，音频准备完成后再进入 speaking 状态；合成失败只降级为字幕。
 
 ### 9.4 Live2D 能力层
 
@@ -772,7 +838,7 @@ motion_map:
 
 口型建议不要由 LLM 控制。更可靠的方案是：
 
-- TTS 生成音频。
+- Python SpeechService 生成音频，或 Desktop 使用本地 fallback 语音。
 - Desktop 在播放音频时获取实时音量或分析音频 envelope。
 - 将音量归一化到 `0..1`。
 - 写入模型声明的 lip-sync 参数。
@@ -1110,7 +1176,9 @@ PetRuntime state machine
 | `PetRuntime` | 管理 hidden、peek、emerging、speaking、chat、retreating 等状态 |
 | `Live2DPresentationController` | 统一调度 expression、motion、lip-sync、idle 和渲染模式 |
 | `ModelMappingStore` | 保存当前模型的 expression map、motion map、口型参数、缩放和贴边露出配置 |
-| `LocalTtsAdapter` | 首版可使用系统语音或 Web Speech，失败时只显示字幕 |
+| `SpeechPlaybackCoordinator` | 串行执行 segment、pause、replace/queue、停止与失败降级 |
+| `AudioPlaybackAdapter` | 播放 Gateway `SpeechArtifactRef`；后续可接 Web Audio 或 Tauri native audio |
+| `SystemSpeechAdapter` | Phase 3 本地开发与离线 fallback，可使用 Web Speech，失败时只显示字幕 |
 | `GatewayEventAdapter` | 后续把 Gateway REST/SSE/WebSocket 事件转换成同一种 `DesktopEvent` |
 
 这样可以先在纯本地环境完成可视表现、窗口行为和调试工具，再把真实 Gateway 消息接入同一入口。Gateway 接入不应修改 Live2D renderer 的核心逻辑，也不应让 pet window 状态机直接读取 Gateway store。
@@ -1129,6 +1197,8 @@ Desktop Gateway Client 可以先复用：
 | `/api/send` | 从 Desktop 发消息给指定 target/session |
 | `/api/sessions` | 浏览会话 |
 | `/api/events/stream` | 接收实时事件 |
+| `/api/speech/jobs` | 后续提交统一 TTS 合成任务并获取 job/artifact 状态 |
+| `/api/media/speech/{artifact_id}` | 后续从 Gateway 下载受鉴权的缓存音频 |
 
 ### 10.2 V2 新增 Node API
 
@@ -1163,8 +1233,8 @@ Desktop Node 的能力应显式声明。
 | `desktop.live2d.play_motion` | Gateway -> Desktop | 播放动作 |
 | `desktop.live2d.set_visibility` | Gateway -> Desktop | 显示/隐藏桌宠 |
 | `desktop.live2d.load_model` | Gateway -> Desktop | 切换到已授权的本地模型 |
-| `desktop.tts.speak` | Gateway -> Desktop | 播放经过校验的分段语音计划 |
-| `desktop.tts.stop` | Gateway -> Desktop | 停止当前 TTS 播放 |
+| `desktop.audio.play` | Gateway -> Desktop | 播放经过校验的 `SpeechArtifactRef` 或分段播放计划 |
+| `desktop.audio.stop` | Gateway -> Desktop | 停止当前音频播放 |
 | `desktop.notification.show` | Gateway -> Desktop | 展示系统通知 |
 | `desktop.window.focus` | Gateway -> Desktop | 聚焦窗口 |
 | `desktop.window.set_interaction_mode` | Gateway -> Desktop | 切换 pet window 整窗点击穿透/交互模式 |
@@ -1243,6 +1313,14 @@ V1 不开放这些高风险能力。
 - 语音、动作、表情映射由 Desktop 本地配置决定，LLM 不能直接指定模型内部文件路径。
 - 对普通 Channel 输出时必须剥离所有控制标签，避免泄漏给 Telegram、Milky 等平台。
 
+### 12.6.1 SpeechArtifact 安全
+
+- Desktop 只接受 Gateway 签发或事件中提供的 `artifact_id` 和 Gateway-relative `download_url`。
+- Gateway Media API 必须复用 Desktop 登录或 node token 鉴权，并校验 artifact 的访问范围、TTL 和 MIME。
+- `artifact_id` 不得直接映射用户输入路径；下载端点需要防止路径穿越和任意文件读取。
+- Provider 内部 URL、SSH/FRP 地址、参考音频路径和 API key 不进入 Desktop event、日志或公开 metadata。
+- Desktop 下载前校验允许的 scheme、Gateway origin、Content-Type 和文件大小上限。
+
 ### 12.7 透明窗口与点击穿透安全
 
 - pet window 默认 click-through，避免长期拦截用户桌面操作。
@@ -1266,7 +1344,7 @@ Desktop App 需要保存：
 | `live2d_model_path` | 当前模型路径 |
 | `live2d_models` | 已导入模型 manifest 列表 |
 | `display_mapping` | 语义 emotion/motion 到当前模型资源的映射 |
-| `tts_settings` | TTS voice、speed、pitch、音量等用户偏好 |
+| `tts_settings` | 远程 voice/profile、speed、pitch、音量、本地 fallback 和自动播放偏好 |
 | `window_state` | 位置、大小、置顶、透明度 |
 | `pet_window_state` | pet window 位置、大小、贴边方向、露出尺寸、click-through、交互模式 |
 | `render_mode` | `suspended` / `idle` / `speaking` / `active` |
@@ -1306,6 +1384,9 @@ Gateway 需要保存或维护：
 | 用户模型不具备某动作所需贴图或 ArtMesh | 明确标记该动作不可用或降级为 Base 动作 |
 | DisplayPlan 解析失败 | 降级为纯文本回复，不执行动作 |
 | TTS 合成失败 | 显示文本并播放默认表情，不阻塞消息 |
+| Gateway 音频下载失败或 artifact 过期 | 尝试本地 fallback；不可用时只显示字幕 |
+| GPU TTS 节点或 SSH/FRP 链路不可用 | Speech job 标记失败，不向 Desktop 暴露内部网络信息 |
+| 音频 codec 不受 Desktop 支持 | 请求兼容 rendition；仍失败时使用本地 fallback 或字幕 |
 | WebGL context 丢失 | 释放并重建 renderer，失败则降级为静态状态 |
 | 透明窗口不受平台支持 | 降级为普通 pet window，提示用户 |
 | click-through 切换失败 | 保持普通窗口模式，不隐藏控制入口 |
@@ -1405,13 +1486,24 @@ Gateway 需要保存或维护：
 
 ### Phase 3：本地 DisplayPlan、TTS 与提醒 pipeline
 
-- [ ] 定义 Desktop 本地可消费的 `DisplayPlan` schema 和 parser。
-- [ ] 支持纯文本、完整 DisplayPlan、`metadata.display_plan` 包装结构和 provider envelope 的本地输入。
-- [ ] 实现 `PresentationPlanner`，把本地事件转换为气泡、TTS、DisplayPlan、目标 session 和打断策略。
-- [ ] 接入首版 `LocalTtsAdapter`，可先使用系统语音或 Web Speech；失败时降级为字幕。
-- [ ] 用音频音量或播放状态驱动 lip-sync 参数。
+- [x] 定义 Desktop 本地可消费的 `DisplayPlan` schema 和 parser。
+- [x] 支持纯文本、完整 DisplayPlan、`metadata.display_plan` 包装结构和 provider envelope 的本地输入。
+- [x] 实现 `PresentationPlanner`，把本地事件转换为气泡、TTS、DisplayPlan、目标 session 和打断策略。
+- [x] 定义 `AudioPlaybackAdapter` 与 `SpeechPlaybackCoordinator`，不耦合具体高质量 TTS Provider。
+- [x] 接入首版 `SystemSpeechAdapter` 作为本地开发/离线 fallback；失败时降级为字幕。
+- [x] 按 segment 串行播放，支持 `pause_after_ms`、replace/queue 打断和停止。
+- [x] 首版使用真实播放状态驱动 speaking/lip-sync；远程 artifact 接入后再升级为音量 envelope。
 - [ ] 实现通知队列、打断、合并和自动收回策略，避免多个提醒互相覆盖。
 - [ ] 实现本地番茄钟设置与提醒，让它进入同一 DesktopEvent pipeline。
+
+当前实现备注：
+
+- `SpeechPlaybackCoordinator` 运行在 main window，pet window 继续只消费 `DesktopRuntimeSnapshot`，避免两个窗口同时播放。
+- 有 `voice` 的 segment 在 Web Speech 可用时进入真实 speaking 状态；无 voice 或播放失败时按字幕估算时长推进，不启用口型。
+- 新的 replace presentation 会取消当前系统语音；queue 顺序、segment pause 和失败降级已有单元测试。
+- Workbench 提供系统语言、具体 voice、女声自动偏好、语速、音高、音量和中文试听；默认语言为 `zh-CN`，选择持久化到本地配置。
+- Web Speech 不提供可靠的 gender metadata，女声自动模式只对常见 voice 名称做启发式优先；用户明确选择的 voice 始终优先。
+- 当前 `PresentationPlanner` 已覆盖 message completed 和 error 基线，通知合并优先级与番茄钟事件仍待补齐。
 
 验收口径：本地番茄钟或 mock 通知能触发桌宠唤出、气泡、可选 TTS、口型、表情和动作；TTS 失败不会影响文本展示。
 
@@ -1435,6 +1527,7 @@ Gateway 需要保存或维护：
 - [ ] 将气泡输入框里的用户回复发送到当前 Gateway session。
 - [ ] 保持本地 mock event source 可用，作为离线调试入口。
 - [ ] 确认普通 Channel 只收到干净文本，Desktop 只消费 `metadata.display_plan`。
+- [ ] 接入 Speech job 和 Gateway Media API，Desktop 通过 Gateway URL 下载 `SpeechArtifactRef`。
 
 验收口径：Gateway 未启动时本地桌宠仍可用；Gateway 启动后，真实消息和本地提醒进入同一展示 pipeline。
 
@@ -1457,8 +1550,9 @@ Gateway 需要保存或维护：
 - [ ] Desktop 注册 Live2D capability。
 - [ ] Gateway 调用 `desktop.live2d.set_expression`。
 - [ ] Gateway 调用 `desktop.live2d.play_motion`。
-- [ ] Desktop 注册 TTS capability。
-- [ ] Gateway 或 Desktop pipeline 能提交分段 TTS 播放计划。
+- [ ] Desktop 注册 `desktop.audio.play` / `desktop.audio.stop` capability。
+- [ ] Python SpeechService 统一适配高质量 TTS Provider，并生成可供 Channel/Desktop 复用的 artifact。
+- [ ] Gateway 或 Desktop pipeline 能提交分段音频播放计划。
 - [ ] Desktop 注册 window interaction/render mode capability。
 - [ ] 调用链路具备超时、错误、审计。
 - [ ] Desktop 本地允许列表生效。
@@ -1509,8 +1603,8 @@ Gateway 需要保存或维护：
 - Gateway 是否需要为 Desktop 单独提供 WebSocket event stream，替代 SSE 的鉴权限制。
 - Live2D 情绪应该由 Agent 显式输出 DisplayPlan，还是由 Desktop 本地规则推导。
 - DisplayPlan 应由主 LLM 直接输出，还是由回复后处理器二次生成。
-- TTS 首版使用本地引擎、系统语音，还是外部 Provider。
 - TTS 时间戳、phoneme、viseme 数据是否需要纳入统一 schema。
+- SpeechArtifact 首版统一使用 Opus/Ogg、MP3，还是按 Channel/Desktop 生成多个 rendition。
 - pet window 的交互模式触发源：托盘、快捷键、悬停按钮还是 Gateway 命令。
 - 贴边隐藏默认位置、露出部件和唤出距离如何配置。
 - 番茄钟属于 Desktop 本地设置，还是需要同步到 Gateway scheduler。
@@ -1541,6 +1635,8 @@ Desktop App 应先作为当前 monorepo 下的独立 Tauri 应用存在，通过
 Rust/Tauri 端不应通过 FFI 调 Python。Desktop App 与 Python core 的边界就是 Gateway 协议。这样可以保留分布式架构的清晰边界，也能为未来 Python node、Rust desktop node 和其他语言 node 提供一致扩展路径。
 
 长消息、TTS 和 Live2D 表现不应依赖 LLM 逐句调用工具。更合适的方式是让 LLM 或后处理器生成 DisplayPlan，由 Gateway/Router 保留干净文本，并将表现 metadata 交给 Desktop pipeline 消费。Live2D capability 继续作为底层执行能力存在，但它的调用通常来自解析后的表现流水线，而不是直接来自 LLM。
+
+高质量 TTS Provider 统一由 Python SpeechService 适配。GPU TTS 可以运行在通过 SSH/FRP 与 Gateway 连通的私网机器上；Gateway 负责拉取、缓存并通过受鉴权的 Media API 暴露音频，Desktop 和 Channel 复用同一个 SpeechArtifact。Gateway-Node WebSocket 只传 artifact 引用和播放控制，不承载音频二进制。Desktop 保留系统语音作为本地开发和离线 fallback。
 
 性能和桌面体验方面，首版继续采用 Tauri + WebView + WebGL Live2D。Native/C++ renderer 只作为后续性能兜底实验，不作为主线。桌宠窗口采用独立透明 `pet` window，首版使用整窗 click-through + 手动交互模式，不做 per-pixel hit-test。
 

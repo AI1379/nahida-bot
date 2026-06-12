@@ -57,6 +57,15 @@ export const desktopWindowDefaults = {
   chatIdleTimeoutMs: 45000,
 } as const;
 
+export const ttsDefaults = {
+  language: "zh-CN",
+  voiceUri: "",
+  preferFemale: true,
+  rate: 1,
+  pitch: 0,
+  volume: 1,
+} as const;
+
 export const petProximityDefaults = {
   pollIntervalMs: 250,
   wakeDistancePx: 96,

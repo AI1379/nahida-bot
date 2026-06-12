@@ -735,7 +735,7 @@ input[type="range"] {
 .side-rail {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(160px, 1fr);
+  grid-template-rows: auto auto auto auto auto minmax(160px, 1fr);
   gap: 12px;
   overflow-y: auto;
 }
@@ -795,6 +795,49 @@ input[type="range"] {
 
 .controls__buttons {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tts-settings__body {
+  display: grid;
+  gap: 12px;
+  padding: 12px 14px 14px;
+}
+
+.tts-settings__body > label,
+.tts-settings__preview {
+  display: grid;
+  gap: 6px;
+}
+
+.tts-settings__body label > span,
+.tts-settings__preview > label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tts-settings__check {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
+.tts-settings__warning,
+.tts-settings__note {
+  margin: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tts-settings__warning {
+  color: #6b421d;
+  background: #fff4e8;
+}
+
+.tts-settings__note {
+  color: var(--text-muted);
+  background: var(--surface-muted);
 }
 
 .expression-map__list,

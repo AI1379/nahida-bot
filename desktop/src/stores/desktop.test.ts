@@ -94,10 +94,32 @@ describe("desktop store pet transitions", () => {
       displayPlan,
     });
     store.completePetEmerge();
+    store.setSegment(0, true);
 
     expect(store.petRuntime.status).toBe("chat");
     expect(store.petRuntime.speaking).toBe(true);
     expect(store.petRuntime.bubbleText).toBe("Chat reply");
+  });
+
+  it("shows timed subtitle segments without enabling lip sync", () => {
+    const store = useDesktopStore();
+    const displayPlan = planFromText("Subtitle only", "thinking");
+
+    store.requestPetEmerge();
+    store.completePetEmerge();
+    store.applyDesktopEvent({
+      type: "message.completed",
+      source: "local",
+      at: "2026-06-12T00:00:00.000Z",
+      sessionId: "test-session",
+      displayPlan,
+    });
+    store.setSegment(0, false);
+
+    expect(store.petRuntime.status).toBe("emerged");
+    expect(store.petRuntime.speaking).toBe(false);
+    expect(store.petRuntime.bubbleText).toBe("Subtitle only");
+    expect(store.petRuntime.emotion).toBe("thinking");
   });
 
   it("applies local config snapshots only when their revision changes", () => {

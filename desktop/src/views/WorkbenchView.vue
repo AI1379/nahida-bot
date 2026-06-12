@@ -6,6 +6,7 @@ import DisplayPlanPanel from "@/components/DisplayPlanPanel.vue";
 import ExpressionMappingPanel from "@/components/ExpressionMappingPanel.vue";
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
+import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import { useDesktopStore } from "@/stores/desktop";
 
@@ -44,6 +45,11 @@ const activeSegment = computed(
       <DisplayPlanPanel
         :plan="store.activePlan"
         :active-index="store.currentSegmentIndex"
+      />
+      <TtsSettingsPanel
+        :settings="store.localConfig.ttsSettings"
+        @update="store.updateTtsSettings"
+        @preview="store.previewSystemSpeech"
       />
       <ExpressionMappingPanel
         :model="store.model"

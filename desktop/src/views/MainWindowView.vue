@@ -10,26 +10,24 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import {
   desktopWindowDefaults,
-  presentationTimingDefaults,
 } from "@/config/desktopRuntimeDefaults";
 import type {
   DesktopRuntimeSnapshot,
   PetWindowCommand,
 } from "@/domain/desktopWindowProtocol";
+import { petRuntimeNeedsEmerge } from "@/domain/petRuntimeMachine";
 import {
   listenForPetCommands,
   publishRuntimeSnapshot,
 } from "@/services/desktopWindowBridge";
+import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
+import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
 import { useDesktopStore } from "@/stores/desktop";
 import PetRuntimeView from "@/views/PetRuntimeView.vue";
 import WorkbenchView from "@/views/WorkbenchView.vue";
 
 const store = useDesktopStore();
 const activeView = ref<"runtime" | "workbench">("runtime");
-
-const activeSegment = computed(() =>
-  store.activePlan?.segments[store.currentSegmentIndex] ?? null,
-);
 
 const title = computed(() =>
   activeView.value === "runtime" ? "Pet Runtime" : "Development Workbench",
@@ -47,18 +45,35 @@ const runtimeSnapshot = computed<DesktopRuntimeSnapshot>(() => ({
   motionMapVersion: store.motionMapVersion,
 }));
 
-let segmentTimer: ReturnType<typeof setTimeout> | null = null;
 let transitionTimer: ReturnType<typeof setTimeout> | null = null;
 let autoRetreatTimer: ReturnType<typeof setTimeout> | null = null;
 let unlistenPetCommands: UnlistenFn | null = null;
+let scheduledPresentationId: string | null = null;
+
+const speechPlayback = new SpeechPlaybackCoordinator(
+  new SystemSpeechAdapter(
+    undefined,
+    undefined,
+    () => store.localConfig.ttsSettings,
+  ),
+  {
+    onSegmentStart(presentation, index, _segment, mode) {
+      if (store.activePresentation?.id !== presentation.id) return;
+      store.setSegment(index, mode === "audio");
+    },
+    onSegmentFallback(presentation, index) {
+      if (store.activePresentation?.id !== presentation.id) return;
+      store.setSegment(index, false);
+    },
+    onPresentationComplete(presentation) {
+      if (store.activePresentation?.id !== presentation.id) return;
+      store.finishPresentation();
+    },
+  },
+);
 
 function clearTimer(timer: ReturnType<typeof setTimeout> | null) {
   if (timer !== null) clearTimeout(timer);
-}
-
-function clearSegmentTimer() {
-  clearTimer(segmentTimer);
-  segmentTimer = null;
 }
 
 function clearPetStateTimers() {
@@ -68,29 +83,25 @@ function clearPetStateTimers() {
   autoRetreatTimer = null;
 }
 
-function scheduleNextSegment() {
-  clearSegmentTimer();
-  if (!store.activePlan || !activeSegment.value) return;
-  // While the emerge slide is still playing the plan has not started
-  // speaking yet; the timer starts once setSegment flips speaking on.
-  if (!store.speaking) return;
-
-  const current = activeSegment.value;
-  const duration = Math.max(
-    presentationTimingDefaults.minimumSegmentDurationMs,
-    current.text.length *
-      presentationTimingDefaults.millisecondsPerCharacter,
-  );
-  const pause = current.pauseAfterMs ?? 0;
-
-  segmentTimer = setTimeout(() => {
-    const nextIndex = store.currentSegmentIndex + 1;
-    if (store.activePlan && nextIndex < store.activePlan.segments.length) {
-      store.setSegment(nextIndex);
-    } else {
-      store.finishSpeaking();
+function scheduleActivePresentation() {
+  const presentation = store.activePresentation;
+  if (!presentation) {
+    scheduledPresentationId = null;
+    speechPlayback.stop();
+    return;
+  }
+  if (petRuntimeNeedsEmerge(store.petRuntime.status)) {
+    if (
+      store.petRuntime.status === "retreating" ||
+      store.petRuntime.status === "error"
+    ) {
+      speechPlayback.stop();
     }
-  }, duration + pause);
+    return;
+  }
+  if (scheduledPresentationId === presentation.id) return;
+  scheduledPresentationId = presentation.id;
+  speechPlayback.play(presentation);
 }
 
 function schedulePetState(status: typeof store.petRuntime.status) {
@@ -184,8 +195,13 @@ function selectModel(event: Event) {
 }
 
 watch(
-  () => [store.activePlan, store.currentSegmentIndex, store.speaking] as const,
-  () => scheduleNextSegment(),
+  () =>
+    [
+      store.activePresentation?.id ?? null,
+      store.petRuntime.status,
+    ] as const,
+  () => scheduleActivePresentation(),
+  { immediate: true },
 );
 
 watch(
@@ -210,7 +226,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  clearSegmentTimer();
+  speechPlayback.dispose();
   clearPetStateTimers();
   unlistenPetCommands?.();
   store.stopMockBackend();

@@ -56,6 +56,11 @@ import {
   writePersistedExpressionMap,
   writePersistedMotionMap,
 } from "@/services/modelMappingStorage";
+import {
+  readPersistedTtsSettings,
+  sanitizeTtsSettings,
+  writePersistedTtsSettings,
+} from "@/services/ttsSettingsStorage";
 import type {
   MotionMap,
   PersistedExpressionMaps,
@@ -155,6 +160,7 @@ export const useDesktopStore = defineStore("desktop", {
       persistedExpressions,
       persistedMotions,
     );
+    localConfig.ttsSettings = readPersistedTtsSettings();
 
     return {
       connected: false,
@@ -241,7 +247,8 @@ export const useDesktopStore = defineStore("desktop", {
         }
         switch (pending.action.type) {
           case "presentation":
-            this.setSegment(0);
+            // The main-window SpeechPlaybackCoordinator observes the
+            // now-ready presentation and starts segment playback.
             break;
           case "motion":
             this.applyPreviewMotion(pending.action.motion);
@@ -391,7 +398,42 @@ export const useDesktopStore = defineStore("desktop", {
       if (!trimmed) return;
       mockBackend.submitMockLlmResult(trimmed);
     },
-    setSegment(index: number) {
+    updateTtsSettings(settings: LocalDesktopConfig["ttsSettings"]) {
+      const ttsSettings = sanitizeTtsSettings(settings);
+      this.commitLocalConfig({
+        ...this.localConfig,
+        ttsSettings,
+      });
+      writePersistedTtsSettings(ttsSettings);
+    },
+    previewSystemSpeech(text: string) {
+      const cleanText = text.trim();
+      if (!cleanText) return;
+      const settings = this.localConfig.ttsSettings;
+      this.applyDesktopEvent({
+        type: "message.completed",
+        source: "local",
+        at: new Date().toISOString(),
+        sessionId: this.sessionId,
+        displayPlan: {
+          version: "1.0",
+          text: cleanText,
+          segments: [
+            {
+              text: cleanText,
+              emotion: "happy",
+              motion: "speaking",
+              voice: {
+                style: "neutral",
+                speed: settings.rate,
+                pitch: settings.pitch,
+              },
+            },
+          ],
+        },
+      });
+    },
+    setSegment(index: number, speaking = true) {
       if (!this.activePlan) return;
       const segment = this.activePlan.segments[index];
       if (!segment) return;
@@ -403,19 +445,35 @@ export const useDesktopStore = defineStore("desktop", {
       const emotion =
         segment.emotion ??
         (isDisplayEmotion(expressionKey) ? expressionKey : "neutral");
-      this.transitionPetRuntime("speak");
+      if (speaking) {
+        this.transitionPetRuntime("speak");
+      } else if (this.petRuntime.speaking) {
+        this.transitionPetRuntime("finish_speaking");
+      }
       this.syncPetRuntime({
         emotion,
         expressionKey,
-        motion: segment.motion ?? "speaking",
+        motion: segment.motion ?? (speaking ? "speaking" : "idle"),
+        speaking,
         currentSegmentIndex: index,
         activePresentationId: this.activePresentation?.id ?? null,
         bubbleText: segment.text,
         lastEventAt: new Date().toISOString(),
       });
     },
+    finishPresentation() {
+      if (this.petRuntime.speaking) {
+        this.transitionPetRuntime("finish_speaking");
+      }
+      this.syncPetRuntime({
+        motion: "idle",
+        speaking: false,
+        activePresentationId: null,
+        lastEventAt: new Date().toISOString(),
+      });
+    },
     finishSpeaking() {
-      this.transitionPetRuntime("finish_speaking");
+      this.finishPresentation();
     },
     selectModel(modelId: string) {
       const model = this.models.find((candidate) => candidate.id === modelId);
@@ -598,6 +656,12 @@ export const useDesktopStore = defineStore("desktop", {
           break;
         case "message.started":
           this.sessionId = event.sessionId;
+          this.activePlan = null;
+          this.activePresentation = null;
+          this.clearPendingAfterEmerge();
+          if (this.petRuntime.speaking) {
+            this.transitionPetRuntime("finish_speaking");
+          }
           if (this.petRuntime.status === "hidden") {
             this.requestPetEmerge();
           }
@@ -626,8 +690,6 @@ export const useDesktopStore = defineStore("desktop", {
           // immediately would cancel the transition and jump the window.
           if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
             this.queuePresentationStart();
-          } else {
-            this.setSegment(0);
           }
           break;
         }
