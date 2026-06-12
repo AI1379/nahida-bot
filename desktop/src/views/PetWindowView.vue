@@ -20,7 +20,6 @@ const interactive = computed(
   () => store.petRuntime.interactionMode === "interactive",
 );
 let unlistenRuntimeSnapshots: UnlistenFn | null = null;
-let windowUpdate = Promise.resolve();
 let snapshotReceived = false;
 const stateRequestTimers: Array<ReturnType<typeof setTimeout>> = [];
 
@@ -29,13 +28,10 @@ windowController.onSlideSettled = (phase) => {
 };
 
 function queueWindowUpdate() {
-  const runtime = { ...store.petRuntime };
-  const windowState = { ...store.localConfig.windowState };
-  windowUpdate = windowUpdate
-    .then(() => windowController.apply(runtime, windowState))
-    .catch((error: unknown) => {
-      console.error("Failed to update the pet window", error);
-    });
+  windowController.schedule(
+    store.petRuntime,
+    store.localConfig.windowState,
+  );
 }
 
 function handleProximityIntent(intent: ProximityIntent) {
@@ -98,6 +94,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  windowController.dispose();
   proximityWatcher.stop();
   for (const timer of stateRequestTimers) clearTimeout(timer);
   unlistenRuntimeSnapshots?.();

@@ -1,6 +1,5 @@
 import type { LocalDesktopConfig } from "./config";
 import type { DisplayPlan } from "./displayPlan";
-import type { Live2DModelManifest } from "./live2d";
 import type { PetRuntimeState, PresentationPlan } from "./runtime";
 
 export interface DesktopRuntimeSnapshot {
@@ -10,7 +9,7 @@ export interface DesktopRuntimeSnapshot {
   activePresentation: PresentationPlan | null;
   petRuntime: PetRuntimeState;
   localConfig: LocalDesktopConfig;
-  models: Live2DModelManifest[];
+  localConfigVersion: number;
   expressionMapVersion: number;
   motionMapVersion: number;
 }

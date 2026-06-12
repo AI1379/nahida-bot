@@ -39,7 +39,8 @@ describe("transitionPetRuntime", () => {
   it("makes chat interactive and hiding click-through", () => {
     const hidden = createInitialPetRuntimeState();
     const emerging = transitionPetRuntime(hidden, "emerge", "active");
-    const chat = transitionPetRuntime(emerging, "enter_chat", "active");
+    const emerged = transitionPetRuntime(emerging, "emerged", "active");
+    const chat = transitionPetRuntime(emerged, "enter_chat", "active");
     const retreating = transitionPetRuntime(chat, "retreat", "active");
     const hiddenAgain = transitionPetRuntime(
       retreating,
@@ -65,7 +66,8 @@ describe("transitionPetRuntime", () => {
   it("keeps chat interactive while a reply is spoken", () => {
     const hidden = createInitialPetRuntimeState();
     const emerging = transitionPetRuntime(hidden, "emerge", "balanced");
-    const chat = transitionPetRuntime(emerging, "enter_chat", "balanced");
+    const emerged = transitionPetRuntime(emerging, "emerged", "balanced");
+    const chat = transitionPetRuntime(emerged, "enter_chat", "balanced");
     const speakingInChat = transitionPetRuntime(chat, "speak", "balanced");
     const finished = transitionPetRuntime(
       speakingInChat,
@@ -113,5 +115,22 @@ describe("transitionPetRuntime", () => {
     const emerged = transitionPetRuntime(emerging, "emerged", "power_saver");
 
     expect(emerged.renderMode).toBe("idle");
+  });
+
+  it("keeps emerging as an animation boundary", () => {
+    const hidden = createInitialPetRuntimeState();
+    const emerging = transitionPetRuntime(hidden, "emerge", "balanced");
+
+    for (const signal of ["speak", "enter_chat", "fail"] as const) {
+      expect(transitionPetRuntime(emerging, signal, "balanced")).toBe(
+        emerging,
+      );
+    }
+
+    const emerged = transitionPetRuntime(emerging, "emerged", "balanced");
+    const failed = transitionPetRuntime(emerged, "fail", "balanced");
+    expect(transitionPetRuntime(failed, "enter_chat", "balanced")).toBe(
+      failed,
+    );
   });
 });

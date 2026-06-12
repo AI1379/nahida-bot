@@ -25,7 +25,7 @@ const allowedTransitions: Record<
   // window out of the edge. The store still updates emotion separately.
   hidden: new Set(["peek", "emerge"]),
   peek: new Set(["emerge", "retreat", "hide"]),
-  emerging: new Set(["emerged", "speak", "enter_chat", "retreat", "fail"]),
+  emerging: new Set(["emerged", "retreat"]),
   emerged: new Set([
     "peek",
     "speak",
@@ -48,8 +48,20 @@ const allowedTransitions: Record<
     "fail",
   ]),
   retreating: new Set(["peek", "emerge", "hide", "fail"]),
-  error: new Set(["emerge", "enter_chat", "retreat", "hide"]),
+  error: new Set(["emerge", "retreat", "hide"]),
 };
+
+const emergeRequiredStatuses = new Set<PetRuntimeStatus>([
+  "hidden",
+  "peek",
+  "emerging",
+  "retreating",
+  "error",
+]);
+
+export function petRuntimeNeedsEmerge(status: PetRuntimeStatus): boolean {
+  return emergeRequiredStatuses.has(status);
+}
 
 function transitionPatch(
   status: PetRuntimeStatus,

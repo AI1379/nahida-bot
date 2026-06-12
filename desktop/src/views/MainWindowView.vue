@@ -42,7 +42,7 @@ const runtimeSnapshot = computed<DesktopRuntimeSnapshot>(() => ({
   activePresentation: store.activePresentation,
   petRuntime: store.petRuntime,
   localConfig: store.localConfig,
-  models: store.models,
+  localConfigVersion: store.localConfigVersion,
   expressionMapVersion: store.expressionMapVersion,
   motionMapVersion: store.motionMapVersion,
 }));

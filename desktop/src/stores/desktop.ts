@@ -31,6 +31,7 @@ import type {
   PresentationPlan,
 } from "@/domain/runtime";
 import {
+  petRuntimeNeedsEmerge,
   transitionPetRuntime as reducePetRuntime,
   type PetRuntimeSignal,
 } from "@/domain/petRuntimeMachine";
@@ -71,6 +72,24 @@ export interface TranscriptEntry {
 }
 
 type ExpressionKeywordMap = Live2DExpressionMap;
+
+type PendingAfterEmergeAction =
+  | { type: "none" }
+  | { type: "presentation" }
+  | { type: "error" }
+  | { type: "motion"; motion: DisplayMotion };
+
+interface PendingAfterEmerge {
+  enterChat: boolean;
+  action: PendingAfterEmergeAction;
+}
+
+function createEmptyPendingAfterEmerge(): PendingAfterEmerge {
+  return {
+    enterChat: false,
+    action: { type: "none" },
+  };
+}
 
 function withPersistedModelMappings(
   config: LocalDesktopConfig,
@@ -121,10 +140,6 @@ function nextCustomExpressionKeyword(map: ExpressionKeywordMap): string {
   return `${base}-${Date.now()}`;
 }
 
-function structurallyEqual(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 export const useDesktopStore = defineStore("desktop", {
   state: () => {
     const persistedExpressions = readPersistedExpressionMaps();
@@ -145,27 +160,28 @@ export const useDesktopStore = defineStore("desktop", {
       connected: false,
       gatewayUrl: mockDesktopDefaults.gatewayUrl,
       sessionId: mockDesktopDefaults.sessionId,
-      currentEmotion: petRuntime.emotion,
-      currentExpressionKey: petRuntime.expressionKey,
-      currentMotion: petRuntime.motion,
-      speaking: petRuntime.speaking,
       activePlan: null as DisplayPlan | null,
       activePresentation: null as PresentationPlan | null,
-      currentSegmentIndex: petRuntime.currentSegmentIndex,
       petRuntime,
       localConfig,
+      localConfigVersion: 0,
+      appliedLocalConfigVersion: -1,
       models,
       expressionOptions: [] as Live2DExpressionOption[],
       motionOptions: [] as Live2DMotionOption[],
       expressionMapVersion: 0,
       motionMapVersion: 0,
       transcript: [] as TranscriptEntry[],
-      /** A presentation is waiting for the emerge slide to settle. */
-      pendingPresentationStart: false,
+      pendingAfterEmerge: createEmptyPendingAfterEmerge(),
       unsubscribe: null as (() => void) | null,
     };
   },
   getters: {
+    currentEmotion: (state) => state.petRuntime.emotion,
+    currentExpressionKey: (state) => state.petRuntime.expressionKey,
+    currentMotion: (state) => state.petRuntime.motion,
+    speaking: (state) => state.petRuntime.speaking,
+    currentSegmentIndex: (state) => state.petRuntime.currentSegmentIndex,
     selectedModelId: (state): string => state.localConfig.selectedModelId,
     model(state): Live2DModelManifest {
       const manifest =
@@ -182,16 +198,10 @@ export const useDesktopStore = defineStore("desktop", {
   },
   actions: {
     syncPetRuntime(partial: Partial<PetRuntimeState>) {
-      const nextRuntime = {
+      this.petRuntime = {
         ...this.petRuntime,
         ...partial,
       };
-      this.petRuntime = nextRuntime;
-      this.currentEmotion = nextRuntime.emotion;
-      this.currentExpressionKey = nextRuntime.expressionKey;
-      this.currentMotion = nextRuntime.motion;
-      this.speaking = nextRuntime.speaking;
-      this.currentSegmentIndex = nextRuntime.currentSegmentIndex;
     },
     transitionPetRuntime(signal: PetRuntimeSignal) {
       const nextRuntime = reducePetRuntime(
@@ -209,58 +219,138 @@ export const useDesktopStore = defineStore("desktop", {
     requestPetEmerge() {
       return this.transitionPetRuntime("emerge");
     },
+    commitLocalConfig(localConfig: LocalDesktopConfig) {
+      this.localConfig = localConfig;
+      this.localConfigVersion += 1;
+    },
+    clearPendingAfterEmerge() {
+      this.pendingAfterEmerge = createEmptyPendingAfterEmerge();
+    },
     completePetEmerge() {
       const changed = this.transitionPetRuntime("emerged");
-      if (changed && this.pendingPresentationStart) {
-        this.pendingPresentationStart = false;
-        this.setSegment(0);
+      if (!changed) return false;
+
+      const pending = this.pendingAfterEmerge;
+      this.clearPendingAfterEmerge();
+
+      if (pending.action.type === "error") {
+        this.transitionPetRuntime("fail");
+      } else {
+        if (pending.enterChat) {
+          this.transitionPetRuntime("enter_chat");
+        }
+        switch (pending.action.type) {
+          case "presentation":
+            this.setSegment(0);
+            break;
+          case "motion":
+            this.applyPreviewMotion(pending.action.motion);
+            break;
+          case "none":
+            break;
+        }
       }
-      return changed;
+      return true;
     },
     requestPetRetreat() {
-      return this.transitionPetRuntime("retreat");
+      const changed = this.transitionPetRuntime("retreat");
+      if (changed) this.clearPendingAfterEmerge();
+      return changed;
     },
     completePetRetreat() {
-      return this.transitionPetRuntime("hide");
+      const changed = this.transitionPetRuntime("hide");
+      if (changed) this.clearPendingAfterEmerge();
+      return changed;
     },
     requestPetHide() {
-      return this.transitionPetRuntime("hide");
+      const changed = this.transitionPetRuntime("hide");
+      if (changed) this.clearPendingAfterEmerge();
+      return changed;
     },
     enterPetChat() {
-      if (
-        ["hidden", "peek", "retreating", "error"].includes(
-          this.petRuntime.status,
-        )
-      ) {
-        this.requestPetEmerge();
+      if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
+        this.pendingAfterEmerge = {
+          enterChat: true,
+          action:
+            this.pendingAfterEmerge.action.type === "error"
+              ? { type: "none" }
+              : this.pendingAfterEmerge.action,
+        };
+        if (this.petRuntime.status !== "emerging") {
+          this.requestPetEmerge();
+        }
+        return true;
       }
       return this.transitionPetRuntime("enter_chat");
     },
     exitPetChat() {
+      if (
+        this.petRuntime.status === "emerging" &&
+        this.pendingAfterEmerge.enterChat
+      ) {
+        this.pendingAfterEmerge = {
+          ...this.pendingAfterEmerge,
+          enterChat: false,
+        };
+        return true;
+      }
       return this.transitionPetRuntime("exit_chat");
     },
-    ensurePetEmerged() {
+    wakePet() {
       if (
-        ["hidden", "peek", "retreating", "error"].includes(
-          this.petRuntime.status,
-        )
+        petRuntimeNeedsEmerge(this.petRuntime.status) &&
+        this.petRuntime.status !== "emerging"
       ) {
-        this.requestPetEmerge();
+        return this.requestPetEmerge();
       }
-      if (this.petRuntime.status === "emerging") {
-        this.completePetEmerge();
+      return false;
+    },
+    queuePresentationStart() {
+      this.pendingAfterEmerge = {
+        ...this.pendingAfterEmerge,
+        action: { type: "presentation" },
+      };
+      this.wakePet();
+    },
+    queueErrorAfterEmerge() {
+      this.pendingAfterEmerge = {
+        enterChat: false,
+        action: { type: "error" },
+      };
+      this.wakePet();
+    },
+    queueMotionAfterEmerge(motion: DisplayMotion) {
+      this.pendingAfterEmerge = {
+        ...this.pendingAfterEmerge,
+        action: { type: "motion", motion },
+      };
+      this.wakePet();
+    },
+    applyPreviewMotion(motion: DisplayMotion) {
+      const speaking = motion !== "idle";
+      if (speaking) {
+        this.transitionPetRuntime("speak");
+      } else if (this.petRuntime.status === "speaking") {
+        this.transitionPetRuntime("finish_speaking");
       }
+      this.syncPetRuntime({
+        motion,
+        speaking,
+        lastEventAt: new Date().toISOString(),
+      });
+      this.motionMapVersion += 1;
     },
     applyRuntimeSnapshot(snapshot: DesktopRuntimeSnapshot) {
       this.connected = snapshot.connected;
       this.sessionId = snapshot.sessionId;
       this.activePlan = snapshot.activePlan;
       this.activePresentation = snapshot.activePresentation;
-      if (!structurallyEqual(this.localConfig, snapshot.localConfig)) {
+      if (
+        this.appliedLocalConfigVersion !== snapshot.localConfigVersion
+      ) {
         this.localConfig = snapshot.localConfig;
-      }
-      if (!structurallyEqual(this.models, snapshot.models)) {
-        this.models = snapshot.models;
+        this.localConfigVersion = snapshot.localConfigVersion;
+        this.appliedLocalConfigVersion = snapshot.localConfigVersion;
       }
       this.expressionMapVersion = snapshot.expressionMapVersion;
       this.motionMapVersion = snapshot.motionMapVersion;
@@ -282,7 +372,7 @@ export const useDesktopStore = defineStore("desktop", {
       this.unsubscribe = null;
       this.activePlan = null;
       this.activePresentation = null;
-      this.pendingPresentationStart = false;
+      this.clearPendingAfterEmerge();
     },
     submitUserMessage(text: string) {
       const trimmed = text.trim();
@@ -305,11 +395,14 @@ export const useDesktopStore = defineStore("desktop", {
       if (!this.activePlan) return;
       const segment = this.activePlan.segments[index];
       if (!segment) return;
+      if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
+        this.queuePresentationStart();
+        return;
+      }
       const expressionKey = segment.expression ?? segment.emotion ?? "neutral";
       const emotion =
         segment.emotion ??
         (isDisplayEmotion(expressionKey) ? expressionKey : "neutral");
-      this.ensurePetEmerged();
       this.transitionPetRuntime("speak");
       this.syncPetRuntime({
         emotion,
@@ -327,15 +420,15 @@ export const useDesktopStore = defineStore("desktop", {
     selectModel(modelId: string) {
       const model = this.models.find((candidate) => candidate.id === modelId);
       if (!model || model.id === this.selectedModelId) return;
-      this.localConfig = {
+      this.commitLocalConfig({
         ...this.localConfig,
         selectedModelId: model.id,
-      };
+      });
       this.expressionOptions = [];
       this.motionOptions = [];
       this.expressionMapVersion += 1;
       this.motionMapVersion += 1;
-      this.ensurePetEmerged();
+      this.wakePet();
       this.syncPetRuntime({
         motion: "idle",
         expressionKey: this.currentEmotion,
@@ -374,10 +467,12 @@ export const useDesktopStore = defineStore("desktop", {
       const currentConfig =
         this.localConfig.modelConfigs[this.selectedModelId] ??
         modelMappingConfigFromManifest(this.model);
-      this.localConfig = withModelConfig(this.localConfig, {
-        ...currentConfig,
-        expressionMap: nextExpressionMap,
-      });
+      this.commitLocalConfig(
+        withModelConfig(this.localConfig, {
+          ...currentConfig,
+          expressionMap: nextExpressionMap,
+        }),
+      );
       writePersistedExpressionMap(this.selectedModelId, nextExpressionMap);
       if (this.currentExpressionKey === previousKeyword) {
         this.syncPetRuntime({ expressionKey: cleanKeyword });
@@ -399,10 +494,12 @@ export const useDesktopStore = defineStore("desktop", {
       const currentConfig =
         this.localConfig.modelConfigs[this.selectedModelId] ??
         modelMappingConfigFromManifest(this.model);
-      this.localConfig = withModelConfig(this.localConfig, {
-        ...currentConfig,
-        expressionMap: nextExpressionMap,
-      });
+      this.commitLocalConfig(
+        withModelConfig(this.localConfig, {
+          ...currentConfig,
+          expressionMap: nextExpressionMap,
+        }),
+      );
       writePersistedExpressionMap(this.selectedModelId, nextExpressionMap);
       if (this.currentExpressionKey === cleanKeyword) {
         this.syncPetRuntime({ expressionKey: this.currentEmotion });
@@ -415,12 +512,12 @@ export const useDesktopStore = defineStore("desktop", {
     previewExpressionKeyword(keyword: string) {
       const cleanKeyword = sanitizeExpressionKeyword(keyword);
       if (!cleanKeyword) return;
-      this.currentEmotion = isDisplayEmotion(cleanKeyword)
+      const emotion = isDisplayEmotion(cleanKeyword)
         ? cleanKeyword
         : "neutral";
-      this.ensurePetEmerged();
+      this.wakePet();
       this.syncPetRuntime({
-        emotion: this.currentEmotion,
+        emotion,
         expressionKey: cleanKeyword,
         motion: "idle",
         speaking: false,
@@ -441,34 +538,34 @@ export const useDesktopStore = defineStore("desktop", {
       const currentConfig =
         this.localConfig.modelConfigs[this.selectedModelId] ??
         modelMappingConfigFromManifest(this.model);
-      this.localConfig = withModelConfig(this.localConfig, {
-        ...currentConfig,
-        motionMap: nextMotionMap,
-      });
+      this.commitLocalConfig(
+        withModelConfig(this.localConfig, {
+          ...currentConfig,
+          motionMap: nextMotionMap,
+        }),
+      );
       writePersistedMotionMap(this.selectedModelId, nextMotionMap);
       this.motionMapVersion += 1;
     },
     previewMotion(motion: DisplayMotion) {
       if (!isDisplayMotion(motion)) return;
-      const speaking = motion !== "idle";
-      this.ensurePetEmerged();
-      if (speaking) {
-        this.transitionPetRuntime("speak");
-      } else if (this.petRuntime.status === "speaking") {
-        this.transitionPetRuntime("finish_speaking");
+      if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
+        this.queueMotionAfterEmerge(motion);
+        return;
       }
-      this.syncPetRuntime({
-        motion,
-        speaking,
-        lastEventAt: new Date().toISOString(),
-      });
-      this.motionMapVersion += 1;
+      this.applyPreviewMotion(motion);
     },
     applyDesktopEvent(event: DesktopEvent) {
       switch (event.type) {
         case "connection.changed":
           this.connected = event.connected;
           if (event.connected) {
+            if (this.pendingAfterEmerge.action.type === "error") {
+              this.pendingAfterEmerge = {
+                ...this.pendingAfterEmerge,
+                action: { type: "none" },
+              };
+            }
             this.requestPetEmerge();
             this.syncPetRuntime({
               emotion: "happy",
@@ -484,7 +581,12 @@ export const useDesktopStore = defineStore("desktop", {
               at: event.at,
             });
           } else {
-            this.transitionPetRuntime("fail");
+            this.clearPendingAfterEmerge();
+            if (this.petRuntime.status === "emerging") {
+              this.queueErrorAfterEmerge();
+            } else {
+              this.transitionPetRuntime("fail");
+            }
             this.syncPetRuntime({
               emotion: "offline",
               expressionKey: "offline",
@@ -522,13 +624,8 @@ export const useDesktopStore = defineStore("desktop", {
           });
           // Let the emerge slide play before speech starts; speaking
           // immediately would cancel the transition and jump the window.
-          if (
-            ["hidden", "peek", "retreating", "emerging", "error"].includes(
-              this.petRuntime.status,
-            )
-          ) {
-            this.pendingPresentationStart = true;
-            this.requestPetEmerge();
+          if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
+            this.queuePresentationStart();
           } else {
             this.setSegment(0);
           }
@@ -539,10 +636,12 @@ export const useDesktopStore = defineStore("desktop", {
           this.activePresentation = presentation;
           this.activePlan = presentation?.displayPlan ?? this.activePlan;
           if (presentation) {
-            // An error notification should be seen: wake the pet first,
-            // then enter the error state (fail is rejected while hidden).
-            this.ensurePetEmerged();
-            this.transitionPetRuntime("fail");
+            if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
+              this.queueErrorAfterEmerge();
+            } else {
+              this.clearPendingAfterEmerge();
+              this.transitionPetRuntime("fail");
+            }
             this.syncPetRuntime({
               emotion: "error",
               expressionKey: "error",
