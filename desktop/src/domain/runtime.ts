@@ -75,7 +75,7 @@ export interface PetRuntimeState {
 export function createInitialPetRuntimeState(): PetRuntimeState {
   return {
     status: "hidden",
-    renderMode: "idle",
+    renderMode: "suspended",
     emotion: "neutral",
     expressionKey: "neutral",
     motion: "idle",
@@ -94,7 +94,8 @@ export function renderModeForPerformanceMode(
   speaking = false,
 ): RenderMode {
   if (speaking) return "speaking";
-  if (performanceMode === "power_saver") return "suspended";
+  // Power saver lowers the frame budget but must not freeze a visible pet;
+  // "suspended" is reserved for hidden/minimized/locked states.
   if (performanceMode === "active") return "active";
   return "idle";
 }

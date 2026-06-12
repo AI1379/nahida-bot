@@ -59,3 +59,9 @@ export interface Live2DModelManifest {
   };
   layout: Live2DModelLayout;
 }
+
+export function live2dModelLoadKey(
+  manifest: Pick<Live2DModelManifest, "id" | "entry">,
+): string {
+  return `${manifest.id}\u0000${manifest.entry}`;
+}

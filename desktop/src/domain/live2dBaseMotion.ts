@@ -170,6 +170,64 @@ export const baseMotionProfiles: Partial<Record<DisplayMotion, BaseMotionProfile
       },
     ],
   },
+  emerge: {
+    // Inertia layer of the edge slide-out: the window animation moves the
+    // pet, this profile adds the head/body/gaze follow-through.
+    durationMs: 760,
+    keyframes: [
+      {
+        atMs: 140,
+        targets: [
+          { role: "headZ", value: -6 },
+          { role: "headY", value: 6 },
+          { role: "bodyZ", value: -1.4 },
+          { role: "eyeX", value: -0.2 },
+          { role: "browY", value: 0.2 },
+        ],
+      },
+      {
+        atMs: 420,
+        targets: [
+          { role: "headZ", value: 3 },
+          { role: "headY", value: -2 },
+          { role: "bodyZ", value: 0.7 },
+          { role: "eyeX", value: 0.08 },
+        ],
+      },
+      {
+        atMs: 640,
+        targets: [
+          { role: "headZ", value: -1 },
+          { role: "headY", value: 0.8 },
+          { role: "bodyZ", value: -0.2 },
+        ],
+      },
+    ],
+  },
+  retreat: {
+    durationMs: 620,
+    keyframes: [
+      {
+        atMs: 120,
+        targets: [
+          { role: "headZ", value: 4 },
+          { role: "headY", value: -5 },
+          { role: "bodyZ", value: 1 },
+          { role: "eyeX", value: 0.22 },
+          { role: "eyeY", value: -0.1 },
+        ],
+      },
+      {
+        atMs: 460,
+        targets: [
+          { role: "headZ", value: 1.5 },
+          { role: "headY", value: -1.5 },
+          { role: "bodyZ", value: 0.3 },
+          { role: "eyeX", value: 0.1 },
+        ],
+      },
+    ],
+  },
 };
 
 export const baseMotionNames = Object.keys(baseMotionProfiles) as DisplayMotion[];

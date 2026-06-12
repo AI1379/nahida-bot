@@ -31,6 +31,8 @@ const nahidaModelManifest: Live2DModelManifest = {
     wave: { source: "model", group: "Gesture", index: 0 },
     notify: { source: "model", group: "Gesture", index: 0 },
     speaking: { source: "model", group: "Gesture", index: 0 },
+    emerge: { source: "procedural", motion: "emerge" },
+    retreat: { source: "procedural", motion: "retreat" },
   },
   lipSync: {
     enabled: true,
@@ -64,6 +66,8 @@ const nahida1080ModelManifest: Live2DModelManifest = {
     wave: { source: "procedural", motion: "wave" },
     notify: { source: "procedural", motion: "notify" },
     speaking: { source: "procedural", motion: "speaking" },
+    emerge: { source: "procedural", motion: "emerge" },
+    retreat: { source: "procedural", motion: "retreat" },
   },
   lipSync: {
     enabled: true,
@@ -113,4 +117,4 @@ export const defaultModelManifest: Live2DModelManifest = configuredModelEntry
     : isNahidaEntry(configuredModelEntry)
       ? nahidaModelManifest
       : genericModelManifest
-  : nahidaModelManifest;
+  : nahida1080ModelManifest;

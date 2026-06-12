@@ -17,7 +17,9 @@ export type DisplayMotion =
   | "point"
   | "wave"
   | "notify"
-  | "speaking";
+  | "speaking"
+  | "emerge"
+  | "retreat";
 
 export interface VoicePlan {
   style?: "neutral" | "bright" | "calm" | "soft";
@@ -58,6 +60,8 @@ export const displayMotions: DisplayMotion[] = [
   "wave",
   "notify",
   "speaking",
+  "emerge",
+  "retreat",
 ];
 
 const emotions = new Set<DisplayEmotion>(displayEmotions);

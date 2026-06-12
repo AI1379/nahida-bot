@@ -44,4 +44,23 @@ export const desktopWindowDefaults = {
   clickThrough: true,
   interactionMode: "click_through" as const,
   performanceMode: "balanced" as const,
+  /** Duration of the emerge/retreat window slide animation. */
+  slideDurationMs: 320,
+  /**
+   * Fallback for advancing emerging/retreating when the pet window never
+   * reports `transition_done` (e.g. browser dev mode without Tauri).
+   */
+  transitionFallbackMs: 1200,
+  autoRetreatMs: 8000,
+  errorRetreatMs: 10000,
+  /** Exit chat (and click-through again) after this much inactivity. */
+  chatIdleTimeoutMs: 45000,
+} as const;
+
+export const petProximityDefaults = {
+  pollIntervalMs: 250,
+  wakeDistancePx: 96,
+  hideDistancePx: 220,
+  /** Minimum gap between pointer_activity commands sent to the main window. */
+  activityThrottleMs: 2000,
 } as const;

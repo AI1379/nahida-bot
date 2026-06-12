@@ -8,6 +8,7 @@ import type {
   Live2DModelManifest,
   Live2DMotionOption,
 } from "@/domain/live2d";
+import { live2dModelLoadKey } from "@/domain/live2d";
 import Live2DDebugPanel from "@/components/Live2DDebugPanel.vue";
 import type { Live2DDebugSnapshot } from "@/renderers/live2dRenderer";
 import { WebLive2DRenderer } from "@/renderers/live2dRenderer";
@@ -63,6 +64,10 @@ const motionLabel = computed(() => {
   return `${mapped.group} #${mapped.index}`;
 });
 
+const modelLoadKey = computed(
+  () => live2dModelLoadKey(props.model),
+);
+
 function loadLive2D(): Promise<void> {
   if (!live2dHost.value) return Promise.resolve();
   const generation = ++loadGeneration;
@@ -103,6 +108,9 @@ async function performLive2DLoad(generation: number): Promise<void> {
     }
     renderer.value = live2dRenderer;
     controller.value = presentationController;
+    if (document.hidden) {
+      presentationController.setRenderMode("suspended");
+    }
     loadState.value = "ready";
     refreshDebugSnapshot();
   } catch (error) {
@@ -178,7 +186,7 @@ function playDebugMotion(payload: {
 }
 
 watch(
-  () => [props.model.id, props.model.entry] as const,
+  modelLoadKey,
   () => void loadLive2D(),
 );
 
@@ -211,15 +219,25 @@ watch(
 watch(
   () => props.renderMode,
   () => {
+    if (document.hidden) return;
     controller.value?.setRenderMode(props.renderMode);
   },
 );
 
+function handleVisibilityChange() {
+  // A minimized/hidden window must not keep burning frames (design §9.8).
+  controller.value?.setRenderMode(
+    document.hidden ? "suspended" : props.renderMode,
+  );
+}
+
 onMounted(() => {
+  document.addEventListener("visibilitychange", handleVisibilityChange);
   void loadLive2D();
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   loadGeneration += 1;
   controller.value?.dispose();
   controller.value = null;
@@ -265,7 +283,7 @@ onBeforeUnmount(() => {
     />
 
     <div
-      v-if="loadState !== 'ready'"
+      v-if="loadState === 'fallback'"
       class="avatar"
       :data-emotion="props.emotion"
       :data-motion="props.motion"

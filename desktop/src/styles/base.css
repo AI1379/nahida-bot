@@ -33,6 +33,15 @@ body,
   margin: 0;
 }
 
+html[data-window="pet"],
+html[data-window="pet"] body,
+html[data-window="pet"] #app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
 button,
 input,
 select,
@@ -190,6 +199,16 @@ input[type="range"] {
   overflow: hidden;
 }
 
+.pet-controls {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.pet-controls button {
+  min-height: 34px;
+  padding-inline: 10px;
+}
+
 .workspace > .stage {
   min-height: 0;
 }
@@ -224,6 +243,58 @@ input[type="range"] {
 
 .pet-runtime__composer input {
   min-height: 38px;
+}
+
+.pet-window {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.pet-window .stage {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pet-window .stage__subtitle {
+  bottom: 86px;
+  width: calc(100% - 24px);
+  border-color: rgb(167 195 174 / 72%);
+  background: rgb(250 253 249 / 92%);
+  box-shadow: 0 10px 24px rgb(22 32 26 / 18%);
+}
+
+.pet-window__composer {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  border: 1px solid rgb(167 195 174 / 78%);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgb(250 253 249 / 94%);
+  box-shadow: 0 12px 30px rgb(22 32 26 / 20%);
+}
+
+.pet-window__composer input,
+.pet-window__composer button {
+  min-height: 38px;
+}
+
+.pet-window[data-status="hidden"] .stage__subtitle,
+.pet-window[data-status="retreating"] .stage__subtitle {
+  display: none;
 }
 
 .stage {

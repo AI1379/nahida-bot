@@ -1384,13 +1384,22 @@ Gateway 需要保存或维护：
 
 ### Phase 2：本地 Pet Window 与状态机
 
-- [ ] 新增或完善独立 `pet` transparent window。
-- [ ] 实现 `hidden`、`peek`、`emerging`、`emerged`、`speaking`、`chat`、`retreating`、`error` 状态机。
-- [ ] 将“从屏幕边缘爬出来”拆成两层：窗口/容器滑出动画负责位移，Live2D Base motion 负责头发、身体、头部和视线的惯性表现。
-- [ ] 实现贴边隐藏、露出部件、鼠标靠近唤出、自动收回。
-- [ ] 实现整窗 click-through 与手动交互模式，首版不做 per-pixel hit-test。
-- [ ] 实现主体验气泡文本和紧凑输入框；本阶段输入可先接本地 mock session。
-- [ ] 实现渲染模式切换：`suspended`、`idle`、`speaking`、`active`。
+- [x] 新增或完善独立 `pet` transparent window。
+- [x] 实现 `hidden`、`peek`、`emerging`、`emerged`、`speaking`、`chat`、`retreating`、`error` 状态机。
+- [x] 将“从屏幕边缘爬出来”拆成两层：窗口/容器滑出动画负责位移，Live2D Base motion 负责头发、身体、头部和视线的惯性表现。
+- [x] 实现贴边隐藏、露出部件、mock/主窗口唤出和自动收回。
+- [x] 增加鼠标靠近唤出；整窗 click-through 模式下使用 Tauri `cursorPosition()` 全局指针轮询，不依赖自定义 Rust hook。
+- [x] 实现整窗 click-through 与手动交互模式，首版不做 per-pixel hit-test。
+- [x] 实现主体验气泡文本和紧凑输入框；本阶段输入先接本地 mock session。
+- [x] 实现渲染模式切换：`suspended`、`idle`、`speaking`、`active`。
+
+实现备注：
+
+- 鼠标靠近唤出的状态流：cursor 接近贴边露出区域 → `peek`；cursor 触碰露出部件 → `emerge`；cursor 远离 → 收回。`emerged`/`chat` 状态下 cursor 悬停会重置自动收回/聊天空闲计时。
+- 交互模式有自动超时（chat 空闲超时后回到 click-through），满足 12.7 节“交互模式应有自动超时”的要求。
+- 断线（`fail`）不会把隐藏中的桌宠弹出；error 状态有独立自动收回计时。
+- 省电性能模式映射到 `idle` 渲染档（低帧率），`suspended` 仅保留给隐藏/最小化/锁屏。
+- WebView `visibilitychange` 时渲染自动挂起，主窗口最小化后不再消耗帧预算。
 
 验收口径：不连接 Gateway 时，桌宠可以贴边隐藏、被 hover/mock 事件唤出、展示气泡、进入输入模式、超时收回，并且默认不长期拦截桌面点击。
 
@@ -1461,6 +1470,7 @@ Gateway 需要保存或维护：
 ### Phase 8：产品化与发布
 
 - [ ] 托盘、透明窗口、置顶、拖拽和快捷入口。
+- [ ] 设置生产 CSP，替换当前开发期的 `csp: null`（见 12.4 节）。
 - [ ] 配对流程。
 - [ ] token 撤销与重新登录。
 - [ ] TTS voice 管理。
