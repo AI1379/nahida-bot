@@ -4,6 +4,7 @@ import type {
   Live2DModelManifest,
   Live2DMotionTarget,
 } from "./live2d";
+import { desktopWindowDefaults } from "@/config/desktopRuntimeDefaults";
 
 export type PerformanceMode = "power_saver" | "balanced" | "active";
 export type PetWindowEdge = "left" | "right" | "top" | "bottom";
@@ -53,32 +54,57 @@ export function modelMappingConfigFromManifest(
       enabled: manifest.lipSync.enabled,
       parameterIds: [...manifest.lipSync.parameterIds],
     },
-    scale: 1,
-    offsetX: 0,
-    offsetY: 0,
-    edgeExposedPx: 42,
+    scale: manifest.layout.scale,
+    offsetX: manifest.layout.offsetX,
+    offsetY: manifest.layout.offsetY,
+    edgeExposedPx: manifest.layout.edgeExposedPx,
   };
 }
 
 export function createDefaultLocalDesktopConfig(
   manifest: Live2DModelManifest,
+  manifests: Live2DModelManifest[] = [manifest],
 ): LocalDesktopConfig {
   return {
     selectedModelId: manifest.id,
-    modelConfigs: {
-      [manifest.id]: modelMappingConfigFromManifest(manifest),
-    },
+    modelConfigs: Object.fromEntries(
+      manifests.map((candidate) => [
+        candidate.id,
+        modelMappingConfigFromManifest(candidate),
+      ]),
+    ),
     windowState: {
-      width: 420,
-      height: 620,
+      width: desktopWindowDefaults.width,
+      height: desktopWindowDefaults.height,
       x: null,
       y: null,
-      edge: "right",
-      exposedPx: 42,
-      alwaysOnTop: true,
-      clickThrough: true,
-      interactionMode: "click_through",
+      edge: desktopWindowDefaults.edge,
+      exposedPx: desktopWindowDefaults.exposedPx,
+      alwaysOnTop: desktopWindowDefaults.alwaysOnTop,
+      clickThrough: desktopWindowDefaults.clickThrough,
+      interactionMode: desktopWindowDefaults.interactionMode,
     },
-    performanceMode: "balanced",
+    performanceMode: desktopWindowDefaults.performanceMode,
+  };
+}
+
+export function configuredModelFromManifest(
+  manifest: Live2DModelManifest,
+  config: ModelMappingConfig,
+): Live2DModelManifest {
+  return {
+    ...manifest,
+    emotionMap: { ...config.expressionMap },
+    motionMap: { ...config.motionMap },
+    lipSync: {
+      enabled: config.lipSync.enabled,
+      parameterIds: [...config.lipSync.parameterIds],
+    },
+    layout: {
+      scale: config.scale,
+      offsetX: config.offsetX,
+      offsetY: config.offsetY,
+      edgeExposedPx: config.edgeExposedPx,
+    },
   };
 }

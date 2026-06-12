@@ -93,7 +93,7 @@ input[type="range"] {
 }
 
 .desktop-shell {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -187,6 +187,11 @@ input[type="range"] {
   display: grid;
   grid-template-columns: minmax(420px, 1fr) minmax(340px, 420px);
   gap: 16px;
+  overflow: hidden;
+}
+
+.workspace > .stage {
+  min-height: 0;
 }
 
 .pet-runtime {
@@ -371,6 +376,16 @@ input[type="range"] {
   display: grid;
   gap: 12px;
   padding: 10px;
+}
+
+.debug-parameters {
+  display: grid;
+  gap: 12px;
+  padding: 10px;
+}
+
+.debug-parameters .debug-list {
+  padding: 0;
 }
 
 .debug-section__header {
@@ -651,6 +666,7 @@ input[type="range"] {
   display: grid;
   grid-template-rows: auto auto auto auto minmax(160px, 1fr);
   gap: 12px;
+  overflow-y: auto;
 }
 
 .panel {
@@ -850,8 +866,6 @@ input[type="range"] {
 
 .transcript__list {
   display: grid;
-  max-height: 260px;
-  overflow: auto;
   gap: 8px;
 }
 

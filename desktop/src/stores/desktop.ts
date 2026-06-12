@@ -5,12 +5,23 @@ import type {
   DisplayMotion,
   DisplayPlan,
 } from "@/domain/displayPlan";
-import { displayEmotions, displayMotions } from "@/domain/displayPlan";
 import {
+  isDisplayEmotion,
+  isDisplayMotion,
+} from "@/domain/displayPlan";
+import {
+  configuredModelFromManifest,
   createDefaultLocalDesktopConfig,
   modelMappingConfigFromManifest,
 } from "@/domain/config";
-import type { LocalDesktopConfig } from "@/domain/config";
+import type {
+  LocalDesktopConfig,
+  ModelMappingConfig,
+} from "@/domain/config";
+import {
+  sanitizeExpressionKeyword,
+  sanitizeExpressionName,
+} from "@/domain/displayPlanPolicy";
 import {
   createInitialPetRuntimeState,
   renderModeForPerformanceMode,
@@ -20,8 +31,13 @@ import type {
   PetRuntimeState,
   PresentationPlan,
 } from "@/domain/runtime";
-import { availableModelManifests, mockModelManifest } from "@/domain/live2d";
+import {
+  availableModelManifests,
+  defaultModelManifest,
+} from "@/config/live2dModelManifests";
+import { mockDesktopDefaults } from "@/config/mockDefaults";
 import type {
+  Live2DExpressionMap,
   Live2DExpressionOption,
   Live2DModelManifest,
   Live2DMotionOption,
@@ -29,6 +45,17 @@ import type {
 } from "@/domain/live2d";
 import { mockGatewayEventAdapter } from "@/services/gatewayEventAdapter";
 import { mockBackend } from "@/services/mockBackend";
+import {
+  readPersistedExpressionMaps,
+  readPersistedMotionMaps,
+  writePersistedExpressionMap,
+  writePersistedMotionMap,
+} from "@/services/modelMappingStorage";
+import type {
+  MotionMap,
+  PersistedExpressionMaps,
+  PersistedMotionMaps,
+} from "@/services/modelMappingStorage";
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
 
 export interface TranscriptEntry {
@@ -39,203 +66,43 @@ export interface TranscriptEntry {
   displayPlan?: DisplayPlan;
 }
 
-type ExpressionKeywordMap = Record<string, string[]>;
-type PersistedExpressionMaps = Record<string, ExpressionKeywordMap>;
-type MotionMap = Partial<Record<DisplayMotion, Live2DMotionTarget>>;
-type PersistedMotionMaps = Record<string, MotionMap>;
+type ExpressionKeywordMap = Live2DExpressionMap;
 
-const expressionMapStorageKey = "nahida.desktop.live2d.expressionMap.v2";
-const legacyExpressionMapStorageKey = "nahida.desktop.live2d.emotionMap.v1";
-const motionMapStorageKey = "nahida.desktop.live2d.motionMap.v1";
-
-const expressionKeywordPattern = /^[\p{L}\p{N}_.-]+$/u;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function isDisplayEmotion(value: string): value is DisplayEmotion {
-  return displayEmotions.includes(value as DisplayEmotion);
-}
-
-function isDisplayMotion(value: string): value is DisplayMotion {
-  return displayMotions.includes(value as DisplayMotion);
-}
-
-function cleanExpressionKeyword(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const keyword = value.trim().slice(0, 48);
-  return expressionKeywordPattern.test(keyword) ? keyword : "";
-}
-
-function cleanExpressionName(value: unknown): string {
-  return typeof value === "string" ? value.trim().slice(0, 160) : "";
-}
-
-function readPersistedExpressionMaps(): PersistedExpressionMaps {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw =
-      window.localStorage.getItem(expressionMapStorageKey) ??
-      window.localStorage.getItem(legacyExpressionMapStorageKey);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!isRecord(parsed)) return {};
-
-    return Object.fromEntries(
-      Object.entries(parsed).map(([modelId, value]) => [
-        modelId,
-        sanitizeExpressionMap(value),
-      ]),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function writePersistedExpressionMap(
-  modelId: string,
-  expressionMap: ExpressionKeywordMap,
-): void {
-  if (typeof window === "undefined") return;
-  const persisted = readPersistedExpressionMaps();
-  persisted[modelId] = sanitizeExpressionMap(expressionMap);
-  window.localStorage.setItem(
-    expressionMapStorageKey,
-    JSON.stringify(persisted),
-  );
-}
-
-function sanitizeExpressionMap(value: unknown): ExpressionKeywordMap {
-  if (!isRecord(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value).flatMap(([rawKeyword, raw]) => {
-      const keyword = cleanExpressionKeyword(rawKeyword);
-      if (!keyword) return [];
-      if (Array.isArray(raw)) {
-        const expression = cleanExpressionName(raw[0]);
-        return [[keyword, expression ? [expression] : []]];
-      }
-      const expression = cleanExpressionName(raw);
-      // raw === "" means the user explicitly cleared the mapping for this keyword
-      if (expression || raw === "") return [[keyword, expression ? [expression] : []]];
-      return [];
-    }),
-  ) as ExpressionKeywordMap;
-}
-
-function sanitizeMotionTarget(value: unknown): Live2DMotionTarget | null {
-  if (!isRecord(value)) return null;
-  if (value.source === "none") {
-    return { source: "none" };
-  }
-  if (value.source === "procedural" && typeof value.motion === "string") {
-    return isDisplayMotion(value.motion)
-      ? { source: "procedural", motion: value.motion }
-      : null;
-  }
-
-  const source = value.source ?? "model";
-  if (
-    source === "model" &&
-    typeof value.group === "string" &&
-    typeof value.index === "number" &&
-    Number.isInteger(value.index) &&
-    value.index >= 0
-  ) {
-    return {
-      source: "model",
-      group: value.group.trim().slice(0, 120),
-      index: value.index,
-    };
-  }
-
-  return null;
-}
-
-function sanitizeMotionMap(value: unknown): MotionMap {
-  if (!isRecord(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value).flatMap(([rawMotion, rawTarget]) => {
-      if (!isDisplayMotion(rawMotion)) return [];
-      const target = sanitizeMotionTarget(rawTarget);
-      return target ? [[rawMotion, target]] : [];
-    }),
-  ) as MotionMap;
-}
-
-function readPersistedMotionMaps(): PersistedMotionMaps {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(motionMapStorageKey);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!isRecord(parsed)) return {};
-
-    return Object.fromEntries(
-      Object.entries(parsed).map(([modelId, value]) => [
-        modelId,
-        sanitizeMotionMap(value),
-      ]),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function writePersistedMotionMap(modelId: string, motionMap: MotionMap): void {
-  if (typeof window === "undefined") return;
-  const persisted = readPersistedMotionMaps();
-  persisted[modelId] = sanitizeMotionMap(motionMap);
-  window.localStorage.setItem(motionMapStorageKey, JSON.stringify(persisted));
-}
-
-function applyPersistedExpressionMap(
-  model: Live2DModelManifest,
-  persisted: PersistedExpressionMaps,
-): Live2DModelManifest {
-  return {
-    ...model,
-    emotionMap: {
-      ...model.emotionMap,
-      ...(persisted[model.id] ?? {}),
-    },
-  };
-}
-
-function applyPersistedMotionMap(
-  model: Live2DModelManifest,
-  persisted: PersistedMotionMaps,
-): Live2DModelManifest {
-  return {
-    ...model,
-    motionMap: {
-      ...model.motionMap,
-      ...(persisted[model.id] ?? {}),
-    },
-  };
-}
-
-function withModelMappingConfig(
+function withPersistedModelMappings(
   config: LocalDesktopConfig,
-  model: Live2DModelManifest,
+  persistedExpressions: PersistedExpressionMaps,
+  persistedMotions: PersistedMotionMaps,
 ): LocalDesktopConfig {
-  const existing =
-    config.modelConfigs[model.id] ?? modelMappingConfigFromManifest(model);
   return {
     ...config,
-    selectedModelId: model.id,
+    modelConfigs: Object.fromEntries(
+      Object.entries(config.modelConfigs).map(([modelId, modelConfig]) => [
+        modelId,
+        {
+          ...modelConfig,
+          expressionMap: {
+            ...modelConfig.expressionMap,
+            ...(persistedExpressions[modelId] ?? {}),
+          },
+          motionMap: {
+            ...modelConfig.motionMap,
+            ...(persistedMotions[modelId] ?? {}),
+          },
+        },
+      ]),
+    ),
+  };
+}
+
+function withModelConfig(
+  config: LocalDesktopConfig,
+  modelConfig: ModelMappingConfig,
+): LocalDesktopConfig {
+  return {
+    ...config,
     modelConfigs: {
       ...config.modelConfigs,
-      [model.id]: {
-        ...existing,
-        expressionMap: { ...model.emotionMap },
-        motionMap: { ...model.motionMap },
-        lipSync: {
-          enabled: model.lipSync.enabled,
-          parameterIds: [...model.lipSync.parameterIds],
-        },
-      },
+      [modelConfig.modelId]: modelConfig,
     },
   };
 }
@@ -254,26 +121,22 @@ export const useDesktopStore = defineStore("desktop", {
   state: () => {
     const persistedExpressions = readPersistedExpressionMaps();
     const persistedMotions = readPersistedMotionMaps();
-    const models = availableModelManifests.map((model) =>
-      applyPersistedMotionMap(
-        applyPersistedExpressionMap(model, persistedExpressions),
-        persistedMotions,
-      ),
-    );
-    const fallbackModel = applyPersistedMotionMap(
-      applyPersistedExpressionMap(mockModelManifest, persistedExpressions),
+    const models = availableModelManifests;
+    const selectedModel =
+      models.find((model) => model.id === defaultModelManifest.id) ??
+      models[0] ??
+      defaultModelManifest;
+    const petRuntime = createInitialPetRuntimeState();
+    const localConfig = withPersistedModelMappings(
+      createDefaultLocalDesktopConfig(selectedModel, models),
+      persistedExpressions,
       persistedMotions,
     );
-    const selectedModel =
-      models.find((model) => model.id === mockModelManifest.id) ??
-      models[0] ??
-      fallbackModel;
-    const petRuntime = createInitialPetRuntimeState();
 
     return {
       connected: false,
-      gatewayUrl: "mock://backend",
-      sessionId: "desktop:private:mock-user",
+      gatewayUrl: mockDesktopDefaults.gatewayUrl,
+      sessionId: mockDesktopDefaults.sessionId,
       currentEmotion: petRuntime.emotion,
       currentExpressionKey: petRuntime.expressionKey,
       currentMotion: petRuntime.motion,
@@ -282,10 +145,8 @@ export const useDesktopStore = defineStore("desktop", {
       activePresentation: null as PresentationPlan | null,
       currentSegmentIndex: petRuntime.currentSegmentIndex,
       petRuntime,
-      localConfig: createDefaultLocalDesktopConfig(selectedModel),
+      localConfig,
       models,
-      selectedModelId: selectedModel.id,
-      model: selectedModel,
       expressionOptions: [] as Live2DExpressionOption[],
       motionOptions: [] as Live2DMotionOption[],
       expressionMapVersion: 0,
@@ -293,6 +154,21 @@ export const useDesktopStore = defineStore("desktop", {
       transcript: [] as TranscriptEntry[],
       unsubscribe: null as (() => void) | null,
     };
+  },
+  getters: {
+    selectedModelId: (state): string => state.localConfig.selectedModelId,
+    model(state): Live2DModelManifest {
+      const manifest =
+        state.models.find(
+          (candidate) => candidate.id === state.localConfig.selectedModelId,
+        ) ??
+        state.models[0] ??
+        defaultModelManifest;
+      const modelConfig =
+        state.localConfig.modelConfigs[manifest.id] ??
+        modelMappingConfigFromManifest(manifest);
+      return configuredModelFromManifest(manifest, modelConfig);
+    },
   },
   actions: {
     syncPetRuntime(partial: Partial<PetRuntimeState>) {
@@ -375,13 +251,14 @@ export const useDesktopStore = defineStore("desktop", {
     selectModel(modelId: string) {
       const model = this.models.find((candidate) => candidate.id === modelId);
       if (!model || model.id === this.selectedModelId) return;
-      this.selectedModelId = model.id;
-      this.model = model;
+      this.localConfig = {
+        ...this.localConfig,
+        selectedModelId: model.id,
+      };
       this.expressionOptions = [];
       this.motionOptions = [];
       this.expressionMapVersion += 1;
       this.motionMapVersion += 1;
-      this.localConfig = withModelMappingConfig(this.localConfig, model);
       this.syncPetRuntime({
         renderMode: renderModeForPerformanceMode(
           this.localConfig.performanceMode,
@@ -402,10 +279,10 @@ export const useDesktopStore = defineStore("desktop", {
       nextKeyword: string,
       expressionName: string,
     ) {
-      const cleanKeyword = cleanExpressionKeyword(nextKeyword);
+      const cleanKeyword = sanitizeExpressionKeyword(nextKeyword);
       if (!cleanKeyword) return;
 
-      const previousKeyword = cleanExpressionKeyword(keyword);
+      const previousKeyword = sanitizeExpressionKeyword(keyword);
       const nextExpressionMap: ExpressionKeywordMap = {
         ...this.model.emotionMap,
       };
@@ -413,23 +290,21 @@ export const useDesktopStore = defineStore("desktop", {
         delete nextExpressionMap[previousKeyword];
       }
 
-      const expression = cleanExpressionName(expressionName);
+      const expression = sanitizeExpressionName(expressionName);
       if (expression) {
         nextExpressionMap[cleanKeyword] = [expression];
       } else {
         nextExpressionMap[cleanKeyword] = [];
       }
 
-      const nextModel: Live2DModelManifest = {
-        ...this.model,
-        emotionMap: nextExpressionMap,
-      };
-      this.model = nextModel;
-      this.models = this.models.map((model) =>
-        model.id === nextModel.id ? nextModel : model,
-      );
-      this.localConfig = withModelMappingConfig(this.localConfig, nextModel);
-      writePersistedExpressionMap(nextModel.id, nextExpressionMap);
+      const currentConfig =
+        this.localConfig.modelConfigs[this.selectedModelId] ??
+        modelMappingConfigFromManifest(this.model);
+      this.localConfig = withModelConfig(this.localConfig, {
+        ...currentConfig,
+        expressionMap: nextExpressionMap,
+      });
+      writePersistedExpressionMap(this.selectedModelId, nextExpressionMap);
       if (this.currentExpressionKey === previousKeyword) {
         this.syncPetRuntime({ expressionKey: cleanKeyword });
       }
@@ -440,23 +315,21 @@ export const useDesktopStore = defineStore("desktop", {
       this.setExpressionKeywordMapping(keyword, keyword, "");
     },
     removeExpressionKeywordMapping(keyword: string) {
-      const cleanKeyword = cleanExpressionKeyword(keyword);
+      const cleanKeyword = sanitizeExpressionKeyword(keyword);
       if (!cleanKeyword) return;
       const nextExpressionMap: ExpressionKeywordMap = {
         ...this.model.emotionMap,
       };
       delete nextExpressionMap[cleanKeyword];
 
-      const nextModel: Live2DModelManifest = {
-        ...this.model,
-        emotionMap: nextExpressionMap,
-      };
-      this.model = nextModel;
-      this.models = this.models.map((model) =>
-        model.id === nextModel.id ? nextModel : model,
-      );
-      this.localConfig = withModelMappingConfig(this.localConfig, nextModel);
-      writePersistedExpressionMap(nextModel.id, nextExpressionMap);
+      const currentConfig =
+        this.localConfig.modelConfigs[this.selectedModelId] ??
+        modelMappingConfigFromManifest(this.model);
+      this.localConfig = withModelConfig(this.localConfig, {
+        ...currentConfig,
+        expressionMap: nextExpressionMap,
+      });
+      writePersistedExpressionMap(this.selectedModelId, nextExpressionMap);
       if (this.currentExpressionKey === cleanKeyword) {
         this.syncPetRuntime({ expressionKey: this.currentEmotion });
       }
@@ -466,7 +339,7 @@ export const useDesktopStore = defineStore("desktop", {
       this.setExpressionKeywordMapping(emotion, emotion, expressionName);
     },
     previewExpressionKeyword(keyword: string) {
-      const cleanKeyword = cleanExpressionKeyword(keyword);
+      const cleanKeyword = sanitizeExpressionKeyword(keyword);
       if (!cleanKeyword) return;
       this.currentEmotion = isDisplayEmotion(cleanKeyword)
         ? cleanKeyword
@@ -488,26 +361,24 @@ export const useDesktopStore = defineStore("desktop", {
       this.previewExpressionKeyword(emotion);
     },
     setMotionMapping(motion: DisplayMotion, target: Live2DMotionTarget) {
-      if (!displayMotions.includes(motion)) return;
+      if (!isDisplayMotion(motion)) return;
       const nextMotionMap: MotionMap = {
         ...this.model.motionMap,
         [motion]: target,
       };
 
-      const nextModel: Live2DModelManifest = {
-        ...this.model,
+      const currentConfig =
+        this.localConfig.modelConfigs[this.selectedModelId] ??
+        modelMappingConfigFromManifest(this.model);
+      this.localConfig = withModelConfig(this.localConfig, {
+        ...currentConfig,
         motionMap: nextMotionMap,
-      };
-      this.model = nextModel;
-      this.models = this.models.map((model) =>
-        model.id === nextModel.id ? nextModel : model,
-      );
-      this.localConfig = withModelMappingConfig(this.localConfig, nextModel);
-      writePersistedMotionMap(nextModel.id, nextMotionMap);
+      });
+      writePersistedMotionMap(this.selectedModelId, nextMotionMap);
       this.motionMapVersion += 1;
     },
     previewMotion(motion: DisplayMotion) {
-      if (!displayMotions.includes(motion)) return;
+      if (!isDisplayMotion(motion)) return;
       const speaking = motion !== "idle";
       this.syncPetRuntime({
         status: speaking ? "speaking" : "emerged",

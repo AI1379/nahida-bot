@@ -9,6 +9,7 @@
     "setup:live2d-core": "node scripts/download-live2d-core.mjs",
     "dev:web": "pnpm setup:live2d-core && vite --host 127.0.0.1 --port 1420",
     "build:web": "pnpm setup:live2d-core && vue-tsc --noEmit && vite build",
+    "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1 --port 1421"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.12",
+    "vitest": "^4.1.8",
     "vue-tsc": "^3.3.2"
   }
 }

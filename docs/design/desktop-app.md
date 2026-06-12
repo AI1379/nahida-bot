@@ -1372,13 +1372,13 @@ Gateway 需要保存或维护：
 
 ### Phase 1：纯本地 Live2D 表现层
 
-- [ ] 收敛 `Live2DPresentationController`，统一管理 expression、motion、lip-sync 和 render mode。
+- [x] 收敛 `Live2DPresentationController`，统一管理 expression、motion、lip-sync 和 render mode。
 - [ ] 继续调优 Base 参数动作，例如 `nod`、`notify`、`speaking`、`peek`、`emerge`、`retreat`、`bounce`。
-- [ ] 明确 Base 动作边界：只用常见参数制造头部、身体、视线、眉毛、口型和物理惯性；不承诺生成模型没有的手臂或贴图动作。
-- [ ] 支持 motion fallback：优先模型原生 `.motion3.json`，其次 Base 参数动作，最后 None。
-- [ ] 支持 expression fallback：优先 DisplayPlan keyword 映射，其次 emotion 映射，最后 neutral 或保持当前表情。
-- [ ] 让 Debug Panel 同时展示模型原生 motion、Base motion、expression 和关键参数，便于调试当前模型。
-- [ ] 将动作参数从 renderer 中进一步整理成可维护 profile，避免在渲染器里堆大量临时常量。
+- [x] 明确 Base 动作边界：只用常见参数制造头部、身体、视线、眉毛、口型和物理惯性；不承诺生成模型没有的手臂或贴图动作。
+- [x] 支持 motion fallback：优先模型原生 `.motion3.json`，其次 Base 参数动作，最后 None。
+- [x] 支持 expression fallback：优先 DisplayPlan keyword 映射，其次 emotion 映射，最后 neutral 或保持当前表情。
+- [x] 让 Debug Panel 同时展示模型原生 motion、Base motion、expression 和关键参数，便于调试当前模型。
+- [x] 将动作参数从 renderer 中进一步整理成可维护 profile，避免在渲染器里堆大量临时常量。
 
 验收口径：输入一段本地 DisplayPlan 后，模型能稳定完成表情、动作、说话口型和 idle 恢复；动作速度、幅度和身体/头部比例可继续调参。
 

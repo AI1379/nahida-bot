@@ -1,3 +1,8 @@
+import {
+  displayPlanPolicy,
+  sanitizeExpressionKeyword as sanitizeExpressionKeywordValue,
+} from "./displayPlanPolicy";
+
 export type DisplayEmotion =
   | "neutral"
   | "happy"
@@ -65,7 +70,18 @@ const voiceStyles = new Set<NonNullable<VoicePlan["style"]>>([
   "soft",
 ]);
 
-function cleanText(value: unknown, maxLength = 4000): string {
+export function isDisplayEmotion(value: unknown): value is DisplayEmotion {
+  return emotions.has(value as DisplayEmotion);
+}
+
+export function isDisplayMotion(value: unknown): value is DisplayMotion {
+  return motions.has(value as DisplayMotion);
+}
+
+function cleanText(
+  value: unknown,
+  maxLength: number = displayPlanPolicy.maximumTextLength,
+): string {
   if (typeof value !== "string") return "";
   return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
@@ -87,8 +103,7 @@ function cleanEmotion(value: unknown): DisplayEmotion | undefined {
 }
 
 function cleanExpressionKeyword(value: unknown): string | undefined {
-  const text = cleanText(value, 48);
-  return text && /^[\p{L}\p{N}_.-]+$/u.test(text) ? text : undefined;
+  return sanitizeExpressionKeywordValue(value) || undefined;
 }
 
 function cleanMotion(value: unknown): DisplayMotion | undefined {
@@ -106,7 +121,10 @@ function cleanVoiceStyle(value: unknown): VoicePlan["style"] | undefined {
 function normalizeSegment(value: unknown): DisplaySegment | null {
   if (!value || typeof value !== "object") return null;
   const record = value as JsonRecord;
-  const text = cleanText(record.text, 800);
+  const text = cleanText(
+    record.text,
+    displayPlanPolicy.maximumSegmentTextLength,
+  );
   if (!text) return null;
 
   const emotion = cleanEmotion(record.emotion);
@@ -121,8 +139,18 @@ function normalizeSegment(value: unknown): DisplaySegment | null {
     const rawVoice = record.voice as JsonRecord;
     voice = {
       style: cleanVoiceStyle(rawVoice.style),
-      speed: cleanNumber(rawVoice.speed, 1, 0.5, 1.5),
-      pitch: cleanNumber(rawVoice.pitch, 0, -6, 6),
+      speed: cleanNumber(
+        rawVoice.speed,
+        1,
+        displayPlanPolicy.voiceSpeed.minimum,
+        displayPlanPolicy.voiceSpeed.maximum,
+      ),
+      pitch: cleanNumber(
+        rawVoice.pitch,
+        0,
+        displayPlanPolicy.voicePitch.minimum,
+        displayPlanPolicy.voicePitch.maximum,
+      ),
     };
   }
 
@@ -135,7 +163,7 @@ function normalizeSegment(value: unknown): DisplaySegment | null {
       record.pauseAfterMs ?? record.pause_after_ms,
       0,
       0,
-      3000,
+      displayPlanPolicy.maximumPauseAfterMs,
     ),
     voice,
   };
@@ -146,7 +174,10 @@ function joinedSegmentText(values: unknown[]): string {
     values
       .map((value) =>
         value && typeof value === "object"
-          ? cleanText((value as JsonRecord).text, 800)
+          ? cleanText(
+              (value as JsonRecord).text,
+              displayPlanPolicy.maximumSegmentTextLength,
+            )
           : "",
       )
       .filter(Boolean)
@@ -169,7 +200,7 @@ export function normalizeDisplayPlan(
   if (!text) return null;
 
   const segments = rawSegments
-    .slice(0, 12)
+    .slice(0, displayPlanPolicy.maximumSegments)
     .map(normalizeSegment)
     .filter((segment): segment is DisplaySegment => segment !== null);
 

@@ -11,6 +11,7 @@ import type {
 import Live2DDebugPanel from "@/components/Live2DDebugPanel.vue";
 import type { Live2DDebugSnapshot } from "@/renderers/live2dRenderer";
 import { WebLive2DRenderer } from "@/renderers/live2dRenderer";
+import { Live2DPresentationController } from "@/services/live2dPresentationController";
 
 const props = withDefaults(defineProps<{
   emotion: DisplayEmotion;
@@ -36,6 +37,7 @@ const emit = defineEmits<{
 
 const live2dHost = ref<HTMLElement | null>(null);
 const renderer = ref<WebLive2DRenderer | null>(null);
+const controller = ref<Live2DPresentationController | null>(null);
 const loadState = ref<"loading" | "ready" | "fallback">("loading");
 const loadError = ref("");
 const debugOpen = ref(
@@ -43,6 +45,8 @@ const debugOpen = ref(
     new URLSearchParams(window.location.search).get("debugLive2D") === "1",
 );
 const debugSnapshot = ref<Live2DDebugSnapshot | null>(null);
+let loadGeneration = 0;
+let loadQueue = Promise.resolve();
 
 const expressionLabel = computed(() => {
   const mapped =
@@ -59,27 +63,54 @@ const motionLabel = computed(() => {
   return `${mapped.group} #${mapped.index}`;
 });
 
-async function loadLive2D() {
-  if (!live2dHost.value) return;
+function loadLive2D(): Promise<void> {
+  if (!live2dHost.value) return Promise.resolve();
+  const generation = ++loadGeneration;
   loadState.value = "loading";
   loadError.value = "";
   debugSnapshot.value = null;
   emit("expressionsLoaded", []);
   emit("motionsLoaded", []);
-  renderer.value?.dispose();
+  controller.value?.dispose();
+  controller.value = null;
   renderer.value = null;
+  const load = loadQueue.then(() => performLive2DLoad(generation));
+  loadQueue = load.catch(() => {});
+  return load;
+}
+
+async function performLive2DLoad(generation: number): Promise<void> {
+  if (!live2dHost.value || generation !== loadGeneration) return;
+  const live2dRenderer = new WebLive2DRenderer(live2dHost.value);
+  const presentationController = new Live2DPresentationController(
+    live2dRenderer,
+  );
   try {
-    const live2dRenderer = new WebLive2DRenderer(live2dHost.value);
+    await presentationController.loadModel(props.model);
+    if (generation !== loadGeneration) {
+      presentationController.dispose();
+      return;
+    }
+    await presentationController.applyPresentation({
+      expressionKey: props.expressionKey,
+      emotion: props.emotion,
+      motion: props.motion,
+      renderMode: props.renderMode,
+    });
+    if (generation !== loadGeneration) {
+      presentationController.dispose();
+      return;
+    }
     renderer.value = live2dRenderer;
-    await live2dRenderer.loadModel(props.model);
-    await live2dRenderer.setExpression(props.expressionKey, props.emotion);
-    live2dRenderer.setFpsMode(props.renderMode);
+    controller.value = presentationController;
     loadState.value = "ready";
     refreshDebugSnapshot();
   } catch (error) {
+    presentationController.dispose();
+    if (generation !== loadGeneration) return;
     loadState.value = "fallback";
     loadError.value = error instanceof Error ? error.message : String(error);
-    renderer.value?.dispose();
+    controller.value = null;
     renderer.value = null;
     debugSnapshot.value = null;
   }
@@ -147,15 +178,21 @@ function playDebugMotion(payload: {
 }
 
 watch(
-  () => props.model.entry,
+  () => [props.model.id, props.model.entry] as const,
   () => void loadLive2D(),
+);
+
+watch(
+  () => props.model,
+  (model) => controller.value?.setManifest(model),
+  { deep: true },
 );
 
 watch(
   () => [props.expressionKey, props.emotion, props.expressionMapVersion] as const,
   () => {
-    void renderer.value
-      ?.setExpression(props.expressionKey, props.emotion)
+    void controller.value
+      ?.applyExpression(props.expressionKey, props.emotion)
       .then(refreshDebugSnapshot)
       .catch(() => {});
   },
@@ -164,14 +201,17 @@ watch(
 watch(
   () => [props.motion, props.motionMapVersion] as const,
   () => {
-    void renderer.value?.playMotion(props.motion).then(refreshDebugSnapshot).catch(() => {});
+    void controller.value
+      ?.playMotion(props.motion)
+      .then(refreshDebugSnapshot)
+      .catch(() => {});
   },
 );
 
 watch(
   () => props.renderMode,
   () => {
-    renderer.value?.setFpsMode(props.renderMode);
+    controller.value?.setRenderMode(props.renderMode);
   },
 );
 
@@ -180,7 +220,9 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  renderer.value?.dispose();
+  loadGeneration += 1;
+  controller.value?.dispose();
+  controller.value = null;
   renderer.value = null;
   debugSnapshot.value = null;
 });

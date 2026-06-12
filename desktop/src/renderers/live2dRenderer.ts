@@ -1,8 +1,16 @@
 import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display/cubism4";
 
-import type { DisplayEmotion, DisplayMotion } from "@/domain/displayPlan";
+import { live2dRuntimeDefaults } from "@/config/desktopRuntimeDefaults";
+import type { DisplayMotion } from "@/domain/displayPlan";
 import type { RenderMode } from "@/domain/runtime";
+import {
+  baseMotionNames,
+  baseMotionProfiles,
+  commonLive2DParameterIds,
+  type BaseMotionProfile,
+  type CommonLive2DParameterRole,
+} from "@/domain/live2dBaseMotion";
 import type {
   Live2DExpressionOption,
   Live2DModelManifest,
@@ -18,11 +26,11 @@ declare global {
 
 export interface Live2DRenderer {
   loadModel(manifest: Live2DModelManifest): Promise<void>;
-  setExpression(
-    expressionKey: string,
-    fallbackEmotion?: DisplayEmotion,
-  ): Promise<void>;
-  playMotion(motion: DisplayMotion): Promise<void>;
+  updateModelConfig(manifest: Live2DModelManifest): void;
+  applyExpression(expressionName: string): Promise<boolean>;
+  playModelMotion(group: string, index: number): Promise<boolean>;
+  playBaseMotion(motion: DisplayMotion): boolean;
+  clearRuntimeMotion(): void;
   setLipSync(value: number): void;
   setFpsMode(mode: RenderMode): void;
   dispose(): void;
@@ -38,6 +46,13 @@ export interface Live2DParameterDebugInfo {
   maximum: number;
   defaultValue: number;
   overridden: boolean;
+  runtimeOverridden: boolean;
+}
+
+export interface Live2DKeyParameterDebugInfo
+  extends Live2DParameterDebugInfo {
+  roles: CommonLive2DParameterRole[];
+  lipSync: boolean;
 }
 
 export interface Live2DPartDebugInfo {
@@ -71,7 +86,10 @@ export interface Live2DMotionDebugInfo extends Live2DMotionOption {}
 export interface Live2DDebugSnapshot {
   modelName: string;
   expressions: Live2DExpressionDebugInfo[];
+  nativeMotions: Live2DMotionDebugInfo[];
+  baseMotions: Live2DMotionDebugInfo[];
   motions: Live2DMotionDebugInfo[];
+  keyParameters: Live2DKeyParameterDebugInfo[];
   parameters: Live2DParameterDebugInfo[];
   parts: Live2DPartDebugInfo[];
   drawables: Live2DDrawableDebugInfo[];
@@ -121,33 +139,7 @@ interface DebugOverride {
   original: number;
 }
 
-type CommonParameterRole =
-  | "headX"
-  | "headY"
-  | "headZ"
-  | "bodyX"
-  | "bodyY"
-  | "bodyZ"
-  | "eyeX"
-  | "eyeY"
-  | "browY"
-  | "mouthOpen"
-  | "mouthForm";
-
-interface ProceduralMotionTarget {
-  role: CommonParameterRole;
-  value: number;
-}
-
-interface ProceduralMotionKeyframe {
-  atMs: number;
-  targets: ProceduralMotionTarget[];
-}
-
-interface ProceduralMotionProfile {
-  durationMs: number;
-  keyframes: ProceduralMotionKeyframe[];
-}
+type CommonParameterRole = CommonLive2DParameterRole;
 
 interface RuntimeParameterKeyframe {
   atMs: number;
@@ -160,157 +152,6 @@ interface RuntimeParameterOverride {
   startedAt: number;
   durationMs: number;
 }
-
-const fpsByMode: Record<RenderMode, number> = {
-  suspended: 0,
-  idle: 15,
-  speaking: 30,
-  active: 60,
-};
-
-const commonParameterIds: Record<CommonParameterRole, string[]> = {
-  headX: ["ParamAngleX", "PARAM_ANGLE_X"],
-  headY: ["ParamAngleY", "PARAM_ANGLE_Y"],
-  headZ: ["ParamAngleZ", "PARAM_ANGLE_Z"],
-  bodyX: ["ParamBodyAngleX", "PARAM_BODY_ANGLE_X"],
-  bodyY: ["ParamBodyAngleY", "PARAM_BODY_ANGLE_Y"],
-  bodyZ: ["ParamBodyAngleZ", "PARAM_BODY_ANGLE_Z"],
-  eyeX: ["ParamEyeBallX", "PARAM_EYE_BALL_X"],
-  eyeY: ["ParamEyeBallY", "PARAM_EYE_BALL_Y"],
-  browY: ["ParamBrowLY", "ParamBrowRY", "PARAM_BROW_L_Y", "PARAM_BROW_R_Y"],
-  mouthOpen: ["ParamMouthOpenY", "PARAM_MOUTH_OPEN_Y"],
-  mouthForm: ["ParamMouthForm", "PARAM_MOUTH_FORM"],
-};
-
-const proceduralMotionProfiles: Partial<
-  Record<DisplayMotion, ProceduralMotionProfile>
-> = {
-  nod: {
-    durationMs: 1180,
-    keyframes: [
-      {
-        atMs: 240,
-        targets: [
-          { role: "headY", value: 12 },
-          { role: "bodyY", value: 1.2 },
-        ],
-      },
-      {
-        atMs: 520,
-        targets: [
-          { role: "headY", value: -5 },
-          { role: "bodyY", value: -0.5 },
-        ],
-      },
-      {
-        atMs: 780,
-        targets: [
-          { role: "headY", value: 5.5 },
-          { role: "bodyY", value: 0.55 },
-        ],
-      },
-    ],
-  },
-  point: {
-    durationMs: 1320,
-    keyframes: [
-      {
-        atMs: 260,
-        targets: [
-          { role: "headX", value: -8 },
-          { role: "bodyX", value: -1.2 },
-          { role: "eyeX", value: -0.18 },
-        ],
-      },
-      {
-        atMs: 700,
-        targets: [
-          { role: "headX", value: -10 },
-          { role: "bodyX", value: -1.8 },
-          { role: "eyeX", value: -0.28 },
-          { role: "browY", value: 0.25 },
-        ],
-      },
-    ],
-  },
-  wave: {
-    durationMs: 1440,
-    keyframes: [
-      {
-        atMs: 240,
-        targets: [
-          { role: "headZ", value: 7 },
-          { role: "bodyZ", value: 1.2 },
-          { role: "eyeX", value: 0.12 },
-        ],
-      },
-      {
-        atMs: 560,
-        targets: [
-          { role: "headZ", value: -6 },
-          { role: "bodyZ", value: -0.9 },
-          { role: "eyeX", value: -0.1 },
-        ],
-      },
-      {
-        atMs: 880,
-        targets: [
-          { role: "headZ", value: 6 },
-          { role: "bodyZ", value: 0.9 },
-          { role: "eyeX", value: 0.1 },
-        ],
-      },
-    ],
-  },
-  notify: {
-    durationMs: 1120,
-    keyframes: [
-      {
-        atMs: 220,
-        targets: [
-          { role: "headY", value: -8 },
-          { role: "eyeY", value: 0.14 },
-          { role: "browY", value: 0.35 },
-          { role: "mouthOpen", value: 0.22 },
-        ],
-      },
-      {
-        atMs: 580,
-        targets: [
-          { role: "headY", value: -4 },
-          { role: "eyeY", value: 0.08 },
-          { role: "browY", value: 0.2 },
-          { role: "mouthOpen", value: 0.12 },
-        ],
-      },
-    ],
-  },
-  speaking: {
-    durationMs: 1040,
-    keyframes: [
-      {
-        atMs: 240,
-        targets: [
-          { role: "headY", value: -2.6 },
-          { role: "bodyY", value: -0.25 },
-          { role: "mouthForm", value: 0.15 },
-        ],
-      },
-      {
-        atMs: 560,
-        targets: [
-          { role: "headY", value: 1.8 },
-          { role: "bodyY", value: 0.18 },
-          { role: "mouthForm", value: 0.05 },
-        ],
-      },
-    ],
-  },
-};
-
-const proceduralMotionDebugEntries = Object.keys(
-  proceduralMotionProfiles,
-) as DisplayMotion[];
 
 export class WebLive2DRenderer implements Live2DRenderer {
   private app: PIXI.Application | null = null;
@@ -343,9 +184,12 @@ export class WebLive2DRenderer implements Live2DRenderer {
     const app = new PIXI.Application({
       autoDensity: true,
       backgroundAlpha: 0,
-      antialias: false,
-      powerPreference: "low-power",
-      resolution: Math.min(window.devicePixelRatio || 1, 1.5),
+      antialias: live2dRuntimeDefaults.canvas.antialias,
+      powerPreference: live2dRuntimeDefaults.canvas.powerPreference,
+      resolution: Math.min(
+        window.devicePixelRatio || 1,
+        live2dRuntimeDefaults.canvas.maxDevicePixelRatio,
+      ),
       resizeTo: this.host,
     });
 
@@ -357,7 +201,10 @@ export class WebLive2DRenderer implements Live2DRenderer {
       autoInteract: false,
       autoUpdate: true,
     });
-    model.anchor.set(0.5, 0.5);
+    model.anchor.set(
+      live2dRuntimeDefaults.layout.anchorX,
+      live2dRuntimeDefaults.layout.anchorY,
+    );
     model.interactive = false;
     app.stage.addChild(model);
     this.model = model;
@@ -370,50 +217,52 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.setFpsMode("idle");
   }
 
-  async setExpression(
-    expressionKey: string,
-    fallbackEmotion?: DisplayEmotion,
-  ): Promise<void> {
-    if (!this.model || !this.manifest) return;
-    const expressionNames = [
-      ...(this.manifest.emotionMap[expressionKey] ?? []),
-      ...(fallbackEmotion && fallbackEmotion !== expressionKey
-        ? (this.manifest.emotionMap[fallbackEmotion] ?? [])
-        : []),
-    ];
-    for (const expression of expressionNames) {
-      if (!expression) continue;
-      try {
-        await this.model.expression(expression);
-        return;
-      } catch {
-        // Some user models have expression files that are not declared or compatible.
-      }
+  updateModelConfig(manifest: Live2DModelManifest): void {
+    if (this.manifest?.id !== manifest.id) return;
+    this.manifest = manifest;
+    this.fitModel();
+  }
+
+  async applyExpression(expressionName: string): Promise<boolean> {
+    if (!this.model || !expressionName) return false;
+    try {
+      await this.model.expression(expressionName);
+      return true;
+    } catch {
+      // Some user models have expression files that are not declared or compatible.
+      return false;
     }
   }
 
-  async playMotion(motion: DisplayMotion): Promise<void> {
-    if (!this.model || !this.manifest) return;
-    const target = this.manifest.motionMap[motion];
-    if (motion === "idle") {
-      this.runtimeParameterOverrides.clear();
-      this.applyLipSyncValue(0);
-      return;
+  async playModelMotion(group: string, index: number): Promise<boolean> {
+    if (!this.model || !group) return false;
+    try {
+      await this.model.motion(group, index);
+      return true;
+    } catch {
+      // User models often expose semantic motions in UI but omit .motion3.json.
+      return false;
     }
-    if (target?.source === "none") return;
-    if (target?.source === "procedural") {
-      this.playProceduralMotion(target.motion);
-      return;
-    }
-    if (target?.source === "model") {
-      try {
-        await this.model.motion(target.group, target.index);
-        return;
-      } catch {
-        // User models often expose semantic motions in UI but omit .motion3.json.
+  }
+
+  playBaseMotion(motion: DisplayMotion): boolean {
+    return this.playProceduralMotion(motion);
+  }
+
+  clearRuntimeMotion(): void {
+    const coreModel = this.getCoreModel();
+    if (coreModel?.setParameterValueByIndex) {
+      for (const [index, override] of this.runtimeParameterOverrides) {
+        const debugOverride = this.parameterOverrides.get(index);
+        coreModel.setParameterValueByIndex(
+          index,
+          debugOverride?.value ?? override.original,
+          1,
+        );
       }
     }
-    this.playProceduralMotion(motion);
+    this.runtimeParameterOverrides.clear();
+    this.applyLipSyncValue(0);
   }
 
   setLipSync(value: number): void {
@@ -433,8 +282,8 @@ export class WebLive2DRenderer implements Live2DRenderer {
     if (!this.app) return;
     const fps =
       this.motionBoostUntil > performance.now()
-        ? fpsByMode.active
-        : fpsByMode[this.renderMode];
+        ? live2dRuntimeDefaults.fpsByMode.active
+        : live2dRuntimeDefaults.fpsByMode[this.renderMode];
     if (fps <= 0) {
       this.app.ticker.stop();
       return;
@@ -464,6 +313,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
         maximum: coreModel.getParameterMaximumValue?.(index) ?? 1,
         defaultValue: coreModel.getParameterDefaultValue?.(index) ?? 0,
         overridden: this.parameterOverrides.has(index),
+        runtimeOverridden: this.runtimeParameterOverrides.has(index),
       }),
     );
 
@@ -493,10 +343,16 @@ export class WebLive2DRenderer implements Live2DRenderer {
       (left, right) => (right.bounds?.area ?? 0) - (left.bounds?.area ?? 0),
     );
 
+    const nativeMotions = this.getNativeMotionDebugInfo(settings);
+    const baseMotions = this.getBaseMotionDebugInfo();
+
     return {
       modelName: this.manifest.name,
       expressions: this.getExpressionDebugInfo(settings),
-      motions: this.getMotionDebugInfo(settings),
+      nativeMotions,
+      baseMotions,
+      motions: [...nativeMotions, ...baseMotions],
+      keyParameters: this.getKeyParameterDebugInfo(parameters),
       parameters,
       parts,
       drawables,
@@ -529,9 +385,9 @@ export class WebLive2DRenderer implements Live2DRenderer {
   ): Promise<void> {
     if (!this.model || !group) return;
     if (source === "procedural") {
-      const targetMotion = motion ?? proceduralMotionDebugEntries[index];
+      const targetMotion = motion ?? baseMotionNames[index];
       if (targetMotion) {
-        this.playProceduralMotion(targetMotion);
+        this.playBaseMotion(targetMotion);
       }
       return;
     }
@@ -636,8 +492,6 @@ export class WebLive2DRenderer implements Live2DRenderer {
       this.app.destroy(true, { children: true, texture: true, baseTexture: true });
       this.app = null;
     }
-
-    this.host.replaceChildren();
   }
 
   private readonly applyDebugOverrides = (): void => {
@@ -660,6 +514,12 @@ export class WebLive2DRenderer implements Live2DRenderer {
     for (const [index, override] of this.runtimeParameterOverrides) {
       const elapsed = now - override.startedAt;
       if (elapsed >= override.durationMs) {
+        const debugOverride = this.parameterOverrides.get(index);
+        coreModel.setParameterValueByIndex?.(
+          index,
+          debugOverride?.value ?? override.original,
+          1,
+        );
         this.runtimeParameterOverrides.delete(index);
         continue;
       }
@@ -676,8 +536,16 @@ export class WebLive2DRenderer implements Live2DRenderer {
     }
 
     if (this.renderMode === "speaking") {
-      const pulse = (Math.sin(now / 150) + 1) / 2;
-      this.applyLipSyncValue(0.12 + pulse * 0.32);
+      const pulse =
+        (Math.sin(
+          now / live2dRuntimeDefaults.lipSync.pulsePeriodMs,
+        ) +
+          1) /
+        2;
+      this.applyLipSyncValue(
+        live2dRuntimeDefaults.lipSync.minimumOpen +
+          pulse * live2dRuntimeDefaults.lipSync.openRange,
+      );
     }
   };
 
@@ -692,10 +560,19 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.model.scale.set(1);
     const modelWidth = Math.max(this.model.width, 1);
     const modelHeight = Math.max(this.model.height, 1);
-    const scale = Math.min(width / modelWidth, height / modelHeight) * 0.82;
+    const layout = this.manifest?.layout;
+    const scale =
+      Math.min(width / modelWidth, height / modelHeight) *
+      live2dRuntimeDefaults.layout.fitScale *
+      (layout?.scale ?? 1);
 
     this.model.scale.set(scale);
-    this.model.position.set(width / 2, height * 0.58);
+    this.model.position.set(
+      width * live2dRuntimeDefaults.layout.positionXRatio +
+        (layout?.offsetX ?? 0),
+      height * live2dRuntimeDefaults.layout.positionYRatio +
+        (layout?.offsetY ?? 0),
+    );
   }
 
   private getCoreModel(): CubismCoreModelDebugApi | null {
@@ -714,13 +591,16 @@ export class WebLive2DRenderer implements Live2DRenderer {
 
   private playProceduralMotion(motion: DisplayMotion): boolean {
     const coreModel = this.getCoreModel();
-    const profile = proceduralMotionProfiles[motion];
+    const profile = baseMotionProfiles[motion];
     if (!coreModel || !profile) return false;
 
+    this.clearRuntimeMotion();
     const now = performance.now();
     this.motionBoostUntil = Math.max(
       this.motionBoostUntil,
-      now + profile.durationMs + 180,
+      now +
+        profile.durationMs +
+        live2dRuntimeDefaults.motion.boostTailMs,
     );
     this.applyTickerFps();
 
@@ -756,8 +636,8 @@ export class WebLive2DRenderer implements Live2DRenderer {
     return applied;
   }
 
-  private getProceduralMotionDebugInfo(): Live2DMotionDebugInfo[] {
-    return proceduralMotionDebugEntries.map((motion, index) => ({
+  private getBaseMotionDebugInfo(): Live2DMotionDebugInfo[] {
+    return baseMotionNames.map((motion, index) => ({
       source: "procedural",
       group: "Base",
       index,
@@ -768,7 +648,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
   }
 
   private groupProceduralTargets(
-    profile: ProceduralMotionProfile,
+    profile: BaseMotionProfile,
   ): Map<CommonParameterRole, RuntimeParameterKeyframe[]> {
     const grouped = new Map<CommonParameterRole, RuntimeParameterKeyframe[]>();
     for (const keyframe of profile.keyframes) {
@@ -810,14 +690,16 @@ export class WebLive2DRenderer implements Live2DRenderer {
 
     const parameterIds = this.manifest.lipSync.parameterIds.length
       ? this.manifest.lipSync.parameterIds
-      : commonParameterIds.mouthOpen;
+      : commonLive2DParameterIds.mouthOpen;
 
     for (const id of parameterIds) {
       const index = this.parameterIndexById(id);
       if (index === null || this.parameterOverrides.has(index)) continue;
       const minimum = coreModel.getParameterMinimumValue?.(index) ?? 0;
       const maximum = coreModel.getParameterMaximumValue?.(index) ?? 1;
-      const nextValue = /form/i.test(id) ? value * 0.25 : value;
+      const nextValue = /form/i.test(id)
+        ? value * live2dRuntimeDefaults.lipSync.mouthFormScale
+        : value;
       coreModel.setParameterValueByIndex?.(
         index,
         this.clamp(nextValue, minimum, maximum),
@@ -827,7 +709,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
   }
 
   private parameterIndicesForRole(role: CommonParameterRole): number[] {
-    return commonParameterIds[role].flatMap((id) => {
+    return commonLive2DParameterIds[role].flatMap((id) => {
       const index = this.parameterIndexById(id);
       return index === null ? [] : [index];
     });
@@ -864,13 +746,13 @@ export class WebLive2DRenderer implements Live2DRenderer {
     });
   }
 
-  private getMotionDebugInfo(
+  private getNativeMotionDebugInfo(
     settings: ModelSettingsDebugApi | null,
   ): Live2DMotionDebugInfo[] {
     const groups =
       settings?.motions ?? settings?.json?.FileReferences?.Motions ?? {};
 
-    const modelMotions = Object.entries(groups).flatMap(([group, definitions]) =>
+    return Object.entries(groups).flatMap(([group, definitions]) =>
       (definitions ?? []).map((definition, index) => ({
         source: "model" as const,
         group,
@@ -879,8 +761,41 @@ export class WebLive2DRenderer implements Live2DRenderer {
         file: this.stringField(definition, ["File", "file"]) ?? "",
       })),
     );
+  }
 
-    return [...modelMotions, ...this.getProceduralMotionDebugInfo()];
+  private getKeyParameterDebugInfo(
+    parameters: Live2DParameterDebugInfo[],
+  ): Live2DKeyParameterDebugInfo[] {
+    const lipSyncParameterIds = new Set(
+      (this.manifest?.lipSync.parameterIds.length
+        ? this.manifest.lipSync.parameterIds
+        : commonLive2DParameterIds.mouthOpen
+      ).map((id) => id.toLowerCase()),
+    );
+
+    return parameters.flatMap((parameter) => {
+      const roles = this.parameterRolesForId(parameter.id);
+      const lipSync =
+        Boolean(this.manifest?.lipSync.enabled) &&
+        lipSyncParameterIds.has(parameter.id.toLowerCase());
+      if (!roles.length && !lipSync) return [];
+      return [
+        {
+          ...parameter,
+          roles,
+          lipSync,
+        },
+      ];
+    });
+  }
+
+  private parameterRolesForId(id: string): CommonParameterRole[] {
+    const normalized = id.toLowerCase();
+    return Object.entries(commonLive2DParameterIds).flatMap(([role, ids]) =>
+      ids.some((candidate) => candidate.toLowerCase() === normalized)
+        ? [role as CommonParameterRole]
+        : [],
+    );
   }
 
   private getDrawableBounds(

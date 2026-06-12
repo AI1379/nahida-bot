@@ -1,10 +1,14 @@
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import {
+  cpSync,
   createReadStream,
   existsSync,
+  lstatSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
@@ -16,6 +20,7 @@ const configuredModelRoot =
 const modelRoot = isAbsolute(configuredModelRoot)
   ? resolve(configuredModelRoot)
   : resolve(__dirname, configuredModelRoot);
+const buildOutputRoot = resolve(__dirname, "dist");
 
 const contentTypes: Record<string, string> = {
   ".cdi3.json": "application/json; charset=utf-8",
@@ -181,7 +186,42 @@ function live2DModelServer(): Plugin {
     configurePreviewServer(server) {
       server.middlewares.use("/live2d_model", serveLive2DModel);
     },
+    closeBundle() {
+      copyLive2DModelsForBuild();
+    },
   };
+}
+
+function copyLive2DModelsForBuild(): void {
+  if (!existsSync(modelRoot)) {
+    throw new Error(`Live2D model root does not exist: ${modelRoot}`);
+  }
+
+  const destination = resolve(buildOutputRoot, "live2d_model");
+  mkdirSync(destination, { recursive: true });
+  cpSync(modelRoot, destination, {
+    recursive: true,
+    filter: (source) =>
+      !source.toLowerCase().endsWith(".zip") &&
+      !lstatSync(source).isSymbolicLink(),
+  });
+  patchCopiedModelJsonFiles(destination);
+}
+
+function patchCopiedModelJsonFiles(directory: string): void {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      patchCopiedModelJsonFiles(path);
+      continue;
+    }
+    if (!entry.name.toLowerCase().endsWith(".model3.json")) continue;
+
+    const patched = modelJsonWithLocalReferences(path);
+    if (patched !== null) {
+      writeFileSync(path, patched, "utf8");
+    }
+  }
 }
 
 export default defineConfig({
@@ -198,7 +238,7 @@ export default defineConfig({
     strictPort: true,
   },
   build: {
-    outDir: resolve(__dirname, "dist"),
+    outDir: buildOutputRoot,
     emptyOutDir: true,
   },
 });

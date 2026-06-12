@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
-import { displayMotions } from "@/domain/displayPlan";
+import { displayMotions, isDisplayMotion } from "@/domain/displayPlan";
 import type { DisplayMotion } from "@/domain/displayPlan";
 import type {
   Live2DModelManifest,
@@ -112,10 +112,6 @@ function targetFromValue(value: string): Live2DMotionTarget {
   }
 
   return { source: "none" };
-}
-
-function isDisplayMotion(value: string | undefined): value is DisplayMotion {
-  return displayMotions.includes(value as DisplayMotion);
 }
 
 function currentTarget(motion: DisplayMotion): Live2DMotionTarget {

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
 
+import { mockControlDefaults } from "@/config/mockDefaults";
+
 const emit = defineEmits<{
   submit: [text: string];
   submitMockLlmResult: [rawOutput: string];
@@ -13,24 +15,8 @@ defineProps<{
   gatewayUrl: string;
 }>();
 
-const text = ref("演示一条带 TTS 和 Live2D 表现计划的回复。");
-const mockLlmResult = ref(`{
-  "text": "今天的计划已经整理好了。先处理配置问题，然后再看桌宠协议。",
-  "segments": [
-    {
-      "text": "今天的计划已经整理好了。",
-      "emotion": "happy",
-      "motion": "nod",
-      "pause_after_ms": 250
-    },
-    {
-      "text": "先处理配置问题，然后再看桌宠协议。",
-      "emotion": "thinking",
-      "expression": "star",
-      "motion": "point"
-    }
-  ]
-}`);
+const text = ref(mockControlDefaults.message);
+const mockLlmResult = ref(mockControlDefaults.llmResult);
 
 function submit() {
   emit("submit", text.value);

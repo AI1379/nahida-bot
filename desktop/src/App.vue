@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
+import { presentationTimingDefaults } from "@/config/desktopRuntimeDefaults";
 import { useDesktopStore } from "@/stores/desktop";
 import PetRuntimeView from "@/views/PetRuntimeView.vue";
 import WorkbenchView from "@/views/WorkbenchView.vue";
@@ -30,7 +31,11 @@ function scheduleNextSegment() {
   if (!store.activePlan || !activeSegment.value) return;
 
   const current = activeSegment.value;
-  const duration = Math.max(1400, current.text.length * 85);
+  const duration = Math.max(
+    presentationTimingDefaults.minimumSegmentDurationMs,
+    current.text.length *
+      presentationTimingDefaults.millisecondsPerCharacter,
+  );
   const pause = current.pauseAfterMs ?? 0;
 
   segmentTimer = setTimeout(() => {

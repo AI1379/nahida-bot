@@ -4,6 +4,7 @@ import {
   planFromText,
 } from "@/domain/displayPlan";
 import type { DisplayPlan } from "@/domain/displayPlan";
+import { mockDesktopDefaults } from "@/config/mockDefaults";
 
 export type MockGatewayEvent =
   | {
@@ -76,7 +77,7 @@ export class MockBackend {
 
   submitUserMessage(text: string): void {
     if (!this.connected) return;
-    const sessionId = "desktop:private:mock-user";
+    const sessionId = mockDesktopDefaults.sessionId;
     this.emit({
       type: "agent.message.started",
       at: new Date().toISOString(),
@@ -93,13 +94,13 @@ export class MockBackend {
           "happy",
         ),
       });
-    }, 900);
+    }, mockDesktopDefaults.delays.messageResponseMs);
     this.timers.push(timer);
   }
 
   submitMockLlmResult(rawOutput: string): void {
     if (!this.connected) return;
-    const sessionId = "desktop:private:mock-user";
+    const sessionId = mockDesktopDefaults.sessionId;
     this.emit({
       type: "agent.message.started",
       at: new Date().toISOString(),
@@ -113,12 +114,12 @@ export class MockBackend {
         sessionId,
         displayPlan: planFromLlmOutput(rawOutput),
       });
-    }, 180);
+    }, mockDesktopDefaults.delays.llmResultMs);
     this.timers.push(timer);
   }
 
   private scheduleDemo(): void {
-    const sessionId = "desktop:private:mock-user";
+    const sessionId = mockDesktopDefaults.sessionId;
     this.timers.push(
       setTimeout(() => {
         this.emit({
@@ -126,7 +127,7 @@ export class MockBackend {
           at: new Date().toISOString(),
           sessionId,
         });
-      }, 600),
+      }, mockDesktopDefaults.delays.demoStartedMs),
       setTimeout(() => {
         this.emit({
           type: "agent.message.completed",
@@ -134,7 +135,7 @@ export class MockBackend {
           sessionId,
           displayPlan: demoPlan ?? planFromText("Mock backend 已连接。", "happy"),
         });
-      }, 1500),
+      }, mockDesktopDefaults.delays.demoCompletedMs),
     );
   }
 

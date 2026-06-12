@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
+import { displayEmotions } from "@/domain/displayPlan";
 import type {
   Live2DExpressionOption,
   Live2DModelManifest,
@@ -18,14 +19,7 @@ const emit = defineEmits<{
   preview: [keyword: string];
 }>();
 
-const builtInKeywordOrder = [
-  "neutral",
-  "happy",
-  "thinking",
-  "worried",
-  "error",
-  "offline",
-];
+const builtInKeywordOrder: readonly string[] = displayEmotions;
 
 const expressionOptions = computed(() => {
   const options = new Map<string, Live2DExpressionOption>();

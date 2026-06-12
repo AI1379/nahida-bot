@@ -2,7 +2,10 @@
 import { computed, ref } from "vue";
 
 import type { DisplayMotion } from "@/domain/displayPlan";
-import type { Live2DDebugSnapshot } from "@/renderers/live2dRenderer";
+import type {
+  Live2DDebugSnapshot,
+  Live2DMotionDebugInfo,
+} from "@/renderers/live2dRenderer";
 
 const props = defineProps<{
   snapshot: Live2DDebugSnapshot | null;
@@ -51,6 +54,16 @@ const filteredParameters = computed(() => {
   );
 });
 
+const filteredKeyParameters = computed(() => {
+  const parameters = props.snapshot?.keyParameters ?? [];
+  if (!normalizedQuery.value) return parameters;
+  return parameters.filter((parameter) =>
+    `${parameter.index} ${parameter.id} ${parameter.roles.join(" ")}`
+      .toLowerCase()
+      .includes(normalizedQuery.value),
+  );
+});
+
 const filteredDrawables = computed(() => {
   const drawables = props.snapshot?.drawables ?? [];
   if (!normalizedQuery.value) return drawables;
@@ -71,15 +84,22 @@ const filteredExpressions = computed(() => {
   );
 });
 
-const filteredMotions = computed(() => {
-  const motions = props.snapshot?.motions ?? [];
+function filterMotions(motions: Live2DMotionDebugInfo[]) {
   if (!normalizedQuery.value) return motions;
   return motions.filter((motion) =>
     `${motion.source} ${motion.group} ${motion.index} ${motion.name} ${motion.file}`
       .toLowerCase()
       .includes(normalizedQuery.value),
   );
-});
+}
+
+const filteredNativeMotions = computed(() =>
+  filterMotions(props.snapshot?.nativeMotions ?? []),
+);
+
+const filteredBaseMotions = computed(() =>
+  filterMotions(props.snapshot?.baseMotions ?? []),
+);
 
 function formatNumber(value: number, digits = 2): string {
   if (!Number.isFinite(value)) return "n/a";
@@ -89,6 +109,15 @@ function formatNumber(value: number, digits = 2): string {
 function readNumericInput(event: Event): number {
   const target = event.target as HTMLInputElement;
   return Number(target.value);
+}
+
+function formatParameterTags(parameter: {
+  roles?: string[];
+  lipSync?: boolean;
+}): string {
+  const tags = [...(parameter.roles ?? [])];
+  if (parameter.lipSync) tags.push("lip-sync");
+  return tags.join(" / ");
 }
 </script>
 
@@ -101,7 +130,8 @@ function readNumericInput(event: Event): number {
           {{ props.snapshot.parts.length }} parts /
           {{ props.snapshot.drawables.length }} drawables /
           {{ props.snapshot.expressions.length }} expressions /
-          {{ props.snapshot.motions.length }} motions
+          {{ props.snapshot.nativeMotions.length }} model motions /
+          {{ props.snapshot.baseMotions.length }} base motions
         </span>
       </div>
       <button type="button" @click="emit('close')">Close</button>
@@ -174,12 +204,12 @@ function readNumericInput(event: Event): number {
 
         <section>
           <header class="debug-section__header">
-            <strong>Motions</strong>
-            <span>{{ filteredMotions.length }} available</span>
+            <strong>Model Motions</strong>
+            <span>{{ filteredNativeMotions.length }} available</span>
           </header>
           <div class="debug-button-grid">
             <button
-              v-for="motion in filteredMotions"
+              v-for="motion in filteredNativeMotions"
               :key="`${motion.source}:${motion.group}:${motion.index}`"
               type="button"
               @click="
@@ -191,13 +221,32 @@ function readNumericInput(event: Event): number {
                 })
               "
             >
-              <strong>
-                {{
-                  motion.source === "procedural"
-                    ? `Base ${motion.name}`
-                    : motion.name
-                }}
-              </strong>
+              <strong>{{ motion.name }}</strong>
+              <span v-if="motion.file">{{ motion.file }}</span>
+            </button>
+          </div>
+        </section>
+
+        <section>
+          <header class="debug-section__header">
+            <strong>Base Motions</strong>
+            <span>{{ filteredBaseMotions.length }} profiles</span>
+          </header>
+          <div class="debug-button-grid">
+            <button
+              v-for="motion in filteredBaseMotions"
+              :key="`${motion.source}:${motion.group}:${motion.index}`"
+              type="button"
+              @click="
+                emit('playMotion', {
+                  source: motion.source,
+                  group: motion.group,
+                  index: motion.index,
+                  motion: motion.motion,
+                })
+              "
+            >
+              <strong>Base {{ motion.name }}</strong>
               <span v-if="motion.file">{{ motion.file }}</span>
             </button>
           </div>
@@ -246,45 +295,100 @@ function readNumericInput(event: Event): number {
         </li>
       </ol>
 
-      <ol v-else-if="activeTab === 'parameters'" class="debug-list">
-        <li
-          v-for="parameter in filteredParameters"
-          :key="parameter.index"
-          :class="{ 'is-overridden': parameter.overridden }"
-        >
-          <div class="debug-list__meta">
-            <strong>#{{ parameter.index }} {{ parameter.id }}</strong>
-            <span>
-              {{ formatNumber(parameter.minimum) }} ..
-              {{ formatNumber(parameter.maximum) }}
-            </span>
-          </div>
-          <div class="debug-list__controls">
-            <input
-              type="range"
-              :min="parameter.minimum"
-              :max="parameter.maximum"
-              :step="(parameter.maximum - parameter.minimum) / 100 || 0.01"
-              :value="parameter.value"
-              @input="
-                emit('setParameterValue', {
-                  index: parameter.index,
-                  value: readNumericInput($event),
-                })
-              "
-            />
-            <span class="debug-list__value">
-              {{ formatNumber(parameter.value) }}
-            </span>
-            <button
-              type="button"
-              @click="emit('resetParameterValue', parameter.index)"
+      <div v-else-if="activeTab === 'parameters'" class="debug-parameters">
+        <section>
+          <header class="debug-section__header">
+            <strong>Key Parameters</strong>
+            <span>{{ filteredKeyParameters.length }} matched</span>
+          </header>
+          <ol class="debug-list">
+            <li
+              v-for="parameter in filteredKeyParameters"
+              :key="`key-${parameter.index}`"
+              :class="{
+                'is-overridden': parameter.overridden || parameter.runtimeOverridden,
+              }"
             >
-              Reset
-            </button>
-          </div>
-        </li>
-      </ol>
+              <div class="debug-list__meta">
+                <strong>#{{ parameter.index }} {{ parameter.id }}</strong>
+                <span>{{ formatParameterTags(parameter) }}</span>
+              </div>
+              <div class="debug-list__controls">
+                <input
+                  type="range"
+                  :min="parameter.minimum"
+                  :max="parameter.maximum"
+                  :step="(parameter.maximum - parameter.minimum) / 100 || 0.01"
+                  :value="parameter.value"
+                  @input="
+                    emit('setParameterValue', {
+                      index: parameter.index,
+                      value: readNumericInput($event),
+                    })
+                  "
+                />
+                <span class="debug-list__value">
+                  {{ formatNumber(parameter.value) }}
+                </span>
+                <button
+                  type="button"
+                  @click="emit('resetParameterValue', parameter.index)"
+                >
+                  Reset
+                </button>
+              </div>
+            </li>
+          </ol>
+        </section>
+
+        <section>
+          <header class="debug-section__header">
+            <strong>All Parameters</strong>
+            <span>{{ filteredParameters.length }} matched</span>
+          </header>
+          <ol class="debug-list">
+            <li
+              v-for="parameter in filteredParameters"
+              :key="parameter.index"
+              :class="{
+                'is-overridden': parameter.overridden || parameter.runtimeOverridden,
+              }"
+            >
+              <div class="debug-list__meta">
+                <strong>#{{ parameter.index }} {{ parameter.id }}</strong>
+                <span>
+                  {{ formatNumber(parameter.minimum) }} ..
+                  {{ formatNumber(parameter.maximum) }}
+                </span>
+              </div>
+              <div class="debug-list__controls">
+                <input
+                  type="range"
+                  :min="parameter.minimum"
+                  :max="parameter.maximum"
+                  :step="(parameter.maximum - parameter.minimum) / 100 || 0.01"
+                  :value="parameter.value"
+                  @input="
+                    emit('setParameterValue', {
+                      index: parameter.index,
+                      value: readNumericInput($event),
+                    })
+                  "
+                />
+                <span class="debug-list__value">
+                  {{ formatNumber(parameter.value) }}
+                </span>
+                <button
+                  type="button"
+                  @click="emit('resetParameterValue', parameter.index)"
+                >
+                  Reset
+                </button>
+              </div>
+            </li>
+          </ol>
+        </section>
+      </div>
 
       <ol v-else class="debug-list debug-list--drawables">
         <li v-for="drawable in filteredDrawables" :key="drawable.index">
