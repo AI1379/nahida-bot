@@ -165,6 +165,8 @@ temp/
 .Trashes
 ehthumbs.db
 Icon?
+!desktop/src-tauri/icons/
+!desktop/src-tauri/icons/icon.ico
 
 # Backup files
 *.bak
@@ -177,6 +179,7 @@ Icon?
 # WebUI build output
 nahida_bot/gateway/static/webui/
 webui/dist/
+desktop/live2d_model/
 
 # VitePress
 docs/.vitepress/cache

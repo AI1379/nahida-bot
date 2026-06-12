@@ -22,6 +22,7 @@ MODULE_SCOPES = frozenset(
         "cli",
         "core",
         "db",
+        "desktop",
         "gateway",
         "node",
         "plugins",

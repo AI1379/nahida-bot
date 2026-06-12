@@ -7,6 +7,10 @@
     "docs:dev": "pnpm --filter docs dev",
     "docs:build": "pnpm --filter docs build",
     "docs:preview": "pnpm --filter docs preview",
+    "desktop:dev": "pnpm --filter desktop dev",
+    "desktop:build": "pnpm --filter desktop build",
+    "desktop:dev:web": "pnpm --filter desktop dev:web",
+    "desktop:build:web": "pnpm --filter desktop build:web",
     "webui:dev": "pnpm --filter webui dev",
     "webui:build": "pnpm --filter webui build"
   }

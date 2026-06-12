@@ -44,6 +44,7 @@ Map to `nahida_bot/` top-level packages:
 | `cli` | `cli/` | CLI entry point and commands |
 | `core` | `core/` | Event bus, app lifecycle, shared types |
 | `db` | `db/` | Database engine and repositories |
+| `desktop` | `desktop/` | Desktop Live2D pet app (Tauri + Vue) |
 | `gateway` | `gateway/` | Remote gateway and node communication |
 | `node` | `node/` | Node runtime |
 | `plugins` | `plugins/` | Plugin system |
