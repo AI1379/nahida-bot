@@ -187,6 +187,7 @@ class RealBotAPI:
         self._status_provider_registry = status_provider_registry
         self._webhost_service = webhost_service
         self._task_manager = task_manager
+        self._document_store_manager: Any | None = None
         self._registered_status_providers: dict[
             str, Any
         ] = {}  # global_key -> StatusProviderEntry
@@ -1378,6 +1379,7 @@ class RealBotAPI:
         plugin_data_repo: SQLitePluginDataRepository | None = None,
         webhost_service: Any | None = None,
         task_manager: Any | None = None,
+        document_store_manager: Any | None = None,
     ) -> None:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
@@ -1393,6 +1395,15 @@ class RealBotAPI:
             self._plugin_data_repo = plugin_data_repo
         if task_manager is not None:
             self._task_manager = task_manager
+        if document_store_manager is not None:
+            self._document_store_manager = document_store_manager
+
+    # ── Document Store ────────────────────────────────────
+
+    def get_document_store_manager(self) -> Any:
+        """Return the ``DocumentStoreManager`` for creating/accessing document collections."""
+        self._permissions.check_llm_access()
+        return self._document_store_manager
 
     # ── Task Management ──────────────────────────────
 

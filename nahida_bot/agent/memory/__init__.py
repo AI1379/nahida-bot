@@ -17,13 +17,13 @@ from nahida_bot.agent.memory.consolidation import (
 )
 from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore, extract_keywords
 from nahida_bot.agent.memory.store import MemoryStore
-from nahida_bot.agent.memory.embedding import (
+from nahida_bot.agent.storage.embedding import (
     EmbeddingProvider,
     EmbeddingResult,
     HashEmbeddingProvider,
     RoutedEmbeddingProvider,
 )
-from nahida_bot.agent.memory.vector import (
+from nahida_bot.agent.storage.vector import (
     NoopVectorIndex,
     SQLiteVecIndex,
     VectorHit,

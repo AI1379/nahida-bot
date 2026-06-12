@@ -13,7 +13,7 @@ import structlog
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
-from nahida_bot.agent.memory.sqlite import build_fts_query
+from nahida_bot.agent.storage.tokenization import build_fts_query
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
@@ -44,9 +44,9 @@ if TYPE_CHECKING:
 
     from nahida_bot.agent.loop import AgentLoop, LoopEvent
     from nahida_bot.agent.media.resolver import MediaResolver
-    from nahida_bot.agent.memory.embedding import EmbeddingProvider
+    from nahida_bot.agent.storage.embedding import EmbeddingProvider
     from nahida_bot.agent.memory.store import MemoryStore
-    from nahida_bot.agent.memory.vector import VectorIndex
+    from nahida_bot.agent.storage.vector import VectorIndex
     from nahida_bot.agent.providers.base import ChatProvider, ModelCapabilities
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.agent.providers.router import ModelRouter

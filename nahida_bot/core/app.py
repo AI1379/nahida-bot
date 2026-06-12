@@ -177,6 +177,7 @@ class Application:
                 model_router=self._model_router,
                 orchestration_service=self.orchestration_service,
                 task_manager=self.task_manager,
+                document_store_manager=self.document_store_manager,
             )
             if self.agent_loop is not None:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
@@ -240,6 +241,12 @@ class Application:
         self.memory_store = SQLiteMemoryStore(engine)
         self.message_delivery_store = SQLiteMessageDeliveryStore(engine)
         self._plugin_data_repo = SQLitePluginDataRepository(engine)
+
+        # Document store manager — reusable collection storage for KB and plugins
+        from nahida_bot.agent.storage.manager import DocumentStoreManager
+
+        self.document_store_manager = DocumentStoreManager(engine)
+
         logger.info("application.memory_initialized", db_path=db_path)
 
         # Build providers from config
@@ -357,8 +364,8 @@ class Application:
         ):
             return
 
-        from nahida_bot.agent.memory.embedding import RoutedEmbeddingProvider
-        from nahida_bot.agent.memory.vector import SQLiteVecIndex
+        from nahida_bot.agent.storage.embedding import RoutedEmbeddingProvider
+        from nahida_bot.agent.storage.vector import SQLiteVecIndex
 
         emb_cfg = self.settings.memory.embedding
         explicit = _legacy_model_spec(
@@ -630,6 +637,7 @@ class Application:
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
                 task_manager=self.task_manager,
+                document_store_manager=self.document_store_manager,
             )
         logger.info("application.scheduler_initialized")
 

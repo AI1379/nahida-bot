@@ -9,7 +9,7 @@ import httpx
 import structlog
 
 from nahida_bot.agent.context import ContextMessage
-from nahida_bot.agent.memory.embedding import EmbeddingResult
+from nahida_bot.agent.storage.embedding import EmbeddingResult
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ProviderResponse,

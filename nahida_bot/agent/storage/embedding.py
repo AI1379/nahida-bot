@@ -1,4 +1,4 @@
-"""Embedding provider abstractions for durable memory."""
+"""Embedding provider abstractions for vector storage."""
 
 from __future__ import annotations
 
@@ -21,7 +21,11 @@ class EmbeddingResult:
 
 
 class EmbeddingProvider(Protocol):
-    """Protocol implemented by memory embedding providers."""
+    """Protocol implemented by embedding providers.
+
+    Keep this structural so plugins and optional backends can provide a
+    compatible object without importing or subclassing a nahida-bot base class.
+    """
 
     provider_id: str
     model: str
@@ -75,7 +79,7 @@ class HashEmbeddingProvider:
 
 
 def memory_text_hash(text: str) -> str:
-    """Return a stable content hash for embedded memory text."""
+    """Return a stable content hash for embedded text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

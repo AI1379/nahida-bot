@@ -1,4 +1,4 @@
-"""Vector index helpers for memory retrieval."""
+"""Vector index helpers for document and memory retrieval."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class VectorHit:
 
 
 class VectorIndex(Protocol):
-    """Protocol for pluggable memory vector indexes.
+    """Protocol for pluggable vector indexes.
 
     Keep this structural so plugins and optional backends can provide a
     compatible object without importing or subclassing a nahida-bot base class.
@@ -78,10 +78,12 @@ class SQLiteVecIndex:
         *,
         dimensions: int,
         table_name: str = "memory_embedding_vec",
+        map_table: str = "memory_vec_map",
     ) -> None:
         self._engine = engine
         self._dimensions = dimensions
         self._table_name = table_name
+        self._map_table = map_table
         self._ready = False
 
     async def setup(self) -> None:
@@ -103,7 +105,7 @@ class SQLiteVecIndex:
                 f"USING vec0(embedding float[{self._dimensions}])"
             )
             await self._engine.execute(
-                "CREATE TABLE IF NOT EXISTS memory_vec_map ("
+                f"CREATE TABLE IF NOT EXISTS {self._map_table} ("
                 "embedding_id TEXT PRIMARY KEY, "
                 "item_id TEXT NOT NULL, "
                 "vec_rowid INTEGER NOT NULL UNIQUE)"
@@ -116,7 +118,7 @@ class SQLiteVecIndex:
         async with self._engine.write_lock:
             for record in records:
                 existing = await self._engine.fetch_one(
-                    "SELECT vec_rowid FROM memory_vec_map WHERE embedding_id = ?",
+                    f"SELECT vec_rowid FROM {self._map_table} WHERE embedding_id = ?",
                     (record.embedding_id,),
                 )
                 if existing is not None:
@@ -134,7 +136,7 @@ class SQLiteVecIndex:
                     raise RuntimeError("sqlite-vec insert did not return a rowid")
                 vec_rowid = int(cursor.lastrowid)
                 await self._engine.execute(
-                    "INSERT INTO memory_vec_map (embedding_id, item_id, vec_rowid) "
+                    f"INSERT INTO {self._map_table} (embedding_id, item_id, vec_rowid) "
                     "VALUES (?, ?, ?)",
                     (record.embedding_id, record.item_id, vec_rowid),
                 )
@@ -147,7 +149,7 @@ class SQLiteVecIndex:
         async with self._engine.write_lock:
             for embedding_id in ids:
                 row = await self._engine.fetch_one(
-                    "SELECT vec_rowid FROM memory_vec_map WHERE embedding_id = ?",
+                    f"SELECT vec_rowid FROM {self._map_table} WHERE embedding_id = ?",
                     (embedding_id,),
                 )
                 if row is None:
@@ -158,7 +160,7 @@ class SQLiteVecIndex:
                     (vec_rowid,),
                 )
                 await self._engine.execute(
-                    "DELETE FROM memory_vec_map WHERE embedding_id = ?",
+                    f"DELETE FROM {self._map_table} WHERE embedding_id = ?",
                     (embedding_id,),
                 )
             await self._engine.db.commit()
@@ -169,7 +171,7 @@ class SQLiteVecIndex:
         self._require_ready()
         rows = await self._engine.fetch_all(
             f"SELECT m.item_id, v.distance FROM {self._table_name} v "
-            "JOIN memory_vec_map m ON m.vec_rowid = v.rowid "
+            f"JOIN {self._map_table} m ON m.vec_rowid = v.rowid "
             "WHERE v.embedding MATCH ? AND k = ? "
             "ORDER BY v.distance",
             (self._serialize(query_embedding), limit),

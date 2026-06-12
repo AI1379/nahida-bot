@@ -502,3 +502,13 @@ class BotAPI(Protocol):
     ) -> None:
         """Spawn a periodic task owned by this plugin."""
         ...
+
+    # ── Document Store ────────────────────────────────────
+
+    def get_document_store_manager(self) -> Any:
+        """Return the ``DocumentStoreManager`` for creating/accessing document collections.
+
+        Returns ``None`` if the document store subsystem is not available.
+        Requires the ``llm_access`` permission.
+        """
+        ...

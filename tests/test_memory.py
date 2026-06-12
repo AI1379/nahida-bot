@@ -24,8 +24,8 @@ from nahida_bot.agent.memory import (
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.memory.consolidation import build_dream_system_prompt
 from nahida_bot.agent.memory.markdown import MEMORY_SUMMARY_FILE
-from nahida_bot.agent.memory.sqlite import build_fts_query, tokenize_for_fts
-from nahida_bot.agent.memory.vector import (
+from nahida_bot.agent.storage.tokenization import build_fts_query, tokenize_for_fts
+from nahida_bot.agent.storage.vector import (
     VectorHit,
     VectorRecord,
     reciprocal_rank_fusion,

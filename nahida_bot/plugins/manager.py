@@ -101,6 +101,7 @@ class PluginManager:
         self._orchestration_service = orchestration_service
         self._webhost_service = webhost_service
         self._task_manager = task_manager
+        self._document_store_manager: Any | None = None
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -122,6 +123,7 @@ class PluginManager:
         orchestration_service: Any | None = None,
         webhost_service: Any | None = None,
         task_manager: Any | None = None,
+        document_store_manager: Any | None = None,
     ) -> None:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
@@ -137,6 +139,8 @@ class PluginManager:
             self._webhost_service = webhost_service
         if task_manager is not None:
             self._task_manager = task_manager
+        if document_store_manager is not None:
+            self._document_store_manager = document_store_manager
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
@@ -149,6 +153,7 @@ class PluginManager:
                     orchestration_service=orchestration_service,
                     webhost_service=self._webhost_service,
                     task_manager=self._task_manager,
+                    document_store_manager=document_store_manager,
                 )
 
     @property
