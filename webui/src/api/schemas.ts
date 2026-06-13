@@ -553,3 +553,38 @@ export interface SkillDetailResponse {
   name: string;
   content: string;
 }
+
+// ── Knowledge Base ──────────────────────────────────
+
+export interface KbCollectionSummary {
+  name: string;
+  document_count: number;
+  created_at: string;
+}
+
+export interface KbCollectionListResponse {
+  collections: KbCollectionSummary[];
+}
+
+export interface KbDocumentResponse {
+  doc_id: string;
+  title: string;
+  content: string;
+  score: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface KbSearchResponse {
+  results: KbDocumentResponse[];
+}
+
+export interface KbImportResponse {
+  collection: string;
+  source: string;
+  chunks: number;
+}
+
+export interface KbActionResponse {
+  status: string;
+  detail: string;
+}

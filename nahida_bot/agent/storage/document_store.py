@@ -58,6 +58,11 @@ class DocumentStore(ABC):
         ...
 
     @abstractmethod
+    async def count(self) -> int:
+        """Count active documents in the collection."""
+        ...
+
+    @abstractmethod
     async def search(self, query: str, *, limit: int = 10) -> list[SearchResult]:
         """Full-text search using FTS5 BM25."""
         ...

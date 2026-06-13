@@ -104,6 +104,7 @@ class WebAPIApp:
         from nahida_bot.gateway.routes.events import router as events_router
         from nahida_bot.gateway.routes.files import router as files_router
         from nahida_bot.gateway.routes.health import router as health_router
+        from nahida_bot.gateway.routes.kb import router as kb_router
         from nahida_bot.gateway.routes.logs import router as logs_router
         from nahida_bot.gateway.routes.messages import router as messages_router
         from nahida_bot.gateway.routes.plugins import router as plugins_router
@@ -160,6 +161,7 @@ class WebAPIApp:
         app.include_router(tokens_router, dependencies=[Depends(require_token)])
         app.include_router(plugins_router, dependencies=[Depends(require_token)])
         app.include_router(skills_router, dependencies=[Depends(require_token)])
+        app.include_router(kb_router, dependencies=[Depends(require_token)])
 
         # Mount WebUI static assets if build output exists
         self._mount_webui(app)

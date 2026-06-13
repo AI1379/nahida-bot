@@ -718,6 +718,7 @@ class Application:
             "nahida_bot.plugins.mcp",
             "nahida_bot.plugins.conversation_joiner",
             "nahida_bot.plugins.image_generation",
+            "nahida_bot.plugins.knowledge_base",
         )
         for module_name in builtin_plugin_modules:
             await self._discover_builtin_plugin_module(module_name)

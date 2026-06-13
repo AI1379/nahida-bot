@@ -185,6 +185,15 @@ class SQLiteDocumentRepository:
             await self._engine.db.commit()
         return cursor.rowcount > 0
 
+    async def count_documents(self) -> int:
+        """Return the number of active documents in the collection."""
+        row = await self._engine.fetch_one(
+            f"SELECT COUNT(*) AS count FROM {self._docs_table} WHERE status = 'active'"
+        )
+        if row is None:
+            return 0
+        return int(row["count"])
+
     async def search_documents_fts(
         self,
         fts_query: str,

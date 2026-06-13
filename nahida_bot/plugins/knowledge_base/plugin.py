@@ -1,0 +1,627 @@
+"""Knowledge Base builtin plugin.
+
+Provides document import, search, and management commands backed by the
+generic ``DocumentStore`` / ``DocumentStoreManager`` from ``agent.storage``.
+
+v1 features:
+- ``/kb import <collection> <path>`` — import Markdown or text files
+- ``/kb import-text <collection> <title> <text>`` — import raw text
+- ``/kb list`` — list all collections
+- ``/kb search <collection> <query>`` — manual search
+- ``/kb delete <collection>`` — delete a collection
+- ``kb_search`` tool — agent-callable knowledge search
+- Static PromptSupplement telling the agent about available collections
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from datetime import UTC, datetime
+from typing import Any
+
+import structlog
+
+from nahida_bot.plugins.base import (
+    CommandHandlerResult,
+    InboundMessage,
+    Plugin,
+)
+from nahida_bot.plugins.knowledge_base.config import parse_kb_config
+from nahida_bot.plugins.knowledge_base.ingestion import import_document
+
+logger = structlog.get_logger(__name__)
+
+_PLUGIN_DATA_KEY = "kb_collections"
+_COLLECTION_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+# ---------------------------------------------------------------------------
+# JSON Schema for the kb_search tool
+# ---------------------------------------------------------------------------
+
+_KB_SEARCH_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Search query to find relevant knowledge documents.",
+        },
+        "collection": {
+            "type": "string",
+            "description": (
+                "Knowledge base collection name. "
+                "If omitted, searches all available collections."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Maximum number of results to return (default: 5).",
+            "default": 5,
+        },
+    },
+    "required": ["query"],
+}
+
+
+class KnowledgeBasePlugin(Plugin):
+    """Builtin plugin for importing and searching knowledge documents."""
+
+    def __init__(self, api: Any, manifest: Any) -> None:
+        super().__init__(api, manifest)
+        self._config = parse_kb_config(self.manifest.config)
+        self._manager: Any = None  # DocumentStoreManager — set in on_load
+
+    # ── Lifecycle ────────────────────────────────────────
+
+    async def on_load(self) -> None:
+        if not self._config.enabled:
+            self.api.logger.info("kb.disabled")
+            return
+
+        self._manager = self.api.get_document_store_manager()
+        if self._manager is None:
+            self.api.logger.warning("kb.no_manager")
+            return
+
+        # Re-register collections persisted in plugin_data.
+        await self._restore_collections()
+
+        self._register_tool()
+        self._register_command()
+        self._register_supplement()
+
+        self.api.logger.info(
+            "kb.loaded",
+            collections=self._manager.list_collections(),
+        )
+
+    async def on_disable(self) -> None:
+        # DocumentStoreManager owns the stores — nothing to close here.
+        pass
+
+    # ── Tool Registration ────────────────────────────────
+
+    def _register_tool(self) -> None:
+        self.api.register_tool(
+            "kb_search",
+            (
+                "Search the knowledge base for relevant documents. "
+                "Use this tool when the user asks about topics that might be "
+                "covered in imported knowledge documents, such as documentation, "
+                "reference material, or domain-specific knowledge."
+            ),
+            _KB_SEARCH_TOOL_SCHEMA,
+            self._handle_kb_search,
+        )
+
+    async def _handle_kb_search(self, **kwargs: Any) -> str:
+        """Handle the ``kb_search`` tool invocation."""
+        query = kwargs.get("query", "")
+        collection = kwargs.get("collection")
+        limit = min(
+            int(kwargs.get("limit", self._config.max_search_results)),
+            self._config.max_search_results,
+        )
+
+        if not query:
+            return "Error: query is required."
+
+        manager = self._manager
+        if manager is None:
+            return "Error: knowledge base is not available."
+
+        results: list[dict[str, Any]] = []
+
+        if collection:
+            store = manager.get(collection)
+            if store is None:
+                return f"Error: collection '{collection}' not found."
+            hits = await store.search(query, limit=limit)
+            results = [
+                {
+                    "collection": collection,
+                    "doc_id": r.doc_id,
+                    "title": r.title,
+                    "content": r.content,
+                    "score": r.score,
+                }
+                for r in hits
+            ]
+        else:
+            # Search all collections.
+            for name in manager.list_collections():
+                store = manager.get(name)
+                if store is None:
+                    continue
+                hits = await store.search(query, limit=limit)
+                for r in hits:
+                    results.append(
+                        {
+                            "collection": name,
+                            "doc_id": r.doc_id,
+                            "title": r.title,
+                            "content": r.content,
+                            "score": r.score,
+                        }
+                    )
+            # Sort by score and take top N.
+            results.sort(key=lambda r: r["score"])
+            results = results[:limit]
+
+        if not results:
+            return "No relevant documents found."
+
+        lines = ["Found relevant knowledge documents:"]
+        for r in results:
+            source = r.get("collection", "")
+            title = r.get("title", "")
+            content = r.get("content", "")
+            lines.append(f"\n--- [{source}] {title} ---")
+            lines.append(content)
+        return "\n".join(lines)
+
+    # ── Command Registration ─────────────────────────────
+
+    def _register_command(self) -> None:
+        self.api.register_command(
+            "kb",
+            self._handle_kb_command,
+            description="Knowledge base management",
+        )
+
+    async def _handle_kb_command(
+        self,
+        *,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> CommandHandlerResult:
+        """Dispatch ``/kb`` subcommands."""
+        parts = args.strip().split(None, 1)
+        if not parts:
+            return self._kb_help()
+
+        subcmd = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+
+        dispatch = {
+            "import": self._cmd_import_file,
+            "import-text": self._cmd_import_text,
+            "list": self._cmd_list,
+            "search": self._cmd_search,
+            "delete": self._cmd_delete,
+            "info": self._cmd_info,
+            "help": lambda **kw: self._kb_help(),
+        }
+
+        handler = dispatch.get(subcmd)
+        if handler is None:
+            return (
+                f"Unknown subcommand '{subcmd}'. "
+                f"Available: {', '.join(dispatch.keys())}"
+            )
+
+        result = handler(args=rest, inbound=inbound, session_id=session_id)
+        if hasattr(result, "__await__"):
+            return await result
+        return result  # type: ignore[return-value]
+
+    def _kb_help(self) -> str:
+        return (
+            "Knowledge Base commands:\n"
+            "  /kb import <collection> <file_path>  — Import a file into a collection\n"
+            "  /kb import-text <collection> <title>|<text>  — Import raw text\n"
+            "  /kb list  — List all collections\n"
+            "  /kb search <collection> <query>  — Search a collection\n"
+            "  /kb delete <collection>  — Delete a collection\n"
+            "  /kb info <collection>  — Show collection details"
+        )
+
+    # ── Subcommand handlers ──────────────────────────────
+
+    async def _cmd_import_file(
+        self,
+        *,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> str:
+        """``/kb import <collection> <file_path>``"""
+        parts = args.strip().split(None, 1)
+        if len(parts) < 2:
+            return "Usage: /kb import <collection> <file_path>"
+
+        collection_name = parts[0]
+        file_path = parts[1].strip()
+
+        # Resolve path relative to workspace.
+        resolved = self.api.resolve_workspace_path(file_path)
+        if not resolved or not os.path.isfile(resolved):
+            return f"File not found: {file_path}"
+
+        try:
+            content = await self.api.workspace_read(file_path)
+        except Exception as exc:
+            return f"Error reading file: {exc}"
+
+        # Determine content type from extension.
+        ext = os.path.splitext(file_path)[1].lower()
+        content_type = "markdown" if ext in (".md", ".markdown") else "text"
+
+        source_id = os.path.splitext(os.path.basename(file_path))[0]
+        try:
+            count = await self.import_content(
+                collection_name,
+                source_id=source_id,
+                content=content,
+                content_type=content_type,
+                extra_metadata={
+                    "file_path": file_path,
+                    "imported_at": datetime.now(UTC).isoformat(),
+                },
+            )
+        except (LookupError, RuntimeError, ValueError) as exc:
+            return str(exc)
+
+        return (
+            f"Imported '{source_id}' into '{collection_name}': {count} chunks created."
+        )
+
+    async def _cmd_import_text(
+        self,
+        *,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> str:
+        """``/kb import-text <collection> <title>|<text>``"""
+        parts = args.strip().split(None, 1)
+        if len(parts) < 2:
+            return "Usage: /kb import-text <collection> <title>|<text>"
+
+        collection_name = parts[0]
+        rest = parts[1].strip()
+
+        # Split title and text by first pipe.
+        if "|" in rest:
+            title, text = rest.split("|", 1)
+            title = title.strip()
+            text = text.strip()
+        else:
+            title = "Untitled"
+            text = rest
+
+        if not text:
+            return "Error: text content is empty."
+
+        try:
+            count = await self.import_content(
+                collection_name,
+                source_id=title,
+                content=text,
+                content_type="text",
+                extra_metadata={"imported_at": datetime.now(UTC).isoformat()},
+            )
+        except (LookupError, RuntimeError, ValueError) as exc:
+            return str(exc)
+
+        return f"Imported '{title}' into '{collection_name}': {count} chunks created."
+
+    async def _cmd_list(
+        self,
+        *,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> str:
+        """``/kb list``"""
+        try:
+            collections = await self.list_collection_summaries()
+        except RuntimeError as exc:
+            return str(exc)
+
+        if not collections:
+            return "No knowledge base collections. Use /kb import to create one."
+
+        lines = ["Knowledge base collections:"]
+        for summary in collections:
+            lines.append(
+                f"  • {summary['name']} ({summary['document_count']} documents)"
+            )
+
+        return "\n".join(lines)
+
+    async def _cmd_search(
+        self,
+        *,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> str:
+        """``/kb search <collection> <query>``"""
+        parts = args.strip().split(None, 1)
+        if len(parts) < 2:
+            return "Usage: /kb search <collection> <query>"
+
+        collection_name = parts[0]
+        query = parts[1].strip()
+
+        try:
+            results = await self.search_documents(
+                collection_name,
+                query,
+                limit=self._config.max_search_results,
+            )
+        except (LookupError, RuntimeError, ValueError) as exc:
+            return str(exc)
+
+        if not results:
+            return f"No results in '{collection_name}' for: {query}"
+
+        lines = [f"Search results from '{collection_name}':"]
+        for r in results:
+            lines.append(f"\n  [{r.doc_id}] {r.title} (score: {r.score:.4f})")
+            # Truncate content for display.
+            snippet = r.content[:200] + "..." if len(r.content) > 200 else r.content
+            lines.append(f"  {snippet}")
+        return "\n".join(lines)
+
+    async def _cmd_delete(
+        self,
+        *,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> str:
+        """``/kb delete <collection>``"""
+        collection_name = args.strip()
+        if not collection_name:
+            return "Usage: /kb delete <collection>"
+
+        try:
+            await self.delete_collection(collection_name)
+        except (LookupError, RuntimeError, ValueError) as exc:
+            return str(exc)
+
+        return f"Deleted collection '{collection_name}' and all its documents."
+
+    async def _cmd_info(
+        self,
+        *,
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> str:
+        """``/kb info <collection>``"""
+        collection_name = args.strip()
+        if not collection_name:
+            return "Usage: /kb info <collection>"
+
+        try:
+            summary = await self.get_collection_summary(collection_name)
+        except (LookupError, RuntimeError, ValueError) as exc:
+            return str(exc)
+
+        lines = [f"Collection: {collection_name}"]
+        lines.append(f"  Documents: {summary['document_count']}")
+        if summary["created_at"]:
+            lines.append(f"  Created: {summary['created_at']}")
+        return "\n".join(lines)
+
+    # ── Public KB operations ─────────────────────────────
+
+    async def list_collection_summaries(self) -> list[dict[str, Any]]:
+        """Return collection summaries for API and command consumers."""
+        manager = self._require_manager()
+        meta = await self._load_collections_meta()
+        summaries: list[dict[str, Any]] = []
+        for name in sorted(manager.list_collections()):
+            store = manager.get(name)
+            doc_count = await store.count() if store is not None else 0
+            summaries.append(
+                {
+                    "name": name,
+                    "document_count": doc_count,
+                    "created_at": str(meta.get(name, {}).get("created_at", "")),
+                }
+            )
+        return summaries
+
+    async def get_collection_summary(self, collection_name: str) -> dict[str, Any]:
+        """Return one collection summary or raise if it does not exist."""
+        collection_name = self._validate_collection_name(collection_name)
+        manager = self._require_manager()
+        store = manager.get(collection_name)
+        if store is None:
+            raise LookupError(f"Collection '{collection_name}' not found.")
+
+        meta = await self._load_collections_meta()
+        return {
+            "name": collection_name,
+            "document_count": await store.count(),
+            "created_at": str(meta.get(collection_name, {}).get("created_at", "")),
+        }
+
+    async def create_collection(self, collection_name: str) -> None:
+        """Create an empty collection and persist its metadata."""
+        collection_name = self._validate_collection_name(collection_name)
+        manager = self._require_manager()
+        try:
+            await manager.create(collection_name)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+        await self._persist_collection_meta(collection_name)
+        self._refresh_supplement()
+
+    async def import_content(
+        self,
+        collection_name: str,
+        *,
+        source_id: str,
+        content: str,
+        content_type: str = "text",
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> int:
+        """Import content into a collection, creating it when needed."""
+        collection_name = self._validate_collection_name(collection_name)
+        manager = self._require_manager()
+        store = await manager.get_or_create(collection_name)
+        count = await import_document(
+            store,
+            source_id=source_id.strip() or "Untitled",
+            content=content,
+            content_type=content_type,
+            chunk_size=self._config.default_chunk_size,
+            chunk_overlap=self._config.default_chunk_overlap,
+            extra_metadata=extra_metadata,
+        )
+        await self._persist_collection_meta(collection_name)
+        self._refresh_supplement()
+        return count
+
+    async def search_documents(
+        self,
+        collection_name: str,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[Any]:
+        """Search one collection and return raw search results."""
+        collection_name = self._validate_collection_name(collection_name)
+        manager = self._require_manager()
+        store = manager.get(collection_name)
+        if store is None:
+            raise LookupError(f"Collection '{collection_name}' not found.")
+        if not query.strip():
+            return []
+        return await store.search(query, limit=max(1, int(limit)))
+
+    async def delete_collection(self, collection_name: str) -> None:
+        """Delete a collection, its documents, and persisted metadata."""
+        collection_name = self._validate_collection_name(collection_name)
+        manager = self._require_manager()
+        deleted = await manager.delete_collection(collection_name)
+        if not deleted:
+            raise LookupError(f"Collection '{collection_name}' not found.")
+
+        await self._remove_collection_meta(collection_name)
+        self._refresh_supplement()
+
+    # ── Prompt Supplement ────────────────────────────────
+
+    def _register_supplement(self) -> None:
+        self._update_supplement()
+
+    def _refresh_supplement(self) -> None:
+        """Re-register the supplement with updated collection list."""
+        self._update_supplement()
+
+    def _update_supplement(self) -> None:
+        if self._manager is None:
+            return
+
+        collections = self._manager.list_collections()
+        if not collections:
+            instruction = (
+                "You have access to a knowledge base system. "
+                "When the user asks about topics that might be covered in "
+                "imported documents, use the `kb_search` tool to find relevant "
+                "information before answering. No collections are currently loaded."
+            )
+        else:
+            collection_list = ", ".join(f"'{c}'" for c in collections)
+            instruction = (
+                f"You have access to a knowledge base system with the following "
+                f"collections: {collection_list}. "
+                "When the user asks about topics that might be covered in imported "
+                "documents, use the `kb_search` tool to search for relevant "
+                "information before answering."
+            )
+
+        self.api.unregister_prompt_supplement("kb_context")
+        self.api.register_prompt_supplement(
+            "kb_context",
+            instruction,
+        )
+
+    # ── Collection Persistence ──────────────────────────
+
+    def _require_manager(self) -> Any:
+        manager = self._manager
+        if manager is None:
+            raise RuntimeError("Knowledge base is not available.")
+        return manager
+
+    @staticmethod
+    def _validate_collection_name(name: str) -> str:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Collection name is required.")
+        if not _COLLECTION_NAME_RE.fullmatch(normalized):
+            raise ValueError(
+                "Collection name must contain only letters, digits, and underscores."
+            )
+        return normalized
+
+    async def _restore_collections(self) -> None:
+        """Re-create DocumentStore instances for persisted collection names."""
+        meta = await self._load_collections_meta()
+        if not meta or self._manager is None:
+            return
+        for name in meta:
+            try:
+                await self._manager.get_or_create(name)
+                self.api.logger.debug("kb.restored_collection", collection=name)
+            except Exception as exc:
+                self.api.logger.warning(
+                    "kb.restore_failed",
+                    collection=name,
+                    error=str(exc),
+                )
+
+    async def _load_collections_meta(self) -> dict[str, Any]:
+        """Load collection metadata from plugin_data."""
+        data = await self.api.plugin_data_get(_PLUGIN_DATA_KEY)
+        if isinstance(data, dict):
+            return data
+        return {}
+
+    async def _save_collections_meta(self, meta: dict[str, Any]) -> None:
+        """Save collection metadata to plugin_data."""
+        await self.api.plugin_data_set(_PLUGIN_DATA_KEY, meta)
+
+    async def _persist_collection_meta(self, name: str) -> None:
+        """Add a collection to the persisted metadata."""
+        meta = await self._load_collections_meta()
+        if name not in meta:
+            meta[name] = {
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            await self._save_collections_meta(meta)
+
+    async def _remove_collection_meta(self, name: str) -> None:
+        """Remove a collection from the persisted metadata."""
+        meta = await self._load_collections_meta()
+        meta.pop(name, None)
+        await self._save_collections_meta(meta)

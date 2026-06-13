@@ -132,6 +132,9 @@ class SQLiteDocumentStore(DocumentStore):
     async def delete(self, doc_id: str) -> bool:
         return await self._repo.delete_document(doc_id)
 
+    async def count(self) -> int:
+        return await self._repo.count_documents()
+
     # ── FTS Search ────────────────────────────────────────
 
     async def search(self, query: str, *, limit: int = 10) -> list[SearchResult]:

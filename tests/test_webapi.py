@@ -1,6 +1,7 @@
 """Tests for the WebAPI layer."""
 
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -554,6 +555,83 @@ async def test_plugin_action_state_error_returns_409(
 
     assert resp.status_code == 409
     assert "bad transition" in resp.json()["detail"]
+
+
+# -- Knowledge Base -------------------------------------------------------
+
+
+async def test_kb_collections_route_uses_plugin_summary_data(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    kb_plugin.list_collection_summaries = AsyncMock(
+        return_value=[
+            {
+                "name": "python_docs",
+                "document_count": 3,
+                "created_at": "2026-06-13T00:00:00+00:00",
+            }
+        ]
+    )
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.get("/api/kb/collections")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "collections": [
+            {
+                "name": "python_docs",
+                "document_count": 3,
+                "created_at": "2026-06-13T00:00:00+00:00",
+            }
+        ]
+    }
+    kb_plugin.list_collection_summaries.assert_awaited_once()
+
+
+async def test_kb_import_text_invalid_collection_returns_400(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    kb_plugin.import_content = AsyncMock(
+        side_effect=ValueError(
+            "Collection name must contain only letters, digits, and underscores."
+        )
+    )
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.post(
+        "/api/kb/collections/bad-name/import-text",
+        data={"source": "Guide", "content": "hello", "content_type": "text"},
+    )
+
+    assert resp.status_code == 400
+    assert "underscores" in resp.json()["detail"]
+
+
+async def test_kb_create_collection_conflict_returns_409(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    kb_plugin.create_collection = AsyncMock(
+        side_effect=ValueError("Collection 'python_docs' already exists")
+    )
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.post("/api/kb/collections/python_docs/create")
+
+    assert resp.status_code == 409
+    assert "already exists" in resp.json()["detail"]
 
 
 # -- Config ---------------------------------------------------------------

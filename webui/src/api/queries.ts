@@ -46,6 +46,10 @@ import type {
   WorkspaceListResponse,
   SkillListResponse,
   SkillDetailResponse,
+  KbCollectionListResponse,
+  KbSearchResponse,
+  KbImportResponse,
+  KbActionResponse,
 } from "./schemas";
 
 export function useBootstrap() {
@@ -584,5 +588,129 @@ export function useSkillContent(name: Ref<string | null>) {
     },
     staleTime: 30_000,
     enabled: computed(() => !!name.value),
+  });
+}
+
+// ── Knowledge Base ──────────────────────────────────
+
+export function useKbCollections() {
+  return useQuery<KbCollectionListResponse>({
+    queryKey: ["kb", "collections"],
+    queryFn: () => api.get<KbCollectionListResponse>("/kb/collections"),
+    staleTime: 10_000,
+  });
+}
+
+export function useKbCreateCollection() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  return useMutation<KbActionResponse, Error, string>({
+    mutationFn: (name: string) =>
+      api.post<KbActionResponse>(`/kb/collections/${encodeURIComponent(name)}/create`),
+    onSuccess(_, name) {
+      qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      toast.add(`Collection "${name}" created.`, "success");
+    },
+    onError(err) {
+      toast.add(`Create failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useKbDeleteCollection() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  return useMutation<KbActionResponse, Error, string>({
+    mutationFn: (name: string) =>
+      api.del<KbActionResponse>(`/kb/collections/${encodeURIComponent(name)}`),
+    onSuccess(_, name) {
+      qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      toast.add(`Collection "${name}" deleted.`, "success");
+    },
+    onError(err) {
+      toast.add(`Delete failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useKbImportText() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  return useMutation<
+    KbImportResponse,
+    Error,
+    { collection: string; source: string; content: string; contentType?: string }
+  >({
+    mutationFn: ({ collection, source, content, contentType }) => {
+      const form = new FormData();
+      form.append("source", source);
+      form.append("content", content);
+      form.append("content_type", contentType || "text");
+      return api.postForm<KbImportResponse>(
+        `/kb/collections/${encodeURIComponent(collection)}/import-text`,
+        form,
+      );
+    },
+    onSuccess(resp) {
+      qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      toast.add(
+        `Imported "${resp.source}" → ${resp.chunks} chunks in "${resp.collection}".`,
+        "success",
+      );
+    },
+    onError(err) {
+      toast.add(`Import failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useKbImportFile() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  return useMutation<
+    KbImportResponse,
+    Error,
+    { collection: string; file: File }
+  >({
+    mutationFn: ({ collection, file }) => {
+      const form = new FormData();
+      form.append("file", file);
+      return api.postForm<KbImportResponse>(
+        `/kb/collections/${encodeURIComponent(collection)}/import-file`,
+        form,
+      );
+    },
+    onSuccess(resp) {
+      qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      toast.add(
+        `Imported "${resp.source}" → ${resp.chunks} chunks in "${resp.collection}".`,
+        "success",
+      );
+    },
+    onError(err) {
+      toast.add(`Import failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useKbSearch() {
+  const toast = useToastStore();
+  return useMutation<
+    KbSearchResponse,
+    Error,
+    { collection: string; query: string; limit?: number }
+  >({
+    mutationFn: ({ collection, query, limit }) => {
+      const form = new FormData();
+      form.append("query", query);
+      form.append("limit", String(limit || 5));
+      return api.postForm<KbSearchResponse>(
+        `/kb/collections/${encodeURIComponent(collection)}/search`,
+        form,
+      );
+    },
+    onError(err) {
+      toast.add(`Search failed: ${toApiError(err).detail}`, "error");
+    },
   });
 }

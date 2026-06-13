@@ -1,0 +1,19 @@
+id: knowledge_base
+name: "Knowledge Base"
+version: "0.1.0"
+description: "Import and search knowledge documents to supplement the model's world knowledge"
+entrypoint: "nahida_bot.plugins.knowledge_base.plugin:KnowledgeBasePlugin"
+load_phase: "post-agent"
+permissions:
+  filesystem:
+    read: [workspace]
+    write: [workspace]
+  plugin_data:
+    read: true
+    write: true
+  llm_access: true
+config:
+  enabled: true
+  default_chunk_size: 500
+  default_chunk_overlap: 50
+  max_search_results: 5
