@@ -34,6 +34,7 @@ const showImportDialog = ref(false);
 const importCollection = ref("");
 const importSource = ref("");
 const importContent = ref("");
+const importContentType = ref<"markdown" | "text">("markdown");
 const importTab = ref<"text" | "file">("text");
 const importFile = ref<File | null>(null);
 const showDeleteDialog = ref(false);
@@ -61,6 +62,41 @@ const collections = computed<KbCollectionSummary[]>(
   () => collectionsData.value?.collections ?? [],
 );
 
+const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_]+$/;
+
+function collectionNameError(name: string): string {
+  const normalized = name.trim();
+  if (!normalized || COLLECTION_NAME_PATTERN.test(normalized)) return "";
+  return "Use only letters, digits, and underscores.";
+}
+
+const newCollectionError = computed(() =>
+  collectionNameError(newCollectionName.value),
+);
+const importCollectionError = computed(() =>
+  collectionNameError(importCollection.value),
+);
+const searchCollectionError = computed(() =>
+  collectionNameError(searchCollection.value),
+);
+const createDisabled = computed(
+  () => !newCollectionName.value.trim() || !!newCollectionError.value,
+);
+const importDisabled = computed(
+  () =>
+    !importCollection.value.trim()
+    || !!importCollectionError.value
+    || (importTab.value === "text"
+      ? !importContent.value.trim()
+      : !importFile.value),
+);
+const searchDisabled = computed(
+  () =>
+    !searchCollection.value.trim()
+    || !!searchCollectionError.value
+    || !searchQuery.value.trim(),
+);
+
 // ── Create ───────────────────────────────────────────
 
 function openCreate() {
@@ -70,10 +106,14 @@ function openCreate() {
 
 async function doCreate() {
   const name = newCollectionName.value.trim();
-  if (!name) return;
-  await createMut.mutateAsync(name);
-  showCreateDialog.value = false;
-  newCollectionName.value = "";
+  if (!name || collectionNameError(name)) return;
+  try {
+    await createMut.mutateAsync(name);
+    showCreateDialog.value = false;
+    newCollectionName.value = "";
+  } catch {
+    // The mutation displays the API error and keeps the dialog open.
+  }
 }
 
 // ── Delete ───────────────────────────────────────────
@@ -85,9 +125,13 @@ function openDelete(name: string) {
 
 async function doDelete() {
   if (!deleteTarget.value) return;
-  await deleteMut.mutateAsync(deleteTarget.value);
-  showDeleteDialog.value = false;
-  deleteTarget.value = "";
+  try {
+    await deleteMut.mutateAsync(deleteTarget.value);
+    showDeleteDialog.value = false;
+    deleteTarget.value = "";
+  } catch {
+    // The mutation displays the API error and keeps the dialog open.
+  }
 }
 
 // ── Import Text ──────────────────────────────────────
@@ -96,6 +140,7 @@ function openImport(collectionName?: string) {
   importCollection.value = collectionName ?? "";
   importSource.value = "";
   importContent.value = "";
+  importContentType.value = "markdown";
   importFile.value = null;
   importTab.value = "text";
   showImportDialog.value = true;
@@ -105,21 +150,30 @@ async function doImportText() {
   const coll = importCollection.value.trim();
   const src = importSource.value.trim() || "Untitled";
   const content = importContent.value.trim();
-  if (!coll || !content) return;
-  await importTextMut.mutateAsync({
-    collection: coll,
-    source: src,
-    content,
-  });
-  showImportDialog.value = false;
+  if (!coll || collectionNameError(coll) || !content) return;
+  try {
+    await importTextMut.mutateAsync({
+      collection: coll,
+      source: src,
+      content,
+      contentType: importContentType.value,
+    });
+    showImportDialog.value = false;
+  } catch {
+    // The mutation displays the API error and keeps the dialog open.
+  }
 }
 
 async function doImportFile() {
   const coll = importCollection.value.trim();
   const file = importFile.value;
-  if (!coll || !file) return;
-  await importFileMut.mutateAsync({ collection: coll, file });
-  showImportDialog.value = false;
+  if (!coll || collectionNameError(coll) || !file) return;
+  try {
+    await importFileMut.mutateAsync({ collection: coll, file });
+    showImportDialog.value = false;
+  } catch {
+    // The mutation displays the API error and keeps the dialog open.
+  }
 }
 
 function onFileSelected(event: Event) {
@@ -140,10 +194,20 @@ function openSearch(collectionName?: string) {
 async function doSearch() {
   const coll = searchCollection.value.trim();
   const q = searchQuery.value.trim();
-  if (!coll || !q) return;
-  const resp = await searchMut.mutateAsync({ collection: coll, query: q, limit: 10 });
-  searchResults.value = resp.results;
-  hasSearched.value = true;
+  if (!coll || collectionNameError(coll) || !q) return;
+  searchResults.value = [];
+  hasSearched.value = false;
+  try {
+    const resp = await searchMut.mutateAsync({
+      collection: coll,
+      query: q,
+      limit: 10,
+    });
+    searchResults.value = resp.results;
+    hasSearched.value = true;
+  } catch {
+    // The mutation displays the API error; old results remain cleared.
+  }
 }
 
 const isImporting = computed(
@@ -222,7 +286,7 @@ const isImporting = computed(
       title="Create Collection"
       confirm-label="Create"
       :loading="createMut.isPending.value"
-      :disabled="!newCollectionName.trim()"
+      :disabled="createDisabled"
       @confirm="doCreate()"
       @update:open="showCreateDialog = $event"
     >
@@ -233,6 +297,9 @@ const isImporting = computed(
           placeholder="e.g. python_docs"
           @keydown.enter="doCreate()"
         />
+        <p v-if="newCollectionError" class="field-error">
+          {{ newCollectionError }}
+        </p>
       </div>
     </ConfirmDialog>
 
@@ -258,17 +325,16 @@ const isImporting = computed(
       title="Import into Knowledge Base"
       confirm-label="Import"
       :loading="isImporting"
-      :disabled="
-        importTab === 'text'
-          ? !importCollection.trim() || !importContent.trim()
-          : !importCollection.trim() || !importFile
-      "
+      :disabled="importDisabled"
       @confirm="importTab === 'text' ? doImportText() : doImportFile()"
       @update:open="showImportDialog = $event"
     >
       <div class="dialog-form">
         <label class="form-label">Collection</label>
         <Input v-model="importCollection" placeholder="e.g. python_docs" />
+        <p v-if="importCollectionError" class="field-error">
+          {{ importCollectionError }}
+        </p>
 
         <div class="tab-row">
           <button
@@ -290,6 +356,12 @@ const isImporting = computed(
         <template v-if="importTab === 'text'">
           <label class="form-label">Title / Source</label>
           <Input v-model="importSource" placeholder="e.g. AsyncIO Guide" />
+
+          <label class="form-label">Content Format</label>
+          <select v-model="importContentType" class="format-select">
+            <option value="markdown">Markdown</option>
+            <option value="text">Plain text</option>
+          </select>
 
           <label class="form-label">Content</label>
           <Textarea
@@ -323,13 +395,16 @@ const isImporting = computed(
       title="Search Knowledge Base"
       confirm-label="Search"
       :loading="searchMut.isPending.value"
-      :disabled="!searchCollection.trim() || !searchQuery.trim()"
+      :disabled="searchDisabled"
       @confirm="doSearch()"
       @update:open="showSearchDialog = $event"
     >
       <div class="dialog-form">
         <label class="form-label">Collection</label>
         <Input v-model="searchCollection" placeholder="Collection name" />
+        <p v-if="searchCollectionError" class="field-error">
+          {{ searchCollectionError }}
+        </p>
 
         <label class="form-label">Query</label>
         <Input
@@ -479,6 +554,23 @@ const isImporting = computed(
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-foreground);
+}
+
+.field-error {
+  margin: -0.5rem 0 0;
+  color: var(--color-destructive);
+  font-size: 0.75rem;
+}
+
+.format-select {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-size: 0.8125rem;
 }
 
 .tab-row {

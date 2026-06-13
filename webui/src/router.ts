@@ -4,8 +4,27 @@ import {
   type RouteRecordRaw,
 } from "vue-router";
 import { api } from "@/api/client";
-import type { AuthSessionResponse, BootstrapResponse } from "@/api/schemas";
+import type {
+  AuthSessionResponse,
+  BootstrapResponse,
+  PluginListResponse,
+} from "@/api/schemas";
 import { useAuthStore } from "@/stores/auth";
+
+async function requireKnowledgeBase() {
+  try {
+    const data = await api.get<PluginListResponse>("/plugins");
+    const available = data.plugins.some(
+      (plugin) =>
+        plugin.id === "knowledge_base"
+        && plugin.state === "enabled"
+        && plugin.has_instance,
+    );
+    return available ? true : { name: "plugins" };
+  } catch {
+    return { name: "plugins" };
+  }
+}
 
 const routes: RouteRecordRaw[] = [
   {
@@ -65,6 +84,7 @@ const routes: RouteRecordRaw[] = [
         name: "kb",
         component: () => import("@/features/kb/KbPage.vue"),
         meta: { label: "Knowledge", icon: "BookOpen" },
+        beforeEnter: requireKnowledgeBase,
       },
       {
         path: "skills",

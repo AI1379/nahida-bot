@@ -87,17 +87,7 @@ class SQLiteVecIndex:
         self._ready = False
 
     async def setup(self) -> None:
-        try:
-            import sqlite_vec  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError("sqlite-vec is not installed") from exc
-
-        await self._engine.db.enable_load_extension(True)
-        try:
-            raw_conn = cast(Any, self._engine.db)._conn
-            await cast(Any, self._engine.db)._execute(sqlite_vec.load, raw_conn)
-        finally:
-            await self._engine.db.enable_load_extension(False)
+        await self._load_extension()
 
         async with self._engine.write_lock:
             await self._engine.execute(
@@ -112,6 +102,20 @@ class SQLiteVecIndex:
             )
             await self._engine.db.commit()
         self._ready = True
+
+    async def _load_extension(self) -> None:
+        """Load sqlite-vec into the current database connection."""
+        try:
+            import sqlite_vec  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError("sqlite-vec is not installed") from exc
+
+        await self._engine.db.enable_load_extension(True)
+        try:
+            raw_conn = cast(Any, self._engine.db)._conn
+            await cast(Any, self._engine.db)._execute(sqlite_vec.load, raw_conn)
+        finally:
+            await self._engine.db.enable_load_extension(False)
 
     async def upsert(self, records: list[VectorRecord]) -> None:
         self._require_ready()
@@ -183,6 +187,16 @@ class SQLiteVecIndex:
             )
             for row in rows
         ]
+
+    async def drop(self) -> None:
+        """Drop the sqlite-vec tables owned by this index."""
+        if not self._ready:
+            await self._load_extension()
+        async with self._engine.write_lock:
+            await self._engine.execute(f"DROP TABLE IF EXISTS {self._map_table}")
+            await self._engine.execute(f"DROP TABLE IF EXISTS {self._table_name}")
+            await self._engine.db.commit()
+        self._ready = False
 
     def _require_ready(self) -> None:
         if not self._ready:

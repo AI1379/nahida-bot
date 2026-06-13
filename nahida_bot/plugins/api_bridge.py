@@ -148,6 +148,7 @@ class RealBotAPI:
         status_provider_registry: Any | None = None,  # StatusProviderRegistry
         webhost_service: Any | None = None,  # WebHostService
         task_manager: Any | None = None,  # TaskManager
+        document_store_manager: Any | None = None,  # DocumentStoreManager
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -187,7 +188,7 @@ class RealBotAPI:
         self._status_provider_registry = status_provider_registry
         self._webhost_service = webhost_service
         self._task_manager = task_manager
-        self._document_store_manager: Any | None = None
+        self._document_store_manager = document_store_manager
         self._registered_status_providers: dict[
             str, Any
         ] = {}  # global_key -> StatusProviderEntry

@@ -91,6 +91,20 @@ def test_schema_includes_builtin_plugin_config_defaults() -> None:
     assert entries["builtin-commands.external_attachment_roots"].type_ == "list"
 
 
+def test_schema_includes_knowledge_base_config() -> None:
+    entries = {
+        entry.path: entry
+        for entry in build_config_schema("knowledge_base", show_providers=False)
+    }
+
+    assert entries["knowledge_base.retrieval.vector_enabled"].default_ == "False"
+    assert (
+        entries["knowledge_base.retrieval.vector_backend"].type_
+        == "'json' | 'sqlite-vec' | 'none'"
+    )
+    assert entries["knowledge_base.embedding.batch_size"].constraints == ">=1"
+
+
 def test_schema_uses_channel_config_models() -> None:
     telegram_entries = {
         entry.path: entry

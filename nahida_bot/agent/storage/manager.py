@@ -40,6 +40,11 @@ class DocumentStoreManager:
         self._engine = engine
         self._stores: dict[str, DocumentStore] = {}
 
+    @property
+    def engine(self) -> "DatabaseEngine":
+        """Return the shared database engine for collection-level helpers."""
+        return self._engine
+
     async def create(self, name: str) -> DocumentStore:
         """Create and register a new collection.
 

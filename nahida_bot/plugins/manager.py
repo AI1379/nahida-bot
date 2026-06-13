@@ -266,6 +266,7 @@ class PluginManager:
             scheduler_service=self._scheduler_service,
             orchestration_service=self._orchestration_service,
             task_manager=self._task_manager,
+            document_store_manager=self._document_store_manager,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)

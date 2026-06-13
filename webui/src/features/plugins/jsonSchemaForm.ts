@@ -102,17 +102,25 @@ export function schemaEntriesToFields(
 ): SchemaField[] {
   const prefix = pluginId + ".";
   const fields: SchemaField[] = [];
+  const containerPaths = new Set(
+    entries
+      .filter((entry) =>
+        entries.some((candidate) => candidate.path.startsWith(entry.path + ".")),
+      )
+      .map((entry) => entry.path),
+  );
 
   for (const entry of entries) {
     if (!entry.path.startsWith(prefix)) continue;
     // Skip the plugin-level top entry (type is like "PluginConfig (...)")
     if (entry.path === pluginId) continue;
-    // Skip container "dict" entries — their children are separate entries
-    if (entry.type === "dict") continue;
+    // Skip container entries — their children are rendered as separate fields.
+    if (entry.type === "dict" || containerPaths.has(entry.path)) continue;
 
     const relativePath = entry.path.slice(prefix.length);
     const key = lastSegment(relativePath);
     const kind = inferKindFromType(key, entry.type);
+    const options = kind === "select" ? literalOptions(entry.type) : undefined;
 
     fields.push({
       path: relativePath,
@@ -120,6 +128,7 @@ export function schemaEntriesToFields(
       kind,
       required: false,
       default: parseDefault(entry.default),
+      options,
     });
   }
 
@@ -135,6 +144,7 @@ function inferKindFromType(
   type: string,
 ): FieldKind {
   if (isSecretKey(key)) return "secret";
+  if (literalOptions(type)) return "select";
   if (type === "bool") return "boolean";
   if (type === "int") return "integer";
   if (type === "float") return "number";
@@ -147,8 +157,41 @@ function inferKindFromType(
   return "string";
 }
 
+function literalOptions(type: string): string[] | undefined {
+  const literalBody = type.match(/^Literal\[(.*)\]$/)?.[1] ?? type;
+  const separator = type.startsWith("Literal[") ? "," : "|";
+  const options = literalBody
+    .split(separator)
+    .map((value) => value.trim())
+    .map((value) => {
+      const quoted = value.match(/^(['"])(.*)\1$/);
+      return quoted?.[2];
+    });
+
+  return options.length > 1
+    && options.every((value): value is string => value !== undefined)
+    ? options
+    : undefined;
+}
+
 function parseDefault(raw: string): unknown {
   if (raw === "" || raw === "required" || raw === "-") return undefined;
+  if (raw === '""') return "";
+  if (raw === "True") return true;
+  if (raw === "False") return false;
+  if (raw === "None") return null;
+  if (/^-?\d+$/.test(raw)) return Number.parseInt(raw, 10);
+  if (/^-?(?:\d+\.\d*|\d*\.\d+)$/.test(raw)) return Number.parseFloat(raw);
+  if (
+    (raw.startsWith("[") && raw.endsWith("]"))
+    || (raw.startsWith("{") && raw.endsWith("}"))
+  ) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
   return raw;
 }
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
 import structlog
 
@@ -62,6 +61,18 @@ def _doc_embedding_text(item: DocumentItem) -> str:
     """Build the text to embed for a document (title + content)."""
     parts = [item.title, item.content] if item.title else [item.content]
     return "\n".join(parts)
+
+
+def _embedding_id_for(
+    *,
+    doc_id: str,
+    provider_id: str,
+    model: str,
+    content_hash: str,
+) -> str:
+    """Build a stable embedding id for repeatable document upserts."""
+    key = "\0".join([doc_id, provider_id, model, content_hash])
+    return f"docemb_{memory_text_hash(key)[:32]}"
 
 
 def _parse_dt(raw: str) -> datetime:
@@ -261,7 +272,25 @@ class SQLiteDocumentStore(DocumentStore):
         content_hash: str,
         vector_index: VectorIndex | None = None,
     ) -> str:
-        embedding_id = f"docemb-{uuid4().hex[:12]}"
+        embedding_id = _embedding_id_for(
+            doc_id=doc_id,
+            provider_id=provider_id,
+            model=model,
+            content_hash=content_hash,
+        )
+        stale_ids = [
+            existing_id
+            for existing_id in await self._repo.list_embedding_ids_for_doc(
+                doc_id,
+                provider_id=provider_id,
+                model=model,
+            )
+            if existing_id != embedding_id
+        ]
+        if stale_ids:
+            if vector_index is not None:
+                await vector_index.delete(stale_ids)
+            await self._repo.delete_embeddings(stale_ids)
         await self._repo.upsert_embedding(
             embedding_id=embedding_id,
             doc_id=doc_id,

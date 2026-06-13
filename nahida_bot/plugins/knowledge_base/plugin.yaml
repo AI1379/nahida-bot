@@ -17,3 +17,15 @@ config:
   default_chunk_size: 500
   default_chunk_overlap: 50
   max_search_results: 5
+  retrieval:
+    fts_enabled: true
+    vector_enabled: false
+    hybrid_enabled: true
+    vector_backend: json
+  embedding:
+    enabled: false
+    model: ""
+    provider_id: ""
+    dimensions: 0
+    batch_size: 16
+    embed_after_import: true

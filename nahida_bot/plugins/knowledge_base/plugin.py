@@ -18,10 +18,13 @@ from __future__ import annotations
 import os
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
+from nahida_bot.agent.storage.embedding import RoutedEmbeddingProvider
+from nahida_bot.agent.storage.tokenization import build_fts_query
+from nahida_bot.agent.storage.vector import SQLiteVecIndex
 from nahida_bot.plugins.base import (
     CommandHandlerResult,
     InboundMessage,
@@ -70,6 +73,10 @@ class KnowledgeBasePlugin(Plugin):
         super().__init__(api, manifest)
         self._config = parse_kb_config(self.manifest.config)
         self._manager: Any = None  # DocumentStoreManager — set in on_load
+        self._embedding_provider: Any | None = None
+        self._vector_indexes: dict[str, Any | None] = {}
+        self._embedded_collections: set[str] = set()
+        self._embedding_dimensions = self._config.embedding.dimensions
 
     # ── Lifecycle ────────────────────────────────────────
 
@@ -82,6 +89,8 @@ class KnowledgeBasePlugin(Plugin):
         if self._manager is None:
             self.api.logger.warning("kb.no_manager")
             return
+
+        self._embedding_provider = self._resolve_embedding_provider()
 
         # Re-register collections persisted in plugin_data.
         await self._restore_collections()
@@ -133,10 +142,10 @@ class KnowledgeBasePlugin(Plugin):
         results: list[dict[str, Any]] = []
 
         if collection:
-            store = manager.get(collection)
-            if store is None:
+            try:
+                hits = await self.search_documents(collection, query, limit=limit)
+            except LookupError:
                 return f"Error: collection '{collection}' not found."
-            hits = await store.search(query, limit=limit)
             results = [
                 {
                     "collection": collection,
@@ -148,25 +157,27 @@ class KnowledgeBasePlugin(Plugin):
                 for r in hits
             ]
         else:
-            # Search all collections.
+            ranked_results: list[tuple[float, dict[str, Any]]] = []
             for name in manager.list_collections():
-                store = manager.get(name)
-                if store is None:
+                try:
+                    hits = await self.search_documents(name, query, limit=limit)
+                except LookupError:
                     continue
-                hits = await store.search(query, limit=limit)
-                for r in hits:
-                    results.append(
-                        {
-                            "collection": name,
-                            "doc_id": r.doc_id,
-                            "title": r.title,
-                            "content": r.content,
-                            "score": r.score,
-                        }
+                for rank, result in enumerate(hits, start=1):
+                    ranked_results.append(
+                        (
+                            1.0 / (60.0 + rank),
+                            {
+                                "collection": name,
+                                "doc_id": result.doc_id,
+                                "title": result.title,
+                                "content": result.content,
+                                "score": result.score,
+                            },
+                        )
                     )
-            # Sort by score and take top N.
-            results.sort(key=lambda r: r["score"])
-            results = results[:limit]
+            ranked_results.sort(key=lambda item: item[0], reverse=True)
+            results = [payload for _rank_score, payload in ranked_results[:limit]]
 
         if not results:
             return "No relevant documents found."
@@ -498,6 +509,11 @@ class KnowledgeBasePlugin(Plugin):
         )
         await self._persist_collection_meta(collection_name)
         self._refresh_supplement()
+        await self._refresh_embeddings_after_import(
+            collection_name,
+            store,
+            imported_count=count,
+        )
         return count
 
     async def search_documents(
@@ -513,9 +529,16 @@ class KnowledgeBasePlugin(Plugin):
         store = manager.get(collection_name)
         if store is None:
             raise LookupError(f"Collection '{collection_name}' not found.")
-        if not query.strip():
+        query = query.strip()
+        if not query:
             return []
-        return await store.search(query, limit=max(1, int(limit)))
+        search_limit = min(max(1, int(limit)), self._config.max_search_results)
+        return await self._search_store(
+            collection_name,
+            store,
+            query,
+            limit=search_limit,
+        )
 
     async def delete_collection(self, collection_name: str) -> None:
         """Delete a collection, its documents, and persisted metadata."""
@@ -525,7 +548,9 @@ class KnowledgeBasePlugin(Plugin):
         if not deleted:
             raise LookupError(f"Collection '{collection_name}' not found.")
 
+        await self._drop_vector_index(collection_name)
         await self._remove_collection_meta(collection_name)
+        self._embedded_collections.discard(collection_name)
         self._refresh_supplement()
 
     # ── Prompt Supplement ────────────────────────────────
@@ -625,3 +650,339 @@ class KnowledgeBasePlugin(Plugin):
         meta = await self._load_collections_meta()
         meta.pop(name, None)
         await self._save_collections_meta(meta)
+
+    def _resolve_embedding_provider(self) -> Any | None:
+        """Resolve the embedding provider configured for KB retrieval."""
+        if not self._config.embedding.enabled:
+            return None
+
+        get_provider_manager = getattr(self.api, "get_provider_manager", None)
+        provider_manager = (
+            get_provider_manager() if callable(get_provider_manager) else None
+        )
+        if provider_manager is None:
+            self.api.logger.warning(
+                "kb.embedding_disabled",
+                reason="no_provider_manager",
+            )
+            return None
+
+        explicit = _legacy_model_spec(
+            provider_id=self._config.embedding.provider_id,
+            model=self._config.embedding.model,
+        )
+        resolved = None
+        reason = ""
+        if explicit:
+            resolved = cast(Any, provider_manager).resolve_model_selection(explicit)
+            reason = "explicit"
+        else:
+            resolved = _resolve_provider_by_tag(provider_manager, "embedding")
+            reason = "tag:embedding"
+
+        if resolved is None:
+            self.api.logger.warning(
+                "kb.embedding_disabled",
+                reason="no_embedding_model",
+                explicit=explicit,
+            )
+            return None
+
+        slot, selected_model = resolved
+        model_name = selected_model or slot.default_model
+        embed = getattr(slot.provider, "embed_texts", None)
+        if not callable(embed):
+            self.api.logger.warning(
+                "kb.embedding_disabled",
+                reason="provider_without_embeddings",
+                provider_id=slot.id,
+                model=model_name,
+            )
+            return None
+
+        provider = RoutedEmbeddingProvider(
+            slot.provider,
+            provider_id=slot.id,
+            model=model_name,
+            dimensions=self._config.embedding.dimensions,
+            batch_size=self._config.embedding.batch_size,
+        )
+        self.api.logger.info(
+            "kb.embedding_initialized",
+            provider_id=slot.id,
+            model=model_name,
+            reason=reason,
+            vector_backend=(
+                self._config.retrieval.vector_backend
+                if self._config.retrieval.vector_enabled
+                else "none"
+            ),
+        )
+        return provider
+
+    async def _search_store(
+        self,
+        collection_name: str,
+        store: Any,
+        query: str,
+        *,
+        limit: int,
+    ) -> list[Any]:
+        """Search one collection using the configured retrieval mode."""
+        fts_enabled = self._config.retrieval.fts_enabled and bool(
+            build_fts_query(query)
+        )
+        vector_enabled = (
+            self._config.retrieval.vector_enabled and self._config.embedding.enabled
+        )
+        if not fts_enabled and not vector_enabled:
+            return []
+
+        use_hybrid = (
+            vector_enabled and fts_enabled and self._config.retrieval.hybrid_enabled
+        )
+        use_vector_only = vector_enabled and not use_hybrid
+        if use_hybrid or use_vector_only:
+            provider, vector_index = await self._ensure_vector_search_ready(
+                collection_name,
+                store,
+            )
+            if provider is not None:
+                try:
+                    if use_hybrid:
+                        return await store.search_hybrid(
+                            query,
+                            provider,
+                            limit=limit,
+                            vector_index=vector_index,
+                        )
+                    return await store.search_vector(
+                        query,
+                        provider,
+                        limit=limit,
+                        vector_index=vector_index,
+                    )
+                except Exception as exc:
+                    self.api.logger.warning(
+                        "kb.vector_search_failed",
+                        collection=collection_name,
+                        error=str(exc),
+                        fallback="fts" if fts_enabled else "none",
+                    )
+            if not fts_enabled:
+                return []
+        return await store.search(query, limit=limit)
+
+    async def _ensure_vector_search_ready(
+        self,
+        collection_name: str,
+        store: Any,
+    ) -> tuple[Any | None, Any | None]:
+        """Prepare embeddings and optional vector index for one collection."""
+        provider = self._embedding_provider
+        if provider is None:
+            provider = self._resolve_embedding_provider()
+            self._embedding_provider = provider
+        if provider is None:
+            return None, None
+
+        vector_index = await self._get_vector_index(collection_name, provider)
+        if collection_name in self._embedded_collections:
+            return provider, vector_index
+
+        try:
+            total_docs = await store.count()
+            embedded_count = (
+                await store.embed_documents(
+                    provider,
+                    limit=total_docs,
+                    vector_index=vector_index,
+                )
+                if total_docs > 0
+                else 0
+            )
+            if embedded_count == total_docs:
+                self._embedded_collections.add(collection_name)
+            else:
+                self._embedded_collections.discard(collection_name)
+            self.api.logger.debug(
+                "kb.embeddings_backfilled",
+                collection=collection_name,
+                documents=total_docs,
+                embedded=embedded_count,
+                complete=embedded_count == total_docs,
+            )
+        except Exception as exc:
+            self.api.logger.warning(
+                "kb.embedding_backfill_failed",
+                collection=collection_name,
+                error=str(exc),
+            )
+        return provider, vector_index
+
+    async def _refresh_embeddings_after_import(
+        self,
+        collection_name: str,
+        store: Any,
+        *,
+        imported_count: int,
+    ) -> None:
+        """Refresh embeddings for freshly imported documents when configured."""
+        if imported_count <= 0:
+            return
+        if not self._config.embedding.enabled:
+            self._embedded_collections.discard(collection_name)
+            return
+        if not self._config.embedding.embed_after_import:
+            self._embedded_collections.discard(collection_name)
+            return
+
+        provider = self._embedding_provider
+        if provider is None:
+            provider = self._resolve_embedding_provider()
+            self._embedding_provider = provider
+        if provider is None:
+            self._embedded_collections.discard(collection_name)
+            return
+
+        vector_index = await self._get_vector_index(collection_name, provider)
+        try:
+            embedded = await store.embed_documents(
+                provider,
+                limit=max(1, imported_count),
+                vector_index=vector_index,
+            )
+            total_docs = await store.count()
+            expected = min(imported_count, total_docs)
+            if embedded < expected:
+                self._embedded_collections.discard(collection_name)
+            elif total_docs <= imported_count and embedded == total_docs:
+                self._embedded_collections.add(collection_name)
+            self.api.logger.debug(
+                "kb.embeddings_refreshed",
+                collection=collection_name,
+                imported=imported_count,
+                embedded=embedded,
+                complete=collection_name in self._embedded_collections,
+            )
+        except Exception as exc:
+            self._embedded_collections.discard(collection_name)
+            self.api.logger.warning(
+                "kb.embedding_refresh_failed",
+                collection=collection_name,
+                error=str(exc),
+            )
+
+    async def _get_vector_index(
+        self,
+        collection_name: str,
+        provider: Any,
+    ) -> Any | None:
+        """Return the optional vector index for a collection."""
+        if (
+            not self._config.retrieval.vector_enabled
+            or self._config.retrieval.vector_backend != "sqlite-vec"
+        ):
+            return None
+        if collection_name in self._vector_indexes:
+            return self._vector_indexes[collection_name]
+
+        manager = self._require_manager()
+        dimensions = await self._resolve_embedding_dimensions(provider)
+        if dimensions <= 0:
+            self.api.logger.warning(
+                "kb.vector_index_disabled",
+                collection=collection_name,
+                reason="sqlite_vec_requires_dimensions",
+            )
+            self._vector_indexes[collection_name] = None
+            return None
+
+        index = SQLiteVecIndex(
+            manager.engine,
+            dimensions=dimensions,
+            table_name=f"kb_{collection_name}_embedding_vec",
+            map_table=f"kb_{collection_name}_vec_map",
+        )
+        try:
+            await index.setup()
+        except Exception as exc:
+            self.api.logger.warning(
+                "kb.vector_index_disabled",
+                collection=collection_name,
+                reason="setup_failed",
+                error=str(exc),
+            )
+            self._vector_indexes[collection_name] = None
+            return None
+
+        self._vector_indexes[collection_name] = index
+        return index
+
+    async def _resolve_embedding_dimensions(self, provider: Any) -> int:
+        """Resolve the embedding dimension for optional sqlite-vec indexes."""
+        if self._embedding_dimensions > 0:
+            return self._embedding_dimensions
+        provider_dimensions = int(getattr(provider, "dimensions", 0) or 0)
+        if provider_dimensions > 0:
+            self._embedding_dimensions = provider_dimensions
+            return provider_dimensions
+        try:
+            probe = await provider.embed_texts(["0"])
+        except Exception as exc:
+            self.api.logger.warning(
+                "kb.embedding_probe_failed",
+                error=str(exc),
+            )
+            return 0
+        dimensions = len(probe[0].embedding) if probe and probe[0].embedding else 0
+        if dimensions > 0:
+            self._embedding_dimensions = dimensions
+        return dimensions
+
+    async def _drop_vector_index(self, collection_name: str) -> None:
+        """Drop the optional vector index tables for a deleted collection."""
+        vector_index = self._vector_indexes.pop(collection_name, None)
+        if vector_index is None:
+            manager = self._require_manager()
+            engine = getattr(manager, "engine", None)
+            if engine is None:
+                return
+            vector_index = SQLiteVecIndex(
+                engine,
+                dimensions=max(1, self._embedding_dimensions),
+                table_name=f"kb_{collection_name}_embedding_vec",
+                map_table=f"kb_{collection_name}_vec_map",
+            )
+        drop = getattr(vector_index, "drop", None)
+        if not callable(drop):
+            return
+        try:
+            await cast(Any, drop)()
+        except Exception as exc:
+            self.api.logger.warning(
+                "kb.vector_index_drop_failed",
+                collection=collection_name,
+                error=str(exc),
+            )
+
+
+def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
+    """Build a model spec from legacy provider/model split fields."""
+    provider_id = provider_id.strip()
+    model = model.strip()
+    if provider_id and model:
+        if model.startswith(f"{provider_id}/"):
+            return model
+        return f"{provider_id}/{model}"
+    return model
+
+
+def _resolve_provider_by_tag(provider_manager: Any, tag: str) -> tuple[Any, str] | None:
+    """Find the first provider/model pair tagged for a specific task."""
+    for slot in getattr(provider_manager, "slots", []):
+        tags_by_model = getattr(slot, "tags_by_model", {}) or {}
+        for model_name, tags in tags_by_model.items():
+            if tag in (tags or []):
+                return slot, model_name
+    return None

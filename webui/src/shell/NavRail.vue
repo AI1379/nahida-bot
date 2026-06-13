@@ -16,8 +16,10 @@ import {
   PanelLeftClose,
 } from "lucide-vue-next";
 import { computed, ref, type Component } from "vue";
+import { usePluginList } from "@/api/queries";
 
 const route = useRoute();
+const { data: pluginData } = usePluginList();
 
 interface NavItem {
   name: string;
@@ -40,6 +42,16 @@ const items: NavItem[] = [
   { name: "about", icon: Info, to: "/about", label: "About" },
 ];
 
+const visibleItems = computed(() => {
+  const knowledgeBaseAvailable = pluginData.value?.plugins.some(
+    (plugin) =>
+      plugin.id === "knowledge_base"
+      && plugin.state === "enabled"
+      && plugin.has_instance,
+  );
+  return items.filter((item) => item.name !== "kb" || knowledgeBaseAvailable);
+});
+
 const activeName = computed(() => {
   const matched = route.matched[route.matched.length - 1];
   return matched?.name as string | undefined;
@@ -61,7 +73,7 @@ function toggleSidebar() {
     </div>
     <div class="nav-items">
       <RouterLink
-        v-for="item in items"
+        v-for="item in visibleItems"
         :key="item.name"
         :to="item.to"
         class="nav-item"

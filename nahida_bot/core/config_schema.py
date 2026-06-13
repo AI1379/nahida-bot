@@ -184,6 +184,10 @@ def _plugin_config_model(plugin_id: str) -> type | None:
         )
 
         return ConversationJoinerConfig
+    if plugin_id == "knowledge_base":
+        from nahida_bot.plugins.knowledge_base.config import KBConfig
+
+        return KBConfig
     return None
 
 
@@ -319,13 +323,15 @@ def _discover_plugin_manifests(settings: Settings) -> list[Any]:
         if builtin_channels is not None:
             paths.append(builtin_channels)
 
-    builtin_mcp = _package_dir("nahida_bot.plugins.mcp")
-    if builtin_mcp is not None:
-        paths.append(builtin_mcp)
-
-    builtin_joiner = _package_dir("nahida_bot.plugins.conversation_joiner")
-    if builtin_joiner is not None:
-        paths.append(builtin_joiner)
+    for module_name in (
+        "nahida_bot.plugins.mcp",
+        "nahida_bot.plugins.conversation_joiner",
+        "nahida_bot.plugins.image_generation",
+        "nahida_bot.plugins.knowledge_base",
+    ):
+        plugin_dir = _package_dir(module_name)
+        if plugin_dir is not None:
+            paths.append(plugin_dir)
 
     paths.extend(
         path for p in settings.plugin_paths if (path := Path(p).resolve()).is_dir()

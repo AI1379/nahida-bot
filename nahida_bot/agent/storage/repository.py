@@ -138,18 +138,28 @@ class SQLiteDocumentRepository:
         title_index: str,
         content_index: str,
     ) -> str:
-        """Insert or replace a document and its FTS row."""
+        """Insert or update a document and replace its FTS row."""
         now_iso = _utc_now_iso()
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         async with self._engine.write_lock:
             await self._engine.execute(
-                f"INSERT OR REPLACE INTO {self._docs_table} "
+                f"INSERT INTO {self._docs_table} "
                 "(doc_id, title, content, status, metadata_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'active', ?, ?, ?)",
+                "VALUES (?, ?, ?, 'active', ?, ?, ?) "
+                "ON CONFLICT(doc_id) DO UPDATE SET "
+                "title = excluded.title, "
+                "content = excluded.content, "
+                "status = excluded.status, "
+                "metadata_json = excluded.metadata_json, "
+                "updated_at = excluded.updated_at",
                 (doc_id, title, content, metadata_json, now_iso, now_iso),
             )
             await self._engine.execute(
-                f"INSERT OR REPLACE INTO {self._fts_table} "
+                f"DELETE FROM {self._fts_table} WHERE doc_id = ?",
+                (doc_id,),
+            )
+            await self._engine.execute(
+                f"INSERT INTO {self._fts_table} "
                 "(doc_id, title_index, content_index) "
                 "VALUES (?, ?, ?)",
                 (doc_id, title_index, content_index),
@@ -267,8 +277,10 @@ class SQLiteDocumentRepository:
                 "(embedding_id, doc_id, provider_id, model, dimensions, "
                 "content_hash, embedding_json, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(embedding_id) DO UPDATE SET "
+                "ON CONFLICT(doc_id, provider_id, model, content_hash) "
+                "DO UPDATE SET embedding_id = excluded.embedding_id, "
                 "embedding_json = excluded.embedding_json, "
+                "dimensions = excluded.dimensions, "
                 "content_hash = excluded.content_hash, "
                 "created_at = excluded.created_at",
                 (
@@ -284,6 +296,29 @@ class SQLiteDocumentRepository:
             )
             await self._engine.db.commit()
         return embedding_id
+
+    async def list_embedding_ids_for_doc(
+        self,
+        doc_id: str,
+        *,
+        provider_id: str = "",
+        model: str = "",
+    ) -> list[str]:
+        """Return embedding ids for one document, optionally filtered by model."""
+        conditions = ["doc_id = ?"]
+        params: list[Any] = [doc_id]
+        if provider_id:
+            conditions.append("provider_id = ?")
+            params.append(provider_id)
+        if model:
+            conditions.append("model = ?")
+            params.append(model)
+        rows = await self._engine.fetch_all(
+            f"SELECT embedding_id FROM {self._emb_table} "
+            f"WHERE {' AND '.join(conditions)} ORDER BY created_at DESC",
+            tuple(params),
+        )
+        return [str(row["embedding_id"]) for row in rows]
 
     async def list_embeddings(
         self,
@@ -317,6 +352,19 @@ class SQLiteDocumentRepository:
             }
             for row in rows
         ]
+
+    async def delete_embeddings(self, embedding_ids: list[str]) -> int:
+        """Delete embeddings by their ids."""
+        if not embedding_ids:
+            return 0
+        placeholders = ",".join("?" for _ in embedding_ids)
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                f"DELETE FROM {self._emb_table} WHERE embedding_id IN ({placeholders})",
+                tuple(embedding_ids),
+            )
+            await self._engine.db.commit()
+        return cursor.rowcount
 
     async def delete_embeddings_for_doc(self, doc_id: str) -> int:
         """Delete all embeddings for a document."""

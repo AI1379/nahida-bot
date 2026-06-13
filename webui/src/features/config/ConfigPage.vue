@@ -634,6 +634,42 @@ function fieldBool(path: string) {
   return Boolean(getValue(path));
 }
 
+function pluginFieldPath(field: SchemaField) {
+  return `${pluginIdFromSection(activeSection.value)}.${field.path}`;
+}
+
+function pluginFieldValue(field: SchemaField) {
+  const value = getValue(pluginFieldPath(field));
+  return value === undefined ? field.default : value;
+}
+
+function pluginFieldText(field: SchemaField) {
+  const value = pluginFieldValue(field);
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function pluginFieldBool(field: SchemaField) {
+  return Boolean(pluginFieldValue(field));
+}
+
+function pluginFieldListText(field: SchemaField) {
+  const value = pluginFieldValue(field);
+  return Array.isArray(value) ? value.map((item) => String(item)).join("\n") : "";
+}
+
+function updatePluginList(field: SchemaField, raw: string) {
+  const values = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  setAtPath(
+    draft.value,
+    pluginFieldPath(field),
+    field.kind === "array-number" ? values.map(Number) : values,
+  );
+}
+
 function updateText(path: string, value: string) {
   setAtPath(draft.value, path, value);
 }
@@ -1631,8 +1667,8 @@ function confirmSave() {
                 <select
                   v-if="field.kind === 'select'"
                   :id="`plugin_${field.path.replaceAll('.', '_')}`"
-                  :value="fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
-                  @change="updateText(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLSelectElement).value)"
+                  :value="pluginFieldText(field)"
+                  @change="updateText(pluginFieldPath(field), ($event.target as HTMLSelectElement).value)"
                 >
                   <option v-for="opt in field.options" :key="opt" :value="opt">
                     {{ opt || "auto" }}
@@ -1643,8 +1679,8 @@ function confirmSave() {
                   v-else-if="field.kind === 'boolean'"
                   :id="`plugin_${field.path.replaceAll('.', '_')}`"
                   type="checkbox"
-                  :checked="fieldBool(`${pluginIdFromSection(activeSection)}.${field.path}`)"
-                  @change="updateBool(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).checked)"
+                  :checked="pluginFieldBool(field)"
+                  @change="updateBool(pluginFieldPath(field), ($event.target as HTMLInputElement).checked)"
                 />
 
                 <input
@@ -1652,19 +1688,19 @@ function confirmSave() {
                   :id="`plugin_${field.path.replaceAll('.', '_')}`"
                   type="number"
                   :step="field.kind === 'integer' ? 1 : 'any'"
-                  :value="fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
-                  @input="updateNumber(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).value)"
+                  :value="pluginFieldText(field)"
+                  @input="updateNumber(pluginFieldPath(field), ($event.target as HTMLInputElement).value)"
                 />
 
                 <div v-else-if="field.kind === 'secret'" class="secret-control">
                   <input
                     :id="`plugin_${field.path.replaceAll('.', '_')}`"
                     type="password"
-                    :placeholder="redactedPaths.has(`${pluginIdFromSection(activeSection)}.${field.path}`) ? 'unchanged' : ''"
-                    :value="redactedPaths.has(`${pluginIdFromSection(activeSection)}.${field.path}`) && fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`) === '***' ? '' : fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
-                    @input="updateText(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).value)"
+                    :placeholder="redactedPaths.has(pluginFieldPath(field)) ? 'unchanged' : ''"
+                    :value="redactedPaths.has(pluginFieldPath(field)) && pluginFieldText(field) === '***' ? '' : pluginFieldText(field)"
+                    @input="updateText(pluginFieldPath(field), ($event.target as HTMLInputElement).value)"
                   />
-                  <Button variant="outline" size="sm" @click="clearSecret(`${pluginIdFromSection(activeSection)}.${field.path}`)">
+                  <Button variant="outline" size="sm" @click="clearSecret(pluginFieldPath(field))">
                     Clear
                   </Button>
                 </div>
@@ -1672,9 +1708,9 @@ function confirmSave() {
                 <Textarea
                   v-else-if="field.kind === 'array-string' || field.kind === 'array-number'"
                   :id="`plugin_${field.path.replaceAll('.', '_')}`"
-                  :model-value="listText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
+                  :model-value="pluginFieldListText(field)"
                   :rows="3"
-                  @update:model-value="updateList(`${pluginIdFromSection(activeSection)}.${field.path}`, $event)"
+                  @update:model-value="updatePluginList(field, $event)"
                 />
 
                 <!-- Default: text -->
@@ -1682,8 +1718,8 @@ function confirmSave() {
                   v-else
                   :id="`plugin_${field.path.replaceAll('.', '_')}`"
                   type="text"
-                  :value="fieldText(`${pluginIdFromSection(activeSection)}.${field.path}`)"
-                  @input="updateText(`${pluginIdFromSection(activeSection)}.${field.path}`, ($event.target as HTMLInputElement).value)"
+                  :value="pluginFieldText(field)"
+                  @input="updateText(pluginFieldPath(field), ($event.target as HTMLInputElement).value)"
                 />
               </div>
             </div>

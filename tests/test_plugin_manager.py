@@ -161,6 +161,30 @@ class TestPluginLifecycle:
             assert manager.get_record(pid) is not None
             assert manager.get_record(pid).state == PluginState.ENABLED  # type: ignore[union-attr]
 
+    async def test_late_loaded_plugin_receives_document_store_manager(
+        self, tmp_path: Path
+    ) -> None:
+        plugin_dir = _create_test_plugin(tmp_path, "storage_plugin")
+        manifest_path = plugin_dir / "plugin.yaml"
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8")
+            + "\npermissions:\n  llm_access: true\n",
+            encoding="utf-8",
+        )
+        document_store_manager = object()
+        manager = PluginManager(event_bus=_make_event_bus())
+        manager.set_runtime_services(
+            document_store_manager=document_store_manager,
+        )
+
+        await manager.discover([tmp_path])
+        await manager.load("storage_plugin")
+
+        record = manager.get_record("storage_plugin")
+        assert record is not None
+        assert record.api_bridge is not None
+        assert record.api_bridge.get_document_store_manager() is document_store_manager
+
     async def test_load_all_and_enable_all_can_filter_by_phase(
         self, tmp_path: Path
     ) -> None:
