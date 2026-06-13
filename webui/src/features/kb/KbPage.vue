@@ -13,14 +13,19 @@ import {
   useKbCreateCollection,
   useKbDeleteCollection,
   useKbImportText,
-  useKbImportFile,
+  useKbImportFiles,
   useKbSearch,
 } from "@/api/queries";
-import type { KbCollectionSummary, KbDocumentResponse } from "@/api/schemas";
+import type {
+  KbBatchImportResponse,
+  KbCollectionSummary,
+  KbDocumentResponse,
+} from "@/api/schemas";
 import Alert from "@/components/ui/Alert.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
+import FileDropZone from "@/components/ui/FileDropZone.vue";
 import Input from "@/components/ui/Input.vue";
 import Textarea from "@/components/ui/Textarea.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
@@ -36,7 +41,8 @@ const importSource = ref("");
 const importContent = ref("");
 const importContentType = ref<"markdown" | "text">("markdown");
 const importTab = ref<"text" | "file">("text");
-const importFile = ref<File | null>(null);
+const importFiles = ref<File[]>([]);
+const batchImportResult = ref<KbBatchImportResponse | null>(null);
 const showDeleteDialog = ref(false);
 const deleteTarget = ref("");
 const showSearchDialog = ref(false);
@@ -55,7 +61,7 @@ const {
 const createMut = useKbCreateCollection();
 const deleteMut = useKbDeleteCollection();
 const importTextMut = useKbImportText();
-const importFileMut = useKbImportFile();
+const importFilesMut = useKbImportFiles();
 const searchMut = useKbSearch();
 
 const collections = computed<KbCollectionSummary[]>(
@@ -63,6 +69,27 @@ const collections = computed<KbCollectionSummary[]>(
 );
 
 const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_]+$/;
+const MAX_IMPORT_FILES = 20;
+const MAX_IMPORT_FILE_BYTES = 25 * 1024 * 1024;
+const KB_DOCUMENT_ACCEPT = [
+  ".md",
+  ".markdown",
+  ".txt",
+  ".text",
+  ".pdf",
+  ".docx",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+  ".html",
+  ".htm",
+  ".csv",
+  ".json",
+  ".xml",
+  ".epub",
+  ".msg",
+  ".ipynb",
+].join(",");
 
 function collectionNameError(name: string): string {
   const normalized = name.trim();
@@ -88,7 +115,7 @@ const importDisabled = computed(
     || !!importCollectionError.value
     || (importTab.value === "text"
       ? !importContent.value.trim()
-      : !importFile.value),
+      : importFiles.value.length === 0),
 );
 const searchDisabled = computed(
   () =>
@@ -141,7 +168,8 @@ function openImport(collectionName?: string) {
   importSource.value = "";
   importContent.value = "";
   importContentType.value = "markdown";
-  importFile.value = null;
+  importFiles.value = [];
+  batchImportResult.value = null;
   importTab.value = "text";
   showImportDialog.value = true;
 }
@@ -164,21 +192,29 @@ async function doImportText() {
   }
 }
 
-async function doImportFile() {
+async function doImportFiles() {
   const coll = importCollection.value.trim();
-  const file = importFile.value;
-  if (!coll || collectionNameError(coll) || !file) return;
+  const files = importFiles.value;
+  if (!coll || collectionNameError(coll) || files.length === 0) return;
   try {
-    await importFileMut.mutateAsync({ collection: coll, file });
-    showImportDialog.value = false;
+    const resp = await importFilesMut.mutateAsync({ collection: coll, files });
+    batchImportResult.value = resp;
+    if (resp.failed_files === 0) {
+      showImportDialog.value = false;
+      importFiles.value = [];
+      return;
+    }
+    importFiles.value = files.filter(
+      (_, index) => resp.results[index]?.status === "failed",
+    );
   } catch {
     // The mutation displays the API error and keeps the dialog open.
   }
 }
 
-function onFileSelected(event: Event) {
-  const target = event.target as HTMLInputElement;
-  importFile.value = target.files?.[0] ?? null;
+function setImportFiles(files: File[]) {
+  importFiles.value = files;
+  batchImportResult.value = null;
 }
 
 // ── Search ───────────────────────────────────────────
@@ -211,7 +247,7 @@ async function doSearch() {
 }
 
 const isImporting = computed(
-  () => importTextMut.isPending.value || importFileMut.isPending.value,
+  () => importTextMut.isPending.value || importFilesMut.isPending.value,
 );
 </script>
 
@@ -326,7 +362,7 @@ const isImporting = computed(
       confirm-label="Import"
       :loading="isImporting"
       :disabled="importDisabled"
-      @confirm="importTab === 'text' ? doImportText() : doImportFile()"
+      @confirm="importTab === 'text' ? doImportText() : doImportFiles()"
       @update:open="showImportDialog = $event"
     >
       <div class="dialog-form">
@@ -349,7 +385,7 @@ const isImporting = computed(
             :class="{ active: importTab === 'file' }"
             @click="importTab = 'file'"
           >
-            <Upload :size="14" /> File Upload
+            <Upload :size="14" /> Files
           </button>
         </div>
 
@@ -372,19 +408,35 @@ const isImporting = computed(
         </template>
 
         <template v-else>
-          <label class="form-label">Upload File (.md, .txt)</label>
-          <input
-            type="file"
-            class="file-input"
-            accept=".md,.markdown,.txt,.text"
-            @change="onFileSelected($event)"
+          <label class="form-label">Upload Document</label>
+          <FileDropZone
+            :model-value="importFiles"
+            :accept="KB_DOCUMENT_ACCEPT"
+            :max-files="MAX_IMPORT_FILES"
+            :max-size-bytes="MAX_IMPORT_FILE_BYTES"
+            :disabled="isImporting"
+            @update:model-value="setImportFiles"
           />
-          <p v-if="importFile" class="file-info">
-            Selected: {{ importFile.name }} ({{
-              (importFile.size / 1024).toFixed(1)
-            }}
-            KB)
+          <p class="file-help">
+            Text and Markdown work by default. PDF, Word, PowerPoint, Excel,
+            HTML, EPUB, and other rich formats require the server's
+            document-import extra.
           </p>
+          <div v-if="batchImportResult" class="batch-results">
+            <p class="batch-summary">
+              {{ batchImportResult.imported_files }} imported,
+              {{ batchImportResult.failed_files }} failed,
+              {{ batchImportResult.chunks }} chunks.
+            </p>
+            <div
+              v-for="(result, index) in batchImportResult.results.filter((item) => item.status === 'failed')"
+              :key="`${result.source}:${index}`"
+              class="batch-error"
+            >
+              <Badge variant="destructive">{{ result.source }}</Badge>
+              <span>{{ result.error }}</span>
+            </div>
+          </div>
         </template>
       </div>
     </ConfirmDialog>
@@ -603,26 +655,32 @@ const isImporting = computed(
   border-bottom-color: var(--color-primary);
 }
 
-.file-input {
-  font-size: 0.8125rem;
-  color: var(--color-foreground);
-}
-
-.file-input::file-selector-button {
-  margin-right: 0.5rem;
-  padding: 0.25rem 0.625rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-accent);
-  color: var(--color-foreground);
-  cursor: pointer;
-  font-size: 0.8125rem;
-}
-
-.file-info {
+.file-help {
   font-size: 0.75rem;
   color: var(--color-muted-foreground);
+  line-height: 1.45;
+  margin: -0.25rem 0 0;
+}
+
+.batch-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding-top: 0.25rem;
+}
+
+.batch-summary {
   margin: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+}
+
+.batch-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .search-results {

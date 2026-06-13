@@ -48,6 +48,7 @@ import type {
   SkillDetailResponse,
   KbCollectionListResponse,
   KbSearchResponse,
+  KbBatchImportResponse,
   KbImportResponse,
   KbActionResponse,
 } from "./schemas";
@@ -689,6 +690,40 @@ export function useKbImportFile() {
     },
     onError(err) {
       toast.add(`Import failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useKbImportFiles() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  return useMutation<
+    KbBatchImportResponse,
+    Error,
+    { collection: string; files: File[] }
+  >({
+    mutationFn: ({ collection, files }) => {
+      const form = new FormData();
+      for (const file of files) form.append("files", file);
+      return api.postForm<KbBatchImportResponse>(
+        `/kb/collections/${encodeURIComponent(collection)}/import-files`,
+        form,
+      );
+    },
+    onSuccess(resp) {
+      qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      const summary = `${resp.imported_files} imported, ${resp.failed_files} failed, ${resp.chunks} chunks.`;
+      toast.add(
+        summary,
+        resp.failed_files === 0
+          ? "success"
+          : resp.imported_files > 0
+            ? "warning"
+            : "error",
+      );
+    },
+    onError(err) {
+      toast.add(`Batch import failed: ${toApiError(err).detail}`, "error");
     },
   });
 }

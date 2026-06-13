@@ -584,6 +584,21 @@ export interface KbImportResponse {
   chunks: number;
 }
 
+export interface KbBatchImportItem {
+  source: string;
+  status: "imported" | "failed";
+  chunks: number;
+  error: string;
+}
+
+export interface KbBatchImportResponse {
+  collection: string;
+  imported_files: number;
+  failed_files: number;
+  chunks: number;
+  results: KbBatchImportItem[];
+}
+
 export interface KbActionResponse {
   status: string;
   detail: string;

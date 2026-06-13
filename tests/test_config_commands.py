@@ -103,6 +103,7 @@ def test_schema_includes_knowledge_base_config() -> None:
         == "'json' | 'sqlite-vec' | 'none'"
     )
     assert entries["knowledge_base.embedding.batch_size"].constraints == ">=1"
+    assert "knowledge_base.embedding.provider_id" not in entries
 
 
 def test_schema_uses_channel_config_models() -> None:

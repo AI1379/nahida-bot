@@ -656,62 +656,52 @@ class KnowledgeBasePlugin(Plugin):
         if not self._config.embedding.enabled:
             return None
 
-        get_provider_manager = getattr(self.api, "get_provider_manager", None)
-        provider_manager = (
-            get_provider_manager() if callable(get_provider_manager) else None
-        )
-        if provider_manager is None:
+        get_model_router = getattr(self.api, "get_model_router", None)
+        model_router = get_model_router() if callable(get_model_router) else None
+        if model_router is None:
             self.api.logger.warning(
                 "kb.embedding_disabled",
-                reason="no_provider_manager",
+                reason="no_model_router",
             )
             return None
 
-        explicit = _legacy_model_spec(
-            provider_id=self._config.embedding.provider_id,
-            model=self._config.embedding.model,
+        routed = cast(Any, model_router).resolve_for_task(
+            "embedding",
+            explicit=self._config.embedding.model.strip(),
+            default_spec="embedding",
+            fallback="disabled",
         )
-        resolved = None
-        reason = ""
-        if explicit:
-            resolved = cast(Any, provider_manager).resolve_model_selection(explicit)
-            reason = "explicit"
-        else:
-            resolved = _resolve_provider_by_tag(provider_manager, "embedding")
-            reason = "tag:embedding"
-
-        if resolved is None:
+        if routed is None:
             self.api.logger.warning(
                 "kb.embedding_disabled",
                 reason="no_embedding_model",
-                explicit=explicit,
+                explicit=self._config.embedding.model,
             )
             return None
 
-        slot, selected_model = resolved
-        model_name = selected_model or slot.default_model
-        embed = getattr(slot.provider, "embed_texts", None)
+        model_name = routed.model or routed.slot.default_model
+        embed = getattr(routed.slot.provider, "embed_texts", None)
         if not callable(embed):
             self.api.logger.warning(
                 "kb.embedding_disabled",
                 reason="provider_without_embeddings",
-                provider_id=slot.id,
+                provider_id=routed.slot.id,
                 model=model_name,
             )
             return None
 
         provider = RoutedEmbeddingProvider(
-            slot.provider,
-            provider_id=slot.id,
+            routed.slot.provider,
+            provider_id=routed.slot.id,
             model=model_name,
             dimensions=self._config.embedding.dimensions,
             batch_size=self._config.embedding.batch_size,
         )
         self.api.logger.info(
             "kb.embedding_initialized",
-            provider_id=slot.id,
+            provider_id=routed.slot.id,
             model=model_name,
-            reason=reason,
+            reason=routed.reason,
             vector_backend=(
                 self._config.retrieval.vector_backend
                 if self._config.retrieval.vector_enabled
@@ -965,24 +955,3 @@ class KnowledgeBasePlugin(Plugin):
                 collection=collection_name,
                 error=str(exc),
             )
-
-
-def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
-    """Build a model spec from legacy provider/model split fields."""
-    provider_id = provider_id.strip()
-    model = model.strip()
-    if provider_id and model:
-        if model.startswith(f"{provider_id}/"):
-            return model
-        return f"{provider_id}/{model}"
-    return model
-
-
-def _resolve_provider_by_tag(provider_manager: Any, tag: str) -> tuple[Any, str] | None:
-    """Find the first provider/model pair tagged for a specific task."""
-    for slot in getattr(provider_manager, "slots", []):
-        tags_by_model = getattr(slot, "tags_by_model", {}) or {}
-        for model_name, tags in tags_by_model.items():
-            if tag in (tags or []):
-                return slot, model_name
-    return None

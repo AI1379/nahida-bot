@@ -1154,6 +1154,10 @@ class RealBotAPI:
         """Access the ProviderManager (if configured)."""
         return self._provider_manager
 
+    def get_model_router(self) -> Any:
+        """Access the unified ModelRouter (if configured)."""
+        return self._model_router
+
     @property
     def orchestration_service(self) -> Any | None:
         """Access the AgentOrchestrator exposed to built-in tools."""

@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from nahida_bot.agent.providers.router import ModelRouter
 from nahida_bot.agent.storage.manager import DocumentStoreManager
 from nahida_bot.agent.storage.models import SearchResult
 from nahida_bot.agent.storage.vector import SQLiteVecIndex
@@ -142,6 +143,7 @@ class _ProviderManager:
             default_model="kb-embed",
             tags_by_model={"kb-embed": ["embedding"]},
         )
+        self._slots = {"embedder": self._slot}
 
     @property
     def slots(self) -> list[Any]:
@@ -162,12 +164,18 @@ class _StrictRecordingAPI(RecordingMockBotAPI):
         super().__init__()
         self._manager = manager
         self._provider_manager = provider_manager
+        self._model_router = (
+            ModelRouter(provider_manager) if provider_manager is not None else None
+        )
 
     def get_document_store_manager(self) -> Any:
         return self._manager
 
     def get_provider_manager(self) -> Any | None:
         return self._provider_manager
+
+    def get_model_router(self) -> ModelRouter | None:
+        return self._model_router
 
     def register_prompt_supplement(
         self,
@@ -185,6 +193,35 @@ class _StrictRecordingAPI(RecordingMockBotAPI):
             channel=channel,
             filter=filter,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model_spec",
+    ["", "embedding", "kb-embed", "embedder/kb-embed"],
+)
+async def test_embedding_uses_unified_model_spec_routing(model_spec: str) -> None:
+    manager = _Manager()
+    api = _StrictRecordingAPI(manager, provider_manager=_ProviderManager())
+    plugin = KnowledgeBasePlugin(
+        api=api,
+        manifest=_kb_manifest_with_config(
+            {
+                "embedding": {
+                    "enabled": True,
+                    "model": model_spec,
+                    "dimensions": 4,
+                }
+            }
+        ),
+    )
+
+    await plugin.on_load()
+
+    provider = plugin._embedding_provider  # noqa: SLF001
+    assert provider is not None
+    assert provider.provider_id == "embedder"
+    assert provider.model == "kb-embed"
 
 
 @pytest.mark.asyncio

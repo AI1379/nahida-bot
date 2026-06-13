@@ -25,7 +25,6 @@ class KBEmbeddingConfig(BaseModel):
 
     enabled: bool = False
     model: str = ""
-    provider_id: str = ""  # Legacy: prefer ``model: provider/model``.
     dimensions: int = Field(default=0, ge=0)
     batch_size: int = Field(default=16, ge=1)
     embed_after_import: bool = True

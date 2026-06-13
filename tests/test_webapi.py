@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import nahida_bot.gateway.app as gateway_app_module
+import nahida_bot.gateway.routes.kb as kb_routes
 from nahida_bot.core.config import (
     Settings,
     WebAPIConfigModel,
@@ -614,6 +615,200 @@ async def test_kb_import_text_invalid_collection_returns_400(
 
     assert resp.status_code == 400
     assert "underscores" in resp.json()["detail"]
+
+
+async def test_kb_import_file_converts_document_before_ingestion(
+    client_no_auth: AsyncClient,
+    monkeypatch,
+) -> None:
+    from nahida_bot.plugins.knowledge_base.document_conversion import (
+        ConvertedDocument,
+    )
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    kb_plugin.import_content = AsyncMock(return_value=2)
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    monkeypatch.setattr(
+        kb_routes,
+        "convert_document_bytes",
+        lambda data, filename: ConvertedDocument(
+            content="# Converted report",
+            content_type="markdown",
+        ),
+    )
+
+    resp = await client_no_auth.post(
+        "/api/kb/collections/reports/import-file",
+        files={"file": ("quarterly.pdf", b"%PDF-test", "application/pdf")},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "collection": "reports",
+        "source": "quarterly.pdf",
+        "chunks": 2,
+    }
+    kb_plugin.import_content.assert_awaited_once()
+    call = kb_plugin.import_content.await_args
+    assert call.args == ("reports",)
+    assert call.kwargs["source_id"] == "quarterly"
+    assert call.kwargs["content"] == "# Converted report"
+    assert call.kwargs["content_type"] == "markdown"
+    assert call.kwargs["extra_metadata"]["original_content_type"] == "application/pdf"
+
+
+async def test_kb_import_file_missing_optional_dependency_returns_503(
+    client_no_auth: AsyncClient,
+    monkeypatch,
+) -> None:
+    from nahida_bot.plugins.knowledge_base.document_conversion import (
+        DocumentImportDependencyError,
+    )
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    def raise_missing_dependency(data: bytes, filename: str):
+        raise DocumentImportDependencyError(
+            "Run `uv sync --extra document-import` and restart Nahida Bot."
+        )
+
+    monkeypatch.setattr(
+        kb_routes,
+        "convert_document_bytes",
+        raise_missing_dependency,
+    )
+
+    resp = await client_no_auth.post(
+        "/api/kb/collections/reports/import-file",
+        files={"file": ("quarterly.pdf", b"%PDF-test", "application/pdf")},
+    )
+
+    assert resp.status_code == 503
+    assert "document-import" in resp.json()["detail"]
+
+
+async def test_kb_import_file_rejects_oversized_upload(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.post(
+        "/api/kb/collections/reports/import-file",
+        files={
+            "file": (
+                "large.pdf",
+                b"x" * (25 * 1024 * 1024 + 1),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert resp.status_code == 413
+    assert "25 MiB" in resp.json()["detail"]
+
+
+async def test_kb_import_files_returns_partial_results(
+    client_no_auth: AsyncClient,
+    monkeypatch,
+) -> None:
+    from nahida_bot.plugins.knowledge_base.document_conversion import (
+        ConvertedDocument,
+        DocumentConversionError,
+    )
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    kb_plugin.import_content = AsyncMock(side_effect=[2, 1])
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    def convert(data: bytes, filename: str) -> ConvertedDocument:
+        if filename == "broken.pdf":
+            raise DocumentConversionError("Failed to convert 'broken.pdf'.")
+        return ConvertedDocument(
+            content=f"# {filename}",
+            content_type="markdown",
+        )
+
+    monkeypatch.setattr(kb_routes, "convert_document_bytes", convert)
+
+    resp = await client_no_auth.post(
+        "/api/kb/collections/reports/import-files",
+        files=[
+            ("files", ("first.pdf", b"first", "application/pdf")),
+            ("files", ("broken.pdf", b"broken", "application/pdf")),
+            (
+                "files",
+                (
+                    "second.docx",
+                    b"second",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+            ),
+        ],
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "collection": "reports",
+        "imported_files": 2,
+        "failed_files": 1,
+        "chunks": 3,
+        "results": [
+            {
+                "source": "first.pdf",
+                "status": "imported",
+                "chunks": 2,
+                "error": "",
+            },
+            {
+                "source": "broken.pdf",
+                "status": "failed",
+                "chunks": 0,
+                "error": "Failed to convert 'broken.pdf'.",
+            },
+            {
+                "source": "second.docx",
+                "status": "imported",
+                "chunks": 1,
+                "error": "",
+            },
+        ],
+    }
+    assert kb_plugin.import_content.await_count == 2
+
+
+async def test_kb_import_files_rejects_more_than_twenty_documents(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    kb_plugin = MagicMock()
+    manager = MagicMock()
+    manager.get_record.return_value = SimpleNamespace(instance=kb_plugin)
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.post(
+        "/api/kb/collections/reports/import-files",
+        files=[
+            ("files", (f"{index}.txt", b"text", "text/plain")) for index in range(21)
+        ],
+    )
+
+    assert resp.status_code == 400
+    assert "At most 20 documents" in resp.json()["detail"]
 
 
 async def test_kb_create_collection_conflict_returns_409(

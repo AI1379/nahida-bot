@@ -70,6 +70,9 @@ telegram = [
 builtin-plugins = [
     "nahida-plugin-echo",
 ]
+document-import = [
+    "markitdown[docx,outlook,pdf,pptx,xls,xlsx]>=0.1.6,<0.2",
+]
 
 [project.scripts]
 nahida-bot = "nahida_bot.cli:main"

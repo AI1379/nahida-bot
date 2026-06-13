@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, NoReturn
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from anyio import to_thread
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from nahida_bot.gateway.deps import get_application
+from nahida_bot.plugins.knowledge_base.document_conversion import (
+    convert_document_bytes,
+    normalize_document_filename,
+)
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+_MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
+_MAX_DOCUMENT_FILES = 20
 
 
 # ── Response models ──────────────────────────────────
@@ -45,6 +52,21 @@ class KbImportResponse(BaseModel):
     collection: str
     source: str
     chunks: int
+
+
+class KbBatchImportItem(BaseModel):
+    source: str
+    status: Literal["imported", "failed"]
+    chunks: int = 0
+    error: str = ""
+
+
+class KbBatchImportResponse(BaseModel):
+    collection: str
+    imported_files: int
+    failed_files: int
+    chunks: int
+    results: list[KbBatchImportItem]
 
 
 class KbActionResponse(BaseModel):
@@ -91,7 +113,7 @@ def _summary_from_mapping(summary: Mapping[str, Any]) -> KbCollectionSummary:
     )
 
 
-def _raise_kb_error(exc: Exception) -> None:
+def _raise_kb_error(exc: Exception) -> NoReturn:
     detail = str(exc)
     if isinstance(exc, LookupError):
         raise HTTPException(
@@ -113,6 +135,53 @@ def _raise_kb_error(exc: Exception) -> None:
             detail=detail,
         ) from exc
     raise exc
+
+
+async def _import_uploaded_document(
+    plugin: Any,
+    collection_name: str,
+    file: UploadFile,
+) -> KbImportResponse:
+    filename = normalize_document_filename(file.filename or "untitled")
+    content_bytes = await file.read(_MAX_DOCUMENT_BYTES + 1)
+    if len(content_bytes) > _MAX_DOCUMENT_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Document exceeds the 25 MiB upload limit.",
+        )
+    try:
+        converted = await to_thread.run_sync(
+            convert_document_bytes,
+            content_bytes,
+            filename,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_kb_error(exc)
+
+    source_id = filename.rsplit(".", 1)[0] if "." in filename else filename
+    try:
+        count = await plugin.import_content(
+            collection_name,
+            source_id=source_id,
+            content=converted.content,
+            content_type=converted.content_type,
+            extra_metadata={
+                "filename": filename,
+                "original_content_type": file.content_type or "",
+                "imported_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_kb_error(exc)
+
+    logger.info(
+        "kb.api.import_file", collection=collection_name, file=filename, chunks=count
+    )
+    return KbImportResponse(
+        collection=collection_name,
+        source=filename,
+        chunks=count,
+    )
 
 
 # ── Endpoints ─────────────────────────────────────────
@@ -194,41 +263,61 @@ async def import_file(
 ) -> KbImportResponse:
     """Upload and import a file into a collection."""
     plugin = _require_kb_plugin(app)
+    return await _import_uploaded_document(plugin, collection_name, file)
 
-    filename = file.filename or "untitled"
-    content_bytes = await file.read()
-    try:
-        content = content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
+
+@router.post(
+    "/api/kb/collections/{collection_name}/import-files",
+    response_model=KbBatchImportResponse,
+)
+async def import_files(
+    collection_name: str,
+    files: list[UploadFile] = File(...),
+    app=Depends(get_application),
+) -> KbBatchImportResponse:
+    """Upload multiple documents and return one result per file."""
+    plugin = _require_kb_plugin(app)
+    if len(files) > _MAX_DOCUMENT_FILES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be UTF-8 encoded text",
+            detail=f"At most {_MAX_DOCUMENT_FILES} documents can be imported at once.",
         )
 
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    content_type = "markdown" if ext in ("md", "markdown") else "text"
-    source_id = filename.rsplit(".", 1)[0] if "." in filename else filename
-    try:
-        count = await plugin.import_content(
-            collection_name,
-            source_id=source_id,
-            content=content,
-            content_type=content_type,
-            extra_metadata={
-                "filename": filename,
-                "imported_at": datetime.now(UTC).isoformat(),
-            },
+    results: list[KbBatchImportItem] = []
+    total_chunks = 0
+    for file in files:
+        source = normalize_document_filename(file.filename or "untitled")
+        try:
+            imported = await _import_uploaded_document(
+                plugin,
+                collection_name,
+                file,
+            )
+        except HTTPException as exc:
+            results.append(
+                KbBatchImportItem(
+                    source=source,
+                    status="failed",
+                    error=str(exc.detail),
+                )
+            )
+            continue
+        total_chunks += imported.chunks
+        results.append(
+            KbBatchImportItem(
+                source=imported.source,
+                status="imported",
+                chunks=imported.chunks,
+            )
         )
-    except Exception as exc:  # noqa: BLE001
-        _raise_kb_error(exc)
 
-    logger.info(
-        "kb.api.import_file", collection=collection_name, file=filename, chunks=count
-    )
-    return KbImportResponse(
+    imported_files = sum(item.status == "imported" for item in results)
+    return KbBatchImportResponse(
         collection=collection_name,
-        source=filename,
-        chunks=count,
+        imported_files=imported_files,
+        failed_files=len(results) - imported_files,
+        chunks=total_chunks,
+        results=results,
     )
 
 

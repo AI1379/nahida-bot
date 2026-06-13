@@ -119,6 +119,9 @@ cd nahida-bot
 # Python 后端
 uv sync
 
+# 如需知识库导入 PDF、Word、PowerPoint、Excel 等文档
+uv sync --extra document-import
+
 # 如需 Telegram Channel，安装可选依赖
 uv sync --group telegram
 
@@ -135,6 +138,26 @@ uv run pytest
 # 编辑 config.yaml 配置 LLM Provider 和 Channel 后启动
 uv run nahida-bot start
 ```
+
+#### 知识库文档导入
+
+基础安装可以直接导入 UTF-8 编码的 `.txt`、`.text`、`.md` 和
+`.markdown` 文件。需要完整的知识库文档导入能力时，安装可选依赖：
+
+```bash
+uv sync --extra document-import
+```
+
+安装后可通过 WebUI 导入 PDF、DOCX、PPTX、XLS/XLSX、HTML、CSV、
+JSON、XML、EPUB、Outlook MSG 和 Jupyter Notebook。富文档会先由
+[Microsoft MarkItDown](https://github.com/microsoft/markitdown) 转换为
+Markdown，再进入现有的分块和检索流程。WebUI 支持一次选择或拖入最多
+20 个文件，单个文件上限为 25 MiB；批量导入会单独报告每个文件的结果，
+失败文件不会回滚已经成功导入的文件。
+
+旧版 `.doc` 不受支持，请先另存为 `.docx`。扫描版 PDF 或以图片为主的
+文档可能无法提取足够文本；当前集成不会启用 MarkItDown 第三方插件或
+云端 OCR。
 
 ### CLI 命令
 

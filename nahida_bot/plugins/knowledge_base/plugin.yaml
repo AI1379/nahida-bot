@@ -25,7 +25,6 @@ config:
   embedding:
     enabled: false
     model: ""
-    provider_id: ""
     dimensions: 0
     batch_size: 16
     embed_after_import: true

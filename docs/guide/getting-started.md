@@ -16,12 +16,34 @@ cd nahida-bot
 # 安装 Python 后端依赖
 uv sync
 
+# 如需知识库导入 PDF、Word、PowerPoint、Excel 等文档
+uv sync --extra document-import
+
 # 如需 Telegram Channel，安装可选依赖
 uv sync --group telegram
 
 # WebUI 前端（可选，但推荐）
 pnpm webui:build    # 输出到 webui/dist/，Gateway 启动时自动挂载
 ```
+
+### 可选：完整知识库文档导入
+
+默认安装支持 UTF-8 编码的纯文本和 Markdown 文件。安装
+`document-import` extra 后，知识库 WebUI 还可以导入 PDF、DOCX、
+PPTX、XLS/XLSX、HTML、CSV、JSON、XML、EPUB、Outlook MSG
+和 Jupyter Notebook：
+
+```bash
+uv sync --extra document-import
+```
+
+这些格式由
+[Microsoft MarkItDown](https://github.com/microsoft/markitdown)
+转换为 Markdown，再交给知识库分块和索引。旧版 `.doc` 文件需要先转换
+为 `.docx`。WebUI 可以一次选择或拖入最多 20 个文件，单个文件上限为
+25 MiB。批量导入采用逐文件结果，部分文件失败时，其余成功文件仍会保留。
+扫描 PDF 和以图片为主的文档可能提取不到正文；当前默认集成不启用第三方
+OCR 插件或付费云端文档分析服务。
 
 ## 最小配置
 
