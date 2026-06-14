@@ -54,7 +54,7 @@ Nahida Bot 不应直接引入 Microsoft GraphRAG、LlamaIndex GraphRAG 这类重
 - **可审计/可删除**：用户能查看、修改、禁用、删除具体记忆。
 - **可分层召回**：短期最近历史、中期摘要、长期事实/偏好/经验分开管理。
 - **可预算注入**：记忆进入 LLM context 前必须经过 token 预算和相关性筛选。
-- **多作用域隔离**：支持 global、workspace、channel、chat、user、session、agent profile 等 scope。
+- **多作用域隔离**：支持 global、workspace、channel、chat、user、session、agent profile 等 scope。（现状 2026-06-14：`global` + `chat` 已实现并验证；`workspace`/`user`/`person`/`account` pending，见 [memory-scoping.md](memory-scoping.md) 与 [person-identity-system.md](person-identity-system.md)。）
 - **渐进增强**：FTS、向量、reranker、图谱、dreaming 都应可插拔，不绑定单一 provider 或框架。
 
 ### 3.2 非目标
@@ -489,7 +489,7 @@ Needs review:
 
 ## 9. 配置建议
 
-### 9.0 当前实现审计（2026-05-15）
+### 9.0 当前实现审计（初版 2026-05-15，更新 2026-06-14）
 
 已确认完成：
 
@@ -506,12 +506,13 @@ Needs review:
 - consolidation 或 dreaming 写入长期记忆后可自动刷新 `memory_embeddings`。
 - `sqlite-vec` 仍为可选后端；未安装或未配置维度时回退到 SQLite JSON embedding 扫描。
 - scheduler 后台 dreaming 已按 `memory_dream_last_turn_id` 做增量处理。
+- durable memory 已按 session 的 typed ChatAddress 自动隔离到 `chat` scope（`preference`/`fact`/`task` → chat，共享 kind 仍写 `global`）；读取走 chat→global cascade；embedding 跨 scope 刷新。详见 [memory-scoping.md](memory-scoping.md)。**存量 global 数据迁移已决定跳过**（当前数据量小）。
 
 仍未完成：
 
 - 没有独立 embedding 维护任务表；当前是按 consolidation/dreaming 后批量刷新。
 - `/memory forget`、`/memory review`、手动触发 embedding rebuild 还没实现。
-- scope 仍主要默认写入 `global/__global__`，未按 workspace/chat/user 自动隔离。
+- scope 的 `workspace` / `user`（person/account）自动隔离仍未实现（依赖 #7 身份系统）；`chat` 已隔离（2026-06-14）。
 - consolidation 输入还不是完整 agent run/event，只包含主要 user/assistant 文本。
 - 还没有实际 reranker 接入；`ModelRouter.resolve_for_task()` 已能支撑后续 reranker model spec 选择。
 - 还没有 `agent_runs` / `agent_events` 持久化表，也没有 dream run 历史表。

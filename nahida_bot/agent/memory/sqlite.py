@@ -15,6 +15,7 @@ from nahida_bot.agent.memory.models import (
     MemoryRecord,
     SessionSummary,
 )
+from nahida_bot.agent.memory.scope import SCOPE_ID_GLOBAL, SCOPE_TYPE_GLOBAL
 from nahida_bot.agent.memory.store import MemoryStore
 from nahida_bot.agent.storage.embedding import EmbeddingProvider, memory_text_hash
 from nahida_bot.agent.storage.tokenization import (
@@ -292,8 +293,8 @@ class SQLiteMemoryStore(MemoryStore):
         *,
         content: str,
         title: str = "",
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
         kind: str = "fact",
         source: str = "plugin",
         confidence: float = 1.0,
@@ -328,8 +329,8 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         query: str = "",
         *,
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
         limit: int = 10,
     ) -> list[MemoryItem]:
         """Search durable memory items using FTS5 BM25 over pre-tokenized text."""
@@ -359,8 +360,8 @@ class SQLiteMemoryStore(MemoryStore):
         candidate_id: str,
         content: str,
         title: str = "",
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
         kind: str = "fact",
         status: str = "pending",
         confidence: float = 0.5,
@@ -385,8 +386,8 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         *,
         status: str | None = None,
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
         limit: int = 20,
     ) -> list[MemoryCandidate]:
         """List memory consolidation candidates."""
@@ -446,8 +447,8 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         provider: EmbeddingProvider,
         *,
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
         limit: int = 100,
         vector_index: VectorIndex | None = None,
     ) -> int:
@@ -512,8 +513,8 @@ class SQLiteMemoryStore(MemoryStore):
         query: str,
         provider: EmbeddingProvider,
         *,
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
         limit: int = 10,
         vector_index: VectorIndex | None = None,
     ) -> list[MemoryItem]:
@@ -577,8 +578,8 @@ class SQLiteMemoryStore(MemoryStore):
         query: str,
         provider: EmbeddingProvider | None = None,
         *,
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
         limit: int = 10,
         vector_index: VectorIndex | None = None,
     ) -> list[MemoryItem]:

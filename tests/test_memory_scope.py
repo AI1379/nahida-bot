@@ -8,6 +8,7 @@ See ``docs/design/memory-scoping.md``.
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 
 import pytest
@@ -21,6 +22,7 @@ from nahida_bot.agent.memory.scope import (
     resolve_scope_from_session,
     scope_for_kind,
 )
+from nahida_bot.agent.providers.base import ProviderResponse
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 
@@ -272,3 +274,89 @@ async def test_load_relevant_memory_cascade_isolates_chats(memory_store: Any) ->
     assert "Alice" in message.content
     assert "Project uses Python" in message.content  # global cascades in
     assert "Bob" not in message.content  # other chat isolated out
+
+
+# ---------------------------------------------------------------------------
+# Dreaming isolation
+# ---------------------------------------------------------------------------
+
+
+class _FakeDreamProvider:
+    """Minimal provider stub returning a fixed dreaming JSON response."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.model: str | None = None
+
+    async def chat(
+        self,
+        *,
+        messages: list[object],
+        tools: list[object] | None = None,
+        timeout_seconds: float | None = None,
+        model: str | None = None,
+    ) -> ProviderResponse:
+        self.model = model
+        return ProviderResponse(content=self.content)
+
+
+@pytest.mark.asyncio
+async def test_dreaming_does_not_archive_other_chat_items(
+    memory_store: Any,
+) -> None:
+    """Session A's dreaming must not archive session B's chat-scoped items.
+
+    The dreamer only sees the current session's scope; archive requests for
+    item ids outside that scope are ignored, so cross-chat data stays safe even
+    if the model hallucinates a foreign item id.
+    """
+    item_a = await memory_store.append_item(
+        content="Alice prefers Python",
+        scope_type="chat",
+        scope_id="milky:private:10001",
+        kind="preference",
+        title="lang",
+    )
+    item_b = await memory_store.append_item(
+        content="Bob prefers Go",
+        scope_type="chat",
+        scope_id="milky:private:10002",
+        kind="preference",
+        title="lang",
+    )
+
+    # The chat-A dreamer is (wrongly) told to archive both items.
+    provider = _FakeDreamProvider(
+        json.dumps(
+            {
+                "add": [],
+                "archive": [
+                    {"item_id": item_a, "reason": "stale"},
+                    {"item_id": item_b, "reason": "stale"},
+                ],
+            }
+        )
+    )
+
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10001",
+    )
+    await consolidator.consolidate_turn(
+        session_id="milky:private:10001",
+        user_message="unused",
+        assistant_message="",
+        dream_provider=provider,
+        run_rules=False,
+    )
+
+    a_hits = await memory_store.search_items(
+        "", scope_type="chat", scope_id="milky:private:10001", limit=10
+    )
+    b_hits = await memory_store.search_items(
+        "", scope_type="chat", scope_id="milky:private:10002", limit=10
+    )
+    # item_a (in scope) is archived; item_b (other chat) survives.
+    assert all(h.item_id != item_a for h in a_hits)
+    assert any(h.item_id == item_b for h in b_hits)

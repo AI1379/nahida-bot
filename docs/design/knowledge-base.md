@@ -596,9 +596,9 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 
 > 详见 [memory-scoping.md](memory-scoping.md)。这是 KB 与 person scope 的公共地基——
 > store 层早已 scope-ready，本次落地的是应用层 chat/global 隔离。
-> 状态：**Phase 0 / 1 / 2 / min-3 已完成并验证（2026-06-14）**。`scope_type` 目前是
-> 开放字符串，active 取值 `global` / `chat`；完整枚举（`person` / `account` /
-> `collection` / `workspace`）等身份系统与 KB 落地时再闭合。
+> 状态：**Phase 0 / 1 / 2 / min-3 / 5 已完成并验证（2026-06-14）**；Phase 4（存量
+> 迁移）已决定跳过。`scope_type` 目前是开放字符串，active 取值 `global` / `chat`；
+> 完整枚举（`person` / `account` / `collection` / `workspace`）等身份系统与 KB 落地时再闭合。
 
 - [x] Phase 0：新建 `nahida_bot/agent/memory/scope.py`（常量 + `resolve_scope_from_session` + `scope_for_kind`；typed→chat、legacy/空/非法→global、绝不抛异常）
 - [x] Phase 1 写入：consolidator 构造默认 scope + 每调用覆盖 + per-kind 写入（preference/fact/task→chat，decision/procedure/warning/summary→global）；`_load_existing_items` / `_has_duplicate` / `project_workspace_memory` 按 scope 过滤（修复跨 chat 误判重/误归档）
@@ -606,8 +606,8 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 - [x] Phase 2 读路径：`_load_relevant_memory(query, *, session_id="")` 与 `memory_search` 做 chat→global cascade（满额优先 chat、剩余补 global、item_id 去重）；legacy 字节级不变
 - [x] Phase 3（最小）：`list_memory_items_all_scopes` + `embed_items_all_scopes`，两个 embedding 刷新调用点切全 scope
 - [x] 验证：`tests/test_memory_scope.py`（解析单测 + 两 chat 隔离 + per-kind + dedup + cascade + embedding）；`uv run pytest` / `ruff` / `pyright` 全绿
-- [ ] Phase 4：存量 global 数据迁移脚本（inspect/apply + 自动备份），把本该 chat 的历史全局数据归位
-- [ ] Phase 5：全局审计收尾、`memory-system.md` §9.0 状态更新、grep 确认无残留硬编码
+- ⏭️ **Phase 4（存量 global 数据迁移）：已决定跳过（2026-06-14）**——当前记忆量小，存量串线可接受，迁移成本 > 收益。注意：读取 cascade 永远包含 global，所以**历史放错位置的个人记忆（若有）仍会串线**，直到将来数据积累后启用迁移。脚本设计保留在 [memory-scoping.md](memory-scoping.md) §5 Phase 4，随时可启用。
+- [x] Phase 5：全局审计收尾——grep 确认无 buggy 硬编码（sqlite.py 默认参数已改用 scope.py 常量；sqlite_memory_repo.py 保留 2 处字面量以维持 db 层独立于 agent.memory；api_bridge 的 `"__global__"` 是 legacy turn-storage fallback，与 durable-item scope 无关）；`memory-system.md` §3.1/§9.0 已更新；补 dreaming 跨 session 不串归档的 e2e 测试；pyright/ruff/pytest 全绿
 
 ### Phase 0：建立召回评测
 
