@@ -475,6 +475,38 @@ class SQLiteMemoryStore(MemoryStore):
             count += 1
         return count
 
+    async def embed_items_all_scopes(
+        self,
+        provider: EmbeddingProvider,
+        *,
+        limit: int = 100,
+        vector_index: VectorIndex | None = None,
+    ) -> int:
+        """Embed recent active memory items across all scopes.
+
+        Covers chat-scoped items so vector/hybrid search over non-global
+        scopes returns matches. Embeddings are scope-agnostic (derived from
+        text), so a single pass over all active items is sufficient.
+        """
+        rows = await self._repo.list_memory_items_all_scopes(limit=limit)
+        items = [_row_to_item(row) for row in rows]
+        texts = [_item_embedding_text(item) for item in items]
+        results = await provider.embed_texts(texts)
+        count = 0
+        for item, text, result in zip(items, texts, results, strict=False):
+            if not result.embedding:
+                continue
+            await self.upsert_item_embedding(
+                item.item_id,
+                result.embedding,
+                provider_id=result.provider_id,
+                model=result.model,
+                content_hash=memory_text_hash(text),
+                vector_index=vector_index,
+            )
+            count += 1
+        return count
+
     async def search_items_vector(
         self,
         query: str,

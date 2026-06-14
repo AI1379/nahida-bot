@@ -20,8 +20,30 @@ from nahida_bot.agent.memory.markdown import (
     replace_generated_memory_section,
     validate_memory_content,
 )
+from nahida_bot.agent.memory.scope import (
+    SCOPE_ID_GLOBAL,
+    SCOPE_TYPE_CHAT,
+    SCOPE_TYPE_GLOBAL,
+    scope_for_kind,
+)
 
 logger = structlog.get_logger(__name__)
+
+
+def _resolve_item_scope(
+    kind: str, eff_scope_type: str, eff_scope_id: str
+) -> tuple[str, str]:
+    """Resolve the target scope for a memory item given the session scope.
+
+    Within a typed chat session, personal kinds (preference/fact/task) land in
+    the chat scope while shared kinds (decision/procedure/warning/summary)
+    stay global so shared knowledge is not trapped in a single chat. Legacy /
+    global sessions resolve every item to global.
+    """
+    if eff_scope_type == SCOPE_TYPE_CHAT and scope_for_kind(kind) == SCOPE_TYPE_CHAT:
+        return SCOPE_TYPE_CHAT, eff_scope_id
+    return SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL
+
 
 _EXPLICIT_MEMORY_RE = re.compile(
     r"(?:请)?(?:记住|记一下|帮我记|remember(?: that)?|please remember)\s*[:：,，]?\s*(.+)",
@@ -329,11 +351,15 @@ class MemoryConsolidator:
         extractor: RuleBasedMemoryExtractor | None = None,
         projection_limit: int = 40,
         app_name: str = "the assistant",
+        default_scope_type: str = SCOPE_TYPE_GLOBAL,
+        default_scope_id: str = SCOPE_ID_GLOBAL,
     ) -> None:
         self._memory = memory_store
         self._extractor = extractor or RuleBasedMemoryExtractor()
         self._projection_limit = projection_limit
         self._app_name = app_name
+        self._default_scope_type = default_scope_type
+        self._default_scope_id = default_scope_id
 
     async def consolidate_turn(
         self,
@@ -346,6 +372,8 @@ class MemoryConsolidator:
         dream_provider: Any | None = None,
         dream_model: str | None = None,
         run_rules: bool = True,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
     ) -> int:
         """Extract and auto-apply durable memory from one completed turn."""
         append_item = getattr(self._memory, "append_item", None)
@@ -354,7 +382,11 @@ class MemoryConsolidator:
         if not run_rules and dream_provider is None:
             return 0
 
-        existing_items = await self._load_existing_items()
+        eff_scope_type = scope_type or self._default_scope_type
+        eff_scope_id = scope_id or self._default_scope_id
+        existing_items = await self._load_existing_items(
+            scope_type=eff_scope_type, scope_id=eff_scope_id
+        )
         extracted = (
             self._extractor.extract(
                 session_id=session_id,
@@ -402,11 +434,21 @@ class MemoryConsolidator:
             if validate_memory_content(memory.content) is not None:
                 skipped_unsafe += 1
                 continue
-            if await self._has_duplicate(memory.content):
+            item_scope_type, item_scope_id = _resolve_item_scope(
+                memory.kind, eff_scope_type, eff_scope_id
+            )
+            if await self._has_duplicate(
+                memory.content,
+                scope_type=item_scope_type,
+                scope_id=item_scope_id,
+            ):
                 skipped_duplicates += 1
                 continue
             candidate_id = await self._append_candidate(
-                memory, workspace_id=workspace_id
+                memory,
+                workspace_id=workspace_id,
+                scope_type=item_scope_type,
+                scope_id=item_scope_id,
             )
             metadata = {
                 **memory.metadata,
@@ -418,8 +460,8 @@ class MemoryConsolidator:
             await cast(Any, append_item)(
                 title=memory.title,
                 content=memory.content,
-                scope_type="global",
-                scope_id="__global__",
+                scope_type=item_scope_type,
+                scope_id=item_scope_id,
                 kind=memory.kind,
                 source="consolidation",
                 confidence=memory.confidence,
@@ -435,6 +477,8 @@ class MemoryConsolidator:
             archives,
             existing_items=existing_items,
             workspace_id=workspace_id,
+            scope_type=eff_scope_type,
+            scope_id=eff_scope_id,
         )
         logger.debug(
             "memory_consolidation.applied",
@@ -446,16 +490,31 @@ class MemoryConsolidator:
         )
 
         if applied and workspace_root is not None:
-            await self.project_workspace_memory(workspace_root)
+            await self.project_workspace_memory(
+                workspace_root,
+                scope_type=eff_scope_type,
+                scope_id=eff_scope_id,
+            )
         return applied
 
-    async def project_workspace_memory(self, workspace_root: Path) -> None:
+    async def project_workspace_memory(
+        self,
+        workspace_root: Path,
+        *,
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+    ) -> None:
         """Regenerate workspace memory projection files from structured memory."""
         search_items = getattr(self._memory, "search_items", None)
         if not callable(search_items):
             return
         try:
-            items = await cast(Any, search_items)("", limit=self._projection_limit)
+            items = await cast(Any, search_items)(
+                "",
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=self._projection_limit,
+            )
         except Exception as exc:
             logger.warning("memory_consolidation.project_search_failed", error=str(exc))
             return
@@ -475,12 +534,21 @@ class MemoryConsolidator:
             encoding="utf-8",
         )
 
-    async def _load_existing_items(self) -> list[Any]:
+    async def _load_existing_items(
+        self, *, scope_type: str, scope_id: str
+    ) -> list[Any]:
         search_items = getattr(self._memory, "search_items", None)
         if not callable(search_items):
             return []
         try:
-            return list(await cast(Any, search_items)("", limit=self._projection_limit))
+            return list(
+                await cast(Any, search_items)(
+                    "",
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    limit=self._projection_limit,
+                )
+            )
         except Exception as exc:
             logger.warning("memory_consolidation.load_existing_failed", error=str(exc))
             return []
@@ -491,6 +559,8 @@ class MemoryConsolidator:
         *,
         existing_items: list[Any],
         workspace_id: str | None,
+        scope_type: str,
+        scope_id: str,
     ) -> int:
         archive_item = getattr(self._memory, "archive_item", None)
         if not callable(archive_item) or not archives:
@@ -509,8 +579,8 @@ class MemoryConsolidator:
             if callable(append_candidate):
                 await cast(Any, append_candidate)(
                     candidate_id=candidate_id,
-                    scope_type="global",
-                    scope_id="__global__",
+                    scope_type=scope_type,
+                    scope_id=scope_id,
                     kind="archive",
                     title=f"Archive {archive.item_id}",
                     content=archive.reason,
@@ -527,7 +597,12 @@ class MemoryConsolidator:
         return applied
 
     async def _append_candidate(
-        self, memory: ExtractedMemory, *, workspace_id: str | None
+        self,
+        memory: ExtractedMemory,
+        *,
+        workspace_id: str | None,
+        scope_type: str,
+        scope_id: str,
     ) -> str:
         append_candidate = getattr(self._memory, "append_candidate", None)
         if not callable(append_candidate):
@@ -535,8 +610,8 @@ class MemoryConsolidator:
         candidate_id = f"cand_{uuid4().hex}"
         await cast(Any, append_candidate)(
             candidate_id=candidate_id,
-            scope_type="global",
-            scope_id="__global__",
+            scope_type=scope_type,
+            scope_id=scope_id,
             kind=memory.kind,
             title=memory.title,
             content=memory.content,
@@ -552,12 +627,16 @@ class MemoryConsolidator:
         if callable(mark_candidate_applied):
             await cast(Any, mark_candidate_applied)(candidate_id)
 
-    async def _has_duplicate(self, content: str) -> bool:
+    async def _has_duplicate(
+        self, content: str, *, scope_type: str, scope_id: str
+    ) -> bool:
         search_items = getattr(self._memory, "search_items", None)
         if not callable(search_items):
             return False
         try:
-            results = await cast(Any, search_items)(content, limit=10)
+            results = await cast(Any, search_items)(
+                content, scope_type=scope_type, scope_id=scope_id, limit=10
+            )
         except Exception:
             return False
         needle = _normalize_for_dedupe(content)

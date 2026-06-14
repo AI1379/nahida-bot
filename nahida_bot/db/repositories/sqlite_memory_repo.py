@@ -444,6 +444,27 @@ class SQLiteMemoryRepository:
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 
+    async def list_memory_items_all_scopes(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List recent active durable memory items across all scopes.
+
+        Used for embedding refresh so chat-scoped items are covered, not just
+        the legacy global scope.
+        """
+        rows = await self._engine.fetch_all(
+            "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
+            "confidence, importance, sensitivity, source, evidence_json, "
+            "metadata_json, created_at, updated_at, 0.0 AS score "
+            "FROM memory_items "
+            "WHERE status = 'active' "
+            "ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
     async def archive_memory_item(self, item_id: str) -> bool:
         """Mark a durable memory item as archived."""
         now_iso = _utc_now_iso()

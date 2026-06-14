@@ -810,7 +810,12 @@ class _RecordingMemoryStore:
 
 class _SearchableMemoryStore(_RecordingMemoryStore):
     async def search_items(
-        self, query: str = "", *, limit: int = 10
+        self,
+        query: str = "",
+        *,
+        limit: int = 10,
+        scope_type: str = "global",
+        scope_id: str = "__global__",
     ) -> list[MemoryItem]:
         return [
             MemoryItem(

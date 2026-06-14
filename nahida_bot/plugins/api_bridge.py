@@ -676,7 +676,50 @@ class RealBotAPI:
             return []
         search_items = getattr(self._memory, "search_items", None)
         if callable(search_items):
-            items = await cast(Any, search_items)(query, limit=limit)
+            from nahida_bot.agent.memory.scope import (
+                SCOPE_ID_GLOBAL,
+                SCOPE_TYPE_CHAT,
+                SCOPE_TYPE_GLOBAL,
+                resolve_scope_from_session,
+            )
+            from nahida_bot.core.context import current_session
+
+            session_ctx = current_session.get()
+            session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
+            scope_type, scope_id = resolve_scope_from_session(session_id)
+            items: list[Any] = []
+            if scope_type == SCOPE_TYPE_CHAT:
+                chat_items = list(
+                    await cast(Any, search_items)(
+                        query, scope_type=scope_type, scope_id=scope_id, limit=limit
+                    )
+                )
+                items = chat_items
+                remaining = limit - len(items)
+                if remaining > 0:
+                    global_items = list(
+                        await cast(Any, search_items)(
+                            query,
+                            scope_type=SCOPE_TYPE_GLOBAL,
+                            scope_id=SCOPE_ID_GLOBAL,
+                            limit=remaining,
+                        )
+                    )
+                    seen = {getattr(i, "item_id", "") for i in items}
+                    items.extend(
+                        gi
+                        for gi in global_items
+                        if getattr(gi, "item_id", "") not in seen
+                    )
+            else:
+                items = list(
+                    await cast(Any, search_items)(
+                        query,
+                        scope_type=SCOPE_TYPE_GLOBAL,
+                        scope_id=SCOPE_ID_GLOBAL,
+                        limit=limit,
+                    )
+                )
             return [
                 MemoryRef(
                     key=item.item_id,
@@ -709,13 +752,24 @@ class RealBotAPI:
         if self._memory is None:
             return
         metadata = dict(metadata or {})
+        scope_type_value = metadata.pop("scope_type", None)
+        scope_id_value = metadata.pop("scope_id", None)
+        if scope_type_value is None or scope_id_value is None:
+            from nahida_bot.agent.memory.scope import resolve_scope_from_session
+            from nahida_bot.core.context import current_session
+
+            session_ctx = current_session.get()
+            session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
+            base_scope_type, base_scope_id = resolve_scope_from_session(session_id)
+            scope_type_value = scope_type_value or base_scope_type
+            scope_id_value = scope_id_value or base_scope_id
         append_item = getattr(self._memory, "append_item", None)
         if callable(append_item):
             await cast(Any, append_item)(
                 title=key,
                 content=content,
-                scope_type=str(metadata.pop("scope_type", "global")),
-                scope_id=str(metadata.pop("scope_id", "__global__")),
+                scope_type=str(scope_type_value),
+                scope_id=str(scope_id_value),
                 kind=str(metadata.pop("kind", "fact")),
                 source=str(metadata.pop("source", "plugin")),
                 confidence=float(metadata.pop("confidence", 1.0)),

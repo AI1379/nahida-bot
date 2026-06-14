@@ -105,7 +105,12 @@ class _Memory:
         return item.item_id
 
     async def search_items(
-        self, query: str = "", *, limit: int = 10
+        self,
+        query: str = "",
+        *,
+        limit: int = 10,
+        scope_type: str = "global",
+        scope_id: str = "__global__",
     ) -> list[MemoryItem]:
         if self.items:
             return self.items[:limit]

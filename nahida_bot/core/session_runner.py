@@ -13,6 +13,12 @@ import structlog
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
+from nahida_bot.agent.memory.scope import (
+    SCOPE_ID_GLOBAL,
+    SCOPE_TYPE_CHAT,
+    SCOPE_TYPE_GLOBAL,
+    resolve_scope_from_session,
+)
 from nahida_bot.agent.storage.tokenization import build_fts_query
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.providers import ToolDefinition
@@ -494,7 +500,9 @@ class SessionRunner:
                     observed_context_chars=len(observed_context.content),
                     history_count=len(history),
                 )
-            relevant_memory = await self._load_relevant_memory(user_message)
+            relevant_memory = await self._load_relevant_memory(
+                user_message, session_id=session_id
+            )
             if relevant_memory:
                 history = [relevant_memory, *history]
                 logger.debug(
@@ -1216,7 +1224,9 @@ class SessionRunner:
             return observed_context.timestamp == current_message_context.timestamp
         return True
 
-    async def _load_relevant_memory(self, query: str) -> ContextMessage | None:
+    async def _load_relevant_memory(
+        self, query: str, *, session_id: str = ""
+    ) -> ContextMessage | None:
         """Load a small relevant durable-memory context block for the current turn."""
         if self._memory is None or not query.strip():
             return None
@@ -1248,16 +1258,42 @@ class SessionRunner:
             search_items = getattr(self._memory, "search_items", None)
         if not callable(search_items):
             return None
-        try:
+        scope_type, scope_id = resolve_scope_from_session(session_id)
+
+        async def _scoped_search(st: str, sid: str, lim: int) -> list[Any]:
             if use_hybrid or use_vector_only:
-                items = await cast(Any, search_items)(
-                    query,
-                    self._memory_embedding_provider,
-                    limit=limit,
-                    vector_index=self._memory_vector_index,
+                return list(
+                    await cast(Any, search_items)(
+                        query,
+                        self._memory_embedding_provider,
+                        scope_type=st,
+                        scope_id=sid,
+                        limit=lim,
+                        vector_index=self._memory_vector_index,
+                    )
                 )
+            return list(
+                await cast(Any, search_items)(
+                    query, scope_type=st, scope_id=sid, limit=lim
+                )
+            )
+
+        try:
+            if scope_type == SCOPE_TYPE_CHAT:
+                items = await _scoped_search(scope_type, scope_id, limit)
+                remaining = limit - len(items)
+                if remaining > 0:
+                    global_items = await _scoped_search(
+                        SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL, remaining
+                    )
+                    seen = {getattr(i, "item_id", "") for i in items}
+                    items.extend(
+                        gi
+                        for gi in global_items
+                        if getattr(gi, "item_id", "") not in seen
+                    )
             else:
-                items = await cast(Any, search_items)(query, limit=limit)
+                items = await _scoped_search(SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL, limit)
         except Exception as exc:
             logger.warning("session_runner.memory_search_failed", error=str(exc))
             return None
@@ -2481,6 +2517,7 @@ class SessionRunner:
         if resolved_root is None and workspace_id is not None:
             resolved_root = self._resolve_workspace_root(workspace_id)
         try:
+            scope_type, scope_id = resolve_scope_from_session(session_id)
             applied = await self._memory_consolidator.consolidate_turn(
                 session_id=session_id,
                 user_message=user_message,
@@ -2488,6 +2525,8 @@ class SessionRunner:
                 workspace_id=workspace_id,
                 workspace_root=resolved_root,
                 run_rules=self._memory_consolidation_rule_based_enabled,
+                scope_type=scope_type,
+                scope_id=scope_id,
             )
             if applied:
                 logger.debug(
@@ -2512,7 +2551,9 @@ class SessionRunner:
             or self._memory_embedding_provider is None
         ):
             return
-        embed_items = getattr(self._memory, "embed_items", None)
+        embed_items = getattr(self._memory, "embed_items_all_scopes", None) or getattr(
+            self._memory, "embed_items", None
+        )
         if not callable(embed_items):
             return
         try:

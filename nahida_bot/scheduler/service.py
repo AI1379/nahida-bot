@@ -15,6 +15,7 @@ import structlog
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
+from nahida_bot.agent.memory.scope import resolve_scope_from_session
 from nahida_bot.core.message_context import strip_envelope_prefix
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.plugins.base import MessageContext, OutboundMessage
@@ -618,7 +619,13 @@ class SchedulerService:
             )
             return 0
 
-        consolidator = MemoryConsolidator(memory, app_name=self._app_name)
+        dream_scope_type, dream_scope_id = resolve_scope_from_session(session_id)
+        consolidator = MemoryConsolidator(
+            memory,
+            app_name=self._app_name,
+            default_scope_type=dream_scope_type,
+            default_scope_id=dream_scope_id,
+        )
         applied = await consolidator.consolidate_turn(
             session_id=session_id,
             user_message=conversation,
@@ -655,7 +662,9 @@ class SchedulerService:
         provider = self._runner.memory_embedding_provider
         if memory is None or provider is None:
             return
-        embed_items = getattr(memory, "embed_items", None)
+        embed_items = getattr(memory, "embed_items_all_scopes", None) or getattr(
+            memory, "embed_items", None
+        )
         if not callable(embed_items):
             return
         try:

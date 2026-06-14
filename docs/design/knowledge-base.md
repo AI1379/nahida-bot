@@ -1,7 +1,15 @@
 # Knowledge Base 与统一上下文检索设计
 
-> 最近审计：2026-06-13
+> 最近审计：2026-06-14
 > 状态：现有 KB 已可用，但检索模型需要与 Memory 方向合并重构
+>
+> 本次修订要点（2026-06-14）：
+>
+> - 标题树是 **containment（`parent_of`）**，不是 alias；alias 只是稀疏的横向等价（见 §5.3）。
+> - **FTS + 结构 + 别名为默认检索主线**，向量是可重建的派生缓存（见 §6、§8.5、§11）。
+> - embedding **不锁死**：版本化 + 内容哈希去重 + 双写切换（见 §8.5）。
+> - 当前架构**未解决 §3.1 的触发问题**，触发需独立策略。
+> - 与 #7/#10/#12：**统一设计、分阶段实现**；scope/provenance 等共享 schema 契约（见 §5.1、§12）。
 > 相关文档：
 >
 > - [memory-system.md](memory-system.md)
@@ -94,6 +102,17 @@ Memory 的行为正好相反：每轮都会根据用户输入自动检索少量 
 - Memory 容易过度注入或被脏记忆污染；
 - KB 容易根本不触发；
 - 两者使用不同的预算、排序和上下文包装策略。
+
+需要强调：本节描述的是**触发**问题，而第 5–8 节的层级 Context Store、contextual
+retrieval、两阶段检索解决的是**召回质量**问题。两者正交——统一 pipeline 让 Memory
+和 KB 共用一条路径，但 pipeline 再好也不能让“模型没想到去搜”自动发生。因此触发
+不对称需要独立策略，候选方向：
+
+- 每轮做一次极小预算的 KB 自动召回（像 Memory 那样，但更严阈值、更小 top-k）；
+- 改进 PromptSupplement，把可用 collection / 主题 / 实体名暴露给模型，让它知道“有东西可搜”；
+- 一个轻量的“该不该查 KB”判别器，避免每轮无条件触发。
+
+这些应作为统一 pipeline 的**触发层**单独设计，并纳入 Phase 0 评测。
 
 ### 3.2 分块后丢失文档身份和标题路径
 
@@ -246,6 +265,19 @@ ContextNode
 索引 `retrieval_text`，命中后返回 `raw_text` 和 provenance。这样不会为了提高
 召回而污染原始内容，也不要求生成模型根据缺失信息猜测来源。
 
+两个必须在第一阶段就定死的 schema 约束（否则后续 issue 进来要反复迁移）：
+
+- **`scope_type` 枚举一次列全**：`global` / `chat` / `person` / `account` /
+  `collection` / `workspace`，即使 `person` / `account`（来自 #7）暂不实现。
+  scope 是 KB、Memory、身份系统三方的公共契约，后加枚举值意味着历史数据回填。
+- **`provenance` 必须双模**：既能表达文档来源（file / page / section / version），
+  也能表达对话来源（turn / session / person / account）。当前实现偏文档来源，
+  Memory 和 #7 进来后会不够用。
+
+注意：#7 的身份层（`persons` / `person_accounts` / `account_observations`）**不是
+ContextNode**，它是 scope 解析表，memory 节点通过 `scope_id = person_id` 引用它。
+不要把身份关系误建为 memory 节点。
+
 ### 5.2 不同来源的映射
 
 | 输入 | 建议层级 |
@@ -267,15 +299,31 @@ ContextNode
 第一阶段只需要少量稳定关系：
 
 ```text
-parent_of
+parent_of        # 标题/章节的纵向包含，文档树的主导关系
 derived_from
-mentions
+mentions         # 稀疏的横向关联（实体共现）
+alias_of         # 同一实体的不同称呼（阿贝多 = 黄金莱茵多特）
 supersedes
 adjacent_to
 ```
 
-这些关系多数可以从标题结构、文档顺序、metadata 和 Memory provenance 直接
-产生，不需要完整 GraphRAG 的实体抽取、community detection 和社区摘要。
+要区分两类**不能混用**的关系：
+
+- **Containment（`parent_of`）**：纵向包含/导航。“角色故事 5”不是“阿贝多”的别名，
+  而是嵌套在它之下的一节。这是文档树和 memory 树的**主导**关系，占绝大多数。
+- **Equivalence（`alias_of` / 部分 `mentions`）**：横向等价或关联，**稀疏**，只用来
+  解决“同物异名”导致词面召回失败，不能概括标题层级。
+
+把多层标题塞进 alias 框架是类型错误：`parent_of` 承担结构，`alias_of` 只补在叶子
+和实体上。
+
+这些关系多数可以从标题结构、文档顺序、metadata 和 Memory provenance **确定性产出**，
+不需要完整 GraphRAG 的 LLM 实体抽取、community detection 和社区摘要。这正是与
+GraphRAG 的本质区别——后者从无结构文本用 LLM **造**结构，前者只是**捡起已有的结构**
+（目录名、标题、字段、provenance）。守住两条红线即可避免滑向重 GraphRAG：
+
+1. 索引时不调用 LLM 产出图结构；实体/别名来自源数据的结构或人工维护。
+2. 去掉图，FTS 必须仍能工作——图是召回增强，不是承重墙。
 
 ## 6. 渐进式检索策略
 
@@ -291,6 +339,18 @@ adjacent_to
 | 跨文档关系问题很多 | 可选实体索引或轻量图谱 |
 
 阈值应基于 token 量、延迟预算和评测结果，而不是固定文件数量。
+
+更根本的分层按**检索手段的成本和锁死风险**排，而不是按语料规模：
+
+| 层 | 内容 | 模型绑死风险 | 默认开关 |
+|---|---|---|---|
+| L0 | 完整标题路径 + 实体/别名 + FTS | 无 | **永远开** |
+| L1 | dense vector（按 §8.5 版本化、内容哈希去重、可切换后端） | 低（派生缓存） | 评测证明 L0 漏召回才开 |
+| L2 | cross-encoder reranker | 无（对任意召回源重排） | 收益够大才开 |
+
+BM25 / FTS 本身就是那个廉价的第一阶段过滤器，已经解决了“不让 LLM 扫全文”的成本
+问题；dense vector 只在 L0 漏掉转述类查询（用户用了文档里没有的同义表达）时补位。
+**默认主线是 FTS + 结构 + 别名，向量是可选补盲区，不是检索引擎本身。**
 
 ### 6.1 小知识库
 
@@ -408,6 +468,25 @@ Late Chunking 使用长上下文 embedding 模型先编码完整文档，再在 
 
 不要只存叶子 chunk，也不要只存摘要。摘要负责导航，原始 passage 负责证据。
 
+### 8.5 Embedding 是可重建的派生缓存，不是真相
+
+为避免 embedding 模型绑死（换模型 = 全量重建），核心原则是：
+
+> **文本是唯一真相（source of truth）；向量是从 `retrieval_text` 派生的、可随时重建的缓存。**
+
+落地做法：
+
+- 向量表单独存 `(node_id, model_id, model_version, content_hash, vector)`，并明确
+  标注“此表可由 node 表完整重建”。换模型只动这张表，node 表不受影响。
+- **按 `content_hash` 去重**：内容没变的 chunk 复用既有向量，增量更新和模型切换都
+  不会全量重算（顺带修复 Phase 2 列出的“重启后全量重复计算”问题）。
+- **切换用双写**：新模型写入新 `model_version`，旧表继续服务读；后台按 hash 批量重算；
+  评测通过后读切到新版本，旧表回收。全程对线上只读，切换是一个布尔位。
+- **后端做成 adapter**：默认 SQLite + sqlite-vec，未来换专用向量库是 adapter 替换，
+  不触碰核心 schema。
+
+因此“embedding 不可用就退化到 FTS”不是口号，而是自然结果——向量从来不是核心数据。
+
 ## 9. 层级 Memory 与 Issue #12
 
 Issue #12 的核心需求包括：
@@ -501,54 +580,89 @@ Memory
 - external vector database。
 
 基础核心不能依赖这些能力才能正常工作。默认 SQLite + FTS 必须保持可用，
-embedding 不可用时应退化而不是失败。
+embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，embedding 表是派生缓存，
+模型绑死风险用版本化 + 内容哈希去重 + 双写切换化解，核心数据流不经它；对于图，
+守住 §5.3 的两条红线（索引时不调用 LLM、去掉图 FTS 仍能工作）。
 
 ## 12. 实施路线
 
+> 范围说明：#10（KB）核心已落地（plugin / FTS / hybrid / document-import / WebAPI），
+> 剩下的是检索质量重构；#12（Memory 提炼 + scoping）是地基；#7（person/account 身份）
+> 消费 #12 的 scope 模型。三者**统一设计、分阶段实现**（共享 §5.1 的 scope/provenance
+> 契约与统一检索底座），但 #7 因安全边界（群聊不注入 person memory、LLM 不参与身份
+> 解析）单独成轨，不与 KB 检索重构混入同一交付。
+
+### 地基：记忆作用域隔离（#12 scoping）
+
+> 详见 [memory-scoping.md](memory-scoping.md)。这是 KB 与 person scope 的公共地基——
+> store 层早已 scope-ready，本次落地的是应用层 chat/global 隔离。
+> 状态：**Phase 0 / 1 / 2 / min-3 已完成并验证（2026-06-14）**。`scope_type` 目前是
+> 开放字符串，active 取值 `global` / `chat`；完整枚举（`person` / `account` /
+> `collection` / `workspace`）等身份系统与 KB 落地时再闭合。
+
+- [x] Phase 0：新建 `nahida_bot/agent/memory/scope.py`（常量 + `resolve_scope_from_session` + `scope_for_kind`；typed→chat、legacy/空/非法→global、绝不抛异常）
+- [x] Phase 1 写入：consolidator 构造默认 scope + 每调用覆盖 + per-kind 写入（preference/fact/task→chat，decision/procedure/warning/summary→global）；`_load_existing_items` / `_has_duplicate` / `project_workspace_memory` 按 scope 过滤（修复跨 chat 误判重/误归档）
+- [x] Phase 1 调用点：`session_runner._consolidate_memory_after_turn`、`scheduler._dream_session`、`api_bridge.memory_store` 接 scope
+- [x] Phase 2 读路径：`_load_relevant_memory(query, *, session_id="")` 与 `memory_search` 做 chat→global cascade（满额优先 chat、剩余补 global、item_id 去重）；legacy 字节级不变
+- [x] Phase 3（最小）：`list_memory_items_all_scopes` + `embed_items_all_scopes`，两个 embedding 刷新调用点切全 scope
+- [x] 验证：`tests/test_memory_scope.py`（解析单测 + 两 chat 隔离 + per-kind + dedup + cascade + embedding）；`uv run pytest` / `ruff` / `pyright` 全绿
+- [ ] Phase 4：存量 global 数据迁移脚本（inspect/apply + 自动备份），把本该 chat 的历史全局数据归位
+- [ ] Phase 5：全局审计收尾、`memory-system.md` §9.0 状态更新、grep 确认无残留硬编码
+
 ### Phase 0：建立召回评测
 
-- 为 Teyvat、短文档和 Memory 各建立小型 query/gold 数据集。
-- 记录 recall@k、MRR、命中来源、最终注入字符数和查询延迟。
-- 覆盖实体名、别名、章节路径、精确片段、主题问题和跨片段问题。
-- 在没有评测前，不继续凭主观感觉调整 chunk size 或 embedding 模型。
+- [ ] 为 Teyvat、短文档和 Memory 各建立小型 query/gold 数据集。
+- [ ] 记录 recall@k、MRR、命中来源、最终注入字符数和查询延迟。
+- [ ] 覆盖实体名、别名、章节路径、精确片段、主题问题和跨片段问题。
+- [ ] 在没有评测前，不继续凭主观感觉调整 chunk size 或 embedding 模型。
 
 ### Phase 1：修复现有文档索引
 
-- 长段落继续按句子/token window 拆分。
-- Markdown parser 保留完整 heading path。
-- 文件名、source id、路径和别名进入 `retrieval_text`。
-- `raw_text` 与 `retrieval_text` 分离。
-- 搜索结果返回稳定 provenance。
-- 增加相邻 chunk 和父级上下文展开。
+- [ ] 长段落继续按句子/token window 拆分。
+- [ ] Markdown parser 保留完整 heading path。
+- [ ] 文件名、source id、路径和别名进入 `retrieval_text`。
+- [ ] `raw_text` 与 `retrieval_text` 分离。
+- [ ] 搜索结果返回稳定 provenance。
+- [ ] 增加相邻 chunk 和父级上下文展开。
 
 该阶段不要求迁移到全新表结构，可以先扩展现有 DocumentStore metadata 和索引。
+**但 `scope_type` 枚举和 `provenance` 的双模结构必须在 Phase 1 就按 §5.1 定死**——
+它们是 KB / Memory / #7 三方的公共契约，Phase 3 引入层级时不能回头改这两个字段，
+否则触发历史数据回填。可以理解为：Phase 1 把目标 schema 的 scope/provenance 子集
+先落到位（`parent_id` / `root_id` / `path` 可暂留空），层级化在 Phase 3 填充。
+
+> 注：`scope_type` 的 `global`/`chat` 已在记忆地基（上方小节）中生效；KB 侧文档节点
+> 尚未携带 scope/provenance，仍是扁平 chunk。
 
 ### Phase 2：统一检索服务
 
-- 抽出 Memory 与 KB 共用的 retrieval request/result 类型。
-- 统一 FTS/vector/hybrid、RRF、threshold 和 context packing。
-- KB 工具和 Memory 自动注入调用相同服务。
-- 保留不同 scope、预算和触发策略。
-- 修复 embedding 增量维护，避免进程重启后全量重复计算。
+- [ ] 抽出 Memory 与 KB 共用的 retrieval request/result 类型。
+- [ ] 统一 FTS/vector/hybrid、RRF、threshold 和 context packing。
+- [ ] KB 工具和 Memory 自动注入调用相同服务。
+- [ ] 保留不同 scope、预算和触发策略。
+- [ ] 修复 embedding 增量维护，避免进程重启后全量重复计算。
+
+> 注：Memory 侧的 FTS/vector/hybrid + RRF + scope cascade 已就位（见上方"地基"小节）；
+> 本阶段重点是把它与 KB 的检索抽成同一服务。
 
 ### Phase 3：层级 Context Store
 
-- 引入 parent/root/path/node_type。
-- 支持 document/section/passage 和 episode/memory/evidence。
-- 实现父级定位后子树检索。
-- 支持按 node id 继续展开父节点、子节点和邻居。
-- 为现有 KB 和 Memory 提供可回滚迁移。
+- [ ] 引入 parent/root/path/node_type。
+- [ ] 支持 document/section/passage 和 episode/memory/evidence。
+- [ ] 实现父级定位后子树检索。
+- [ ] 支持按 node id 继续展开父节点、子节点和邻居。
+- [ ] 为现有 KB 和 Memory 提供可回滚迁移。
 
 ### Phase 4：按评测增加高级能力
 
 按实际收益选择，而不是全部实现：
 
-- reranker；
-- 可选 LLM contextualizer；
-- Late Chunking adapter；
-- document/section summaries；
-- 轻量 entity links；
-- 大规模语料外部索引。
+- [ ] reranker；
+- [ ] 可选 LLM contextualizer；
+- [ ] Late Chunking adapter；
+- [ ] document/section summaries；
+- [ ] 轻量 entity links；
+- [ ] 大规模语料外部索引。
 
 ## 13. 暂不实施
 
