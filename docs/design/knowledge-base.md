@@ -609,14 +609,28 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 - ⏭️ **Phase 4（存量 global 数据迁移）：已决定跳过（2026-06-14）**——当前记忆量小，存量串线可接受，迁移成本 > 收益。注意：读取 cascade 永远包含 global，所以**历史放错位置的个人记忆（若有）仍会串线**，直到将来数据积累后启用迁移。脚本设计保留在 [memory-scoping.md](memory-scoping.md) §5 Phase 4，随时可启用。
 - [x] Phase 5：全局审计收尾——grep 确认无 buggy 硬编码（sqlite.py 默认参数已改用 scope.py 常量；sqlite_memory_repo.py 保留 2 处字面量以维持 db 层独立于 agent.memory；api_bridge 的 `"__global__"` 是 legacy turn-storage fallback，与 durable-item scope 无关）；`memory-system.md` §3.1/§9.0 已更新；补 dreaming 跨 session 不串归档的 e2e 测试；pyright/ruff/pytest 全绿
 
-### Phase 0：建立召回评测
+### Phase 0：轻量召回回归评测
 
-- [ ] 为 Teyvat、短文档和 Memory 各建立小型 query/gold 数据集。
-- [ ] 记录 recall@k、MRR、命中来源、最终注入字符数和查询延迟。
+- [x] 主线代码只保留开发脚本，不把评测语料、gold 数据和运行结果纳入产品运行时。
+- [x] 本地测试集合放独立目录（当前约定 `kb-eval-data/`），通过 `.git/info/exclude`
+  排除；不要把大语料或版权敏感数据写进 `.gitignore` 或仓库历史。
+- [x] 为 Teyvat 建立本地 manifest 与 seed queries；Teyvat 全量导出只作为
+  本地手动评测语料，主线脚本通过 manifest 引用原始路径。
+- [ ] 为短文档和 Memory 建立小型 query/gold 数据集。
+- [x] 记录 doc-level / heading-level recall@k、MRR 和命中来源。
+- [ ] 记录最终注入字符数和查询延迟。
 - [ ] 覆盖实体名、别名、章节路径、精确片段、主题问题和跨片段问题。
-- [ ] 在没有评测前，不继续凭主观感觉调整 chunk size 或 embedding 模型。
+- [ ] 在没有轻量回归样例前，不继续凭主观感觉调整 chunk size 或 embedding 模型。
 
-### Phase 1：修复现有文档索引
+当前本地约定：
+
+- `scripts/prepare_kb_eval_teyvat.py`：从本地 Genshin Impact Wiki Markdown 导出目录
+  生成本地 manifest 和 seed queries；导出路径通过 `--source` 或
+  `KB_EVAL_TEYVAT_SOURCE` 指定，不写入仓库。
+- `scripts/eval_kb_retrieval.py`：按 manifest 临时导入当前 KB，实现 doc-level 与
+  heading-level recall/MRR smoke eval。
+
+### Phase 1：重建 KB 文档索引
 
 - [ ] 长段落继续按句子/token window 拆分。
 - [ ] Markdown parser 保留完整 heading path。
@@ -625,7 +639,11 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 - [ ] 搜索结果返回稳定 provenance。
 - [ ] 增加相邻 chunk 和父级上下文展开。
 
-该阶段不要求迁移到全新表结构，可以先扩展现有 DocumentStore metadata 和索引。
+当前 KB 仍处于早期可重建状态，collection 数据可以作为派生索引丢弃后重导入。
+因此 Phase 1 不必为了兼容旧 KB 表结构而牺牲目标 schema；可以直接引入新的
+KB 文档节点表/索引表，或替换现有 `DocumentStore` 的 KB 用法。唯一要求是导入
+路径可重复、删除旧 collection 有明确工具或自动迁移策略。
+
 **但 `scope_type` 枚举和 `provenance` 的双模结构必须在 Phase 1 就按 §5.1 定死**——
 它们是 KB / Memory / #7 三方的公共契约，Phase 3 引入层级时不能回头改这两个字段，
 否则触发历史数据回填。可以理解为：Phase 1 把目标 schema 的 scope/provenance 子集
@@ -633,6 +651,12 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 
 > 注：`scope_type` 的 `global`/`chat` 已在记忆地基（上方小节）中生效；KB 侧文档节点
 > 尚未携带 scope/provenance，仍是扁平 chunk。
+
+Memory 不能按 KB 的方式直接丢弃。后续统一 Context Store 时，`memory_items` /
+`memory_candidates` / `memory_embeddings` 需要保留兼容读或提供一次性迁移：
+durable memory 回填为 `source_type=conversation|human|tool` 的 ContextNode，保留
+原 `item_id`、scope、kind、evidence、confidence 和 timestamps；embedding 仍视为
+可重建缓存，迁移时可丢弃后按新 `retrieval_text` 重算。
 
 ### Phase 2：统一检索服务
 
