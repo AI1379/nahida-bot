@@ -1,7 +1,7 @@
 # 记忆作用域隔离设计
 
 > 记录时间：2026-05-24
-> 状态：规划中
+> 状态：应用层 chat/global 隔离已实现；生产存量 global 数据需要先审计再迁移
 > 相关文档：
 >
 > - [memory-system.md](memory-system.md#9-配置建议) — 记忆系统总体设计，§9.0 审计中标注了 scope 缺口
@@ -294,16 +294,32 @@ else:
 
 **迁移策略**：
 
-1. 查询所有 `scope_type="global"`、`status="active"` 的 items。
-2. 对每个 item，从 `evidence_json` / `metadata_json` 中提取 `session_id`。
-3. 如果 `session_id` 可解析为 typed ChatAddress，且 `kind` 属于 `CHAT_SCOPED_KINDS`（preference / fact / task），则迁移到 chat scope。
+1. 查询所有 `scope_type="global"`、`status="active"` 的 durable `memory_items`。
+2. 对每个 item，只从结构化 `evidence_json` / `metadata_json` 中提取 scope 线索：
+   `session_id` / `source_session_id` / `created_from_session_id` / `requester_session_id`、
+   `chat_address` / `source_chat_address` / `created_from_chat_address` /
+   `target_chat_address` / `from_chat_address`，以及
+   `message_context(channel, chat_type, chat_id)`。
+3. 如果线索可解析为 typed ChatAddress，且 `kind` 属于 `CHAT_SCOPED_KINDS`
+   （preference / fact / task），则生成迁移建议：`global -> chat:{chat_key}`。
 4. `kind` 属于 `GLOBAL_SCOPED_KINDS`（decision / procedure / warning / summary）的保留在 global。
-5. 无法推断 `session_id` 或 legacy session 的 items 保留在 global（安全默认）。
-6. `inspect` 先只读分析，输出迁移计划。`apply` 需显式执行，先自动备份 DB。
+5. 无法推断 typed chat、只有 legacy session（如 `milky:10001`）、或出现多个冲突 chat scope
+   的 items 不自动迁移；冲突项标记 `manual_review`。
+6. `inspect` 只读分析，输出 JSON 迁移计划。`apply` 默认只执行 plan 中被人工标记
+   `approval="approved"` 的条目；也可显式 `--apply-all-safe` 应用所有自动判定为
+   `migrate` 的条目。
+7. `apply` 需显式 `--confirm`，并在修改 SQLite 前自动备份 DB。
+
+迁移脚本默认只修改 `memory_items` 和 `memory_item_fts`，因为这是运行时长期记忆召回的
+权威路径。`memory_candidates` 是审计历史，先不随 durable item 自动改 scope；如果后续
+review UI 强依赖 candidate scope，再单独做候选记录迁移。
 
 **迁移后**：
-- 调用 `embed_items_all_scopes()` 刷新 embedding。
+- embedding 本身 scope 无关，`item_id` 不变时 `memory_embeddings` / vector map 不需要
+  立即重算；但若后续统一 Context Store 改 `retrieval_text`，应丢弃旧 embedding 并重建。
 - 验证 chat-scoped items 不出现在 global 搜索中。
+- 在生产库先跑 `apply --dry-run`，再用少量 approved 条目做试迁移，确认读取 cascade 正常后
+  再扩大范围。
 
 **测试**：
 - 创建 global scope 的 preference item + 已知 session_id → inspect 建议迁移 → apply 执行迁移
@@ -312,9 +328,9 @@ else:
 - 迁移后搜索结果正确隔离
 
 **验收标准**：
-- [ ] `inspect` 输出完整迁移计划，标注每条 item 的建议动作
-- [ ] `apply --dry-run` 不修改数据库
-- [ ] `apply` 前自动备份 SQLite
+- [x] `inspect` 输出完整迁移计划，标注每条 item 的建议动作
+- [x] `apply --dry-run` 不修改数据库
+- [x] `apply` 前自动备份 SQLite
 - [ ] 迁移后 chat-scoped items 仅出现在对应 chat 的搜索中
 - [ ] global 共享知识保持全局可见
 

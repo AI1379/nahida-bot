@@ -506,7 +506,7 @@ Needs review:
 - consolidation 或 dreaming 写入长期记忆后可自动刷新 `memory_embeddings`。
 - `sqlite-vec` 仍为可选后端；未安装或未配置维度时回退到 SQLite JSON embedding 扫描。
 - scheduler 后台 dreaming 已按 `memory_dream_last_turn_id` 做增量处理。
-- durable memory 已按 session 的 typed ChatAddress 自动隔离到 `chat` scope（`preference`/`fact`/`task` → chat，共享 kind 仍写 `global`）；读取走 chat→global cascade；embedding 跨 scope 刷新。详见 [memory-scoping.md](memory-scoping.md)。**存量 global 数据迁移已决定跳过**（当前数据量小）。
+- durable memory 已按 session 的 typed ChatAddress 自动隔离到 `chat` scope（`preference`/`fact`/`task` → chat，共享 kind 仍写 `global`）；读取走 chat→global cascade；embedding 跨 scope 刷新。详见 [memory-scoping.md](memory-scoping.md)。存量 global 数据不能在生产环境跳过：需要先用 `scripts/migrate_memory_scope.py inspect` 生成计划，人工审查/备份后再按 approved 条目迁移。
 
 仍未完成：
 
