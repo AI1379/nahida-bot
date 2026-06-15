@@ -289,6 +289,7 @@ class Application:
                 "use_previous_response_id",
                 "stream_responses",
                 "reasoning_effort",
+                "context_1m",
                 "built_in_tools",
             ):
                 value = getattr(cfg, extra_field, None)

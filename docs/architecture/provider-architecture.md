@@ -856,6 +856,14 @@ class AnthropicProvider(ChatProvider):
         ...
 ```
 
+**推理控制与 1M 上下文（Anthropic 专属）**：
+
+`AnthropicProvider` 的推理深度与 DeepSeek/OpenAI Responses 不同，使用 Claude 原生形态：
+
+- `reasoning_effort`（配置）→ 解析后注入请求体的 `output_config: {effort: ...}`，而非顶层参数。可被运行时 `/reasoning` 覆盖；默认 `null` 时不发送，保留 Claude 模型默认（`high`）。
+- `context_1m`（配置，默认 `false`）→ 启用时发送 `anthropic-beta: context-1m-2025-08-07` 头解锁 1M 上下文窗口 beta（付费 beta，仅 `claude-sonnet-4.6`/`claude-opus-4.6` 等支持）。
+- thinking 块的回放已由 `_serialize_assistant_message` 处理（无需额外请求参数；现代 Claude 默认使用 adaptive thinking）。
+
 **Gemini Provider（Phase 3，使用 OpenAI 兼容端点起步）**：
 
 ```python

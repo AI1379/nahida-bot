@@ -211,7 +211,7 @@ class ProviderSlot:
 | `DeepSeekProvider` | [deepseek.py:13](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/deepseek.py#L13) | 继承 OpenAI + `thinking_enabled`, `reasoning_effort` |
 | `GLMProvider` | [glm.py:12](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/glm.py#L12) | 继承 OpenAI，无额外字段 |
 | `GroqProvider` | [groq.py:13](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/groq.py#L13) | 继承 OpenAI + `reasoning_key="reasoning"` |
-| `AnthropicProvider` | [anthropic.py:49](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/anthropic.py#L49) | `base_url`, `api_key`, `model`, `max_tokens`, `stream_responses` |
+| `AnthropicProvider` | [anthropic.py:49](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/anthropic.py#L49) | `base_url`, `api_key`, `model`, `max_tokens`, `stream_responses`, `reasoning_effort`, `context_1m` |
 | `MinimaxProvider` | [minimax.py:17](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/minimax.py#L17) | 继承 Anthropic，无额外字段 |
 | `OpenAIResponsesProvider` | [openai_responses.py:54](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/agent/providers/openai_responses.py#L54) | `store_responses`, `use_previous_response_id`, `stream_responses`, `reasoning_effort`, `max_output_tokens`, `built_in_tools` |
 

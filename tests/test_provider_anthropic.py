@@ -10,6 +10,11 @@ import pytest
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.providers.anthropic import AnthropicProvider
+from nahida_bot.core.runtime_settings import (
+    ReasoningRuntimeSettings,
+    RuntimeSettings,
+    current_runtime_settings,
+)
 
 
 def _build_transport(handler):  # noqa: ANN001
@@ -471,6 +476,119 @@ async def test_anthropic_serializes_thinking_replay(
     # Third block should be text
     assert blocks[2]["type"] == "text"
     assert blocks[2]["text"] == "The answer is 42."
+
+
+# ── Reasoning effort + 1M context ──
+
+
+def _anthropic_text_response() -> dict[str, Any]:
+    return {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "done"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+
+
+@pytest.mark.asyncio
+async def test_anthropic_effort_from_config_emits_output_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Config reasoning_effort is emitted as Claude-native output_config.effort."""
+    captured_payload: dict[str, Any] = {}
+    captured_headers: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.content.decode("utf-8")))
+        captured_headers.update(request.headers)
+        return httpx.Response(200, json=_anthropic_text_response())
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.reasoning_effort = "low"
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert captured_payload["output_config"] == {"effort": "low"}
+    # effort alone should not trigger the beta header
+    assert "anthropic-beta" not in captured_headers
+
+
+@pytest.mark.asyncio
+async def test_anthropic_runtime_effort_overrides_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime /reasoning override takes precedence over the config value."""
+    captured_payload: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json=_anthropic_text_response())
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.reasoning_effort = "low"
+
+    token = current_runtime_settings.set(
+        RuntimeSettings(reasoning=ReasoningRuntimeSettings(effort="max"))
+    )
+    try:
+        await provider.chat(
+            messages=[ContextMessage(role="user", source="u", content="hi")]
+        )
+    finally:
+        current_runtime_settings.reset(token)
+
+    assert captured_payload["output_config"] == {"effort": "max"}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_context_1m_sends_beta_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """context_1m=True sends the context-1m anthropic-beta header."""
+    captured_payload: dict[str, Any] = {}
+    captured_headers: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.content.decode("utf-8")))
+        captured_headers.update(request.headers)
+        return httpx.Response(200, json=_anthropic_text_response())
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.context_1m = True
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert captured_headers["anthropic-beta"] == "context-1m-2025-08-07"
+    # 1M context alone should not inject output_config
+    assert "output_config" not in captured_payload
+
+
+@pytest.mark.asyncio
+async def test_anthropic_default_sends_no_beta_and_no_output_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default provider sends no beta header and no output_config (Minimax-safe)."""
+    captured_payload: dict[str, Any] = {}
+    captured_headers: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.content.decode("utf-8")))
+        captured_headers.update(request.headers)
+        return httpx.Response(200, json=_anthropic_text_response())
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert "anthropic-beta" not in captured_headers
+    assert "output_config" not in captured_payload
+    assert captured_headers["x-api-key"] == "test-key"
+    assert captured_headers["anthropic-version"] == "2023-06-01"
 
 
 # ── format_tools ──

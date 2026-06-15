@@ -31,6 +31,7 @@ from nahida_bot.agent.providers.errors import (
 )
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
+from nahida_bot.core.runtime_settings import current_runtime_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -62,6 +63,13 @@ class AnthropicProvider(ChatProvider):
     api_family: str = "anthropic-messages"
     max_tokens: int = 16000
     stream_responses: bool = False
+    # Reasoning effort — Claude-native ``output_config.effort``. Resolved at
+    # request time: runtime override (``/reasoning`` command) takes precedence
+    # over this config value; ``None`` lets Claude use its model default.
+    reasoning_effort: str | None = None
+    # Enable the 1M context window beta (sends the ``context-1m-2025-08-07``
+    # ``anthropic-beta`` header). Paid beta — opt-in, off by default.
+    context_1m: bool = False
     tokenizer_impl: Tokenizer | None = None
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
@@ -299,6 +307,16 @@ class AnthropicProvider(ChatProvider):
         if self.stream_responses:
             payload["stream"] = True
 
+        # Reasoning effort — runtime override (``/reasoning`` command) takes
+        # precedence over config. Claude uses ``output_config.effort`` rather
+        # than a top-level ``reasoning_effort`` param. Only emitted when an
+        # effort is resolved, so Claude's model default ("high") is preserved
+        # when unset.
+        runtime_effort = current_runtime_settings.get().reasoning.effort
+        reasoning_effort = runtime_effort or self.reasoning_effort
+        if reasoning_effort is not None:
+            payload["output_config"] = {"effort": reasoning_effort}
+
         timeout = timeout_seconds or 60
         endpoint = f"{self.base_url.rstrip('/')}/v1/messages"
         headers = {
@@ -306,6 +324,14 @@ class AnthropicProvider(ChatProvider):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
+        # Beta features are opt-in. The 1M context window requires the
+        # ``context-1m-2025-08-07`` beta header (paid beta on Claude). Build a
+        # list so additional betas can be appended later.
+        beta_features: list[str] = []
+        if self.context_1m:
+            beta_features.append("context-1m-2025-08-07")
+        if beta_features:
+            headers["anthropic-beta"] = ",".join(beta_features)
         if self.stream_responses:
             headers["Accept"] = "text/event-stream"
 
@@ -321,6 +347,8 @@ class AnthropicProvider(ChatProvider):
                 has_system=system_prompt is not None,
                 tool_count=len(tools or []),
                 stream=self.stream_responses,
+                reasoning_effort=reasoning_effort,
+                context_1m=self.context_1m,
                 timeout_seconds=timeout,
             )
             client = self._ensure_client()
