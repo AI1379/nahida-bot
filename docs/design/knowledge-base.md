@@ -597,7 +597,7 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 > 详见 [memory-scoping.md](memory-scoping.md)。这是 KB 与 person scope 的公共地基——
 > store 层早已 scope-ready，本次落地的是应用层 chat/global 隔离。
 > 状态：**Phase 0 / 1 / 2 / min-3 / 5 已完成并验证（2026-06-14）**；Phase 4（存量
-> 迁移）本地小库曾跳过，但生产服务器必须先审计再迁移。`scope_type` 目前是开放字符串，active 取值 `global` / `chat`；
+> 迁移）工具已完成，生产服务器必须先审计再迁移。`scope_type` 目前是开放字符串，active 取值 `global` / `chat`；
 > 完整枚举（`person` / `account` / `collection` / `workspace`）等身份系统与 KB 落地时再闭合。
 
 - [x] Phase 0：新建 `nahida_bot/agent/memory/scope.py`（常量 + `resolve_scope_from_session` + `scope_for_kind`；typed→chat、legacy/空/非法→global、绝不抛异常）
@@ -606,7 +606,8 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 - [x] Phase 2 读路径：`_load_relevant_memory(query, *, session_id="")` 与 `memory_search` 做 chat→global cascade（满额优先 chat、剩余补 global、item_id 去重）；legacy 字节级不变
 - [x] Phase 3（最小）：`list_memory_items_all_scopes` + `embed_items_all_scopes`，两个 embedding 刷新调用点切全 scope
 - [x] 验证：`tests/test_memory_scope.py`（解析单测 + 两 chat 隔离 + per-kind + dedup + cascade + embedding）；`uv run pytest` / `ruff` / `pyright` 全绿
-- [ ] **Phase 4（存量 global 数据迁移）：生产需审计迁移**——本地小库可以接受跳过，但服务器上的历史 durable memory 不能直接丢弃，也不能长期全部留在 global。迁移必须先用 `scripts/migrate_memory_scope.py inspect` 基于 `evidence_json` / `metadata_json` 中的 typed session、chat_address 或 message_context 生成计划；只有 `preference` / `fact` / `task` 且能唯一推断 chat scope 的条目可迁移。legacy session 或冲突证据保留 global / manual review。详见 [memory-scoping.md](memory-scoping.md) §5 Phase 4。
+- [x] Phase 4a（存量 global 数据迁移工具）：`scripts/migrate_memory_scope.py inspect/apply` 已完成；基于 `evidence_json` / `metadata_json` 中的 typed session、chat_address 或 message_context 生成计划；只有 `preference` / `fact` / `task` 且能唯一推断 chat scope 的条目可迁移；legacy session 或冲突证据保留 global / manual review；`apply` 支持 approved-only、`--apply-all-safe`、`--dry-run`、自动备份和迁移日志。
+- [ ] Phase 4b（生产执行）：服务器上的历史 durable memory 不能直接丢弃，也不能长期全部留在 global；需要在生产库上执行 inspect → 人工审查 → dry-run → 备份 apply → 读路径验证。详见 [memory-scoping.md](memory-scoping.md) §5 Phase 4。
 - [x] Phase 5：全局审计收尾——grep 确认无 buggy 硬编码（sqlite.py 默认参数已改用 scope.py 常量；sqlite_memory_repo.py 保留 2 处字面量以维持 db 层独立于 agent.memory；api_bridge 的 `"__global__"` 是 legacy turn-storage fallback，与 durable-item scope 无关）；`memory-system.md` §3.1/§9.0 已更新；补 dreaming 跨 session 不串归档的 e2e 测试；pyright/ruff/pytest 全绿
 
 ### Phase 0：轻量召回回归评测
@@ -620,7 +621,7 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 - [x] 记录 doc-level / heading-level recall@k、MRR 和命中来源。
 - [ ] 记录最终注入字符数和查询延迟。
 - [ ] 覆盖实体名、别名、章节路径、精确片段、主题问题和跨片段问题。
-- [ ] 在没有轻量回归样例前，不继续凭主观感觉调整 chunk size 或 embedding 模型。
+- [x] 已建立最低限度 Teyvat smoke eval；后续不再在没有评测样例的情况下调整 chunk size 或 embedding 模型。
 
 当前本地约定：
 
