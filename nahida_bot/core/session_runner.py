@@ -115,8 +115,15 @@ class ActiveRunTracker:
         run = self._runs.get(session_id)
         if run is None:
             return False
+        # Signal a graceful stop only. We must NOT cancel the task here: the
+        # agent loop checks ``stop_event`` at each step boundary and yields a
+        # final ``done`` event carrying whatever assistant/tool messages were
+        # produced so far, so SessionRunner can persist the partial turn.
+        # Cancelling the task would inject CancelledError mid-await, skipping
+        # that persistence path and dropping the user message + partial reply
+        # from history. Blocking points are bounded by provider/tool timeouts,
+        # so the loop always reaches a stop check eventually.
         run.stop_event.set()
-        run.task.cancel()
         return True
 
     @property

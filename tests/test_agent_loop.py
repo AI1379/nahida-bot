@@ -927,3 +927,72 @@ async def test_agent_loop_no_metrics_when_collector_not_provided() -> None:
 
     assert result.final_response == "hello"
     assert result.trace_id is None
+
+
+# ---------------------------------------------------------------------------
+# Graceful stop via stop_event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_stop_event_preserves_partial_messages() -> None:
+    """A graceful stop must carry the partial transcript out via the done event.
+
+    Regression guard for the /stop context-loss fix: when ``stop_event`` is
+    set mid-run, the loop must exit through its ``done`` path holding whatever
+    assistant and tool messages were produced so far, instead of being
+    cancelled (which would drop them and skip persistence downstream).
+    """
+    provider = _QueuedProvider(
+        responses=[
+            ProviderResponse(
+                content="partial",
+                tool_calls=[
+                    ToolCall(call_id="tc_1", name="search", arguments={"q": "x"})
+                ],
+            ),
+            ProviderResponse(content="should not be reached", tool_calls=[]),
+        ]
+    )
+    tool_executor = _RecorderToolExecutor()
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=builder,
+        tool_executor=tool_executor,
+    )
+    stop_event = asyncio.Event()
+
+    done_event = None
+    async for event in loop.run_stream(
+        user_message="hi",
+        system_prompt="sys",
+        tools=[
+            ToolDefinition(
+                name="search",
+                description="search",
+                parameters={
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            )
+        ],
+        stop_event=stop_event,
+    ):
+        if event.type == "tool_end":
+            stop_event.set()
+        if event.type == "done":
+            done_event = event
+
+    assert done_event is not None
+    assert done_event.error == "cancelled"
+    assert [message.content for message in done_event.assistant_messages] == ["partial"]
+    assert [message.source for message in done_event.tool_messages] == [
+        "tool_result:search"
+    ]
+    # The loop stopped before consuming the second queued provider response.
+    assert provider.calls == 1
