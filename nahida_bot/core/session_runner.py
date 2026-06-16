@@ -13,15 +13,16 @@ import structlog
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
-from nahida_bot.agent.memory.scope import (
-    SCOPE_ID_GLOBAL,
-    SCOPE_TYPE_CHAT,
-    SCOPE_TYPE_GLOBAL,
-    resolve_scope_from_session,
+from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+from nahida_bot.agent.memory.scope import resolve_scope_from_session
+from nahida_bot.agent.providers import ToolDefinition
+from nahida_bot.agent.retrieval import (
+    MemoryStoreRetrievalAdapter,
+    RetrievalRequest,
+    RetrievalScope,
+    RetrievalService,
 )
 from nahida_bot.agent.storage.tokenization import build_fts_query
-from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
-from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.logging import log_trace
@@ -1246,58 +1247,31 @@ class SessionRunner:
         if fts_enabled and not build_fts_query(query):
             return None
 
-        use_hybrid = (
-            vector_enabled and fts_enabled and cfg is not None and cfg.hybrid_enabled
-        )
-        use_vector_only = vector_enabled and not use_hybrid
-        if use_hybrid:
-            search_items = getattr(self._memory, "search_items_hybrid", None)
-        elif use_vector_only:
-            search_items = getattr(self._memory, "search_items_vector", None)
-        else:
-            search_items = getattr(self._memory, "search_items", None)
-        if not callable(search_items):
-            return None
         scope_type, scope_id = resolve_scope_from_session(session_id)
 
-        async def _scoped_search(st: str, sid: str, lim: int) -> list[Any]:
-            if use_hybrid or use_vector_only:
-                return list(
-                    await cast(Any, search_items)(
-                        query,
-                        self._memory_embedding_provider,
-                        scope_type=st,
-                        scope_id=sid,
-                        limit=lim,
-                        vector_index=self._memory_vector_index,
-                    )
-                )
-            return list(
-                await cast(Any, search_items)(
-                    query, scope_type=st, scope_id=sid, limit=lim
+        try:
+            adapter = MemoryStoreRetrievalAdapter(
+                memory_store=self._memory,
+                embedding_provider=self._memory_embedding_provider,
+                vector_index=self._memory_vector_index,
+            )
+            service = RetrievalService({"memory": adapter})
+            results = await service.retrieve(
+                RetrievalRequest(
+                    query=query,
+                    source_type="memory",
+                    limit=limit,
+                    scope=RetrievalScope(scope_type=scope_type, scope_id=scope_id),
+                    fts_enabled=fts_enabled,
+                    vector_enabled=vector_enabled,
+                    hybrid_enabled=cfg.hybrid_enabled if cfg is not None else True,
+                    allow_global_fallback=True,
                 )
             )
-
-        try:
-            if scope_type == SCOPE_TYPE_CHAT:
-                items = await _scoped_search(scope_type, scope_id, limit)
-                remaining = limit - len(items)
-                if remaining > 0:
-                    global_items = await _scoped_search(
-                        SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL, remaining
-                    )
-                    seen = {getattr(i, "item_id", "") for i in items}
-                    items.extend(
-                        gi
-                        for gi in global_items
-                        if getattr(gi, "item_id", "") not in seen
-                    )
-            else:
-                items = await _scoped_search(SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL, limit)
         except Exception as exc:
             logger.warning("session_runner.memory_search_failed", error=str(exc))
             return None
-        if not items:
+        if not results:
             return None
 
         lines = [
@@ -1305,11 +1279,11 @@ class SessionRunner:
             "Treat memory as helpful context, not unquestionable truth. Current user instructions and current files take precedence.",
         ]
         remaining = max_chars
-        for item in items:
-            kind = getattr(item, "kind", "memory")
-            title = getattr(item, "title", "")
-            content = str(getattr(item, "content", "")).strip()
-            item_id = getattr(item, "item_id", "")
+        for result in results:
+            kind = str(result.metadata.get("kind") or "memory")
+            title = result.title
+            content = result.text.strip()
+            item_id = result.result_id
             if not content:
                 continue
             prefix = f"- [{kind}"
@@ -1331,18 +1305,22 @@ class SessionRunner:
 
         if len(lines) <= 2:
             return None
+        # Derive the backend label from the mode the adapter actually executed,
+        # not from the request flags: the adapter may degrade hybrid/vector to fts
+        # (e.g. when the store lacks the hybrid/vector method), so the request flags
+        # can diverge from what really ran.
+        backend = {
+            "hybrid": "items_hybrid",
+            "vector": "items_vector",
+            "fts": "items",
+            "none": "items",
+        }.get(results[0].mode, "items")
         return ContextMessage(
             role="system",
             source="long_term_memory",
             content="\n".join(lines),
             metadata={
-                "memory_backend": (
-                    "items_hybrid"
-                    if use_hybrid
-                    else "items_vector"
-                    if use_vector_only
-                    else "items"
-                ),
+                "memory_backend": backend,
                 "memory_count": len(lines) - 2,
             },
         )

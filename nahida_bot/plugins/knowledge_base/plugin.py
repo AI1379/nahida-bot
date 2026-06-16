@@ -22,8 +22,12 @@ from typing import Any, cast
 
 import structlog
 
+from nahida_bot.agent.retrieval import (
+    DocumentStoreRetrievalAdapter,
+    RetrievalRequest,
+    RetrievalService,
+)
 from nahida_bot.agent.storage.embedding import RoutedEmbeddingProvider
-from nahida_bot.agent.storage.tokenization import build_fts_query
 from nahida_bot.agent.storage.vector import SQLiteVecIndex
 from nahida_bot.plugins.base import (
     CommandHandlerResult,
@@ -719,49 +723,32 @@ class KnowledgeBasePlugin(Plugin):
         limit: int,
     ) -> list[Any]:
         """Search one collection using the configured retrieval mode."""
-        fts_enabled = self._config.retrieval.fts_enabled and bool(
-            build_fts_query(query)
-        )
-        vector_enabled = (
-            self._config.retrieval.vector_enabled and self._config.embedding.enabled
-        )
-        if not fts_enabled and not vector_enabled:
-            return []
-
-        use_hybrid = (
-            vector_enabled and fts_enabled and self._config.retrieval.hybrid_enabled
-        )
-        use_vector_only = vector_enabled and not use_hybrid
-        if use_hybrid or use_vector_only:
-            provider, vector_index = await self._ensure_vector_search_ready(
+        adapter = DocumentStoreRetrievalAdapter(
+            collection_name=collection_name,
+            store=store,
+            ensure_vector_ready=lambda: self._ensure_vector_search_ready(
                 collection_name,
                 store,
+            ),
+            logger=self.api.logger,
+            vector_failure_event="kb.vector_search_failed",
+        )
+        service = RetrievalService({"knowledge_base": adapter})
+        results = await service.retrieve(
+            RetrievalRequest(
+                query=query,
+                source_type="knowledge_base",
+                collection=collection_name,
+                limit=limit,
+                fts_enabled=self._config.retrieval.fts_enabled,
+                vector_enabled=(
+                    self._config.retrieval.vector_enabled
+                    and self._config.embedding.enabled
+                ),
+                hybrid_enabled=self._config.retrieval.hybrid_enabled,
             )
-            if provider is not None:
-                try:
-                    if use_hybrid:
-                        return await store.search_hybrid(
-                            query,
-                            provider,
-                            limit=limit,
-                            vector_index=vector_index,
-                        )
-                    return await store.search_vector(
-                        query,
-                        provider,
-                        limit=limit,
-                        vector_index=vector_index,
-                    )
-                except Exception as exc:
-                    self.api.logger.warning(
-                        "kb.vector_search_failed",
-                        collection=collection_name,
-                        error=str(exc),
-                        fallback="fts" if fts_enabled else "none",
-                    )
-            if not fts_enabled:
-                return []
-        return await store.search(query, limit=limit)
+        )
+        return [result.raw for result in results if result.raw is not None]
 
     async def _ensure_vector_search_ready(
         self,

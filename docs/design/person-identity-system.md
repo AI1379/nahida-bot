@@ -265,6 +265,13 @@ memory:
 
 推荐默认值是 `visible_only` 或 `off`，不要默认 `allow_private`。
 
+> **意图触发的 capability 扩张**：以上 cascade 和 `group_person_memory` 开关都是静态的
+> （部署级配置或 slash 命令）。自然语言触发的跨 scope 召回——例如用户在群聊里说“还记得
+> 我们私下聊的吗”——需要额外的**触发判断层**：检测到意图后，把本轮可读集扩张到请求者
+> 本人 person/account scope 的非 sensitive 项，召回后的公开仍由 §10.2 把关、sensitive 项
+> 仍受 §5.3 硬隔离。该触发层与 KB 触发不对称问题统一处理，见
+> [knowledge-base.md §3.1](knowledge-base.md)；本文档不重复其触发判别设计。
+
 ### 5.3 可见性
 
 每条 personal memory 需要在 `metadata_json` 或后续列中记录可见性：

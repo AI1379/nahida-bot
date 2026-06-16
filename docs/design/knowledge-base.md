@@ -14,6 +14,7 @@
 >
 > - [memory-system.md](memory-system.md)
 > - [memory-scoping.md](memory-scoping.md)
+> - [person-identity-system.md](person-identity-system.md) — scope/visibility/sensitivity 访问语义的 source of truth
 > - [data-and-state.md](../architecture/data-and-state.md)
 > - [GitHub Issue #12：记忆系统完善与作用域机制](https://github.com/AI1379/nahida-bot/issues/12)
 
@@ -113,6 +114,25 @@ retrieval、两阶段检索解决的是**召回质量**问题。两者正交—�
 - 一个轻量的“该不该查 KB”判别器，避免每轮无条件触发。
 
 这些应作为统一 pipeline 的**触发层**单独设计，并纳入 Phase 0 评测。
+
+**跨 scope 召回的意图触发**——触发层的一个具体、可独立设计的职责：用户常希望“在群聊
+里让 bot 召回我和她私聊的记忆”，且由**自然语言**触发而非固定命令。这要求召回的访问
+控制从静态配置（`group_person_memory` 开关 / slash 命令）升级为意图驱动：检测到这类
+意图时，把本轮可读 scope 集合从默认 `{当前 chat, global}` 扩张到**请求者本人**
+person/account scope 的非 sensitive 项。
+
+访问语义（“本人”如何解析、scope cascade、visibility、sensitivity 分级）以
+[person-identity-system.md](person-identity-system.md) 为准——身份解析见其 §4，
+scope/visibility/sensitivity 见其 §5、§10；本节只负责**触发判断**（该不该扩张 capability），
+不重复推导访问语义。两条安全约束：
+
+- **意图只放松 recall 的默认收敛**，碰不到 `sensitivity=sensitive` 的硬隔离（其 §5.3：
+  该级“grant 也不能越权”，意图亦不能越过）。
+- **召回后的公开**由其 §10.2“私下召回、群里慎言”的回复约束把关——召回进上下文 ≠ 可在
+  群里复述，类比人“想得起来但不当众说”。
+
+意图判别器必须保守：假阳性 = 把不该跨 scope 的内容拉进群聊上下文 = 隐私泄露。该能力以
+#7 为前置，#7 当前为规划中（其 §12），故现阶段未实现、默认走硬隔离 fallback。
 
 ### 3.2 分块后丢失文档身份和标题路径
 
@@ -587,10 +607,14 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 ## 12. 实施路线
 
 > 范围说明：#10（KB）核心已落地（plugin / FTS / hybrid / document-import / WebAPI），
-> 剩下的是检索质量重构；#12（Memory 提炼 + scoping）是地基；#7（person/account 身份）
-> 消费 #12 的 scope 模型。三者**统一设计、分阶段实现**（共享 §5.1 的 scope/provenance
-> 契约与统一检索底座），但 #7 因安全边界（群聊不注入 person memory、LLM 不参与身份
-> 解析）单独成轨，不与 KB 检索重构混入同一交付。
+> 剩下的是检索质量重构；#12（Memory 提炼 + scoping）是地基；#7（person/account 身份，
+> 详见 [person-identity-system.md](person-identity-system.md)）定义 scope/visibility/
+> sensitivity 的访问语义，是 §3.1 意图触发跨 scope 召回的**前置依赖**。三者**统一设计、
+> 分阶段实现**（共享 §5.1 的 scope/provenance 契约与统一检索底座），但 #7 因安全边界
+> （LLM 不参与权威身份解析、跨 scope 召回须 identity 解析 + sensitivity 硬隔离把关）
+> 单独成轨，不与 KB 检索重构混入同一交付。访问控制语义以 person-identity-system.md 为
+> 准（群聊**默认**不注入 private person memory，非硬墙——按其 §5.2/§5.3 受控注入）；
+> 本文件不重复推导 scope 语义。
 
 ### 地基：记忆作用域隔离（#12 scoping）
 
