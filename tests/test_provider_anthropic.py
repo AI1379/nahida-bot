@@ -544,10 +544,10 @@ async def test_anthropic_runtime_effort_overrides_config(
 
 
 @pytest.mark.asyncio
-async def test_anthropic_context_1m_sends_beta_header(
+async def test_anthropic_context_1m_does_not_send_retired_beta_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """context_1m=True sends the context-1m anthropic-beta header."""
+    """context_1m=True no longer sends the retired context-1m beta header."""
     captured_payload: dict[str, Any] = {}
     captured_headers: dict[str, str] = {}
 
@@ -562,9 +562,58 @@ async def test_anthropic_context_1m_sends_beta_header(
         messages=[ContextMessage(role="user", source="u", content="hi")]
     )
 
-    assert captured_headers["anthropic-beta"] == "context-1m-2025-08-07"
+    assert "anthropic-beta" not in captured_headers
     # 1M context alone should not inject output_config
     assert "output_config" not in captured_payload
+
+
+@pytest.mark.asyncio
+async def test_anthropic_explicit_beta_headers_are_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relays can opt into Anthropic beta headers explicitly."""
+    captured_headers: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers.update(request.headers)
+        return httpx.Response(200, json=_anthropic_text_response())
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.anthropic_beta_headers = [
+        "context-1m-2025-08-07",
+        "prompt-caching-2024-07-31",
+    ]
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert (
+        captured_headers["anthropic-beta"]
+        == "context-1m-2025-08-07,prompt-caching-2024-07-31"
+    )
+
+
+@pytest.mark.asyncio
+async def test_anthropic_explicit_beta_header_string_is_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """String config is accepted for one or more comma-separated betas."""
+    captured_headers: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_headers.update(request.headers)
+        return httpx.Response(200, json=_anthropic_text_response())
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.anthropic_beta_headers = "context-1m-2025-08-07, prompt-caching-2024-07-31"
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert (
+        captured_headers["anthropic-beta"]
+        == "context-1m-2025-08-07,prompt-caching-2024-07-31"
+    )
 
 
 @pytest.mark.asyncio

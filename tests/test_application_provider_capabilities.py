@@ -9,6 +9,7 @@ from nahida_bot.core.app import (
     Application,
     _model_capabilities_from_config,
     _provider_model_entries,
+    _with_context_1m_capability,
 )
 from nahida_bot.core.config import (
     ProviderEntryConfig,
@@ -50,6 +51,21 @@ def test_model_capabilities_from_empty_config_uses_defaults() -> None:
 
     assert cap.image_input is False
     assert cap.tool_calling is True
+
+
+def test_context_1m_capability_fills_missing_window() -> None:
+    cap = _with_context_1m_capability(_model_capabilities_from_config({}))
+
+    assert cap.context_window == 1_000_000
+    assert cap.resolved_context_window() == 1_000_000
+
+
+def test_context_1m_capability_preserves_explicit_window() -> None:
+    cap = _with_context_1m_capability(
+        _model_capabilities_from_config({"context_window": 200_000})
+    )
+
+    assert cap.context_window == 200_000
 
 
 def test_provider_model_entries_normalizes_strings_and_objects() -> None:
@@ -102,6 +118,83 @@ async def test_application_passes_anthropic_max_tokens_and_history_turns(
         assert default_slot.provider.max_tokens == 32000
         assert app.session_runner is not None
         assert app.session_runner._max_history_turns == 321
+    finally:
+        await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_application_context_1m_sets_anthropic_context_budget(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        db_path=":memory:",
+        workspace_base_dir=str(tmp_path / "workspace"),
+        plugin_paths=[],
+        discover_builtin_channels=False,
+        providers={
+            "anthropic": ProviderEntryConfig.model_validate(
+                {
+                    "type": "anthropic",
+                    "api_key": "test-key",
+                    "base_url": "https://example.invalid",
+                    "context_1m": True,
+                    "models": ["claude-sonnet-4-6"],
+                }
+            )
+        },
+        default_provider="anthropic",
+    )
+
+    app = Application(settings=settings)
+    await app.initialize()
+    try:
+        provider_manager = cast(Any, app._provider_manager)
+        default_slot = provider_manager.default
+        assert default_slot is not None
+        assert default_slot.provider.context_1m is True
+        capabilities = default_slot.resolve_capabilities("claude-sonnet-4-6")
+        assert capabilities.context_window == 1_000_000
+        assert app.session_runner is not None
+        builder = app.session_runner._context_builder_for_model(
+            default_slot.provider,
+            capabilities,
+        )
+        assert builder.budget.max_tokens == 1_000_000
+        assert builder.budget.usable_tokens == 950_000
+    finally:
+        await app.stop()
+
+
+@pytest.mark.asyncio
+async def test_application_passes_anthropic_beta_headers(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        db_path=":memory:",
+        workspace_base_dir=str(tmp_path / "workspace"),
+        plugin_paths=[],
+        discover_builtin_channels=False,
+        providers={
+            "anthropic": ProviderEntryConfig.model_validate(
+                {
+                    "type": "anthropic",
+                    "api_key": "test-key",
+                    "base_url": "https://example.invalid",
+                    "anthropic_beta_headers": ["context-1m-2025-08-07"],
+                    "models": ["claude-opus-4-8"],
+                }
+            )
+        },
+        default_provider="anthropic",
+    )
+
+    app = Application(settings=settings)
+    await app.initialize()
+    try:
+        provider_manager = cast(Any, app._provider_manager)
+        default_slot = provider_manager.default
+        assert default_slot is not None
+        assert default_slot.provider.anthropic_beta_headers == ["context-1m-2025-08-07"]
     finally:
         await app.stop()
 

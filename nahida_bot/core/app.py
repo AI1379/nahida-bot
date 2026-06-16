@@ -269,6 +269,11 @@ class Application:
                 name: _model_capabilities_from_config(raw)
                 for name, raw, _ in model_entries
             }
+            if cfg.type == "anthropic" and bool(getattr(cfg, "context_1m", False)):
+                capabilities_by_model = {
+                    name: _with_context_1m_capability(capabilities)
+                    for name, capabilities in capabilities_by_model.items()
+                }
             tags_by_model = {name: tags for name, _, tags in model_entries if tags}
             provider_kwargs: dict[str, object] = {
                 "base_url": cfg.base_url,
@@ -290,6 +295,7 @@ class Application:
                 "stream_responses",
                 "reasoning_effort",
                 "context_1m",
+                "anthropic_beta_headers",
                 "built_in_tools",
             ):
                 value = getattr(cfg, extra_field, None)
@@ -1022,6 +1028,20 @@ def _model_capabilities_from_config(raw: dict[str, Any]) -> "ModelCapabilities":
             str(item) for item in values["supported_image_mime_types"]
         )
     return ModelCapabilities(**values)
+
+
+def _with_context_1m_capability(
+    capabilities: "ModelCapabilities",
+) -> "ModelCapabilities":
+    """Apply Anthropic provider-level context_1m to models without a window."""
+    from dataclasses import replace
+
+    if (
+        capabilities.context_window is not None
+        or capabilities.max_context_window is not None
+    ):
+        return capabilities
+    return replace(capabilities, context_window=1_000_000)
 
 
 def _provider_model_entries(

@@ -67,9 +67,14 @@ class AnthropicProvider(ChatProvider):
     # request time: runtime override (``/reasoning`` command) takes precedence
     # over this config value; ``None`` lets Claude use its model default.
     reasoning_effort: str | None = None
-    # Enable the 1M context window beta (sends the ``context-1m-2025-08-07``
-    # ``anthropic-beta`` header). Paid beta — opt-in, off by default.
+    # Enable local 1M context-window mode for supported Claude models. Anthropic
+    # retired the old ``context-1m-2025-08-07`` beta header; modern 4.6+ models
+    # expose 1M context without an opt-in request header.
     context_1m: bool = False
+    # Optional raw Anthropic beta header values for relays or preview features.
+    # Official 1M context on modern Claude models does not need this, but some
+    # Anthropic-compatible routers still use beta headers as routing switches.
+    anthropic_beta_headers: list[str] | str = field(default_factory=list)
     tokenizer_impl: Tokenizer | None = None
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
 
@@ -324,14 +329,9 @@ class AnthropicProvider(ChatProvider):
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        # Beta features are opt-in. The 1M context window requires the
-        # ``context-1m-2025-08-07`` beta header (paid beta on Claude). Build a
-        # list so additional betas can be appended later.
-        beta_features: list[str] = []
-        if self.context_1m:
-            beta_features.append("context-1m-2025-08-07")
-        if beta_features:
-            headers["anthropic-beta"] = ",".join(beta_features)
+        beta_headers = self._resolved_beta_headers()
+        if beta_headers:
+            headers["anthropic-beta"] = ",".join(beta_headers)
         if self.stream_responses:
             headers["Accept"] = "text/event-stream"
 
@@ -349,6 +349,7 @@ class AnthropicProvider(ChatProvider):
                 stream=self.stream_responses,
                 reasoning_effort=reasoning_effort,
                 context_1m=self.context_1m,
+                anthropic_beta_headers=beta_headers,
                 timeout_seconds=timeout,
             )
             client = self._ensure_client()
@@ -389,6 +390,12 @@ class AnthropicProvider(ChatProvider):
         )
 
         return self._parse_response(body)
+
+    def _resolved_beta_headers(self) -> list[str]:
+        raw = self.anthropic_beta_headers
+        if isinstance(raw, str):
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return [str(item).strip() for item in raw if str(item).strip()]
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code in (401, 403):

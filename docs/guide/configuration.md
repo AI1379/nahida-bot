@@ -82,7 +82,8 @@ default_provider: deepseek-main
 |----|------|--------|------|
 | `max_tokens` | `int` | `16000` | Anthropic / Minimax 的输出 token 上限；适用于 `anthropic` 和 `minimax` provider |
 | `reasoning_effort` | `str\|null` | `null` | Claude 原生推理深度，注入请求体的 `output_config.effort`（`"low"`/`"medium"`/`"high"`/`"max"`）。可被运行时 `/reasoning` 覆盖。**仅 Claude 原生端点**（`anthropic` provider）——Minimax 兼容端点可能拒绝该字段 |
-| `context_1m` | `bool` | `false` | 启用 1M 上下文窗口 beta，发送 `anthropic-beta: context-1m-2025-08-07` 头。付费 beta，默认关闭；仅 `claude-sonnet-4.6`/`claude-opus-4.6` 等支持的模型可用 |
+| `context_1m` | `bool` | `false` | 为 Anthropic 原生 provider 启用 1M 上下文预算。现代 Claude 4.6+ 模型不需要 `anthropic-beta` 头；仅在上游账号和模型支持 1M context 时有效 |
+| `anthropic_beta_headers` | `list[str]\|str` | `[]` | 显式发送 `anthropic-beta` header。官方 1M Claude 4.6+ 不需要；部分 Anthropic-compatible 转发层可能仍用旧 beta 名作为路由开关 |
 
 ### 模型条目
 
