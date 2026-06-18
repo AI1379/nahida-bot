@@ -353,6 +353,27 @@ class SQLiteDocumentRepository:
             for row in rows
         ]
 
+    async def list_embedding_keys(
+        self,
+        *,
+        provider_id: str,
+        model: str,
+    ) -> set[tuple[str, str]]:
+        """Return persisted ``(doc_id, content_hash)`` keys for a provider+model.
+
+        Used to skip documents whose current content already has a vector for
+        this provider and model, so backfill is incremental instead of
+        re-embedding every document on every call (and after every restart).
+        Keys are not filtered to active documents on purpose: a soft-deleted
+        document's stale key simply never matches a live document id.
+        """
+        rows = await self._engine.fetch_all(
+            f"SELECT doc_id, content_hash FROM {self._emb_table} "
+            "WHERE provider_id = ? AND model = ?",
+            (provider_id, model),
+        )
+        return {(str(row["doc_id"]), str(row["content_hash"])) for row in rows}
+
     async def delete_embeddings(self, embedding_ids: list[str]) -> int:
         """Delete embeddings by their ids."""
         if not embedding_ids:

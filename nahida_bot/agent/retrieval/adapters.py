@@ -83,6 +83,7 @@ class DocumentStoreRetrievalAdapter:
                             mode=mode,
                         )
                         for result in results
+                        if result.score >= request.min_score
                     ]
                 except Exception as exc:
                     if self._logger is not None:
@@ -104,6 +105,7 @@ class DocumentStoreRetrievalAdapter:
                 mode="fts",
             )
             for result in results
+            if result.score >= request.min_score
         ]
 
     async def _ready_vector_search(self) -> tuple[Any | None, Any | None]:
@@ -148,22 +150,31 @@ class MemoryStoreRetrievalAdapter:
             scope_id=SCOPE_ID_GLOBAL,
         )
         if scope.scope_type == SCOPE_TYPE_CHAT and request.allow_global_fallback:
-            scoped_items = await self._search_scope(scope, query, limit, mode=mode)
+            scoped_items = _above_threshold(
+                await self._search_scope(scope, query, limit, mode=mode),
+                request.min_score,
+            )
             remaining = limit - len(scoped_items)
             if remaining <= 0:
                 return scoped_items
-            global_items = await self._search_scope(
-                RetrievalScope(SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL),
-                query,
-                remaining,
-                mode=mode,
+            global_items = _above_threshold(
+                await self._search_scope(
+                    RetrievalScope(SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL),
+                    query,
+                    remaining,
+                    mode=mode,
+                ),
+                request.min_score,
             )
             seen = {item.result_id for item in scoped_items}
             return [
                 *scoped_items,
                 *(item for item in global_items if item.result_id not in seen),
             ]
-        return await self._search_scope(scope, query, limit, mode=mode)
+        return _above_threshold(
+            await self._search_scope(scope, query, limit, mode=mode),
+            request.min_score,
+        )
 
     async def _search_scope(
         self,
@@ -211,6 +222,22 @@ class MemoryStoreRetrievalAdapter:
                 limit=limit,
             )
         return [_memory_item_to_retrieval(item, mode=mode) for item in list(items)]
+
+
+def _above_threshold(
+    items: list[RetrievalResult],
+    min_score: float,
+) -> list[RetrievalResult]:
+    """Drop results below ``min_score``.
+
+    ``min_score <= 0`` disables filtering so the default request preserves the
+    raw top-k ordering. Filtering happens per scope in the memory cascade so a
+    weak chat-scoped hit does not consume budget that the global fallback could
+    fill with a stronger match.
+    """
+    if min_score <= 0.0:
+        return items
+    return [item for item in items if item.score >= min_score]
 
 
 def _select_mode(

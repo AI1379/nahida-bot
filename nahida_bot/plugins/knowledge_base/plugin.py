@@ -769,16 +769,13 @@ class KnowledgeBasePlugin(Plugin):
 
         try:
             total_docs = await store.count()
-            embedded_count = (
-                await store.embed_documents(
-                    provider,
-                    limit=total_docs,
-                    vector_index=vector_index,
-                )
-                if total_docs > 0
-                else 0
+            result = await store.embed_documents(
+                provider,
+                limit=total_docs,
+                vector_index=vector_index,
             )
-            if embedded_count == total_docs:
+            complete = result.added == result.needed
+            if complete:
                 self._embedded_collections.add(collection_name)
             else:
                 self._embedded_collections.discard(collection_name)
@@ -786,8 +783,9 @@ class KnowledgeBasePlugin(Plugin):
                 "kb.embeddings_backfilled",
                 collection=collection_name,
                 documents=total_docs,
-                embedded=embedded_count,
-                complete=embedded_count == total_docs,
+                embedded=result.added,
+                needed=result.needed,
+                complete=complete,
             )
         except Exception as exc:
             self.api.logger.warning(
@@ -824,22 +822,24 @@ class KnowledgeBasePlugin(Plugin):
 
         vector_index = await self._get_vector_index(collection_name, provider)
         try:
-            embedded = await store.embed_documents(
+            result = await store.embed_documents(
                 provider,
                 limit=max(1, imported_count),
                 vector_index=vector_index,
             )
             total_docs = await store.count()
-            expected = min(imported_count, total_docs)
-            if embedded < expected:
+            if result.added < result.needed:
                 self._embedded_collections.discard(collection_name)
-            elif total_docs <= imported_count and embedded == total_docs:
+            elif total_docs <= imported_count:
+                # Import batch covered the whole collection and every pending
+                # document in it was embedded; safe to mark complete.
                 self._embedded_collections.add(collection_name)
             self.api.logger.debug(
                 "kb.embeddings_refreshed",
                 collection=collection_name,
                 imported=imported_count,
-                embedded=embedded,
+                embedded=result.added,
+                needed=result.needed,
                 complete=collection_name in self._embedded_collections,
             )
         except Exception as exc:

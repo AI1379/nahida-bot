@@ -184,3 +184,66 @@ async def test_memory_adapter_degrades_hybrid_to_fts() -> None:
 
 async def _ready_vector() -> tuple[Any, None]:
     return object(), None
+
+
+@pytest.mark.asyncio
+async def test_memory_adapter_filters_results_below_min_score() -> None:
+    store = _MemoryStore()
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store)
+
+    # Default scope is global; the global fixture scores 0.5 and is dropped.
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="Python",
+            source_type="memory",
+            limit=2,
+            min_score=0.7,
+        )
+    )
+
+    assert results == []
+    assert store.calls == [("Python", "global", "__global__", 2)]
+
+
+@pytest.mark.asyncio
+async def test_memory_adapter_threshold_keeps_strong_drops_weak_in_cascade() -> None:
+    store = _MemoryStore()
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store)
+
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="Python",
+            source_type="memory",
+            scope=RetrievalScope("chat", "milky:private:10001"),
+            limit=2,
+            min_score=0.7,
+            allow_global_fallback=True,
+        )
+    )
+
+    # Chat hit scores 1.0 (kept); global fallback hit scores 0.5 (dropped).
+    assert [result.result_id for result in results] == ["mem_chat"]
+    assert [result.metadata["scope_type"] for result in results] == ["chat"]
+
+
+@pytest.mark.asyncio
+async def test_document_adapter_filters_results_below_min_score() -> None:
+    store = _DocStore()
+    store.search_results = [
+        SearchResult(doc_id="doc_a", title="A", content="a", score=0.9),
+        SearchResult(doc_id="doc_b", title="B", content="b", score=0.2),
+    ]
+    adapter = DocumentStoreRetrievalAdapter(collection_name="docs", store=store)
+
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="Python",
+            source_type="knowledge_base",
+            collection="docs",
+            limit=5,
+            fts_enabled=True,
+            min_score=0.5,
+        )
+    )
+
+    assert [result.result_id for result in results] == ["doc_a"]

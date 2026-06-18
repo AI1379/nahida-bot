@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from nahida_bot.agent.storage.document_store import BackfillResult
+from nahida_bot.agent.storage.embedding import HashEmbeddingProvider
 from nahida_bot.agent.storage.sqlite_document_store import SQLiteDocumentStore
 from nahida_bot.agent.storage.vector import SQLiteVecIndex
 from nahida_bot.db.engine import DatabaseEngine
@@ -99,3 +101,35 @@ async def test_sqlite_vec_drop_works_after_database_reconnect(tmp_path) -> None:
         assert rows == []
     finally:
         await second_engine.close()
+
+
+@pytest.mark.asyncio
+async def test_embed_documents_is_incremental_and_skips_unchanged() -> None:
+    """Repeated backfill only embeds new or changed content, not the whole set.
+
+    Regression test for the restart-recompute bug: ``embed_documents`` must skip
+    documents whose current content already has a persisted vector for this
+    provider+model, so a process restart does not re-embed the collection.
+    """
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    try:
+        store = SQLiteDocumentStore(engine, collection="kb_docs")
+        await store.setup()
+        await store.put("doc_1", "Alice likes Python", title="Profile")
+        await store.put("doc_2", "Bob prefers Rust", title="Profile")
+        provider = HashEmbeddingProvider(dimensions=8)
+
+        first = await store.embed_documents(provider, limit=10)
+        assert first == BackfillResult(added=2, needed=2)
+
+        # Nothing changed -> nothing re-embedded (no provider call; needed == 0).
+        second = await store.embed_documents(provider, limit=10)
+        assert second == BackfillResult(added=0, needed=0)
+
+        # Editing one document changes its content hash -> only it re-embeds.
+        await store.put("doc_1", "Alice now likes Go", title="Profile")
+        third = await store.embed_documents(provider, limit=10)
+        assert third == BackfillResult(added=1, needed=1)
+    finally:
+        await engine.close()

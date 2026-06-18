@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, NamedTuple
 
 from nahida_bot.agent.storage.embedding import EmbeddingProvider
 from nahida_bot.agent.storage.models import DocumentItem, SearchResult
 from nahida_bot.agent.storage.vector import VectorIndex
+
+
+class BackfillResult(NamedTuple):
+    """Outcome of an :meth:`DocumentStore.embed_documents` backfill pass.
+
+    - ``needed``: active documents in the processed batch whose current content
+      did not already have a persisted embedding for this provider+model.
+    - ``added``: embeddings actually written this call.
+
+    The collection is fully embedded for this provider+model iff
+    ``added == needed`` (every document that lacked an embedding now has one).
+    This holds both for a fresh backfill (``needed`` = total, ``added`` = total)
+    and for the steady state after a process restart, where nothing has changed
+    (``needed`` = 0, ``added`` = 0) — so callers can mark the collection
+    complete without re-embedding or rescanning every document.
+    """
+
+    added: int
+    needed: int
 
 
 class DocumentStore(ABC):
@@ -112,6 +131,11 @@ class DocumentStore(ABC):
         *,
         limit: int = 100,
         vector_index: VectorIndex | None = None,
-    ) -> int:
-        """Batch-embed documents that lack embeddings.  Returns count embedded."""
+    ) -> BackfillResult:
+        """Embed active documents lacking a current embedding for this provider+model.
+
+        Documents whose current embedding text already has a persisted vector for
+        the given provider and model are skipped, so repeated calls (including
+        after a process restart) only embed new or changed content.
+        """
         ...

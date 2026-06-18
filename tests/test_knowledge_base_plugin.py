@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from nahida_bot.agent.providers.router import ModelRouter
+from nahida_bot.agent.storage.document_store import BackfillResult
 from nahida_bot.agent.storage.manager import DocumentStoreManager
 from nahida_bot.agent.storage.models import SearchResult
 from nahida_bot.agent.storage.vector import SQLiteVecIndex
@@ -96,11 +97,14 @@ class _Store:
         *,
         limit: int = 100,
         vector_index: Any | None = None,
-    ) -> int:
+    ) -> BackfillResult:
         self.embed_calls.append((limit, vector_index is not None))
+        target = min(limit, len(self.docs))
         if self.embed_result_count is not None:
-            return self.embed_result_count
-        return min(limit, len(self.docs))
+            # Simulate a partial / failed backfill: only ``embed_result_count``
+            # documents were embedded, but ``target`` still needed embedding.
+            return BackfillResult(added=self.embed_result_count, needed=target)
+        return BackfillResult(added=target, needed=target)
 
 
 class _Manager:

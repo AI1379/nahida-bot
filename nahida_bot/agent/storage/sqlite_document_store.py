@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 
-from nahida_bot.agent.storage.document_store import DocumentStore
+from nahida_bot.agent.storage.document_store import BackfillResult, DocumentStore
 from nahida_bot.agent.storage.embedding import EmbeddingProvider, memory_text_hash
 from nahida_bot.agent.storage.models import (
     DocumentEmbedding,
@@ -318,16 +318,31 @@ class SQLiteDocumentStore(DocumentStore):
         *,
         limit: int = 100,
         vector_index: VectorIndex | None = None,
-    ) -> int:
-        """Batch-embed documents that lack embeddings."""
+    ) -> BackfillResult:
+        """Embed active documents lacking a current embedding for this provider+model.
+
+        Documents whose current embedding text already has a persisted vector for
+        the given provider and model are skipped (``content_hash`` dedup), so the
+        expensive embedding call only runs for new or changed content. This makes
+        the backfill idempotent across calls and process restarts.
+        """
         rows = await self._repo.list_documents(limit=limit)
         items = [_row_to_item(row) for row in rows]
-        texts = [_doc_embedding_text(item) for item in items]
-        if not texts:
-            return 0
-        results = await provider.embed_texts(texts)
-        count = 0
-        for item, text, result in zip(items, texts, results, strict=False):
+        existing = await self._repo.list_embedding_keys(
+            provider_id=provider.provider_id,
+            model=provider.model,
+        )
+        pending: list[tuple[DocumentItem, str]] = []
+        for item in items:
+            text = _doc_embedding_text(item)
+            if (item.doc_id, memory_text_hash(text)) in existing:
+                continue
+            pending.append((item, text))
+        if not pending:
+            return BackfillResult(added=0, needed=0)
+        results = await provider.embed_texts([text for _, text in pending])
+        added = 0
+        for (item, text), result in zip(pending, results, strict=False):
             if not result.embedding:
                 continue
             await self.put_embedding(
@@ -338,8 +353,8 @@ class SQLiteDocumentStore(DocumentStore):
                 content_hash=memory_text_hash(text),
                 vector_index=vector_index,
             )
-            count += 1
-        return count
+            added += 1
+        return BackfillResult(added=added, needed=len(pending))
 
 
 def _row_to_search_result(row: dict[str, Any], *, score: float = 0.0) -> SearchResult:

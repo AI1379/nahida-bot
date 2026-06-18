@@ -685,14 +685,25 @@ durable memory 回填为 `source_type=conversation|human|tool` 的 ContextNode�
 
 ### Phase 2：统一检索服务
 
-- [ ] 抽出 Memory 与 KB 共用的 retrieval request/result 类型。
-- [ ] 统一 FTS/vector/hybrid、RRF、threshold 和 context packing。
-- [ ] KB 工具和 Memory 自动注入调用相同服务。
-- [ ] 保留不同 scope、预算和触发策略。
-- [ ] 修复 embedding 增量维护，避免进程重启后全量重复计算。
+- [x] 抽出 Memory 与 KB 共用的 retrieval request/result 类型。
+- [x] 统一 FTS/vector/hybrid、RRF、threshold 和 context packing。
+      （dispatch 经 `_select_mode` 统一；RRF 共用 `reciprocal_rank_fusion`；threshold
+      为 `RetrievalRequest.min_score`，在 adapter 内、cascade 去重前过滤。**context packing
+      暂不统一**：当前仅 Memory 自动注入一个消费者，KB 工具返回原始结果；等 §3.1 自动注入
+      落地出现第二个消费者再抽共享 packing，避免单消费者提前抽象违反 §11。）
+- [x] KB 工具和 Memory 自动注入调用相同服务。
+- [x] 保留不同 scope、预算和触发策略。（scope 经 `RetrievalScope`、预算经 `limit`/`max_chars`；
+      触发策略即 §3.1 的软跨 scope 召回，已单列并标注依赖 #7。）
+- [x] 修复 embedding 增量维护，避免进程重启后全量重复计算。
+      （KB：`embed_documents` 按 `(doc_id, content_hash)` 跳过已持久化项，返回
+      `BackfillResult(added, needed)`，调用方以 `added == needed` 判定"已全部嵌入"——重启后
+      needed=0 不再全量重算。Memory：`embed_items` / `embed_items_all_scopes` 同样按
+      `(item_id, content_hash)` 跳过，定时刷新只嵌新项、不重嵌全量；返回仍为 `int`（新嵌数），
+      因 memory 无"标记完成"语义、调用方只用于 debug 日志。）
 
 > 注：Memory 侧的 FTS/vector/hybrid + RRF + scope cascade 已就位（见上方"地基"小节）；
-> 本阶段重点是把它与 KB 的检索抽成同一服务。
+> 本阶段重点是把它与 KB 的检索抽成同一服务。状态：**Phase 2 已完成并验证（2026-06-18）**；
+> `uv run pytest` / `ruff` / `pyright` 全绿。
 
 ### Phase 3：层级 Context Store
 
