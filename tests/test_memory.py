@@ -533,10 +533,37 @@ async def test_memory_item_embeddings_can_use_optional_vector_index(
     )
 
     assert first_count == 1
-    assert second_count == 1
+    # Second refresh is incremental: the item already has a current embedding,
+    # so nothing is re-embedded (count 0) and no new vector records appear.
+    assert second_count == 0
     assert set(vector_index.records) == first_embedding_ids
     assert results
     assert results[0].item_id == item_id
+
+
+@pytest.mark.asyncio
+async def test_embed_items_all_scopes_is_incremental_across_refreshes(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    """A repeat embedding refresh skips items whose content is already embedded.
+
+    Regression guard for the scheduled refresh re-embedding every item on every
+    run: only new items should hit the provider.
+    """
+    await memory_store.append_item(title="first", content="Alice likes Python.")
+    await memory_store.append_item(title="second", content="Bob prefers Rust.")
+    provider = HashEmbeddingProvider(dimensions=32)
+
+    first = await memory_store.embed_items_all_scopes(provider, limit=100)
+    second = await memory_store.embed_items_all_scopes(provider, limit=100)
+
+    assert first == 2
+    assert second == 0  # nothing changed -> nothing re-embedded
+
+    # A new item is embedded on the next refresh; existing ones stay skipped.
+    await memory_store.append_item(title="third", content="Carol likes Go.")
+    third = await memory_store.embed_items_all_scopes(provider, limit=100)
+    assert third == 1
 
 
 @pytest.mark.asyncio

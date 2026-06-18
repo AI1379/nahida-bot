@@ -558,6 +558,27 @@ class SQLiteMemoryRepository:
         )
         return [self._memory_embedding_row_to_dict(row) for row in rows]
 
+    async def list_memory_embedding_keys(
+        self,
+        *,
+        provider_id: str,
+        model: str,
+    ) -> set[tuple[str, str]]:
+        """Return persisted ``(item_id, content_hash)`` keys for a provider+model.
+
+        Used to skip memory items whose current content already has a vector for
+        this provider and model, so the scheduled embedding refresh is incremental
+        instead of re-embedding every item on every run. Keys are not filtered to
+        active items on purpose: an archived item's stale key simply never matches
+        a live item id.
+        """
+        rows = await self._engine.fetch_all(
+            "SELECT item_id, content_hash FROM memory_embeddings "
+            "WHERE provider_id = ? AND model = ?",
+            (provider_id, model),
+        )
+        return {(str(row["item_id"]), str(row["content_hash"])) for row in rows}
+
     async def delete_memory_embeddings_for_item(self, item_id: str) -> int:
         """Delete persisted embeddings for one memory item."""
         async with self._engine.write_lock:

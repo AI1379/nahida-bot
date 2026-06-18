@@ -452,29 +452,19 @@ class SQLiteMemoryStore(MemoryStore):
         limit: int = 100,
         vector_index: VectorIndex | None = None,
     ) -> int:
-        """Embed recent active memory items for a scope."""
+        """Embed active memory items lacking a current embedding for this scope.
+
+        Items whose current content already has a persisted vector for this
+        provider+model are skipped, so the scheduled refresh only embeds new
+        items instead of re-embedding the whole scope every run.
+        """
         items = await self.search_items(
             "",
             scope_type=scope_type,
             scope_id=scope_id,
             limit=limit,
         )
-        texts = [_item_embedding_text(item) for item in items]
-        results = await provider.embed_texts(texts)
-        count = 0
-        for item, text, result in zip(items, texts, results, strict=False):
-            if not result.embedding:
-                continue
-            await self.upsert_item_embedding(
-                item.item_id,
-                result.embedding,
-                provider_id=result.provider_id,
-                model=result.model,
-                content_hash=memory_text_hash(text),
-                vector_index=vector_index,
-            )
-            count += 1
-        return count
+        return await self._embed_pending_items(provider, items, vector_index)
 
     async def embed_items_all_scopes(
         self,
@@ -483,18 +473,46 @@ class SQLiteMemoryStore(MemoryStore):
         limit: int = 100,
         vector_index: VectorIndex | None = None,
     ) -> int:
-        """Embed recent active memory items across all scopes.
+        """Embed active memory items lacking a current embedding across all scopes.
 
-        Covers chat-scoped items so vector/hybrid search over non-global
-        scopes returns matches. Embeddings are scope-agnostic (derived from
-        text), so a single pass over all active items is sufficient.
+        Covers chat-scoped items so vector/hybrid search over non-global scopes
+        returns matches. Embeddings are scope-agnostic (derived from text), so a
+        single pass over all active items is sufficient. Already-embedded items
+        are skipped via ``content_hash`` dedup.
         """
         rows = await self._repo.list_memory_items_all_scopes(limit=limit)
         items = [_row_to_item(row) for row in rows]
-        texts = [_item_embedding_text(item) for item in items]
-        results = await provider.embed_texts(texts)
+        return await self._embed_pending_items(provider, items, vector_index)
+
+    async def _embed_pending_items(
+        self,
+        provider: EmbeddingProvider,
+        items: list[MemoryItem],
+        vector_index: VectorIndex | None,
+    ) -> int:
+        """Embed only items lacking a current vector for this provider+model.
+
+        Returns the number of new embeddings written this call. ``content_hash``
+        dedup against ``list_memory_embedding_keys`` makes this idempotent across
+        refreshes: items embedded in a previous run are skipped (no provider
+        call), and a model switch re-embeds because the new model's keys are
+        absent.
+        """
+        existing = await self._repo.list_memory_embedding_keys(
+            provider_id=provider.provider_id,
+            model=provider.model,
+        )
+        pending: list[tuple[MemoryItem, str]] = []
+        for item in items:
+            text = _item_embedding_text(item)
+            if (item.item_id, memory_text_hash(text)) in existing:
+                continue
+            pending.append((item, text))
+        if not pending:
+            return 0
+        results = await provider.embed_texts([text for _, text in pending])
         count = 0
-        for item, text, result in zip(items, texts, results, strict=False):
+        for (item, text), result in zip(pending, results, strict=False):
             if not result.embedding:
                 continue
             await self.upsert_item_embedding(
