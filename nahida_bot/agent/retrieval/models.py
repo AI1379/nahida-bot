@@ -25,6 +25,7 @@ class RetrievalRequest:
     source_type: RetrievalSourceType
     limit: int = 10
     scope: RetrievalScope | None = None
+    scopes: tuple[RetrievalScope, ...] = ()
     collection: str = ""
     fts_enabled: bool = True
     vector_enabled: bool = False

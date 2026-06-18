@@ -72,6 +72,38 @@ class _MemoryStore:
                     metadata={},
                 )
             ]
+        if scope_type == "person":
+            return [
+                SimpleNamespace(
+                    item_id="mem_person",
+                    title="Person",
+                    content="Alice prefers Python (person scope)",
+                    score=1.0,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    kind="preference",
+                    source="consolidation",
+                    sensitivity="private",
+                    evidence={},
+                    metadata={},
+                )
+            ]
+        if scope_type == "account":
+            return [
+                SimpleNamespace(
+                    item_id="mem_account",
+                    title="Account",
+                    content="Alice's telegram username (account scope)",
+                    score=1.0,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    kind="preference",
+                    source="consolidation",
+                    sensitivity="private",
+                    evidence={},
+                    metadata={},
+                )
+            ]
         return [
             SimpleNamespace(
                 item_id="mem_global",
@@ -87,6 +119,65 @@ class _MemoryStore:
                 metadata={},
             )
         ][:limit]
+
+
+@pytest.mark.asyncio
+async def test_memory_adapter_cascades_identity_scopes_in_priority_order() -> None:
+    """Explicit ``scopes`` cascade person -> account -> chat -> global."""
+    store = _MemoryStore()
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store)
+
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="Python",
+            source_type="memory",
+            scopes=(
+                RetrievalScope("person", "owner"),
+                RetrievalScope("account", "milky:user:10001"),
+                RetrievalScope("chat", "milky:private:10001"),
+                RetrievalScope("global", "__global__"),
+            ),
+            limit=10,
+        )
+    )
+
+    assert [result.result_id for result in results] == [
+        "mem_person",
+        "mem_account",
+        "mem_chat",
+        "mem_global",
+    ]
+    # Each scope searched once, in order, each with the remaining budget.
+    assert store.calls == [
+        ("Python", "person", "owner", 10),
+        ("Python", "account", "milky:user:10001", 9),
+        ("Python", "chat", "milky:private:10001", 8),
+        ("Python", "global", "__global__", 7),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_memory_adapter_cascade_budget_fill_stops_early() -> None:
+    """An earlier scope filling the budget skips later scopes entirely."""
+    store = _MemoryStore()
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store)
+
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="Python",
+            source_type="memory",
+            scopes=(
+                RetrievalScope("person", "owner"),
+                RetrievalScope("account", "milky:user:10001"),
+                RetrievalScope("chat", "milky:private:10001"),
+            ),
+            limit=1,
+        )
+    )
+
+    # Person scope fills the 1-item budget; account/chat are never searched.
+    assert [result.result_id for result in results] == ["mem_person"]
+    assert store.calls == [("Python", "person", "owner", 1)]
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,13 @@ from nahida_bot.identity.models import (
     Person,
     ParticipantObservation,
 )
+from nahida_bot.identity.policy import (
+    DEFAULT_GROUP_PERSON_MEMORY,
+    GroupPersonMemoryPolicy,
+    MemoryReadRequest,
+    memory_read_request_from_context,
+    resolve_memory_read_scopes,
+)
 from nahida_bot.identity.resolver import IdentityResolver, account_key_from_inbound
 from nahida_bot.identity.sqlite import SQLiteIdentityStore
 from nahida_bot.identity.store import IdentityStore
@@ -20,11 +27,16 @@ from nahida_bot.identity.store import IdentityStore
 __all__ = [
     "AccountKey",
     "AccountLink",
+    "DEFAULT_GROUP_PERSON_MEMORY",
+    "GroupPersonMemoryPolicy",
     "IdentityResolution",
     "IdentityResolver",
     "IdentityStore",
+    "MemoryReadRequest",
     "ParticipantObservation",
     "Person",
     "SQLiteIdentityStore",
     "account_key_from_inbound",
+    "memory_read_request_from_context",
+    "resolve_memory_read_scopes",
 ]

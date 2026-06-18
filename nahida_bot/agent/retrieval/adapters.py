@@ -129,7 +129,16 @@ class MemoryStoreRetrievalAdapter:
         self._vector_index = vector_index
 
     async def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
-        """Search memory in the requested scope, optionally cascading to global."""
+        """Search memory, cascading across the request's scopes in priority order.
+
+        ``request.scopes`` (an ordered tuple) drives an N-level cascade: each
+        scope is searched with the remaining result budget and deduped against
+        earlier scopes by ``result_id``. When ``scopes`` is empty, the legacy
+        ``scope`` / ``allow_global_fallback`` pair is used (chat -> global),
+        preserving V1 behavior exactly. The identity-aware read cascade
+        (person -> account -> chat -> global) is built by the caller and passed
+        here as ``scopes``; see ``nahida_bot.identity.policy``.
+        """
         query = request.query.strip()
         limit = max(0, int(request.limit))
         if not query or limit <= 0:
@@ -145,36 +154,59 @@ class MemoryStoreRetrievalAdapter:
             vector_enabled=vector_enabled,
             hybrid_enabled=request.hybrid_enabled,
         )
-        scope = request.scope or RetrievalScope(
-            scope_type=SCOPE_TYPE_GLOBAL,
-            scope_id=SCOPE_ID_GLOBAL,
+        return await self._cascade(
+            self._effective_scopes(request), query, limit, mode, request.min_score
         )
+
+    @staticmethod
+    def _effective_scopes(request: RetrievalRequest) -> list[RetrievalScope]:
+        """Resolve the ordered scope list for a request.
+
+        An explicit ``scopes`` tuple wins. Otherwise the legacy single ``scope``
+        is used, expanded to ``[scope, global]`` when ``allow_global_fallback``
+        is set on a chat scope. A missing scope defaults to global.
+        """
+        if request.scopes:
+            return list(request.scopes)
+        scope = request.scope or RetrievalScope(SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL)
         if scope.scope_type == SCOPE_TYPE_CHAT and request.allow_global_fallback:
-            scoped_items = _above_threshold(
-                await self._search_scope(scope, query, limit, mode=mode),
-                request.min_score,
-            )
-            remaining = limit - len(scoped_items)
+            return [scope, RetrievalScope(SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL)]
+        return [scope]
+
+    async def _cascade(
+        self,
+        scopes: list[RetrievalScope],
+        query: str,
+        limit: int,
+        mode: RetrievalMode,
+        min_score: float,
+    ) -> list[RetrievalResult]:
+        """Search each scope in order, filling the budget, deduped by id.
+
+        Each scope is searched with only the *remaining* budget so an earlier
+        scope can't starve later ones by over-fetching. Per-scope
+        ``min_score`` filtering means a below-threshold hit does not steal a
+        slot that a stronger match in a later scope could fill.
+        """
+        results: list[RetrievalResult] = []
+        seen: set[str] = set()
+        remaining = limit
+        for scope in scopes:
             if remaining <= 0:
-                return scoped_items
-            global_items = _above_threshold(
-                await self._search_scope(
-                    RetrievalScope(SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL),
-                    query,
-                    remaining,
-                    mode=mode,
-                ),
-                request.min_score,
+                break
+            scoped = _above_threshold(
+                await self._search_scope(scope, query, remaining, mode=mode),
+                min_score,
             )
-            seen = {item.result_id for item in scoped_items}
-            return [
-                *scoped_items,
-                *(item for item in global_items if item.result_id not in seen),
-            ]
-        return _above_threshold(
-            await self._search_scope(scope, query, limit, mode=mode),
-            request.min_score,
-        )
+            for item in scoped:
+                if item.result_id in seen:
+                    continue
+                seen.add(item.result_id)
+                results.append(item)
+                remaining -= 1
+                if remaining <= 0:
+                    break
+        return results
 
     async def _search_scope(
         self,

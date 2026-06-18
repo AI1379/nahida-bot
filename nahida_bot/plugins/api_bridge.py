@@ -676,50 +676,43 @@ class RealBotAPI:
             return []
         search_items = getattr(self._memory, "search_items", None)
         if callable(search_items):
-            from nahida_bot.agent.memory.scope import (
-                SCOPE_ID_GLOBAL,
-                SCOPE_TYPE_CHAT,
-                SCOPE_TYPE_GLOBAL,
-                resolve_scope_from_session,
-            )
             from nahida_bot.core.context import current_session
+            from nahida_bot.identity.policy import (
+                memory_read_request_from_context,
+                resolve_memory_read_scopes,
+            )
 
             session_ctx = current_session.get()
             session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
-            scope_type, scope_id = resolve_scope_from_session(session_id)
+            # Identity-aware read cascade (issue #7, Phase 2). Same policy as
+            # SessionRunner._load_relevant_memory; collapses to the V1
+            # chat -> global cascade (or global-only) when identity is off or
+            # the sender is unlinked, so behavior is unchanged by default.
+            read_request = memory_read_request_from_context(session_ctx, session_id)
+            scopes = resolve_memory_read_scopes(read_request)
             items: list[Any] = []
-            if scope_type == SCOPE_TYPE_CHAT:
-                chat_items = list(
-                    await cast(Any, search_items)(
-                        query, scope_type=scope_type, scope_id=scope_id, limit=limit
-                    )
-                )
-                items = chat_items
-                remaining = limit - len(items)
-                if remaining > 0:
-                    global_items = list(
-                        await cast(Any, search_items)(
-                            query,
-                            scope_type=SCOPE_TYPE_GLOBAL,
-                            scope_id=SCOPE_ID_GLOBAL,
-                            limit=remaining,
-                        )
-                    )
-                    seen = {getattr(i, "item_id", "") for i in items}
-                    items.extend(
-                        gi
-                        for gi in global_items
-                        if getattr(gi, "item_id", "") not in seen
-                    )
-            else:
-                items = list(
+            seen: set[str] = set()
+            remaining = limit
+            for scope_type, scope_id in scopes:
+                if remaining <= 0:
+                    break
+                scoped = list(
                     await cast(Any, search_items)(
                         query,
-                        scope_type=SCOPE_TYPE_GLOBAL,
-                        scope_id=SCOPE_ID_GLOBAL,
-                        limit=limit,
+                        scope_type=scope_type,
+                        scope_id=scope_id,
+                        limit=remaining,
                     )
                 )
+                for item in scoped:
+                    item_id = getattr(item, "item_id", "")
+                    if item_id in seen:
+                        continue
+                    seen.add(item_id)
+                    items.append(item)
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
             return [
                 MemoryRef(
                     key=item.item_id,

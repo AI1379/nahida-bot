@@ -23,6 +23,10 @@ from nahida_bot.agent.retrieval import (
     RetrievalService,
 )
 from nahida_bot.agent.storage.tokenization import build_fts_query
+from nahida_bot.identity.policy import (
+    memory_read_request_from_context,
+    resolve_memory_read_scopes,
+)
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.logging import log_trace
@@ -1254,7 +1258,17 @@ class SessionRunner:
         if fts_enabled and not build_fts_query(query):
             return None
 
-        scope_type, scope_id = resolve_scope_from_session(session_id)
+        # Identity-aware read cascade (issue #7, Phase 2): person -> account ->
+        # chat -> global for private chats, chat -> global for groups. When
+        # identity is off or the sender is unlinked this collapses to the V1
+        # chat -> global cascade (or global-only for legacy sessions).
+        read_request = memory_read_request_from_context(
+            current_session.get(), session_id
+        )
+        scopes = tuple(
+            RetrievalScope(scope_type=scope_type, scope_id=scope_id)
+            for scope_type, scope_id in resolve_memory_read_scopes(read_request)
+        )
 
         try:
             adapter = MemoryStoreRetrievalAdapter(
@@ -1268,11 +1282,10 @@ class SessionRunner:
                     query=query,
                     source_type="memory",
                     limit=limit,
-                    scope=RetrievalScope(scope_type=scope_type, scope_id=scope_id),
+                    scopes=scopes,
                     fts_enabled=fts_enabled,
                     vector_enabled=vector_enabled,
                     hybrid_enabled=cfg.hybrid_enabled if cfg is not None else True,
-                    allow_global_fallback=True,
                 )
             )
         except Exception as exc:

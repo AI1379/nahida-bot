@@ -1,8 +1,8 @@
 # 人员身份与账号映射系统设计
 
 > 记录时间：2026-06-07
-> 最近修订：2026-06-18（Phase 0+1 落地：模型/存储/resolver/router/whoami，gated 在 `identity.enabled`）
-> 状态：Phase 0+1 已实现并验证；Phase 2-5 待实现（identity-aware 记忆读写、管理命令、WebUI、迁移与自助链接）
+> 最近修订：2026-06-18（Phase 0+1 落地：模型/存储/resolver/router/whoami；Phase 2 落地：identity-aware 记忆读取 cascade）
+> 状态：Phase 0-2 已实现并验证；Phase 3-5 待实现（identity-aware 记忆写入、管理命令、WebUI、迁移与自助链接）
 > 相关文档：
 >
 > - [memory-scoping.md](memory-scoping.md) — 当前 `chat` / `global` 记忆隔离设计
@@ -651,10 +651,12 @@ person/account > chat > global
 
 ### Phase 2：identity-aware memory read
 
-- [ ] `SessionRunner._load_relevant_memory` 使用 identity-aware cascade。
-- [ ] 私聊加载 person/account/chat/global。
-- [ ] 群聊只加载 chat/global 和允许在当前群可见的 sender memory。
-- [ ] `api_bridge.memory_search` 支持相同策略。
+> 状态：**已实现并验证（2026-06-18）**；`uv run pytest` / `ruff` / `pyright` 全绿（仅 live/network 集成测试因沙箱无网络被跳过）。读取 cascade gated 在身份解析结果上：identity 关闭或 sender 未链接时 cascade 退化为 V1 的 `chat → global`（legacy 仅 `global`），默认行为零变化。群聊默认仍只加载 `chat + global`，sender 的 private person memory 不注入；`group_person_memory="allow_private"` 才会加入 sender person/account scope（per-item visibility 过滤随 Phase 3 写入 visibility tag 后生效）。
+
+- [x] `SessionRunner._load_relevant_memory` 使用 identity-aware cascade。（`nahida_bot/identity/policy.py` 生成 scope 序列，`MemoryStoreRetrievalAdapter` 泛化为 N 级 cascade；`RetrievalRequest.scopes` 驱动。）
+- [x] 私聊加载 person/account/chat/global。（policy：`person → account → chat → global`，按优先级填满 budget 并按 `result_id` 去重。）
+- [x] 群聊只加载 chat/global 和允许在当前群可见的 sender memory。（默认 `chat → global`；`allow_private` opt-in 加入 sender scope；per-item `visible_only` 过滤待 Phase 3。）
+- [x] `api_bridge.memory_search` 支持相同策略。（同一 policy + budget-fill cascade。）
 
 ### Phase 3：identity-aware memory write
 

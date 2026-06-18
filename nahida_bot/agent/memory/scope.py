@@ -9,9 +9,16 @@ V1 has two scopes:
 - ``chat``: per-ChatAddress personal memory (preferences, facts, tasks).
 
 Legacy / untyped sessions resolve to ``global`` so existing behavior is
-preserved byte-for-byte. ``person`` / ``account`` / ``collection`` scopes are
-reserved for future work (identity system #7, knowledge base) and are not
-produced here yet. See ``docs/design/memory-scoping.md``.
+preserved byte-for-byte. The identity system (issue #7) adds two more scopes:
+
+- ``person``: a real chat counterpart spanning multiple platform accounts.
+- ``account``: a single unlinked platform account's personal memory.
+
+``person`` / ``account`` scope *ids* are not derived here — they come from the
+identity resolver (``nahida_bot.identity.policy``), which builds the read
+cascade (person -> account -> chat -> global). This module only owns the scope
+*type* string constants so they have one source of truth on the DB side. See
+``docs/design/memory-scoping.md`` and ``docs/design/person-identity-system.md``.
 """
 
 from __future__ import annotations
@@ -20,6 +27,8 @@ from nahida_bot.core.chat_address import ChatAddress, SessionKey
 
 SCOPE_TYPE_GLOBAL = "global"
 SCOPE_TYPE_CHAT = "chat"
+SCOPE_TYPE_PERSON = "person"
+SCOPE_TYPE_ACCOUNT = "account"
 SCOPE_ID_GLOBAL = "__global__"
 
 CHAT_SCOPED_KINDS = frozenset({"preference", "fact", "task"})
