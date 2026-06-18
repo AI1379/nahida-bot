@@ -1,8 +1,8 @@
 # 人员身份与账号映射系统设计
 
 > 记录时间：2026-06-07
-> 最近修订：2026-06-14（引入软/硬身份拆分、静默到显式验证、subject≠visibility）
-> 状态：规划中
+> 最近修订：2026-06-18（Phase 0+1 落地：模型/存储/resolver/router/whoami，gated 在 `identity.enabled`）
+> 状态：Phase 0+1 已实现并验证；Phase 2-5 待实现（identity-aware 记忆读写、管理命令、WebUI、迁移与自助链接）
 > 相关文档：
 >
 > - [memory-scoping.md](memory-scoping.md) — 当前 `chat` / `global` 记忆隔离设计
@@ -636,16 +636,18 @@ person/account > chat > global
 
 ### Phase 0：模型与文档
 
-- [ ] 新增 `AccountKey`、`IdentityResolution` 模型。
-- [ ] 明确 account key 格式和 channel instance id 约束。
-- [ ] 更新 memory scope 文档，声明 personal memory 不应默认写入 group chat scope。
+- [x] 新增 `AccountKey`、`IdentityResolution` 模型。（`nahida_bot/identity/models.py`，含 `Person` / `AccountLink` / `ParticipantObservation`。）
+- [x] 明确 account key 格式和 channel instance id 约束。（`{channel}:user:{platform_user_id}`；channel 取自 typed ChatAddress，**不**回退到 platform 名，避免多实例 namespace 碰撞。）
+- [x] 更新 memory scope 文档，声明 personal memory 不应默认写入 group chat scope。（原则见本文 §5.1 / §10；memory 读写尚未切到 person/account scope，Phase 2/3 落地。）
 
 ### Phase 1：配置驱动身份映射
 
-- [ ] 新增 identity 配置 seed。
-- [ ] 新增 `persons`、`person_accounts`、`account_observations` migration。
-- [ ] Router 解析 current sender account 并写入 `SessionContext`。
-- [ ] `whoami` 命令显示当前 account/person。
+> 状态：**Phase 0+1 已实现并验证（2026-06-18）**；`uv run pytest` / `ruff` / `pyright` 全绿。整层 gated 在 `identity.enabled`（默认 `False`），关闭时 resolver no-op、`SessionContext` 身份字段为空，现有行为零变化。
+
+- [x] 新增 identity 配置 seed。（`IdentityConfig` / `IdentityPersonSeed` / `IdentityAccountSeed`，启动时 upsert，`verification=config_seed`，只增改不删除。）
+- [x] 新增 `persons`、`person_accounts`、`account_observations` migration。（migration 016；`identity_link_requests` 留到 Phase 5。）
+- [x] Router 解析 current sender account 并写入 `SessionContext`。（`IdentityResolver` 在 `_build_session_context` 解析，三个 handler 共用；同时记录 `account_observations`。）
+- [x] `whoami` 命令显示当前 account/person。（`/identity whoami`，读 `current_session`。）
 
 ### Phase 2：identity-aware memory read
 

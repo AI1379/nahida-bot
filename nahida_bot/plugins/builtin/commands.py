@@ -138,6 +138,11 @@ class BuiltinCommandsPlugin(Plugin):
             description="Stop the currently running agent",
             aliases=["s"],
         )
+        self.api.register_command(
+            "identity",
+            self._cmd_identity,
+            description="Show your resolved identity (/identity whoami)",
+        )
 
     def _register_workspace_tools(self) -> None:
         self.api.register_tool(
@@ -1680,6 +1685,29 @@ class BuiltinCommandsPlugin(Plugin):
             lines.append("")
             lines.append(block)
 
+        return "\n".join(lines)
+
+    async def _cmd_identity(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        action = args.strip().lower()
+        if action not in {"", "whoami"}:
+            return "Usage:\n  /identity whoami  — show your resolved identity"
+        ctx = current_session.get()
+        if ctx is None:
+            return "No active session context."
+        lines = [f"Session: {session_id}"]
+        if ctx.sender_account_key:
+            lines.append(f"Account: {ctx.sender_account_key}")
+        else:
+            lines.append(
+                "Account: (unresolved — identity disabled or no platform account id)"
+            )
+        lines.append(
+            f"Person: {ctx.person_id}" if ctx.person_id else "Person: (unlinked)"
+        )
+        if ctx.sender_display_name:
+            lines.append(f"Display name: {ctx.sender_display_name}")
         return "\n".join(lines)
 
     @staticmethod

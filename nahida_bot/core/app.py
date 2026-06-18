@@ -96,6 +96,8 @@ class Application:
         self._model_router: ModelRouter | None = None
         self._memory_embedding_provider: Any | None = None
         self._memory_vector_index: Any | None = None
+        self._identity_store: Any | None = None
+        self._identity_resolver: Any | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
         self.session_runner: SessionRunner | None = None
         self.scheduler_service: SchedulerService | None = None
@@ -248,6 +250,46 @@ class Application:
         self.document_store_manager = DocumentStoreManager(engine)
 
         logger.info("application.memory_initialized", db_path=db_path)
+
+        # Identity (issue #7, Phase 0+1) — resolver + config-seeded links.
+        from nahida_bot.identity import (
+            AccountKey,
+            AccountLink,
+            IdentityResolver,
+            Person,
+            SQLiteIdentityStore,
+        )
+
+        identity_store = SQLiteIdentityStore(engine)
+        identity_cfg = self.settings.identity
+        if identity_cfg.enabled:
+            for person_seed in identity_cfg.people:
+                await identity_store.upsert_person(
+                    Person(
+                        person_id=person_seed.person_id,
+                        display_name=person_seed.display_name,
+                    )
+                )
+                for account in person_seed.accounts:
+                    await identity_store.upsert_account_link(
+                        AccountLink(
+                            account_key=str(
+                                AccountKey.from_parts(
+                                    account.channel, account.platform_account_id
+                                )
+                            ),
+                            person_id=person_seed.person_id,
+                            channel=account.channel,
+                            account_type=account.account_type,
+                            platform_account_id=account.platform_account_id,
+                            label=account.label,
+                            verification="config_seed",
+                        )
+                    )
+        self._identity_store = identity_store
+        self._identity_resolver = IdentityResolver(
+            identity_store, enabled=identity_cfg.enabled
+        )
 
         # Build providers from config
         slots: list[ProviderSlot] = []
@@ -798,6 +840,7 @@ class Application:
                     group_context_enabled=self.settings.router.group_context.enabled,
                     enable_silent_reply=self.settings.enable_silent_reply,
                 ),
+                identity_resolver=self._identity_resolver,
             )
             await self.message_router.start()
 

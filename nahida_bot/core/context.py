@@ -22,6 +22,10 @@ class SessionContext:
     chat_address: ChatAddress | None = None
     user_id: str = ""
     sender_display_name: str = ""
+    # Identity (issue #7). Empty/None when identity is disabled or the sender's
+    # account could not be derived. Populated by MessageRouter via IdentityResolver.
+    sender_account_key: str = ""
+    person_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)

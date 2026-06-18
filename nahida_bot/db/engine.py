@@ -280,6 +280,61 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_plugin_data_plugin
         ON plugin_data(plugin_id);
     """,
+    # Migration 016: person/account identity (issue #7, Phase 0+1)
+    """
+    CREATE TABLE IF NOT EXISTS persons (
+        person_id     TEXT    PRIMARY KEY,
+        display_name  TEXT    NOT NULL DEFAULT '',
+        status        TEXT    NOT NULL DEFAULT 'active',
+        metadata_json TEXT    NOT NULL DEFAULT '{}',
+        created_at    TEXT    NOT NULL,
+        updated_at    TEXT    NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS person_accounts (
+        account_key         TEXT    PRIMARY KEY,
+        person_id           TEXT    NOT NULL REFERENCES persons(person_id) ON DELETE CASCADE,
+        channel             TEXT    NOT NULL,
+        account_type        TEXT    NOT NULL DEFAULT 'user',
+        platform_account_id TEXT    NOT NULL,
+        label               TEXT    NOT NULL DEFAULT '',
+        status              TEXT    NOT NULL DEFAULT 'active',
+        verification        TEXT    NOT NULL DEFAULT 'manual_link',
+        linked_by           TEXT    NOT NULL DEFAULT '',
+        linked_at           TEXT    NOT NULL,
+        metadata_json       TEXT    NOT NULL DEFAULT '{}'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_person_accounts_person
+        ON person_accounts(person_id, status);
+
+    -- At most one active binding per (channel, account_type, platform_account_id).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_person_accounts_unique_active
+        ON person_accounts(channel, account_type, platform_account_id)
+        WHERE status = 'active';
+
+    CREATE TABLE IF NOT EXISTS account_observations (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_key     TEXT    NOT NULL,
+        chat_address    TEXT    NOT NULL,
+        display_name    TEXT    NOT NULL DEFAULT '',
+        role_tags_json  TEXT,
+        first_seen_at   TEXT    NOT NULL,
+        last_seen_at    TEXT    NOT NULL,
+        last_message_id TEXT    NOT NULL DEFAULT '',
+        metadata_json   TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_observations_account
+        ON account_observations(account_key, last_seen_at);
+
+    CREATE INDEX IF NOT EXISTS idx_account_observations_chat
+        ON account_observations(chat_address, last_seen_at);
+
+    -- One row per (account, chat) so observation writes upsert on conflict.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_observations_unique
+        ON account_observations(account_key, chat_address);
+    """,
 ]
 
 

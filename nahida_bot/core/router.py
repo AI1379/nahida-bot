@@ -29,6 +29,7 @@ from nahida_bot.core.message_context import (
 )
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.core.runtime_settings import runtime_settings_from_meta
+from nahida_bot.identity.resolver import IdentityResolver
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import (
     CommandEntry,
@@ -90,6 +91,7 @@ class MessageRouter:
         runner: SessionRunner | None = None,
         workspace_manager: WorkspaceManager | None = None,
         config: RouterConfig | None = None,
+        identity_resolver: IdentityResolver | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._commands = command_registry
@@ -98,6 +100,7 @@ class MessageRouter:
         self._runner = runner
         self._workspace = workspace_manager
         self._config = config or RouterConfig()
+        self._identity_resolver = identity_resolver
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
         self._agent_response_subscription: Subscription | None = None
@@ -113,6 +116,43 @@ class MessageRouter:
             list[tuple[InboundMessage, str, str | None, str, str, str | None, str]],
         ] = {}
         self._stopping = False
+
+    async def _build_session_context(
+        self,
+        inbound: InboundMessage,
+        address: ChatAddress,
+        session_id: str,
+        workspace_id: str | None,
+    ) -> SessionContext:
+        """Construct the SessionContext for an inbound turn, with identity.
+
+        Identity fields stay empty when the resolver is absent/disabled or when
+        no account could be derived, so existing behavior is unchanged.
+        """
+        sender_account_key = ""
+        person_id: str | None = None
+        if self._identity_resolver is not None:
+            identity = await self._identity_resolver.resolve(
+                inbound, address, session_id
+            )
+            if identity is not None:
+                sender_account_key = identity.sender_account_key
+                person_id = identity.person_id
+        return SessionContext(
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            chat_address=address,
+            user_id=inbound.user_id,
+            sender_display_name=(
+                inbound.sender_context.display_name
+                if inbound.sender_context is not None
+                else ""
+            ),
+            sender_account_key=sender_account_key,
+            person_id=person_id,
+        )
 
     @property
     def agent(self) -> AgentLoop | None:
@@ -346,18 +386,8 @@ class MessageRouter:
         workspace_id = self._resolve_workspace_id()
 
         # Set session context so tool handlers can access it
-        session_ctx = SessionContext(
-            platform=inbound.platform,
-            chat_id=inbound.chat_id,
-            session_id=session_id,
-            workspace_id=workspace_id,
-            chat_address=address,
-            user_id=inbound.user_id,
-            sender_display_name=(
-                inbound.sender_context.display_name
-                if inbound.sender_context is not None
-                else ""
-            ),
+        session_ctx = await self._build_session_context(
+            inbound, address, session_id, workspace_id
         )
         token = current_session.set(session_ctx)
         try:
@@ -401,18 +431,8 @@ class MessageRouter:
             chat_address=str(address),
             **_inbound_log_fields(inbound),
         )
-        session_ctx = SessionContext(
-            platform=inbound.platform,
-            chat_id=inbound.chat_id,
-            session_id=session_id,
-            workspace_id=workspace_id,
-            chat_address=address,
-            user_id=inbound.user_id,
-            sender_display_name=(
-                inbound.sender_context.display_name
-                if inbound.sender_context is not None
-                else ""
-            ),
+        session_ctx = await self._build_session_context(
+            inbound, address, session_id, workspace_id
         )
         token = current_session.set(session_ctx)
         try:
@@ -472,18 +492,8 @@ class MessageRouter:
             instruction_chars=len(event.payload.instruction),
             **_inbound_log_fields(inbound),
         )
-        session_ctx = SessionContext(
-            platform=inbound.platform,
-            chat_id=inbound.chat_id,
-            session_id=session_id,
-            workspace_id=workspace_id,
-            chat_address=address,
-            user_id=inbound.user_id,
-            sender_display_name=(
-                inbound.sender_context.display_name
-                if inbound.sender_context is not None
-                else ""
-            ),
+        session_ctx = await self._build_session_context(
+            inbound, address, session_id, workspace_id
         )
         token = current_session.set(session_ctx)
         proactive_context = _render_observed_batch_context(

@@ -204,6 +204,41 @@ class GroupContextConfig(BaseModel):
     max_chars: int = Field(default=4000, ge=0)
 
 
+class IdentityAccountSeed(BaseModel):
+    """A platform account to seed-link to a person at startup."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    channel: str
+    account_type: str = "user"
+    platform_account_id: str
+    label: str = ""
+
+
+class IdentityPersonSeed(BaseModel):
+    """A person and their accounts, seeded from config (verification=config_seed)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    person_id: str
+    display_name: str = ""
+    accounts: list[IdentityAccountSeed] = Field(default_factory=list)
+
+
+class IdentityConfig(BaseModel):
+    """Person/account identity system (issue #7).
+
+    Disabled by default: with ``enabled=False`` the resolver is a no-op and
+    ``SessionContext`` carries empty identity fields, so existing behavior is
+    unchanged. Seeded links are upserted (never deleted) at startup.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = False
+    people: list[IdentityPersonSeed] = Field(default_factory=list)
+
+
 class RouterConfigModel(BaseModel):
     """Message router configuration."""
 
@@ -270,6 +305,7 @@ class Settings(BaseModel):
     webui: WebUIConfigModel = WebUIConfigModel()
     model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
     memory: MemoryConfig = MemoryConfig()
+    identity: IdentityConfig = IdentityConfig()
 
 
 def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:
