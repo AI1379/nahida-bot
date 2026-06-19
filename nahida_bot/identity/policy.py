@@ -4,9 +4,10 @@ Owns BOTH sides of the memory-scope decision:
 
 - **Read cascade** (Phase 2): turn an inbound turn's identity into the ordered
   scope list the read path cascades through — private 1:1 is
-  ``person -> account -> chat -> global``; group is ``chat -> global`` (the
-  sender's private memory is injected only under ``allow_private``); legacy is
-  ``global`` only.
+  ``person -> account -> chat -> global``; group is ``chat -> global`` for
+  guests but ``chat -> person -> account -> global`` when the sender is a
+  declared Person (it's the admin's bot — a memory leak is harmless, §2.5);
+  legacy is ``global`` only.
 - **Write scope** (Phase 3): pick the single scope a memory item of a given
   ``kind`` is written to — personal kinds go to ``person`` (linked) or
   ``account`` (unlinked) or ``chat`` (identity off); global kinds go to
@@ -28,7 +29,7 @@ each other. See ``docs/design/person-identity-system.md`` §2.5.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from nahida_bot.agent.memory.scope import (
     CHAT_SCOPED_KINDS,
@@ -43,11 +44,6 @@ from nahida_bot.core.chat_address import SessionKey
 if TYPE_CHECKING:
     from nahida_bot.core.context import SessionContext
     from nahida_bot.core.chat_address import ChatAddress
-
-GroupPersonMemoryPolicy = Literal["off", "visible_only", "allow_private"]
-
-#: Conservative default for group chats — never inject private sender memory.
-DEFAULT_GROUP_PERSON_MEMORY: GroupPersonMemoryPolicy = "visible_only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +60,6 @@ class MemoryReadRequest:
     chat_scope_id: str
     person_id: str | None = None
     sender_account_key: str = ""
-    group_person_memory: GroupPersonMemoryPolicy = DEFAULT_GROUP_PERSON_MEMORY
 
 
 def resolve_memory_read_scopes(
@@ -90,13 +85,14 @@ def resolve_memory_read_scopes(
         scopes.append((SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL))
         return scopes
 
-    # Group / channel / thread: chat rules + global knowledge. Private sender
-    # memory is injected only under an explicit ``allow_private`` opt-in; the
-    # default (off / visible_only) keeps private 1:1 facts out of group turns.
+    # Group / channel / thread: chat rules + global knowledge. A *declared*
+    # Person (linked sender) also gets their personal scope injected — it's the
+    # admin's bot and a memory leak is harmless (§2.5). Unlinked guests stay on
+    # the V1 ``chat -> global`` cascade. No config knob: injection is automatic
+    # for declared persons.
     scopes.append((SCOPE_TYPE_CHAT, req.chat_scope_id))
-    if req.group_person_memory == "allow_private":
-        if req.person_id:
-            scopes.append((SCOPE_TYPE_PERSON, req.person_id))
+    if req.person_id:
+        scopes.append((SCOPE_TYPE_PERSON, req.person_id))
         if req.sender_account_key:
             scopes.append((SCOPE_TYPE_ACCOUNT, req.sender_account_key))
     scopes.append((SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL))
@@ -106,8 +102,6 @@ def resolve_memory_read_scopes(
 def memory_read_request_from_context(
     ctx: SessionContext | None,
     session_id: str,
-    *,
-    group_person_memory: GroupPersonMemoryPolicy = DEFAULT_GROUP_PERSON_MEMORY,
 ) -> MemoryReadRequest:
     """Build a :class:`MemoryReadRequest` from the live session context.
 
@@ -147,7 +141,6 @@ def memory_read_request_from_context(
         chat_scope_id=chat_scope_id,
         person_id=person_id,
         sender_account_key=sender_account_key,
-        group_person_memory=group_person_memory,
     )
 
 

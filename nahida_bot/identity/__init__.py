@@ -14,8 +14,6 @@ from nahida_bot.identity.models import (
     ParticipantObservation,
 )
 from nahida_bot.identity.policy import (
-    DEFAULT_GROUP_PERSON_MEMORY,
-    GroupPersonMemoryPolicy,
     MemoryReadRequest,
     MemoryWriteRequest,
     memory_read_request_from_context,
@@ -30,8 +28,6 @@ from nahida_bot.identity.store import IdentityStore
 __all__ = [
     "AccountKey",
     "AccountLink",
-    "DEFAULT_GROUP_PERSON_MEMORY",
-    "GroupPersonMemoryPolicy",
     "IdentityResolution",
     "IdentityResolver",
     "IdentityStore",

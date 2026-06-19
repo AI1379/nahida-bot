@@ -62,27 +62,18 @@ def test_private_person_without_account_skips_account_scope() -> None:
     assert scopes == [("person", "owner"), ("chat", PRIVATE_CHAT), GLOBAL]
 
 
-def test_group_default_never_injects_private_sender_memory() -> None:
-    """Group chats default to chat + global only — no private sender memory."""
+def test_group_injects_declared_person_scopes() -> None:
+    """A declared Person (linked sender) gets their scopes injected in groups.
+
+    It's the admin's bot — a memory leak is harmless (design §2.5) — so a linked
+    sender's person/account scope is injected automatically, with no config knob.
+    """
     scopes = resolve_memory_read_scopes(
         MemoryReadRequest(
             target_type="group",
             chat_scope_id=GROUP_CHAT,
             person_id="owner",
             sender_account_key=ACCOUNT,
-        )
-    )
-    assert scopes == [("chat", GROUP_CHAT), GLOBAL]
-
-
-def test_group_allow_private_opts_into_sender_scopes() -> None:
-    scopes = resolve_memory_read_scopes(
-        MemoryReadRequest(
-            target_type="group",
-            chat_scope_id=GROUP_CHAT,
-            person_id="owner",
-            sender_account_key=ACCOUNT,
-            group_person_memory="allow_private",
         )
     )
     assert scopes == [
@@ -93,14 +84,13 @@ def test_group_allow_private_opts_into_sender_scopes() -> None:
     ]
 
 
-def test_group_off_does_not_inject_sender_scopes() -> None:
+def test_group_guest_without_person_stays_chat_global() -> None:
+    """An unlinked group guest (no person_id) stays on the V1 chat -> global."""
     scopes = resolve_memory_read_scopes(
         MemoryReadRequest(
             target_type="group",
             chat_scope_id=GROUP_CHAT,
-            person_id="owner",
             sender_account_key=ACCOUNT,
-            group_person_memory="off",
         )
     )
     assert scopes == [("chat", GROUP_CHAT), GLOBAL]
@@ -176,7 +166,7 @@ def test_context_request_legacy_session_is_global_only() -> None:
     assert resolve_memory_read_scopes(req) == [GLOBAL]
 
 
-def test_context_request_group_keeps_sender_memory_private_by_default() -> None:
+def test_context_request_group_injects_declared_person() -> None:
     req = memory_read_request_from_context(
         _ctx(
             target_type="group",
@@ -187,10 +177,15 @@ def test_context_request_group_keeps_sender_memory_private_by_default() -> None:
         ),
         GROUP_CHAT,
     )
-    # Linked person/account are known, but the group cascade still excludes them.
+    # A declared Person is auto-injected in groups (admin's bot; §2.5).
     assert req.person_id == "owner"
     assert req.sender_account_key == ACCOUNT
-    assert resolve_memory_read_scopes(req) == [("chat", GROUP_CHAT), GLOBAL]
+    assert resolve_memory_read_scopes(req) == [
+        ("chat", GROUP_CHAT),
+        ("person", "owner"),
+        ("account", ACCOUNT),
+        GLOBAL,
+    ]
 
 
 # ── resolve_memory_write_scope ──────────────────────────────
