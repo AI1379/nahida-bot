@@ -30,15 +30,18 @@ def account_key_from_inbound(
 ) -> AccountKey | None:
     """Derive the sender's :class:`AccountKey`, or ``None`` if unavailable.
 
-    Channel comes from the (typed) chat address — the configured channel
-    instance id — falling back to the inbound platform. The platform account id
-    comes from ``SenderContext.platform_user_id`` with a legacy fallback to
-    ``InboundMessage.user_id``.
+    Channel comes from the (typed) chat address. Caveat:
+    ``ChatAddress.from_inbound`` currently sets ``channel = platform`` (the SDK
+    has no instance-id concept yet), so today the channel segment *is* the
+    platform name — safe for single-instance deployments, but two bots on the
+    same platform would collide and that is not yet supported. The platform
+    account id comes from ``SenderContext.platform_user_id`` with a legacy
+    fallback to ``InboundMessage.user_id``.
     """
-    # Channel is the configured channel instance id from the typed chat address.
-    # We deliberately do NOT fall back to ``inbound.platform`` (a platform name)
-    # — a key built from a platform name would collide across multi-instance
-    # deployments. No typed address means no account key.
+    # Channel currently = platform name (the SDK's from_inbound sets
+    # channel=platform; no instance-id concept yet). Safe for single-instance;
+    # multi-instance same-platform would collide and is unsupported. No typed
+    # address means no account key.
     channel = address.channel if address is not None else ""
 
     sender = inbound.sender_context
@@ -111,6 +114,11 @@ class IdentityResolver:
                 # The store only ever persists LinkSource verification values.
                 source=cast(LinkSource, source),
             )
+        _logger.debug(
+            "identity.account_unlinked",
+            account_key=account_key_str,
+            chat_address=chat_address,
+        )
         return IdentityResolution(
             chat_address=chat_address,
             session_id=session_id,

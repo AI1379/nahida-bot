@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from nahida_bot.db.engine import DatabaseEngine
+from nahida_bot.identity.models import AccountKey
 
 
 def _utc_now_iso() -> str:
@@ -54,9 +55,6 @@ class SQLiteIdentityRepository:
         *,
         account_key: str,
         person_id: str,
-        channel: str,
-        account_type: str = "user",
-        platform_account_id: str,
         label: str = "",
         status: str = "active",
         verification: str = "manual_link",
@@ -65,12 +63,16 @@ class SQLiteIdentityRepository:
     ) -> None:
         """Bind an account to a person, creating the person if missing.
 
-        The unique-active index on ``(channel, account_type,
-        platform_account_id)`` guarantees one active binding per platform
-        account; upserting a new active link for the same platform account
-        supersedes any prior one (its row is overwritten by account_key, which
-        is derived from the same fields).
+        ``channel`` / ``account_type`` / ``platform_account_id`` are derived
+        from ``account_key`` (the canonical source) so the unique-active index
+        on ``(channel, account_type, platform_account_id)`` can never diverge
+        from the ``account_key`` primary key. ``account_type`` is always
+        ``"user"`` — the only segment in the ``{channel}:user:{id}`` key format.
         """
+        parsed = AccountKey.parse(account_key)
+        channel = parsed.channel
+        account_type = "user"
+        platform_account_id = parsed.platform_user_id
         now_iso = _utc_now_iso()
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         async with self._engine.write_lock:
@@ -128,7 +130,8 @@ class SQLiteIdentityRepository:
         """Return active account links for a person."""
         rows = await self._engine.fetch_all(
             "SELECT account_key, person_id, channel, account_type, "
-            "platform_account_id, label, verification, linked_at "
+            "platform_account_id, label, verification, linked_by, linked_at, "
+            "metadata_json "
             "FROM person_accounts "
             "WHERE person_id = ? AND status = 'active' "
             "ORDER BY linked_at ASC",
@@ -143,7 +146,11 @@ class SQLiteIdentityRepository:
                 "platform_account_id": str(row["platform_account_id"]),
                 "label": str(row["label"]),
                 "verification": str(row["verification"]),
+                "linked_by": str(row["linked_by"]),
                 "linked_at": str(row["linked_at"]),
+                "metadata": (
+                    json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+                ),
             }
             for row in rows
         ]

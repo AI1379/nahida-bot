@@ -30,16 +30,17 @@ class SQLiteIdentityStore:
         )
 
     async def upsert_account_link(self, link: AccountLink) -> None:
+        # channel/account_type/platform_account_id are derived from account_key
+        # inside the repo (account_key is the canonical source), so the
+        # identity columns can never diverge from the primary key.
         await self._repo.upsert_account_link(
             account_key=link.account_key,
             person_id=link.person_id,
-            channel=link.channel,
-            account_type=link.account_type,
-            platform_account_id=link.platform_account_id,
             label=link.label,
             status=link.status,
             verification=link.verification,
             linked_by=link.linked_by,
+            metadata=dict(link.metadata),
         )
 
     async def list_accounts(self, person_id: str) -> list[AccountLink]:
@@ -60,6 +61,7 @@ class SQLiteIdentityStore:
 
 
 def _row_to_account_link(row: dict[str, object]) -> AccountLink:
+    metadata = row.get("metadata")
     return AccountLink(
         account_key=str(row["account_key"]),
         person_id=str(row["person_id"]),
@@ -69,5 +71,6 @@ def _row_to_account_link(row: dict[str, object]) -> AccountLink:
         label=str(row["label"]),
         status="active",
         verification=str(row["verification"]),  # type: ignore[arg-type]
-        linked_by="",
+        linked_by=str(row.get("linked_by", "")),
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
     )

@@ -22,12 +22,15 @@ def _utc_now() -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class AccountKey:
-    """A platform account identity, scoped to a configured channel instance.
+    """A platform account identity.
 
     Canonical string form is ``{channel}:user:{platform_user_id}``. ``channel``
-    is the configured channel instance id (not a vague platform name) so that
-    multi-account deployments keep namespaces separate. ``platform_user_id`` is
-    the stable platform-side account id (never a display name).
+    is currently the platform name (the SDK's ``ChatAddress.from_inbound`` sets
+    ``channel=platform``; there is no instance-id concept yet) — safe for
+    single-instance deployments. Multi-instance same-platform deployments would
+    collide and are not yet supported (would need real instance ids).
+    ``platform_user_id`` is the stable platform-side account id (never a display
+    name).
     """
 
     channel: str
@@ -79,6 +82,7 @@ class AccountLink:
     verification: LinkSource = "manual_link"
     linked_by: str = ""
     linked_at: datetime = field(default_factory=_utc_now)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

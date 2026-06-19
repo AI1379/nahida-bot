@@ -123,7 +123,7 @@ onebot:user:10001
 
 约束：
 
-- `channel` 必须是配置后的 channel 实例 id，而不是含糊的平台名。多 OneBot / 多 QQ 机器人账号部署时，应使用不同 channel id，例如 `onebot-main`、`onebot-alt`。
+- `channel` 段当前即**平台名**（SDK `ChatAddress.from_inbound` 设 `channel=platform`，尚无实例 id 概念），单实例部署安全。多实例（同平台两个 bot）会碰撞，目前不支持——需要真正的实例 id（TODO，需改 SDK + adapter，见 §16 审查 #1）。
 - `platform_user_id` 来自 `SenderContext.platform_user_id`，缺失时退回 `InboundMessage.user_id`。
 - `AccountKey` 不包含群号。群内显示名、角色和成员状态进入 participant observation，而不是账号 key。
 
@@ -562,7 +562,7 @@ person/account > chat > global
 ### Phase 0：模型与文档
 
 - [x] 新增 `AccountKey`、`IdentityResolution` 模型。（`nahida_bot/identity/models.py`，含 `Person` / `AccountLink` / `ParticipantObservation`。）
-- [x] 明确 account key 格式和 channel instance id 约束。（`{channel}:user:{platform_user_id}`；channel 取自 typed ChatAddress，**不**回退到 platform 名，避免多实例 namespace 碰撞。）
+- [x] 明确 account key 格式。（`{channel}:user:{platform_user_id}`；channel 取自 typed ChatAddress。）**注**：channel 段当前实际是平台名（SDK `from_inbound` 设 `channel=platform`，无实例 id），单实例安全；多实例碰撞见 §16 审查 #1，暂不支持。
 - [x] 更新 memory scope 文档，声明 personal memory 不应默认写入 group chat scope。
 
 ### Phase 1：配置驱动身份映射
@@ -636,7 +636,7 @@ person/account > chat > global
 | 错误声明管理员账号 | 权限过大 | 配置由管理员物理控制；可审计可撤销；声明是显式行为 |
 | 记忆认错人 | 回错话（低危） | 可接受——记忆是软上下文；不做硬过滤（§5.3） |
 | 显示名碰撞 | 记忆归错人（低危） | 显示名只做 observation；`AccountKey` 用平台 id |
-| 多 bot 账号 namespace 碰撞 | account key 错误 | channel id 必须表示配置实例；多账号部署使用不同 channel id |
+| 多 bot 账号 namespace 碰撞 | 同平台多实例时 account key 碰撞 | **当前不支持多实例**：channel 段即平台名（SDK 无实例 id），单实例安全。多实例需实例 id（§16 审查 #1，TODO） |
 | 解绑后旧记忆残留 | 访客误以为完全隔离 | 解绑只改变读取；提供迁出/归档工具并在 UI 明示 |
 
 ## 15. 结论
@@ -653,3 +653,19 @@ Person       -> 哪些账号属于同一个真实聊天对象（记忆连续性�
 长期个人记忆归属 `person` 或 `account`，群/频道约定归属 `chat`，系统知识归属 `global`。
 
 但最关键的设计决定是：**信任边界在“动作授权”，不在“记忆身份”。** 管理员账号在部署时声明，平台已认证，无需运行时验证；危险动作由一道独立于记忆的硬闸把关。记忆侧因此可以完全无感——没有 OTP、没有软/硬身份、没有 sensitivity 分级——因为 bot 在记忆里认错人无害，真正不能认错的是“能不能执行危险操作”。
+
+## 16. 审查记录与已知问题
+
+> 2026-06-19 对四个提交（`472fde6` Phase 0+1、`11cd424` Phase 2 读、`67581e0` Phase 3 写、`fd5ef70` 设计解耦）的代码审查。整体结论：分层清晰、identity-off 不变量保持良好、读/写 scope 推导对称（纯函数）、跨账号链接在记忆层成立（P 绑 `milky:A` + `telegram:B`，从 milky 写 `person:{P}`，从 telegram 读 cascade 命中）。下表为发现的问题与处置。
+
+| # | 问题 | 严重度 | 处置 |
+|---|------|--------|------|
+| 1 | `AccountKey` 的 channel 段实际是**平台名**——SDK `ChatAddress.from_inbound` 恒为 `channel=platform`，没有实例 id 概念。`resolver.py` “刻意不回退 platform 名”的注释自相矛盾（`address.channel` 就是 `inbound.platform`）；`channel_registry` 按平台名 flat dict、`register` 覆盖同平台，多实例本就跑不了。属潜在地雷 + 文档过度承诺，非现行 bug。 | 中（误导） | ✅ 本次：修正文档/注释措辞为“channel 段当前即平台名，单实例部署安全；多实例需实例 id（TODO）”。真正实现实例 id 要改 SDK `from_inbound` + adapter，单实例个人 bot 暂不做。 |
+| 2 | re-link 是静默**硬覆盖**（`ON CONFLICT(account_key) DO UPDATE` 原地改 `person_id`/`verification`/`linked_by`/时间戳），丢 provenance 与审计；而 unlink 是软删除（`status=inactive`）。两条路径不一致。 | 中 | ⏳ Phase 4：re-link 改为“旧行置 inactive + 插新行”保留历史，或至少 warning 日志。当前仅 config seed 触发（幂等）。 |
+| 3 | 唯一索引列 `(channel, account_type, platform_account_id)` 与解析键 `account_key` 是两套表示，仅靠调用方纪律一致；Phase 4 admin 命令传入不一致值会抛未捕获 `IntegrityError`。 | 中（Phase 4 footgun） | ✅ 本次：repo 内部从 `account_key` 派生 `channel`/`account_type`/`platform_account_id`（`AccountKey.parse`），不再信任调用方分别传入。`account_key` 成为唯一真源，索引与 PK 结构上不可能分叉。 |
+| 4 | 链接静默失败：seed 的 `platform_account_id` ≠ 运行时 `SenderContext.platform_user_id` 时永远 unlinked，无任何告警——最常见的现实故障（seed 写错）无诊断。 | 中（运维体验） | ✅ 本次：resolver 在“派生出 account_key 但未链接”时打 debug 日志。 |
+| 5 | `user_id` 兜底（`platform_user_id` 为空时）可能产出不稳定/错误 key：legacy `user_id` 可能 per-message/会话级，非稳定账号 id；不稳定的兜底会摧毁链接。 | 中 | ⏳ Phase 4：明确哪些 adapter 保证填 `platform_user_id`；兜底路径至少 warning，考虑直接返回 None（宁可不解析）。 |
+| 6 | 读 `AccountLink` 丢字段：`_row_to_account_link` 硬编码 `linked_by=""`，SELECT 未取 `linked_by`/`metadata_json`。 | 低 | ✅ 本次：SELECT 取 `linked_by`/`metadata_json`，`_row_to_account_link` 正确映射；`AccountLink` 增 `metadata` 字段。 |
+| 7 | config seed 非事务：逐行 upsert + 逐行 commit，启动中断留部分 seed。幂等可重试，影响低。 | 低 | ⏳ Phase 4/低优先：包成一个事务。 |
+
+保留的优点：Phase A 解耦干净（policy 只读身份选 scope，无授权逻辑）；identity-off 不变量读/写两侧逐字节退化 V1 且有测试覆盖；resolver 全程不抛异常降级 None。

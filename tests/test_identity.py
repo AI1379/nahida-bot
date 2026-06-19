@@ -158,6 +158,58 @@ async def test_store_list_accounts(store: SQLiteIdentityStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_store_list_accounts_round_trips_provenance(
+    store: SQLiteIdentityStore,
+) -> None:
+    """linked_by and metadata survive a write/read cycle (audit #6)."""
+    await store.upsert_person(Person(person_id="owner"))
+    await store.upsert_account_link(
+        AccountLink(
+            account_key="milky:user:10001",
+            person_id="owner",
+            channel="milky",
+            platform_account_id="10001",
+            linked_by="admin",
+            metadata={"origin": "config", "note": "seed"},
+        )
+    )
+    links = await store.list_accounts("owner")
+    assert len(links) == 1
+    link = links[0]
+    assert link.linked_by == "admin"
+    assert link.metadata == {"origin": "config", "note": "seed"}
+
+
+@pytest.mark.asyncio
+async def test_store_account_link_columns_derived_from_account_key(
+    store: SQLiteIdentityStore,
+) -> None:
+    """channel/account_type/platform_account_id come from account_key, not the
+    caller-supplied AccountLink fields — the identity columns can't diverge
+    from the primary key (audit #3)."""
+    await store.upsert_person(Person(person_id="owner"))
+    await store.upsert_account_link(
+        AccountLink(
+            account_key="milky:user:10001",
+            person_id="owner",
+            channel="would-collide",  # deliberately inconsistent
+            account_type="bot",  # deliberately inconsistent
+            platform_account_id="99999",  # deliberately inconsistent
+        )
+    )
+    links = await store.list_accounts("owner")
+    assert len(links) == 1
+    link = links[0]
+    # Derived from account_key="milky:user:10001", ignoring the wrong fields.
+    assert link.channel == "milky"
+    assert link.account_type == "user"
+    assert link.platform_account_id == "10001"
+    # resolve still works (account_key is the lookup key).
+    person_id, _ = await store.resolve_account("milky:user:10001")
+    assert person_id == "owner"
+
+
+@pytest.mark.asyncio
 async def test_observation_upsert_is_idempotent(store: SQLiteIdentityStore) -> None:
     from nahida_bot.identity import ParticipantObservation
 
