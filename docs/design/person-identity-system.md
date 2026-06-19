@@ -1,8 +1,8 @@
 # 人员身份与账号映射系统设计
 
 > 记录时间：2026-06-07
-> 最近修订：2026-06-19（架构调整：**信任边界移到"动作授权"，与"记忆身份"解耦**；据此降级软/硬身份、sensitivity/visibility 访问控制、OTP 自助链接）
-> 状态：Phase 0-2 已实现并验证；下一步优先级是 **Phase A 授权闸**（堵住"冒充管理员执行危险操作"，当前唯一真正的安全洞），其次 Phase 3-5（identity-aware 记忆写入、管理命令、迁移）
+> 最近修订：2026-06-19（架构调整：**信任边界移到"动作授权"，与"记忆身份"解耦**，据此降级软/硬身份、sensitivity/visibility 访问控制、OTP 自助链接；Phase 3 落地：identity-aware 记忆写入）
+> 状态：Phase 0-3 已实现并验证；Phase A（动作授权闸）**按用户决定暂缓**——先完成记忆相关部分，授权闸之后做（记忆侧已与之解耦，见 §2.5）；Phase 4-5（管理命令、迁移）待实现
 > 相关文档：
 >
 > - [memory-scoping.md](memory-scoping.md) — 当前 `chat` / `global` 记忆隔离设计
@@ -273,36 +273,35 @@ InboundMessage
 
 ## 6. Consolidation 设计
 
-### 6.1 Subject 不由 LLM 发明 ID
+### 6.1 LLM 不发明 scope ID
 
-Extractor 可以输出受控 subject：
+Extractor 只输出固定集合内的 `kind` + 内容；**scope 完全由系统从 kind + 当前 sender 身份推导**，LLM 无法指定 `person_id` / `account_key` / scope string：
 
 ```json
 {
   "kind": "preference",
-  "subject": "current_sender",
   "content": "用户偏好使用 Python。"
 }
 ```
 
-允许的 subject：
+系统映射（`nahida_bot/identity/policy.py:resolve_memory_write_scope`）：
 
-| subject | 系统映射 |
-|---------|----------|
-| `current_sender` | `person`（已链接）或 `account`/`chat` scope |
-| `current_chat` | `chat` scope |
-| `global` | `global` scope |
-| `mentioned_account:{account_key}` | 仅当系统提供 allowlist 且策略允许 |
+| kind | 身份 | → scope |
+|------|------|---------|
+| `preference` / `fact` / `task` | 已链接 person | `person:{person_id}` |
+| `preference` / `fact` / `task` | 未链接（有 account_key） | `account:{account_key}` |
+| `preference` / `fact` / `task` | identity 关闭 / 无 account | `chat:{chat_key}`（V1） |
+| `decision` / `procedure` / `warning` / `summary` | 任意 | `global:__global__` |
 
-禁止 extractor 输出任意 `person_id`、`account_key` 或 scope string。系统只接受当前 turn 可验证的 subject。
+旧设计里 extractor 输出受控 `subject`（`current_sender`/`current_chat`/`global`）的方案已简化：kind + identity 足以决定 scope，不需要 subject 字段，也不需要 LLM 选 subject。
 
 ### 6.2 写入流程
 
 ```text
 current_session + InboundMessage
-  -> IdentityResolution
-  -> MemoryExtractor extracts content + controlled subject
-  -> MemorySubjectResolver maps subject to scope
+  -> IdentityResolution (person_id / sender_account_key)
+  -> MemoryExtractor extracts content + kind（无 subject 字段）
+  -> resolve_memory_write_scope(identity, kind) -> (scope_type, scope_id)
   -> MemoryStore.append_item(scope_type, scope_id, metadata)
 ```
 
@@ -584,22 +583,24 @@ person/account > chat > global
 - [x] 群聊：管理员 sender 注入 person/account scope，访客只 chat → global。
 - [x] `api_bridge.memory_search` 支持相同策略。（同一 policy + budget-fill cascade。）
 
-### Phase A：动作授权闸（最高优先级）
+### Phase A：动作授权闸（暂缓）
 
-> 堵住“冒充管理员执行危险操作”——这是当前**唯一真正的安全洞**（§2.5）。在记忆写/管理命令之前先做。
+> **按用户决定暂缓（2026-06-19）**：先完成记忆相关部分（Phase 3/4/5），授权闸之后做。记忆侧已与之解耦（§2.5）——两者都只读 `SessionContext.sender_account_key`/`person_id`，记忆用它选 scope，授权（将来）用它判权限，互不依赖，加闸是纯增量。当前权宜：LLM 自身判断充当半层；但 prompt injection 可绕过，授权闸仍是真正必要的。
+>
+> 审计结论（2026-06-19）：bot 现在对任何能发消息的人开放——`exec`（任意 shell）、`message`（跨会话/跨平台发消息）、`workspace_write`、`memory_write`、管理命令（`/reset` `/model` 等）均无 sender 级闸。`PermissionChecker` 只是插件 manifest 沙箱（问"插件有没有能力"，不问"发送者是谁"）。无 admin 账号集、无 `is_admin`。
 
-- [ ] 审计现有权限层（`PermissionChecker`、命令 admin gating、跨会话消息入口），列出所有危险动作入口。
 - [ ] 新增 `nahida_bot/identity/authorization.py`：`is_admin(sender_account_key)` 查声明的管理员账号集。
 - [ ] 把所有特权工具 / 管理命令 / 跨会话消息统一收口到这道闸。
 - [ ] 测试：非管理员账号**无法**触发特权动作，即使记忆/person 解析出错或被 prompt injection 诱导。
 
-### Phase 3：identity-aware memory write（简化）
+### Phase 3：identity-aware memory write
 
-- [ ] Consolidator 接收 `IdentityResolution`。
-- [ ] Extractor subject 限定为 `current_sender` / `current_chat` / `global`。
-- [ ] personal memory 写入 person（已链接）/ account 或 chat（访客）scope。
-- [ ] duplicate 检测按目标 scope 过滤。
-> 无 subject-allowlist 复杂度、无 visibility policy——记忆不是信任边界（§5.3）。
+> 状态：**已实现并验证（2026-06-19）**；`uv run pytest` / `ruff` / `pyright` 全绿。`nahida_bot/identity/policy.py` 新增 `resolve_memory_write_scope`：personal kind（preference/fact/task）→ `person`（已链接）/ `account`（未链接有 account_key）/ `chat`（identity 关闭，V1）；global kind → `global`。consolidator 接收 `person_id`/`sender_account_key`，按 turn 写入对应 scope；duplicate 检测复用既有 scope-aware `_has_duplicate`，无需改动。后台 dreaming 暂保持 V1（chat/global），identity-aware dreaming 留作 follow-up。
+
+- [x] Consolidator 接收身份（`person_id`/`sender_account_key`）。
+- [x] personal memory 写入 person（已链接）/ account（未链接）/ chat（identity 关闭）scope。
+- [x] duplicate 检测按目标 scope 过滤（`_has_duplicate` 已 scope-aware）。
+> 无 subject-allowlist、无 visibility policy——记忆不是信任边界（§5.3）。Extractor 仍只输出 kind（不需要 subject），scope = identity + kind。
 
 ### Phase 4：管理命令与 WebUI
 

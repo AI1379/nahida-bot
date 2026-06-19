@@ -2516,6 +2516,11 @@ class SessionRunner:
             resolved_root = self._resolve_workspace_root(workspace_id)
         try:
             scope_type, scope_id = resolve_scope_from_session(session_id)
+            # Identity for identity-aware write scope (issue #7, Phase 3).
+            # Empty when identity is off / unlinked / context unset → V1.
+            ctx = current_session.get()
+            person_id = ctx.person_id if ctx is not None else None
+            sender_account_key = ctx.sender_account_key if ctx is not None else ""
             applied = await self._memory_consolidator.consolidate_turn(
                 session_id=session_id,
                 user_message=user_message,
@@ -2525,6 +2530,8 @@ class SessionRunner:
                 run_rules=self._memory_consolidation_rule_based_enabled,
                 scope_type=scope_type,
                 scope_id=scope_id,
+                person_id=person_id,
+                sender_account_key=sender_account_key,
             )
             if applied:
                 logger.debug(

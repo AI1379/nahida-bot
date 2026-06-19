@@ -17,8 +17,11 @@ from nahida_bot.identity.policy import (
     DEFAULT_GROUP_PERSON_MEMORY,
     GroupPersonMemoryPolicy,
     MemoryReadRequest,
+    MemoryWriteRequest,
     memory_read_request_from_context,
+    memory_write_request_from_context,
     resolve_memory_read_scopes,
+    resolve_memory_write_scope,
 )
 from nahida_bot.identity.resolver import IdentityResolver, account_key_from_inbound
 from nahida_bot.identity.sqlite import SQLiteIdentityStore
@@ -33,10 +36,13 @@ __all__ = [
     "IdentityResolver",
     "IdentityStore",
     "MemoryReadRequest",
+    "MemoryWriteRequest",
     "ParticipantObservation",
     "Person",
     "SQLiteIdentityStore",
     "account_key_from_inbound",
     "memory_read_request_from_context",
+    "memory_write_request_from_context",
     "resolve_memory_read_scopes",
+    "resolve_memory_write_scope",
 ]

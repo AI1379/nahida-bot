@@ -7,8 +7,11 @@ from nahida_bot.core.chat_address import ChatAddress, TargetType
 from nahida_bot.core.context import SessionContext
 from nahida_bot.identity.policy import (
     MemoryReadRequest,
+    MemoryWriteRequest,
     memory_read_request_from_context,
+    memory_write_request_from_context,
     resolve_memory_read_scopes,
+    resolve_memory_write_scope,
 )
 
 GLOBAL = ("global", SCOPE_ID_GLOBAL)
@@ -188,3 +191,81 @@ def test_context_request_group_keeps_sender_memory_private_by_default() -> None:
     assert req.person_id == "owner"
     assert req.sender_account_key == ACCOUNT
     assert resolve_memory_read_scopes(req) == [("chat", GROUP_CHAT), GLOBAL]
+
+
+# ── resolve_memory_write_scope ──────────────────────────────
+
+
+def test_write_global_kind_always_global() -> None:
+    req = MemoryWriteRequest(
+        chat_scope_id=PRIVATE_CHAT, person_id="owner", sender_account_key=ACCOUNT
+    )
+    for kind in ("decision", "procedure", "warning", "summary"):
+        assert resolve_memory_write_scope(req, kind) == GLOBAL
+
+
+def test_write_personal_linked_goes_to_person() -> None:
+    req = MemoryWriteRequest(chat_scope_id=PRIVATE_CHAT, person_id="owner")
+    for kind in ("preference", "fact", "task"):
+        assert resolve_memory_write_scope(req, kind) == ("person", "owner")
+
+
+def test_write_personal_unlinked_goes_to_account() -> None:
+    req = MemoryWriteRequest(chat_scope_id=PRIVATE_CHAT, sender_account_key=ACCOUNT)
+    assert resolve_memory_write_scope(req, "preference") == ("account", ACCOUNT)
+
+
+def test_write_personal_linked_takes_precedence_over_account() -> None:
+    req = MemoryWriteRequest(
+        chat_scope_id=PRIVATE_CHAT, person_id="owner", sender_account_key=ACCOUNT
+    )
+    assert resolve_memory_write_scope(req, "preference") == ("person", "owner")
+
+
+def test_write_personal_identity_off_goes_to_chat() -> None:
+    """No person, no account → V1 chat scope."""
+    req = MemoryWriteRequest(chat_scope_id=PRIVATE_CHAT)
+    assert resolve_memory_write_scope(req, "preference") == ("chat", PRIVATE_CHAT)
+
+
+def test_write_personal_legacy_no_chat_goes_to_global() -> None:
+    req = MemoryWriteRequest(chat_scope_id="")
+    assert resolve_memory_write_scope(req, "preference") == GLOBAL
+
+
+# ── memory_write_request_from_context ───────────────────────
+
+
+def test_write_context_request_carries_identity_and_chat_scope() -> None:
+    req = memory_write_request_from_context(
+        _ctx(person_id="owner", account_key=ACCOUNT), PRIVATE_CHAT
+    )
+    assert req.chat_scope_id == PRIVATE_CHAT
+    assert req.person_id == "owner"
+    assert req.sender_account_key == ACCOUNT
+
+
+def test_write_context_request_falls_back_to_session_id_without_address() -> None:
+    ctx = SessionContext(
+        platform="milky",
+        chat_id="10001",
+        session_id=PRIVATE_CHAT,
+        chat_address=None,
+    )
+    req = memory_write_request_from_context(ctx, PRIVATE_CHAT)
+    assert req.chat_scope_id == PRIVATE_CHAT
+    assert req.person_id is None
+    assert req.sender_account_key == ""
+
+
+def test_write_context_request_legacy_session_has_no_chat_scope() -> None:
+    ctx = SessionContext(
+        platform="milky",
+        chat_id="10001",
+        session_id="milky:10001",
+        chat_address=None,
+    )
+    req = memory_write_request_from_context(ctx, "milky:10001")
+    assert req.chat_scope_id == ""
+    # Identity-off + no chat scope → write resolves to global for any kind.
+    assert resolve_memory_write_scope(req, "preference") == GLOBAL

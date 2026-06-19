@@ -1,25 +1,28 @@
-"""Identity-aware memory read-scope policy (issue #7, Phase 2).
+"""Identity-aware memory scope policy (issue #7).
 
-Turns an inbound turn's identity (chat address + linked person + sender account)
-into the ordered memory scope cascade used by the read path:
+Owns BOTH sides of the memory-scope decision:
 
-- Private 1:1 chat: ``person -> account -> chat -> global``
-- Group / channel / thread: ``chat -> global`` (private sender memory is **not**
-  injected by default; ``group_person_memory="allow_private"`` opts in to the
-  sender's person/account scopes)
-- Legacy / untyped chat: ``global`` only
+- **Read cascade** (Phase 2): turn an inbound turn's identity into the ordered
+  scope list the read path cascades through — private 1:1 is
+  ``person -> account -> chat -> global``; group is ``chat -> global`` (the
+  sender's private memory is injected only under ``allow_private``); legacy is
+  ``global`` only.
+- **Write scope** (Phase 3): pick the single scope a memory item of a given
+  ``kind`` is written to — personal kinds go to ``person`` (linked) or
+  ``account`` (unlinked) or ``chat`` (identity off); global kinds go to
+  ``global``.
 
-The identity-off invariant is the safety contract: when identity is disabled or
-the sender is unlinked (``person_id is None`` and ``sender_account_key == ""``),
-the person/account scopes are omitted and the cascade collapses to the V1
-``chat -> global`` (or ``global``-only) behavior byte-for-byte. That keeps the
-whole subsystem a pure no-op until ``identity.enabled`` is set.
+Identity-off invariant (the safety contract): when identity is disabled or the
+sender is unlinked (``person_id is None`` and ``sender_account_key == ""``),
+both sides collapse to V1 — read becomes ``chat -> global`` (or ``global``-only)
+and write becomes ``chat``/``global`` per kind — byte-for-byte. The whole
+subsystem stays a no-op until ``identity.enabled`` is set.
 
-Visibility / sensitivity filtering of individual items (``visible_only``) is a
-Phase 3 concern — items do not carry visibility tags yet — so for Phase 2 the
-group cascade is deliberately conservative: only ``allow_private`` injects
-sender scopes at all, and even then only non-private items would surface once
-Phase 3 tags them. See ``docs/design/person-identity-system.md`` §5 and §10.
+**Decoupling:** this module reads identity only to choose a *memory scope*. It
+contains no authorization logic. A future action-authorization gate (Phase A)
+reads the same ``SessionContext.sender_account_key`` / ``person_id`` for
+*permissions*; the two concerns share the identity seam but do not depend on
+each other. See ``docs/design/person-identity-system.md`` §2.5.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from nahida_bot.agent.memory.scope import (
+    CHAT_SCOPED_KINDS,
     SCOPE_ID_GLOBAL,
     SCOPE_TYPE_ACCOUNT,
     SCOPE_TYPE_CHAT,
@@ -144,4 +148,88 @@ def memory_read_request_from_context(
         person_id=person_id,
         sender_account_key=sender_account_key,
         group_person_memory=group_person_memory,
+    )
+
+
+# ── Write scope (Phase 3) ──────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryWriteRequest:
+    """Inputs to a memory write-scope decision.
+
+    Empty identity (``person_id is None`` and ``sender_account_key == ""``) is
+    the identity-off state and reproduces V1 (``chat`` for personal kinds in a
+    typed chat, else ``global``).
+    """
+
+    chat_scope_id: str
+    person_id: str | None = None
+    sender_account_key: str = ""
+
+
+def resolve_memory_write_scope(
+    req: MemoryWriteRequest,
+    kind: str,
+) -> tuple[str, str]:
+    """Resolve ``(scope_type, scope_id)`` for a memory item of ``kind``.
+
+    - global-scoped kind (decision/procedure/warning/summary) → ``global``
+    - personal kind (preference/fact/task):
+        ``person_id`` set              → ``person:{person_id}``
+        else ``sender_account_key`` set → ``account:{account_key}``
+        else ``chat_scope_id`` set      → ``chat:{chat_scope_id}``   (V1)
+        else                            → ``global:__global__``      (V1 legacy)
+
+    Personal memory thus follows the *sender*, not the chat address: an owner's
+    preference lands in their ``person`` scope so it recalls across all their
+    accounts (Phase 2 read cascade), and an unlinked group guest's facts land
+    in ``account`` scope so they don't pollute the group's shared ``chat`` scope.
+    """
+    if kind not in CHAT_SCOPED_KINDS:
+        return SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL
+    if req.person_id:
+        return SCOPE_TYPE_PERSON, req.person_id
+    if req.sender_account_key:
+        return SCOPE_TYPE_ACCOUNT, req.sender_account_key
+    if req.chat_scope_id:
+        return SCOPE_TYPE_CHAT, req.chat_scope_id
+    return SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL
+
+
+def memory_write_request_from_context(
+    ctx: SessionContext | None,
+    session_id: str,
+) -> MemoryWriteRequest:
+    """Build a :class:`MemoryWriteRequest` from the live session context.
+
+    Identity comes from the context (empty when identity is off / unlinked);
+    ``chat_scope_id`` prefers ``ctx.chat_address`` then falls back to parsing
+    ``session_id`` for typed chats. Mirrors the read-side helper.
+    """
+    chat_scope_id = ""
+    person_id: str | None = None
+    sender_account_key = ""
+
+    if ctx is not None:
+        person_id = ctx.person_id
+        sender_account_key = ctx.sender_account_key
+        address: ChatAddress | None = ctx.chat_address
+        if address is not None and address.is_typed:
+            chat_scope_id = address.chat_key
+
+    if not chat_scope_id and session_id:
+        try:
+            key = SessionKey.parse(session_id)
+        except (ValueError, TypeError):
+            pass
+        else:
+            address = getattr(key, "address", None)
+            if address is not None and address.is_typed:
+                chat_scope_id = address.chat_key
+
+    return MemoryWriteRequest(
+        chat_scope_id=chat_scope_id,
+        person_id=person_id,
+        sender_account_key=sender_account_key,
     )

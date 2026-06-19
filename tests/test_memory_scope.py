@@ -208,6 +208,132 @@ async def test_dedup_is_scope_scoped(memory_store: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Identity-aware write scope (issue #7, Phase 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_consolidator_writes_personal_to_person_scope_when_linked(
+    memory_store: Any,
+) -> None:
+    """A linked sender's personal memory lands in person scope, not chat/account."""
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10001",
+    )
+    applied = await consolidator.consolidate_turn(
+        session_id="milky:private:10001",
+        user_message="我喜欢吃辣的食物，每顿都要有辣椒",
+        person_id="owner",
+        sender_account_key="milky:user:10001",
+    )
+    assert applied >= 1
+
+    person_hits = await memory_store.search_items(
+        "", scope_type="person", scope_id="owner", limit=10
+    )
+    assert any("吃辣" in h.content for h in person_hits)
+    chat_hits = await memory_store.search_items(
+        "", scope_type="chat", scope_id="milky:private:10001", limit=10
+    )
+    assert not any("吃辣" in h.content for h in chat_hits)
+    account_hits = await memory_store.search_items(
+        "", scope_type="account", scope_id="milky:user:10001", limit=10
+    )
+    assert not any("吃辣" in h.content for h in account_hits)
+
+
+@pytest.mark.asyncio
+async def test_consolidator_writes_personal_to_account_scope_when_unlinked(
+    memory_store: Any,
+) -> None:
+    """An unlinked sender's personal memory lands in account scope, not chat."""
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10001",
+    )
+    applied = await consolidator.consolidate_turn(
+        session_id="milky:private:10001",
+        user_message="我喜欢吃辣的食物，每顿都要有辣椒",
+        sender_account_key="milky:user:10001",
+    )
+    assert applied >= 1
+
+    account_hits = await memory_store.search_items(
+        "", scope_type="account", scope_id="milky:user:10001", limit=10
+    )
+    assert any("吃辣" in h.content for h in account_hits)
+    chat_hits = await memory_store.search_items(
+        "", scope_type="chat", scope_id="milky:private:10001", limit=10
+    )
+    assert not any("吃辣" in h.content for h in chat_hits)
+
+
+@pytest.mark.asyncio
+async def test_consolidator_global_kind_stays_global_when_linked(
+    memory_store: Any,
+) -> None:
+    """A linked sender's shared decision still lands in global scope."""
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10001",
+    )
+    await consolidator.consolidate_turn(
+        session_id="milky:private:10001",
+        user_message="项目决定使用 Python 作为主语言",
+        person_id="owner",
+    )
+
+    global_hits = await memory_store.search_items(
+        "Python", scope_type="global", scope_id="__global__", limit=10
+    )
+    assert any("Python" in h.content and h.kind == "decision" for h in global_hits)
+    person_hits = await memory_store.search_items(
+        "Python", scope_type="person", scope_id="owner", limit=10
+    )
+    assert not any(h.kind == "decision" for h in person_hits)
+
+
+@pytest.mark.asyncio
+async def test_consolidator_dedup_is_person_scoped(memory_store: Any) -> None:
+    """A duplicate is deduped within a person; independent across persons."""
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10001",
+    )
+    first = await consolidator.consolidate_turn(
+        session_id="milky:private:10001",
+        user_message="I prefer spicy food",
+        person_id="owner",
+    )
+    assert first >= 1
+    # Same preference, same person → deduped.
+    second = await consolidator.consolidate_turn(
+        session_id="milky:private:10001",
+        user_message="I prefer spicy food",
+        person_id="owner",
+    )
+    assert second == 0
+
+    # Same preference, different person → not a duplicate → written.
+    consolidator_b = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10002",
+    )
+    third = await consolidator_b.consolidate_turn(
+        session_id="milky:private:10002",
+        user_message="I prefer spicy food",
+        person_id="bob",
+    )
+    assert third >= 1
+
+
+# ---------------------------------------------------------------------------
 # Cross-scope embedding refresh
 # ---------------------------------------------------------------------------
 

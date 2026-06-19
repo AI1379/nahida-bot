@@ -24,25 +24,9 @@ from nahida_bot.agent.memory.scope import (
     SCOPE_ID_GLOBAL,
     SCOPE_TYPE_CHAT,
     SCOPE_TYPE_GLOBAL,
-    scope_for_kind,
 )
 
 logger = structlog.get_logger(__name__)
-
-
-def _resolve_item_scope(
-    kind: str, eff_scope_type: str, eff_scope_id: str
-) -> tuple[str, str]:
-    """Resolve the target scope for a memory item given the session scope.
-
-    Within a typed chat session, personal kinds (preference/fact/task) land in
-    the chat scope while shared kinds (decision/procedure/warning/summary)
-    stay global so shared knowledge is not trapped in a single chat. Legacy /
-    global sessions resolve every item to global.
-    """
-    if eff_scope_type == SCOPE_TYPE_CHAT and scope_for_kind(kind) == SCOPE_TYPE_CHAT:
-        return SCOPE_TYPE_CHAT, eff_scope_id
-    return SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL
 
 
 _EXPLICIT_MEMORY_RE = re.compile(
@@ -353,6 +337,8 @@ class MemoryConsolidator:
         app_name: str = "the assistant",
         default_scope_type: str = SCOPE_TYPE_GLOBAL,
         default_scope_id: str = SCOPE_ID_GLOBAL,
+        default_person_id: str | None = None,
+        default_sender_account_key: str = "",
     ) -> None:
         self._memory = memory_store
         self._extractor = extractor or RuleBasedMemoryExtractor()
@@ -360,6 +346,8 @@ class MemoryConsolidator:
         self._app_name = app_name
         self._default_scope_type = default_scope_type
         self._default_scope_id = default_scope_id
+        self._default_person_id = default_person_id
+        self._default_sender_account_key = default_sender_account_key
 
     async def consolidate_turn(
         self,
@@ -374,6 +362,8 @@ class MemoryConsolidator:
         run_rules: bool = True,
         scope_type: str | None = None,
         scope_id: str | None = None,
+        person_id: str | None = None,
+        sender_account_key: str = "",
     ) -> int:
         """Extract and auto-apply durable memory from one completed turn."""
         append_item = getattr(self._memory, "append_item", None)
@@ -384,6 +374,20 @@ class MemoryConsolidator:
 
         eff_scope_type = scope_type or self._default_scope_type
         eff_scope_id = scope_id or self._default_scope_id
+        # Identity-aware write scope (issue #7, Phase 3). Empty identity
+        # (background dreaming, legacy callers) reproduces V1 chat/global.
+        from nahida_bot.identity.policy import (
+            MemoryWriteRequest,
+            resolve_memory_write_scope,
+        )
+
+        eff_person_id = person_id if person_id is not None else self._default_person_id
+        eff_account_key = sender_account_key or self._default_sender_account_key
+        write_req = MemoryWriteRequest(
+            chat_scope_id=eff_scope_id if eff_scope_type == SCOPE_TYPE_CHAT else "",
+            person_id=eff_person_id,
+            sender_account_key=eff_account_key,
+        )
         existing_items = await self._load_existing_items(
             scope_type=eff_scope_type, scope_id=eff_scope_id
         )
@@ -434,8 +438,8 @@ class MemoryConsolidator:
             if validate_memory_content(memory.content) is not None:
                 skipped_unsafe += 1
                 continue
-            item_scope_type, item_scope_id = _resolve_item_scope(
-                memory.kind, eff_scope_type, eff_scope_id
+            item_scope_type, item_scope_id = resolve_memory_write_scope(
+                write_req, memory.kind
             )
             if await self._has_duplicate(
                 memory.content,
