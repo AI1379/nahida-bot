@@ -29,6 +29,11 @@ SCOPE_TYPE_GLOBAL = "global"
 SCOPE_TYPE_CHAT = "chat"
 SCOPE_TYPE_PERSON = "person"
 SCOPE_TYPE_ACCOUNT = "account"
+# KB / shared-work scopes (knowledge-base.md §5.1). The enum is pinned here as
+# the KB/Memory/identity shared contract; KB collections physically isolate by
+# table so these are reserved (not yet produced as memory scope ids).
+SCOPE_TYPE_COLLECTION = "collection"
+SCOPE_TYPE_WORKSPACE = "workspace"
 SCOPE_ID_GLOBAL = "__global__"
 
 CHAT_SCOPED_KINDS = frozenset({"preference", "fact", "task"})

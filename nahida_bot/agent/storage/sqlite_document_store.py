@@ -39,6 +39,10 @@ def _row_to_item(row: dict[str, Any]) -> DocumentItem:
         metadata=row.get("metadata", {}),
         created_at=_parse_dt(created_at_raw),
         updated_at=_parse_dt(updated_at_raw),
+        retrieval_text=str(row.get("retrieval_text", "")),
+        path=str(row.get("path", "")),
+        source_id=str(row.get("source_id", "")),
+        chunk_index=int(row.get("chunk_index", 0) or 0),
     )
 
 
@@ -58,7 +62,14 @@ def _row_to_embedding(row: dict[str, Any]) -> DocumentEmbedding:
 
 
 def _doc_embedding_text(item: DocumentItem) -> str:
-    """Build the text to embed for a document (title + content)."""
+    """Build the text to embed for a document.
+
+    Uses the enriched ``retrieval_text`` (source title + heading path + content)
+    when present; falls back to title + content for pre-Phase-1 rows that have
+    no retrieval_text yet.
+    """
+    if item.retrieval_text:
+        return item.retrieval_text
     parts = [item.title, item.content] if item.title else [item.content]
     return "\n".join(parts)
 
@@ -122,9 +133,17 @@ class SQLiteDocumentStore(DocumentStore):
         *,
         title: str = "",
         metadata: dict[str, Any] | None = None,
+        retrieval_text: str = "",
+        path: str = "",
+        source_id: str = "",
+        chunk_index: int = 0,
     ) -> None:
+        # FTS indexes the enriched retrieval text (source + heading path +
+        # content) when present; falls back to title + content for pre-Phase-1
+        # callers so old behavior is preserved.
+        index_text = retrieval_text or (f"{title}\n{content}" if title else content)
         title_index = tokenize_for_fts(title) if title else ""
-        content_index = tokenize_for_fts(content)
+        content_index = tokenize_for_fts(index_text)
         await self._repo.insert_document(
             doc_id=doc_id,
             title=title,
@@ -132,7 +151,28 @@ class SQLiteDocumentStore(DocumentStore):
             metadata=metadata,
             title_index=title_index,
             content_index=content_index,
+            retrieval_text=retrieval_text,
+            path=path,
+            source_id=source_id,
+            chunk_index=chunk_index,
         )
+
+    async def get_neighbors(
+        self,
+        source_id: str,
+        *,
+        chunk_index: int,
+        before: int = 1,
+        after: int = 1,
+    ) -> list[SearchResult]:
+        """Return sibling chunks adjacent to one chunk in the same source."""
+        rows = await self._repo.get_neighbors(
+            source_id,
+            chunk_index=chunk_index,
+            before=before,
+            after=after,
+        )
+        return [_row_to_search_result(row) for row in rows]
 
     async def get(self, doc_id: str) -> DocumentItem | None:
         row = await self._repo.get_document(doc_id)
@@ -162,6 +202,9 @@ class SQLiteDocumentStore(DocumentStore):
                 content=str(row.get("content", "")),
                 score=float(row.get("score", 0.0)),
                 metadata=row.get("metadata", {}),
+                path=str(row.get("path", "")),
+                source_id=str(row.get("source_id", "")),
+                chunk_index=int(row.get("chunk_index", 0) or 0),
             )
             for row in rows
         ]
@@ -365,4 +408,7 @@ def _row_to_search_result(row: dict[str, Any], *, score: float = 0.0) -> SearchR
         content=str(row.get("content", "")),
         score=score,
         metadata=row.get("metadata", {}),
+        path=str(row.get("path", "")),
+        source_id=str(row.get("source_id", "")),
+        chunk_index=int(row.get("chunk_index", 0) or 0),
     )

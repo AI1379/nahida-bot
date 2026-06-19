@@ -193,6 +193,22 @@ class MemoryConfig(BaseModel):
     consolidation: MemoryConsolidationConfig = MemoryConsolidationConfig()
 
 
+class KBAutoRecallConfig(BaseModel):
+    """Lightweight KB auto-recall configuration (§3.1 trigger).
+
+    When enabled, a small FTS search runs across all KB collections before
+    each agent turn and injects top results as context — like Memory does,
+    but with stricter defaults (fewer items, fewer chars, FTS-only).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = False
+    max_items: int = Field(default=2, ge=0)
+    max_chars: int = Field(default=2000, ge=0)
+    min_score: float = Field(default=-10.0)
+
+
 class GroupContextConfig(BaseModel):
     """Observed group-chat context injection configuration."""
 
@@ -305,6 +321,7 @@ class Settings(BaseModel):
     webui: WebUIConfigModel = WebUIConfigModel()
     model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
     memory: MemoryConfig = MemoryConfig()
+    knowledge_base: KBAutoRecallConfig = KBAutoRecallConfig()
     identity: IdentityConfig = IdentityConfig()
 
 

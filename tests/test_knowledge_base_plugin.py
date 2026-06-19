@@ -53,11 +53,19 @@ class _Store:
         *,
         title: str = "",
         metadata: dict[str, Any] | None = None,
+        retrieval_text: str = "",
+        path: str = "",
+        source_id: str = "",
+        chunk_index: int = 0,
     ) -> None:
         self.docs[doc_id] = {
             "content": content,
             "title": title,
             "metadata": metadata or {},
+            "retrieval_text": retrieval_text,
+            "path": path,
+            "source_id": source_id,
+            "chunk_index": chunk_index,
         }
 
     async def count(self) -> int:
@@ -246,7 +254,7 @@ async def test_import_content_refreshes_prompt_supplement_and_persists_metadata(
     assert count == 1
     assert set(api.registered_prompt_supplements) == {"kb_context"}
     assert (
-        "'python_docs'"
+        "python_docs (1 documents)"
         in api.registered_prompt_supplements["kb_context"]["instruction"]
     )
 

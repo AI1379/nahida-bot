@@ -62,8 +62,19 @@ class DocumentStore(ABC):
         *,
         title: str = "",
         metadata: dict[str, Any] | None = None,
+        retrieval_text: str = "",
+        path: str = "",
+        source_id: str = "",
+        chunk_index: int = 0,
     ) -> None:
-        """Insert or replace a document in the collection."""
+        """Insert or replace a document chunk in the collection.
+
+        ``content`` is the raw display text; ``retrieval_text`` is the enriched
+        text indexed for FTS and embeddings (falls back to title + content when
+        empty). ``path`` / ``source_id`` / ``chunk_index`` carry provenance and
+        enable neighbor expansion. All new params default to empty/zero so
+        pre-Phase-1 callers keep working.
+        """
         ...
 
     @abstractmethod

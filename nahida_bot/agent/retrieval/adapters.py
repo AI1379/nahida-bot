@@ -23,7 +23,13 @@ VectorReadyCallback = Callable[[], Awaitable[tuple[Any | None, Any | None]]]
 
 
 class DocumentStoreRetrievalAdapter:
-    """Adapter from ``DocumentStore`` search methods to common retrieval results."""
+    """Adapter from ``DocumentStore`` search methods to common retrieval results.
+
+    Supports optional **neighbor expansion**: when enabled, the top
+    ``expand_neighbors_top_k`` results each pull ±1 sibling chunks (same
+    ``source_id``, adjacent ``chunk_index``) and append them with a lower score
+    and ``neighbor_of`` provenance in metadata.
+    """
 
     def __init__(
         self,
@@ -33,12 +39,16 @@ class DocumentStoreRetrievalAdapter:
         ensure_vector_ready: VectorReadyCallback | None = None,
         logger: Any | None = None,
         vector_failure_event: str = "retrieval.kb_vector_search_failed",
+        expand_neighbors: bool = False,
+        expand_neighbors_top_k: int = 3,
     ) -> None:
         self._collection_name = collection_name
         self._store = store
         self._ensure_vector_ready = ensure_vector_ready
         self._logger = logger
         self._vector_failure_event = vector_failure_event
+        self._expand_neighbors = expand_neighbors
+        self._expand_neighbors_top_k = expand_neighbors_top_k
 
     async def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
         """Search the document store using FTS, vector, or hybrid mode."""
@@ -76,15 +86,18 @@ class DocumentStoreRetrievalAdapter:
                             limit=limit,
                             vector_index=vector_index,
                         )
-                    return [
-                        _document_result_to_retrieval(
-                            result,
-                            collection_name=self._collection_name,
-                            mode=mode,
-                        )
-                        for result in results
-                        if result.score >= request.min_score
-                    ]
+                    converted = _above_threshold(
+                        [
+                            _document_result_to_retrieval(
+                                result,
+                                collection_name=self._collection_name,
+                                mode=mode,
+                            )
+                            for result in results
+                        ],
+                        request.min_score,
+                    )
+                    return await self._maybe_expand_neighbors(converted)
                 except Exception as exc:
                     if self._logger is not None:
                         self._logger.warning(
@@ -98,15 +111,77 @@ class DocumentStoreRetrievalAdapter:
                 return []
 
         results = await self._store.search(query, limit=limit)
-        return [
-            _document_result_to_retrieval(
-                result,
-                collection_name=self._collection_name,
-                mode="fts",
-            )
-            for result in results
-            if result.score >= request.min_score
-        ]
+        converted = _above_threshold(
+            [
+                _document_result_to_retrieval(
+                    result,
+                    collection_name=self._collection_name,
+                    mode="fts",
+                )
+                for result in results
+            ],
+            request.min_score,
+        )
+        return await self._maybe_expand_neighbors(converted)
+
+    async def _maybe_expand_neighbors(
+        self, results: list[RetrievalResult]
+    ) -> list[RetrievalResult]:
+        """Optionally expand the top results with adjacent sibling chunks."""
+        if not self._expand_neighbors or not results:
+            return results
+        get_neighbors = getattr(self._store, "get_neighbors", None)
+        if not callable(get_neighbors):
+            return results
+        get_neighbors = cast(Any, get_neighbors)
+
+        expanded: list[RetrievalResult] = []
+        seen: set[str] = {r.result_id for r in results}
+        top_k = max(0, self._expand_neighbors_top_k)
+        for rank, result in enumerate(results):
+            expanded.append(result)
+            if rank >= top_k:
+                continue
+            source_id = _source_id_from_result(result)
+            chunk_index = _chunk_index_from_result(result)
+            if not source_id:
+                continue
+            try:
+                neighbors = await get_neighbors(
+                    source_id,
+                    chunk_index=chunk_index,
+                    before=1,
+                    after=1,
+                )
+            except Exception:
+                continue
+            for neighbor_raw in neighbors or []:
+                n_doc_id = str(getattr(neighbor_raw, "doc_id", ""))
+                if n_doc_id in seen or n_doc_id == result.result_id:
+                    continue
+                seen.add(n_doc_id)
+                n_result = _document_result_to_retrieval(
+                    neighbor_raw,
+                    collection_name=self._collection_name,
+                    mode=result.mode,
+                )
+                expanded.append(
+                    RetrievalResult(
+                        result_id=n_result.result_id,
+                        title=n_result.title,
+                        text=n_result.text,
+                        source_type=n_result.source_type,
+                        score=n_result.score * 0.8,
+                        mode=n_result.mode,
+                        provenance=n_result.provenance,
+                        metadata={
+                            **n_result.metadata,
+                            "neighbor_of": result.result_id,
+                        },
+                        raw=n_result.raw,
+                    )
+                )
+        return expanded
 
     async def _ready_vector_search(self) -> tuple[Any | None, Any | None]:
         if self._ensure_vector_ready is None:
@@ -295,6 +370,9 @@ def _document_result_to_retrieval(
 ) -> RetrievalResult:
     metadata = _dict_metadata(getattr(result, "metadata", {}))
     doc_id = str(getattr(result, "doc_id", ""))
+    path = str(getattr(result, "path", ""))
+    source_id = str(getattr(result, "source_id", ""))
+    chunk_index = int(getattr(result, "chunk_index", 0) or 0)
     return RetrievalResult(
         result_id=doc_id,
         title=str(getattr(result, "title", "")),
@@ -306,12 +384,20 @@ def _document_result_to_retrieval(
             source_type="knowledge_base",
             source_id=doc_id,
             collection=collection_name,
-            metadata=metadata,
+            metadata={
+                **metadata,
+                "path": path,
+                "source_id": source_id,
+                "chunk_index": str(chunk_index),
+            },
         ),
         metadata={
             **metadata,
             "collection": collection_name,
             "doc_id": doc_id,
+            "path": path,
+            "source_id": source_id,
+            "chunk_index": str(chunk_index),
         },
         raw=result,
     )
@@ -356,3 +442,25 @@ def _memory_item_to_retrieval(item: Any, *, mode: RetrievalMode) -> RetrievalRes
 
 def _dict_metadata(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _source_id_from_result(result: RetrievalResult) -> str:
+    """Extract the source document id from a retrieval result's metadata or raw."""
+    source_id = str(result.metadata.get("source_id", ""))
+    if source_id:
+        return source_id
+    raw = result.raw
+    if raw is not None:
+        return str(getattr(raw, "source_id", ""))
+    return ""
+
+
+def _chunk_index_from_result(result: RetrievalResult) -> int:
+    """Extract the chunk index from a retrieval result's metadata or raw."""
+    raw_val = result.metadata.get("chunk_index", "")
+    if raw_val != "" and raw_val is not None:
+        return int(raw_val)
+    raw = result.raw
+    if raw is not None:
+        return int(getattr(raw, "chunk_index", 0) or 0)
+    return 0

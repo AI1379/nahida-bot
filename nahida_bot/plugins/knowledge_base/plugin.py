@@ -101,7 +101,7 @@ class KnowledgeBasePlugin(Plugin):
 
         self._register_tool()
         self._register_command()
-        self._register_supplement()
+        await self._register_supplement()
 
         self.api.logger.info(
             "kb.loaded",
@@ -157,6 +157,9 @@ class KnowledgeBasePlugin(Plugin):
                     "title": r.title,
                     "content": r.content,
                     "score": r.score,
+                    "path": getattr(r, "path", ""),
+                    "source_id": getattr(r, "source_id", ""),
+                    "chunk_index": getattr(r, "chunk_index", 0),
                 }
                 for r in hits
             ]
@@ -177,6 +180,9 @@ class KnowledgeBasePlugin(Plugin):
                                 "title": result.title,
                                 "content": result.content,
                                 "score": result.score,
+                                "path": getattr(result, "path", ""),
+                                "source_id": getattr(result, "source_id", ""),
+                                "chunk_index": getattr(result, "chunk_index", 0),
                             },
                         )
                     )
@@ -395,7 +401,10 @@ class KnowledgeBasePlugin(Plugin):
 
         lines = [f"Search results from '{collection_name}':"]
         for r in results:
-            lines.append(f"\n  [{r.doc_id}] {r.title} (score: {r.score:.4f})")
+            path_info = f" [{getattr(r, 'path', '')}]" if getattr(r, "path", "") else ""
+            lines.append(
+                f"\n  [{r.doc_id}] {r.title}{path_info} (score: {r.score:.4f})"
+            )
             # Truncate content for display.
             snippet = r.content[:200] + "..." if len(r.content) > 200 else r.content
             lines.append(f"  {snippet}")
@@ -487,7 +496,7 @@ class KnowledgeBasePlugin(Plugin):
             raise ValueError(str(exc)) from exc
 
         await self._persist_collection_meta(collection_name)
-        self._refresh_supplement()
+        await self._refresh_supplement()
 
     async def import_content(
         self,
@@ -512,7 +521,7 @@ class KnowledgeBasePlugin(Plugin):
             extra_metadata=extra_metadata,
         )
         await self._persist_collection_meta(collection_name)
-        self._refresh_supplement()
+        await self._refresh_supplement()
         await self._refresh_embeddings_after_import(
             collection_name,
             store,
@@ -555,23 +564,23 @@ class KnowledgeBasePlugin(Plugin):
         await self._drop_vector_index(collection_name)
         await self._remove_collection_meta(collection_name)
         self._embedded_collections.discard(collection_name)
-        self._refresh_supplement()
+        await self._refresh_supplement()
 
     # ── Prompt Supplement ────────────────────────────────
 
-    def _register_supplement(self) -> None:
-        self._update_supplement()
+    async def _register_supplement(self) -> None:
+        await self._update_supplement()
 
-    def _refresh_supplement(self) -> None:
+    async def _refresh_supplement(self) -> None:
         """Re-register the supplement with updated collection list."""
-        self._update_supplement()
+        await self._update_supplement()
 
-    def _update_supplement(self) -> None:
+    async def _update_supplement(self) -> None:
         if self._manager is None:
             return
 
-        collections = self._manager.list_collections()
-        if not collections:
+        summaries = await self.list_collection_summaries()
+        if not summaries:
             instruction = (
                 "You have access to a knowledge base system. "
                 "When the user asks about topics that might be covered in "
@@ -579,10 +588,13 @@ class KnowledgeBasePlugin(Plugin):
                 "information before answering. No collections are currently loaded."
             )
         else:
-            collection_list = ", ".join(f"'{c}'" for c in collections)
+            lines: list[str] = []
+            for s in summaries:
+                lines.append(f"  • {s['name']} ({s['document_count']} documents)")
+            collection_lines = "\n".join(lines)
             instruction = (
-                f"You have access to a knowledge base system with the following "
-                f"collections: {collection_list}. "
+                "You have access to a knowledge base system with the following "
+                f"collections:\n{collection_lines}\n"
                 "When the user asks about topics that might be covered in imported "
                 "documents, use the `kb_search` tool to search for relevant "
                 "information before answering."
@@ -732,6 +744,8 @@ class KnowledgeBasePlugin(Plugin):
             ),
             logger=self.api.logger,
             vector_failure_event="kb.vector_search_failed",
+            expand_neighbors=self._config.retrieval.expand_neighbors,
+            expand_neighbors_top_k=self._config.retrieval.expand_neighbors_top_k,
         )
         service = RetrievalService({"knowledge_base": adapter})
         results = await service.retrieve(

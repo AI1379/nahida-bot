@@ -1,9 +1,10 @@
 # Knowledge Base 与统一上下文检索设计
 
-> 最近审计：2026-06-14
-> 状态：现有 KB 已可用，但检索模型需要与 Memory 方向合并重构
+> 最近审计：2026-06-19
+> 状态：Phase 1（KB 文档索引重建）已完成；Phase 2（统一检索服务）已完成。
+> 下一阶段为 Phase 3（层级 Context Store）。
 >
-> 本次修订要点（2026-06-14）：
+> 本次修订要点（2026-06-19）：
 >
 > - 标题树是 **containment（`parent_of`）**，不是 alias；alias 只是稀疏的横向等价（见 §5.3）。
 > - **FTS + 结构 + 别名为默认检索主线**，向量是可重建的派生缓存（见 §6、§8.5、§11）。
@@ -621,8 +622,9 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 > 详见 [memory-scoping.md](memory-scoping.md)。这是 KB 与 person scope 的公共地基——
 > store 层早已 scope-ready，本次落地的是应用层 chat/global 隔离。
 > 状态：**Phase 0 / 1 / 2 / min-3 / 5 已完成并验证（2026-06-14）**；Phase 4（存量
-> 迁移）工具已完成，生产服务器必须先审计再迁移。`scope_type` 目前是开放字符串，active 取值 `global` / `chat`；
-> 完整枚举（`person` / `account` / `collection` / `workspace`）等身份系统与 KB 落地时再闭合。
+> 迁移）工具已完成，生产服务器必须先审计再迁移。`scope_type` 枚举已闭合（`global` / `chat` /
+> `person` / `account` / `collection` / `workspace`），其中 `person` / `account` 由
+> identity 系统（#7）生产，`collection` / `workspace` 已预留（§5.1 Phase 1）。
 
 - [x] Phase 0：新建 `nahida_bot/agent/memory/scope.py`（常量 + `resolve_scope_from_session` + `scope_for_kind`；typed→chat、legacy/空/非法→global、绝不抛异常）
 - [x] Phase 1 写入：consolidator 构造默认 scope + 每调用覆盖 + per-kind 写入（preference/fact/task→chat，decision/procedure/warning/summary→global）；`_load_existing_items` / `_has_duplicate` / `project_workspace_memory` 按 scope 过滤（修复跨 chat 误判重/误归档）
@@ -655,14 +657,14 @@ embedding 不可用时应退化而不是失败。具体到向量：按 §8.5，e
 - `scripts/eval_kb_retrieval.py`：按 manifest 临时导入当前 KB，实现 doc-level 与
   heading-level recall/MRR smoke eval。
 
-### Phase 1：重建 KB 文档索引
+### Phase 1：重建 KB 文档索引 ✅ 已完成（2026-06-19）
 
-- [ ] 长段落继续按句子/token window 拆分。
-- [ ] Markdown parser 保留完整 heading path。
-- [ ] 文件名、source id、路径和别名进入 `retrieval_text`。
-- [ ] `raw_text` 与 `retrieval_text` 分离。
-- [ ] 搜索结果返回稳定 provenance。
-- [ ] 增加相邻 chunk 和父级上下文展开。
+- [x] 长段落继续按句子/token window 拆分。
+- [x] Markdown parser 保留完整 heading path。
+- [x] 文件名、source id、路径和别名进入 `retrieval_text`。
+- [x] `raw_text` 与 `retrieval_text` 分离。
+- [x] 搜索结果返回稳定 provenance。
+- [x] 增加相邻 chunk 和父级上下文展开。
 
 当前 KB 仍处于早期可重建状态，collection 数据可以作为派生索引丢弃后重导入。
 因此 Phase 1 不必为了兼容旧 KB 表结构而牺牲目标 schema；可以直接引入新的
@@ -675,7 +677,8 @@ KB 文档节点表/索引表，或替换现有 `DocumentStore` 的 KB 用法。�
 先落到位（`parent_id` / `root_id` / `path` 可暂留空），层级化在 Phase 3 填充。
 
 > 注：`scope_type` 的 `global`/`chat` 已在记忆地基（上方小节）中生效；KB 侧文档节点
-> 尚未携带 scope/provenance，仍是扁平 chunk。
+> 已通过 Phase 1 携带 `path` / `source_id` / `chunk_index` / `retrieval_text` 与
+> 双模 `Provenance` 契约（§5.1），但尚未引入 `parent_id` / `root_id` 层级（Phase 3）。
 
 Memory 不能按 KB 的方式直接丢弃。后续统一 Context Store 时，`memory_items` /
 `memory_candidates` / `memory_embeddings` 需要保留兼容读或提供一次性迁移：

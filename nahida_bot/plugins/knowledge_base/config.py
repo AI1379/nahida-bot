@@ -16,6 +16,17 @@ class KBRetrievalConfig(BaseModel):
     vector_enabled: bool = False
     hybrid_enabled: bool = True
     vector_backend: Literal["json", "sqlite-vec", "none"] = "json"
+    expand_neighbors: bool = Field(
+        default=False,
+        description=(
+            "When true, append ±1 adjacent chunks for the top results "
+            "(same source document, adjacent chunk_index)."
+        ),
+    )
+    expand_neighbors_top_k: int = Field(
+        default=3,
+        description="Number of top results to expand with neighboring chunks.",
+    )
 
 
 class KBEmbeddingConfig(BaseModel):
@@ -42,6 +53,7 @@ class KBConfig(BaseModel):
     enabled: bool = True
     default_chunk_size: int = Field(
         default=500,
+        ge=1,
         description="Maximum characters per document chunk.",
     )
     default_chunk_overlap: int = Field(

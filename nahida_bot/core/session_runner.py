@@ -17,8 +17,10 @@ from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.memory.scope import resolve_scope_from_session
 from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.agent.retrieval import (
+    DocumentStoreRetrievalAdapter,
     MemoryStoreRetrievalAdapter,
     RetrievalRequest,
+    RetrievalResult,
     RetrievalScope,
     RetrievalService,
 )
@@ -162,6 +164,8 @@ class SessionRunner:
         channel_registry: ChannelRegistry | None = None,
         supplement_registry: Any | None = None,
         enable_silent_reply: bool = True,
+        document_store_manager: Any | None = None,
+        kb_auto_recall_config: Any | None = None,
     ) -> None:
         self._agent = agent_loop
         self._memory = memory_store
@@ -189,6 +193,8 @@ class SessionRunner:
         self._channel_registry = channel_registry
         self._supplement_registry = supplement_registry
         self._enable_silent_reply = enable_silent_reply
+        self._document_store_manager = document_store_manager
+        self._kb_auto_recall_config = kb_auto_recall_config
         self._run_tracker = ActiveRunTracker()
 
     @property
@@ -515,12 +521,23 @@ class SessionRunner:
             relevant_memory = await self._load_relevant_memory(
                 user_message, session_id=session_id
             )
+            relevant_kb = await self._load_relevant_knowledge(
+                user_message, session_id=session_id
+            )
             if relevant_memory:
                 history = [relevant_memory, *history]
                 logger.debug(
                     "session_runner.relevant_memory_added",
                     session_id=session_id,
                     relevant_memory_chars=len(relevant_memory.content),
+                    history_count=len(history),
+                )
+            if relevant_kb:
+                history = [relevant_kb, *history]
+                logger.debug(
+                    "session_runner.relevant_kb_added",
+                    session_id=session_id,
+                    relevant_kb_chars=len(relevant_kb.content),
                     history_count=len(history),
                 )
             tools = self._collect_tools(
@@ -1342,6 +1359,127 @@ class SessionRunner:
             metadata={
                 "memory_backend": backend,
                 "memory_count": len(lines) - 2,
+            },
+        )
+
+    async def _load_relevant_knowledge(
+        self, query: str, *, session_id: str = ""
+    ) -> ContextMessage | None:
+        """Load a small relevant KB context block for the current turn.
+
+        Searches every KB collection with a tiny per-collection budget (FTS-only),
+        merges results across collections by score, and wraps the top entries as a
+        lightweight system-level ``ContextMessage``.  Returns ``None`` when KB
+        auto-recall is disabled, the manager is unavailable, or nothing is found.
+        """
+        manager = self._document_store_manager
+        cfg = self._kb_auto_recall_config
+        if manager is None or cfg is None:
+            return None
+        if not cfg.enabled:
+            return None
+        limit = cfg.max_items
+        max_chars = cfg.max_chars
+        if limit <= 0 or max_chars <= 0:
+            return None
+        if not query.strip():
+            return None
+
+        # FTS-only: keep it fast and low-cost for the automatic path.
+        fts_query = build_fts_query(query)
+        if not fts_query:
+            return None
+
+        # Search every collection with a tiny per-collection budget, then merge.
+        all_results: list[RetrievalResult] = []
+        for name in manager.list_collections():
+            store = manager.get(name)
+            if store is None:
+                continue
+            adapter = DocumentStoreRetrievalAdapter(
+                collection_name=name,
+                store=store,
+            )
+            service = RetrievalService({"knowledge_base": adapter})
+            try:
+                hits = await service.retrieve(
+                    RetrievalRequest(
+                        query=query,
+                        source_type="knowledge_base",
+                        collection=name,
+                        limit=1,
+                        fts_enabled=True,
+                        vector_enabled=False,
+                        hybrid_enabled=False,
+                        min_score=cfg.min_score,
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "session_runner.kb_auto_recall_collection_failed",
+                    collection=name,
+                )
+                continue
+            all_results.extend(hits)
+
+        if not all_results:
+            return None
+
+        # Sort descending by score, merge same-result from different collections
+        # (the adapter sets result_id = doc_id, so per-collection dedup is natural).
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        seen: set[str] = set()
+        top: list[RetrievalResult] = []
+        for r in all_results:
+            if r.result_id in seen:
+                continue
+            seen.add(r.result_id)
+            top.append(r)
+            if len(top) >= limit:
+                break
+
+        if not top:
+            return None
+
+        lines = [
+            "Relevant knowledge base snippets:",
+            "Treat snippets as helpful background context, not unquestionable truth."
+            " Use kb_search to dig deeper when needed.",
+        ]
+        remaining = max_chars
+        for result in top:
+            collection = str(result.metadata.get("collection", ""))
+            title = result.title.strip()
+            content = result.text.strip()
+            source_path = str(result.metadata.get("path", ""))
+            if not content:
+                continue
+            prefix = f"- [{collection}] "
+            if title:
+                prefix += f"{title}"
+                if source_path:
+                    prefix += f" [{source_path}]"
+                prefix += ": "
+            allowance = max(remaining - len(prefix), 0)
+            if allowance <= 0:
+                break
+            if len(content) > allowance:
+                content = content[:allowance].rstrip() + "..."
+            line = prefix + content
+            lines.append(line)
+            remaining -= len(line)
+            if remaining <= 0:
+                break
+
+        if len(lines) <= 2:
+            return None
+        return ContextMessage(
+            role="system",
+            source="knowledge_base",
+            content="\n".join(lines),
+            metadata={
+                "kb_backend": "fts",
+                "kb_count": len(lines) - 2,
             },
         )
 

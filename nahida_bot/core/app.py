@@ -581,6 +581,8 @@ class Application:
             channel_registry=self.channel_registry,
             supplement_registry=supplement_registry,
             enable_silent_reply=self.settings.enable_silent_reply,
+            document_store_manager=self.document_store_manager,
+            kb_auto_recall_config=self.settings.knowledge_base,
         )
 
         from nahida_bot.agent.orchestration import (

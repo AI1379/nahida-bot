@@ -85,7 +85,11 @@ class SQLiteDocumentRepository:
                 "status TEXT NOT NULL DEFAULT 'active', "
                 "metadata_json TEXT DEFAULT '{}', "
                 "created_at TEXT NOT NULL, "
-                "updated_at TEXT NOT NULL"
+                "updated_at TEXT NOT NULL, "
+                "retrieval_text TEXT NOT NULL DEFAULT '', "
+                "path TEXT NOT NULL DEFAULT '', "
+                "source_id TEXT NOT NULL DEFAULT '', "
+                "chunk_index INTEGER NOT NULL DEFAULT 0"
                 ")"
             )
             await self._engine.execute(
@@ -117,6 +121,18 @@ class SQLiteDocumentRepository:
                 f"ON {self._emb_table}(doc_id)"
             )
             await self._engine.db.commit()
+        # Add Phase-1 columns to pre-existing {collection}_docs tables (created
+        # before retrieval_text/path/source_id/chunk_index existed). Idempotent.
+        # MUST run before the (source_id, chunk_index) index below — otherwise
+        # old tables without those columns fail the CREATE INDEX with
+        # "no such column: source_id".
+        await self._ensure_docs_columns()
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{self._collection}_docs_source "
+                f"ON {self._docs_table}(source_id, chunk_index)"
+            )
+            await self._engine.db.commit()
 
     async def drop_tables(self) -> None:
         """Drop all tables for this collection."""
@@ -124,6 +140,32 @@ class SQLiteDocumentRepository:
             await self._engine.execute(f"DROP TABLE IF EXISTS {self._emb_table}")
             await self._engine.execute(f"DROP TABLE IF EXISTS {self._fts_table}")
             await self._engine.execute(f"DROP TABLE IF EXISTS {self._docs_table}")
+            await self._engine.db.commit()
+
+    async def _ensure_docs_columns(self) -> None:
+        """Add Phase-1 columns to pre-existing ``{collection}_docs`` tables.
+
+        New tables get the columns from ``CREATE TABLE``; this only ``ALTER``s
+        columns missing on tables created before Phase 1. Existing rows get the
+        column defaults (empty retrieval_text/path/source_id, 0 chunk_index) and
+        keep working — the store falls back to title+content for FTS/embedding
+        when retrieval_text is empty, so old collections degrade gracefully
+        until re-imported rather than breaking.
+        """
+        rows = await self._engine.fetch_all(f"PRAGMA table_info({self._docs_table})")
+        existing = {str(row["name"]) for row in rows}
+        additions = [
+            ("retrieval_text", "TEXT NOT NULL DEFAULT ''"),
+            ("path", "TEXT NOT NULL DEFAULT ''"),
+            ("source_id", "TEXT NOT NULL DEFAULT ''"),
+            ("chunk_index", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        async with self._engine.write_lock:
+            for name, decl in additions:
+                if name not in existing:
+                    await self._engine.execute(
+                        f"ALTER TABLE {self._docs_table} ADD COLUMN {name} {decl}"
+                    )
             await self._engine.db.commit()
 
     # ── Document CRUD ─────────────────────────────────────
@@ -137,6 +179,10 @@ class SQLiteDocumentRepository:
         metadata: dict[str, Any] | None,
         title_index: str,
         content_index: str,
+        retrieval_text: str = "",
+        path: str = "",
+        source_id: str = "",
+        chunk_index: int = 0,
     ) -> str:
         """Insert or update a document and replace its FTS row."""
         now_iso = _utc_now_iso()
@@ -144,15 +190,31 @@ class SQLiteDocumentRepository:
         async with self._engine.write_lock:
             await self._engine.execute(
                 f"INSERT INTO {self._docs_table} "
-                "(doc_id, title, content, status, metadata_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'active', ?, ?, ?) "
+                "(doc_id, title, content, status, metadata_json, created_at, "
+                "updated_at, retrieval_text, path, source_id, chunk_index) "
+                "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(doc_id) DO UPDATE SET "
                 "title = excluded.title, "
                 "content = excluded.content, "
                 "status = excluded.status, "
                 "metadata_json = excluded.metadata_json, "
+                "retrieval_text = excluded.retrieval_text, "
+                "path = excluded.path, "
+                "source_id = excluded.source_id, "
+                "chunk_index = excluded.chunk_index, "
                 "updated_at = excluded.updated_at",
-                (doc_id, title, content, metadata_json, now_iso, now_iso),
+                (
+                    doc_id,
+                    title,
+                    content,
+                    metadata_json,
+                    now_iso,
+                    now_iso,
+                    retrieval_text,
+                    path,
+                    source_id,
+                    chunk_index,
+                ),
             )
             await self._engine.execute(
                 f"DELETE FROM {self._fts_table} WHERE doc_id = ?",
@@ -171,6 +233,7 @@ class SQLiteDocumentRepository:
         """Retrieve a single document by ID.  Returns ``None`` if not found."""
         row = await self._engine.fetch_one(
             f"SELECT doc_id, title, content, status, metadata_json, "
+            f"retrieval_text, path, source_id, chunk_index, "
             f"created_at, updated_at FROM {self._docs_table} "
             "WHERE doc_id = ?",
             (doc_id,),
@@ -213,6 +276,7 @@ class SQLiteDocumentRepository:
         """Search documents via FTS5 BM25 ranking."""
         rows = await self._engine.fetch_all(
             f"SELECT d.doc_id, d.title, d.content, d.status, d.metadata_json, "
+            f"d.retrieval_text, d.path, d.source_id, d.chunk_index, "
             f"d.created_at, d.updated_at, bm25({self._fts_table}) AS score "
             f"FROM {self._fts_table} "
             f"JOIN {self._docs_table} d ON d.doc_id = {self._fts_table}.doc_id "
@@ -224,6 +288,33 @@ class SQLiteDocumentRepository:
         )
         return [self._doc_row_to_dict(row) for row in rows]
 
+    async def get_neighbors(
+        self,
+        source_id: str,
+        *,
+        chunk_index: int,
+        before: int = 1,
+        after: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Return sibling chunks of one chunk within the same source document.
+
+        Used for neighbor expansion: given a hit, pull its immediately adjacent
+        chunks (by ``chunk_index``) so the caller can show surrounding context.
+        Ordered by ``chunk_index`` ascending.
+        """
+        rows = await self._engine.fetch_all(
+            f"SELECT doc_id, title, content, status, metadata_json, "
+            f"retrieval_text, path, source_id, chunk_index, "
+            f"created_at, updated_at, 0.0 AS score "
+            f"FROM {self._docs_table} "
+            "WHERE source_id = ? AND status = 'active' "
+            "AND chunk_index BETWEEN ? AND ? "
+            "AND chunk_index != ? "
+            "ORDER BY chunk_index ASC",
+            (source_id, chunk_index - before, chunk_index + after, chunk_index),
+        )
+        return [self._doc_row_to_dict(row) for row in rows]
+
     async def list_documents(
         self,
         *,
@@ -232,6 +323,7 @@ class SQLiteDocumentRepository:
         """List recent active documents."""
         rows = await self._engine.fetch_all(
             f"SELECT doc_id, title, content, status, metadata_json, "
+            f"retrieval_text, path, source_id, chunk_index, "
             f"created_at, updated_at, 0.0 AS score "
             f"FROM {self._docs_table} "
             "WHERE status = 'active' "
@@ -247,6 +339,7 @@ class SQLiteDocumentRepository:
         placeholders = ",".join("?" for _ in doc_ids)
         rows = await self._engine.fetch_all(
             f"SELECT doc_id, title, content, status, metadata_json, "
+            f"retrieval_text, path, source_id, chunk_index, "
             f"created_at, updated_at, 0.0 AS score "
             f"FROM {self._docs_table} "
             f"WHERE status = 'active' AND doc_id IN ({placeholders})",
@@ -428,5 +521,9 @@ class SQLiteDocumentRepository:
             "metadata": metadata,
             "created_at": str(_get("created_at")),
             "updated_at": str(_get("updated_at")),
+            "retrieval_text": str(_get("retrieval_text")),
+            "path": str(_get("path")),
+            "source_id": str(_get("source_id")),
+            "chunk_index": int(_get("chunk_index", "0") or 0),
             "score": float(_get("score", "0.0")),
         }
