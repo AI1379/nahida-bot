@@ -360,6 +360,11 @@ class SQLiteMemoryRepository:
         metadata: dict[str, Any] | None,
         title_index: str,
         content_index: str,
+        parent_id: str = "",
+        root_id: str = "",
+        node_type: str = "leaf",
+        path: str = "",
+        source_id: str = "",
     ) -> str:
         """Store a durable memory item and its FTS index row."""
         now_iso = _utc_now_iso()
@@ -370,8 +375,9 @@ class SQLiteMemoryRepository:
                 "INSERT INTO memory_items "
                 "(item_id, scope_type, scope_id, kind, title, content, status, "
                 "confidence, importance, sensitivity, source, evidence_json, "
-                "metadata_json, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "metadata_json, created_at, updated_at, "
+                "parent_id, root_id, node_type, path, source_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item_id,
                     scope_type,
@@ -388,6 +394,11 @@ class SQLiteMemoryRepository:
                     metadata_json,
                     now_iso,
                     now_iso,
+                    parent_id,
+                    root_id,
+                    node_type,
+                    path,
+                    source_id,
                 ),
             )
             await self._engine.execute(
@@ -764,3 +775,72 @@ class SQLiteMemoryRepository:
         else:
             data["metadata"] = {}
         return data
+
+    # ── Hierarchy (Phase 3b) ──────────────────────────────────
+
+    async def get_memory_children(
+        self,
+        parent_id: str,
+        *,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return direct children of a parent memory item."""
+        sql = (
+            "SELECT mi.*, 0.0 AS score FROM memory_items mi "
+            "WHERE mi.parent_id = ? AND mi.status = 'active' "
+        )
+        params: list[Any] = [parent_id]
+        if scope_type is not None:
+            sql += "AND mi.scope_type = ? "
+            params.append(scope_type)
+        if scope_id is not None:
+            sql += "AND mi.scope_id = ? "
+            params.append(scope_id)
+        sql += "ORDER BY mi.updated_at DESC LIMIT ?"
+        params.append(max(1, limit))
+        rows = await self._engine.fetch_all(sql, tuple(params))
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
+    async def get_memory_descendants(
+        self,
+        node_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return a node and all its descendants via recursive CTE."""
+        rows = await self._engine.fetch_all(
+            "WITH RECURSIVE subtree AS ("
+            "  SELECT * FROM memory_items "
+            "  WHERE item_id = ? AND status = 'active' "
+            "  UNION ALL "
+            "  SELECT mi.* FROM memory_items mi "
+            "  JOIN subtree s ON mi.parent_id = s.item_id "
+            "  WHERE mi.status = 'active' "
+            ") "
+            "SELECT *, 0.0 AS score FROM subtree "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (node_id, max(1, limit)),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
+    async def get_memory_parents(self, node_id: str) -> list[dict[str, Any]]:
+        """Walk up the parent chain for a memory item."""
+        result: list[dict[str, Any]] = []
+        current_id = node_id
+        for _ in range(20):
+            row = await self._engine.fetch_one(
+                "SELECT *, 0.0 AS score FROM memory_items "
+                "WHERE item_id = ? AND status = 'active'",
+                (current_id,),
+            )
+            if row is None:
+                break
+            d = self._memory_item_row_to_dict(row)
+            result.append(d)
+            parent = str(d.get("parent_id", "") or "")
+            if not parent:
+                break
+            current_id = parent
+        return result

@@ -335,6 +335,17 @@ _SCHEMA_MIGRATIONS = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_observations_unique
         ON account_observations(account_key, chat_address);
     """,
+    # Migration 017: memory tree columns (Phase 3b)
+    """
+    ALTER TABLE memory_items ADD COLUMN parent_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE memory_items ADD COLUMN root_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE memory_items ADD COLUMN node_type TEXT NOT NULL DEFAULT 'leaf';
+    ALTER TABLE memory_items ADD COLUMN path TEXT NOT NULL DEFAULT '';
+    ALTER TABLE memory_items ADD COLUMN source_id TEXT NOT NULL DEFAULT '';
+
+    CREATE INDEX IF NOT EXISTS idx_memory_items_tree
+        ON memory_items(parent_id, root_id);
+    """,
 ]
 
 

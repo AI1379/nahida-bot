@@ -728,12 +728,15 @@ durable memory 回填为 `source_type=conversation|human|tool` 的 ContextNode�
 - [x] `kb_search` 输出 `doc_id` + `node_type`，可直接传给 `context_read`。
 - [x] 向后兼容：旧 collection ALTER TABLE 迁移 + 扁平 chunk 保持可用（重新导入后获得层级）。
 
-#### Phase 3b：Memory 层级 + 统一 ContextNode 表 🔲
+#### Phase 3b：Memory 层级 + 统一 ContextNode 表 ✅ 已完成（2026-06-20）
 
-- [ ] 将 `parent_id` / `root_id` / `node_type` / `path` / `source_id` 引入 `memory_items`。
-- [ ] 统一 KB 与 Memory 的检索接口（共享 ContextNode schema）。
-- [ ] 支持 episode/memory/evidence 等 conversation 来源的 node_type。
-- [ ] 为现有 KB 和 Memory 提供可回滚迁移。
+- [x] `memory_items` 表引入 `parent_id` / `root_id` / `node_type` / `path` / `source_id` 列（migration 017）。
+- [x] `MemoryItem` 数据类 + `append_item` / `append_memory_item` 全链路支持层级字段。
+- [x] `SQLiteMemoryStore` 新增 `get_children` / `get_descendants`（递归 CTE）/ `get_parents`。
+- [x] `ContextNode` Protocol 定义在 `retrieval/models.py`，KB `SearchResult` 和 Memory `MemoryItem` 均满足。
+- [x] 向后兼容：旧数据默认 `node_type='leaf'`，`parent_id`/`root_id` 为空。
+- [ ] 统一 KB 与 Memory 的检索接口为一套 consumer API — 字段对齐完成，统一 consumer 留 Phase 4。
+- [ ] consolidation 自动按类型分组（topic → memory → evidence）— schema 已支持，分配逻辑待后续。
 
 ### Phase 4：按评测增加高级能力
 

@@ -94,6 +94,11 @@ def _row_to_item(row: dict[str, Any]) -> MemoryItem:
         created_at=created_at,
         updated_at=updated_at,
         score=float(row.get("score", 0.0)),
+        parent_id=str(row.get("parent_id", "") or ""),
+        root_id=str(row.get("root_id", "") or ""),
+        node_type=str(row.get("node_type", "leaf") or "leaf"),
+        path=str(row.get("path", "") or ""),
+        source_id=str(row.get("source_id", "") or ""),
     )
 
 
@@ -303,6 +308,11 @@ class SQLiteMemoryStore(MemoryStore):
         evidence: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
         item_id: str | None = None,
+        parent_id: str = "",
+        root_id: str = "",
+        node_type: str = "leaf",
+        path: str = "",
+        source_id: str = "",
     ) -> str:
         """Store a durable structured memory item and update the FTS index."""
         memory_id = item_id or f"mem_{uuid4().hex}"
@@ -322,6 +332,11 @@ class SQLiteMemoryStore(MemoryStore):
             metadata=metadata,
             title_index=tokenize_for_fts(title),
             content_index=tokenize_for_fts(content),
+            parent_id=parent_id,
+            root_id=root_id,
+            node_type=node_type,
+            path=path,
+            source_id=source_id,
         )
         return memory_id
 
@@ -639,3 +654,37 @@ class SQLiteMemoryStore(MemoryStore):
             replace(_row_to_item(row), score=score_by_id.get(str(row["item_id"]), 0.0))
             for row in rows
         ]
+
+    # ── Hierarchy (Phase 3b) ────────────────────────────────────
+
+    async def get_children(
+        self,
+        parent_id: str,
+        *,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        limit: int = 50,
+    ) -> list[MemoryItem]:
+        """Return direct children of a parent memory item."""
+        rows = await self._repo.get_memory_children(
+            parent_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            limit=limit,
+        )
+        return [_row_to_item(row) for row in rows]
+
+    async def get_descendants(
+        self,
+        node_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[MemoryItem]:
+        """Return a node and all its descendants."""
+        rows = await self._repo.get_memory_descendants(node_id, limit=limit)
+        return [_row_to_item(row) for row in rows]
+
+    async def get_parents(self, node_id: str) -> list[MemoryItem]:
+        """Walk up the parent chain for a memory item."""
+        rows = await self._repo.get_memory_parents(node_id)
+        return [_row_to_item(row) for row in rows]

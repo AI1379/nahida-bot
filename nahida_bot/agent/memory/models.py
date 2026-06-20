@@ -48,6 +48,11 @@ class MemoryItem:
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     score: float = 0.0
+    parent_id: str = ""
+    root_id: str = ""
+    node_type: str = "leaf"
+    path: str = ""
+    source_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)
