@@ -29,6 +29,9 @@ class DocumentItem:
     path: str = ""
     source_id: str = ""
     chunk_index: int = 0
+    parent_id: str = ""
+    root_id: str = ""
+    node_type: str = "passage"
 
 
 @dataclass(slots=True, frozen=True)
@@ -80,3 +83,6 @@ class SearchResult:
     path: str = ""
     source_id: str = ""
     chunk_index: int = 0
+    parent_id: str = ""
+    root_id: str = ""
+    node_type: str = "passage"

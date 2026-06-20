@@ -10,8 +10,10 @@ import {
 } from "lucide-vue-next";
 import {
   useKbCollections,
+  useKbCollectionStatuses,
   useKbCreateCollection,
   useKbDeleteCollection,
+  useKbDocuments,
   useKbImportText,
   useKbImportFiles,
   useKbSearch,
@@ -67,9 +69,12 @@ const searchMut = useKbSearch();
 const collections = computed<KbCollectionSummary[]>(
   () => collectionsData.value?.collections ?? [],
 );
+const collectionStatuses = useKbCollectionStatuses(
+  computed(() => collections.value.map((collection) => collection.name)),
+);
 
 const COLLECTION_NAME_PATTERN = /^[A-Za-z0-9_]+$/;
-const MAX_IMPORT_FILES = 20;
+const MAX_IMPORT_FILES = 200;
 const MAX_IMPORT_FILE_BYTES = 25 * 1024 * 1024;
 const KB_DOCUMENT_ACCEPT = [
   ".md",
@@ -249,6 +254,54 @@ async function doSearch() {
 const isImporting = computed(
   () => importTextMut.isPending.value || importFilesMut.isPending.value,
 );
+
+// ── Browse ────────────────────────────────────────────
+
+const showBrowsePanel = ref(false);
+const browseCollection = ref<string | null>(null);
+const browsePageOffset = ref(0);
+const BROWSE_LIMIT = 50;
+
+const {
+  data: browseDataRaw,
+  isLoading: browseLoading,
+} = useKbDocuments(browseCollection, {
+  limit: BROWSE_LIMIT,
+  offset: browsePageOffset,
+});
+
+const browseTotal = computed(() => browseDataRaw.value?.total ?? 0);
+const browseTotalPages = computed(() =>
+  Math.max(1, Math.ceil(browseTotal.value / BROWSE_LIMIT)),
+);
+const browseStatus = computed(() => {
+  const collection = browseCollection.value;
+  return collection ? collectionStatuses.value[collection] ?? "idle" : null;
+});
+
+function openBrowse(collectionName: string) {
+  browseCollection.value = collectionName;
+  browsePageOffset.value = 0;
+  showBrowsePanel.value = true;
+}
+
+function browsePrevPage() {
+  if (browsePageOffset.value > 0) {
+    browsePageOffset.value = Math.max(0, browsePageOffset.value - BROWSE_LIMIT);
+  }
+}
+
+function browseNextPage() {
+  if (browsePageOffset.value + BROWSE_LIMIT < browseTotal.value) {
+    browsePageOffset.value += BROWSE_LIMIT;
+  }
+}
+
+function embeddingStatusLabel(status: string) {
+  if (status === "embedding") return "Embedding...";
+  if (status === "embedded") return "Vector ready";
+  return "Idle";
+}
 </script>
 
 <template>
@@ -294,6 +347,12 @@ const isImporting = computed(
           <BookOpen :size="18" class="card-icon" />
           <span class="card-title">{{ coll.name }}</span>
           <Badge variant="secondary">{{ coll.document_count }} chunks</Badge>
+          <Badge
+            v-if="collectionStatuses[coll.name] !== 'idle'"
+            :variant="collectionStatuses[coll.name] === 'embedding' ? 'default' : collectionStatuses[coll.name] === 'embedded' ? 'secondary' : 'outline'"
+          >
+            {{ embeddingStatusLabel(collectionStatuses[coll.name]) }}
+          </Badge>
         </div>
         <div v-if="coll.created_at" class="card-meta">
           Created {{ coll.created_at }}
@@ -301,6 +360,9 @@ const isImporting = computed(
         <div class="card-actions">
           <Button size="sm" variant="outline" @click="openImport(coll.name)">
             <Upload :size="14" /> Import
+          </Button>
+          <Button size="sm" variant="outline" @click="openBrowse(coll.name)">
+            <BookOpen :size="14" /> Browse
           </Button>
           <Button size="sm" variant="outline" @click="openSearch(coll.name)">
             <Search :size="14" /> Search
@@ -477,12 +539,92 @@ const isImporting = computed(
           >
             <div class="result-header">
               <strong>{{ r.title }}</strong>
-              <Badge variant="outline">{{ r.doc_id }}</Badge>
+              <Badge variant="outline">{{ r.node_type }}</Badge>
+            </div>
+            <div v-if="r.path" class="result-path">
+              <code>{{ r.path }}</code>
+            </div>
+            <div class="result-meta-line">
+              <span class="result-id">{{ r.doc_id }}</span>
+              <span v-if="r.source_id" class="result-source">← {{ r.source_id }}</span>
             </div>
             <p class="result-content">
               {{ r.content.slice(0, 300) }}{{ r.content.length > 300 ? "..." : "" }}
             </p>
           </div>
+        </div>
+      </div>
+    </ConfirmDialog>
+
+    <!-- Browse Panel -->
+    <ConfirmDialog
+      :open="showBrowsePanel"
+      title="Browse Documents"
+      confirm-label="Close"
+      size="wide"
+      :show-cancel="false"
+      @confirm="showBrowsePanel = false"
+      @update:open="showBrowsePanel = $event"
+    >
+      <div class="browse-dialog-form">
+        <div class="browse-info">
+          <span>{{ browseCollection }} — {{ browseTotal }} documents</span>
+          <Badge
+            v-if="browseStatus"
+            :variant="browseStatus === 'embedding' ? 'default' : 'outline'"
+          >
+            {{ embeddingStatusLabel(browseStatus) }}
+          </Badge>
+        </div>
+        <div v-if="browseLoading" class="loading-state">
+          <Spinner /> <span>Loading...</span>
+        </div>
+        <div v-else class="browse-table-container">
+          <table class="browse-table">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Type</th>
+                <th>Path</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="doc in browseDataRaw?.documents ?? []"
+                :key="doc.doc_id"
+                class="browse-row"
+              >
+                <td class="browse-title">{{ doc.title }}</td>
+                <td><Badge variant="outline" size="sm">{{ doc.node_type }}</Badge></td>
+                <td class="browse-path"><code>{{ doc.path || '-' }}</code></td>
+                <td class="browse-source">{{ doc.source_id || '-' }}</td>
+              </tr>
+              <tr v-if="(browseDataRaw?.documents ?? []).length === 0">
+                <td colspan="4" class="no-results">No documents.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="browse-pagination">
+          <Button
+            size="sm" variant="outline"
+            :disabled="browsePageOffset === 0"
+            @click="browsePrevPage()"
+          >
+            Previous
+          </Button>
+          <span class="browse-page-info">
+            {{ Math.floor(browsePageOffset / BROWSE_LIMIT) + 1 }} /
+            {{ browseTotalPages }}
+          </span>
+          <Button
+            size="sm" variant="outline"
+            :disabled="browsePageOffset + BROWSE_LIMIT >= browseTotal"
+            @click="browseNextPage()"
+          >
+            Next
+          </Button>
         </div>
       </div>
     </ConfirmDialog>
@@ -720,10 +862,135 @@ const isImporting = computed(
   white-space: nowrap;
 }
 
+.result-path {
+  margin-bottom: 0.125rem;
+}
+
+.result-path code {
+  font-size: 0.6875rem;
+  color: var(--color-primary);
+  background: none;
+  padding: 0;
+}
+
+.result-meta-line {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  color: var(--color-muted-foreground);
+  margin-bottom: 0.25rem;
+}
+
+.result-id {
+  font-family: monospace;
+}
+
+.result-source {
+  opacity: 0.7;
+}
+
 .result-content {
   font-size: 0.75rem;
   color: var(--color-muted-foreground);
   margin: 0;
   line-height: 1.5;
+}
+
+/* Browse panel */
+.browse-dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.browse-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8125rem;
+  color: var(--color-muted-foreground);
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.browse-table-container {
+  max-height: min(24rem, calc(100dvh - 14rem));
+  overflow: auto;
+}
+
+.browse-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.75rem;
+}
+
+.browse-table th:nth-child(1) { width: 25%; }
+.browse-table th:nth-child(2) { width: 16%; }
+.browse-table th:nth-child(3) { width: 41%; }
+.browse-table th:nth-child(4) { width: 18%; }
+
+.browse-table th {
+  text-align: left;
+  padding: 0.375rem 0.5rem;
+  color: var(--color-muted-foreground);
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  background: var(--color-background);
+}
+
+.browse-table td {
+  padding: 0.375rem 0.5rem;
+  vertical-align: top;
+  overflow: hidden;
+}
+
+.browse-row:hover {
+  background: var(--color-muted);
+}
+
+.browse-title {
+  font-weight: 500;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browse-path code {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--color-primary);
+  background: none;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browse-source {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-muted-foreground);
+}
+
+.browse-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.browse-page-info {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
 }
 </style>

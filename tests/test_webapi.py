@@ -791,7 +791,7 @@ async def test_kb_import_files_returns_partial_results(
     assert kb_plugin.import_content.await_count == 2
 
 
-async def test_kb_import_files_rejects_more_than_twenty_documents(
+async def test_kb_import_files_rejects_more_than_200_documents(
     client_no_auth: AsyncClient,
 ) -> None:
     mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
@@ -803,12 +803,12 @@ async def test_kb_import_files_rejects_more_than_twenty_documents(
     resp = await client_no_auth.post(
         "/api/kb/collections/reports/import-files",
         files=[
-            ("files", (f"{index}.txt", b"text", "text/plain")) for index in range(21)
+            ("files", (f"{index}.txt", b"text", "text/plain")) for index in range(201)
         ],
     )
 
     assert resp.status_code == 400
-    assert "At most 20 documents" in resp.json()["detail"]
+    assert "At most 200 documents" in resp.json()["detail"]
 
 
 async def test_kb_create_collection_conflict_returns_409(

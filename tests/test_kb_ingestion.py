@@ -101,31 +101,38 @@ def test_parse_markdown_heading_path() -> None:
     chunks = parse_markdown(md, source_id="test")
     assert len(chunks) >= 4  # Top, Child, Grandchild, Other Child
 
-    # Grandchild chunk should have full path "Top > Child > Grandchild".
-    deep_chunks = [c for c in chunks if "Deep body" in c.content]
-    assert len(deep_chunks) == 1
-    assert deep_chunks[0].path == "Top > Child > Grandchild"
+    # Grandchild passage chunk should have full path.
+    deep_passages = [
+        c for c in chunks if "Deep body" in c.content and c.node_type == "passage"
+    ]
+    assert len(deep_passages) == 1
+    assert deep_passages[0].path == "Top > Child > Grandchild"
 
-    # Child chunk should have path "Top > Child".
-    child_chunks = [c for c in chunks if c.title == "Child"]
-    assert len(child_chunks) == 1
-    assert child_chunks[0].path == "Top > Child"
+    # Child section node should have path "Top > Child".
+    child_sections = [
+        c for c in chunks if c.title == "Child" and c.node_type == "section"
+    ]
+    assert len(child_sections) == 1
+    assert child_sections[0].path == "Top > Child"
+    assert child_sections[0].parent_id != ""
 
-    # Top chunk should have path "Top".
-    top_chunks = [c for c in chunks if c.title == "Top"]
-    assert any(c.path == "Top" for c in top_chunks)
+    # Top section node should have path "Top".
+    top_nodes = [c for c in chunks if c.title == "Top" and c.node_type == "section"]
+    assert len(top_nodes) == 1
+    assert top_nodes[0].path == "Top"
+    assert top_nodes[0].parent_id != ""  # linked to document root
 
 
 def test_parse_markdown_flat_headings() -> None:
     """Sibling headings share the same parent path."""
     md = "# Root\n\nRoot body.\n\n## A\n\nA body.\n\n## B\n\nB body."
     chunks = parse_markdown(md, source_id="flat")
-    a_chunks = [c for c in chunks if c.title == "A"]
-    b_chunks = [c for c in chunks if c.title == "B"]
-    assert len(a_chunks) == 1
-    assert len(b_chunks) == 1
-    assert a_chunks[0].path == "Root > A"
-    assert b_chunks[0].path == "Root > B"
+    a_sections = [c for c in chunks if c.title == "A" and c.node_type == "section"]
+    b_sections = [c for c in chunks if c.title == "B" and c.node_type == "section"]
+    assert len(a_sections) == 1
+    assert len(b_sections) == 1
+    assert a_sections[0].path == "Root > A"
+    assert b_sections[0].path == "Root > B"
 
 
 # ── retrieval_text content ──
@@ -261,6 +268,247 @@ async def test_get_neighbors_returns_adjacent_chunks() -> None:
         # chunk 0 and chunk 4 should NOT be there.
         assert "src_chunk_0" not in neighbor_ids
         assert "src_chunk_4" not in neighbor_ids
+    finally:
+        await engine.close()
+
+
+# ── Hierarchy: section nodes + parent/root links ──
+
+
+def test_parse_markdown_creates_section_nodes() -> None:
+    """parse_markdown creates section nodes between document root and passages."""
+    md = "# Guide\n\nIntro text.\n\n## Setup\n\nSetup steps.\n\n### Details\n\nDeep."
+    chunks = parse_markdown(md, source_id="hier_test")
+
+    doc_nodes = [c for c in chunks if c.node_type == "document"]
+    sec_nodes = [c for c in chunks if c.node_type == "section"]
+    passage_nodes = [c for c in chunks if c.node_type == "passage"]
+
+    assert len(doc_nodes) == 1  # root document
+    assert len(sec_nodes) >= 2  # "Guide" H1 + "Setup" H2 + "Details" H3
+    assert len(passage_nodes) >= 3  # body text chunks
+
+    # All nodes share the same root_id.
+    root_id = doc_nodes[0].root_id
+    assert root_id
+    for chunk in chunks:
+        assert chunk.root_id == root_id, (
+            f"{chunk.title} root_id={chunk.root_id} != {root_id}"
+        )
+
+
+def test_parse_markdown_section_nodes_have_parent_links() -> None:
+    """Section nodes link to their parent via parent_id."""
+    md = "# A\n\n## B\n\nB body.\n\n## C\n\nC body."
+    chunks = parse_markdown(md, source_id="parent_test")
+
+    doc = next(c for c in chunks if c.node_type == "document")
+    # The root document has no parent.
+    assert doc.parent_id == ""
+
+    sections = {c.title: c for c in chunks if c.node_type == "section"}
+    # H1 "A" section → parent is document root
+    assert sections["A"].parent_id == doc.doc_id
+    # H2 "B" section → parent is "A" section
+    assert sections["B"].parent_id == sections["A"].doc_id
+    # H2 "C" section → parent is "A" section
+    assert sections["C"].parent_id == sections["A"].doc_id
+
+
+@pytest.mark.asyncio
+async def test_get_children_returns_direct_children() -> None:
+    """get_children returns only direct children of a parent."""
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    try:
+        store = SQLiteDocumentStore(engine, collection="children_test")
+        await store.setup()
+
+        await store.put(
+            "root",
+            "Root node",
+            source_id="s",
+            root_id="root",
+            parent_id="",
+            node_type="document",
+        )
+        await store.put(
+            "child_a",
+            "Child A",
+            source_id="s",
+            root_id="root",
+            parent_id="root",
+            node_type="section",
+            chunk_index=0,
+            retrieval_text="Child A",
+        )
+        await store.put(
+            "child_b",
+            "Child B",
+            source_id="s",
+            root_id="root",
+            parent_id="root",
+            node_type="section",
+            chunk_index=1,
+            retrieval_text="Child B",
+        )
+        await store.put(
+            "grandchild",
+            "Grandchild",
+            source_id="s",
+            root_id="root",
+            parent_id="child_a",
+            node_type="passage",
+            retrieval_text="Grandchild",
+        )
+
+        children = await store.get_children("root", limit=10)
+        assert len(children) == 2
+        assert {c.doc_id for c in children} == {"child_a", "child_b"}
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_get_subtree_returns_all_descendants() -> None:
+    """get_subtree returns all nodes under a root, including nested children."""
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    try:
+        store = SQLiteDocumentStore(engine, collection="subtree_test")
+        await store.setup()
+
+        await store.put(
+            "root",
+            "Root",
+            source_id="s",
+            root_id="root",
+            parent_id="",
+            node_type="document",
+        )
+        await store.put(
+            "child_1",
+            "C1",
+            source_id="s",
+            root_id="root",
+            parent_id="root",
+            node_type="section",
+            chunk_index=0,
+            retrieval_text="C1",
+        )
+        await store.put(
+            "child_2",
+            "C2",
+            source_id="s",
+            root_id="root",
+            parent_id="child_1",
+            node_type="passage",
+            chunk_index=1,
+            retrieval_text="C2",
+        )
+
+        subtree = await store.get_subtree("root", limit=10)
+        assert len(subtree) == 3  # root + child_1 + child_2
+        assert {c.doc_id for c in subtree} == {"root", "child_1", "child_2"}
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_get_parents_walks_up_to_root() -> None:
+    """get_parents follows parent_id chain up to the root."""
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    try:
+        store = SQLiteDocumentStore(engine, collection="parents_test")
+        await store.setup()
+
+        await store.put(
+            "root",
+            "Root",
+            source_id="s",
+            root_id="root",
+            parent_id="",
+            node_type="document",
+        )
+        await store.put(
+            "mid",
+            "Mid",
+            source_id="s",
+            root_id="root",
+            parent_id="root",
+            node_type="section",
+            retrieval_text="Mid",
+        )
+        await store.put(
+            "leaf",
+            "Leaf",
+            source_id="s",
+            root_id="root",
+            parent_id="mid",
+            node_type="passage",
+            retrieval_text="Leaf",
+        )
+
+        parents = await store.get_parents("leaf")
+        # leaf → mid → root (walking up)
+        assert len(parents) == 3
+        assert [p.doc_id for p in parents] == ["leaf", "mid", "root"]
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_get_descendants_recursive() -> None:
+    """get_descendants returns all descendants via recursive parent_id walk."""
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    try:
+        store = SQLiteDocumentStore(engine, collection="desc_test")
+        await store.setup()
+
+        await store.put(
+            "section_a",
+            "Section A",
+            source_id="s",
+            root_id="section_a",
+            parent_id="",
+            node_type="section",
+        )
+        await store.put(
+            "section_b",
+            "Section B",
+            source_id="s",
+            root_id="section_a",
+            parent_id="section_a",
+            node_type="section",
+        )
+        await store.put(
+            "passage_1",
+            "Passage 1",
+            source_id="s",
+            root_id="section_a",
+            parent_id="section_b",
+            node_type="passage",
+            retrieval_text="Passage 1",
+        )
+
+        # Descendants of section_a: itself + section_b + passage_1.
+        descendants = await store.get_descendants("section_a", limit=10)
+        assert len(descendants) == 3
+        assert {d.doc_id for d in descendants} == {
+            "section_a",
+            "section_b",
+            "passage_1",
+        }
+
+        # Descendants of section_b: itself + passage_1.
+        desc_b = await store.get_descendants("section_b", limit=10)
+        assert {d.doc_id for d in desc_b} == {"section_b", "passage_1"}
+
+        # Descendants of a leaf: only itself.
+        desc_leaf = await store.get_descendants("passage_1", limit=10)
+        assert {d.doc_id for d in desc_leaf} == {"passage_1"}
     finally:
         await engine.close()
 

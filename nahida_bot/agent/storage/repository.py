@@ -89,7 +89,10 @@ class SQLiteDocumentRepository:
                 "retrieval_text TEXT NOT NULL DEFAULT '', "
                 "path TEXT NOT NULL DEFAULT '', "
                 "source_id TEXT NOT NULL DEFAULT '', "
-                "chunk_index INTEGER NOT NULL DEFAULT 0"
+                "chunk_index INTEGER NOT NULL DEFAULT 0, "
+                "parent_id TEXT NOT NULL DEFAULT '', "
+                "root_id TEXT NOT NULL DEFAULT '', "
+                "node_type TEXT NOT NULL DEFAULT 'passage'"
                 ")"
             )
             await self._engine.execute(
@@ -159,6 +162,9 @@ class SQLiteDocumentRepository:
             ("path", "TEXT NOT NULL DEFAULT ''"),
             ("source_id", "TEXT NOT NULL DEFAULT ''"),
             ("chunk_index", "INTEGER NOT NULL DEFAULT 0"),
+            ("parent_id", "TEXT NOT NULL DEFAULT ''"),
+            ("root_id", "TEXT NOT NULL DEFAULT ''"),
+            ("node_type", "TEXT NOT NULL DEFAULT 'passage'"),
         ]
         async with self._engine.write_lock:
             for name, decl in additions:
@@ -183,6 +189,9 @@ class SQLiteDocumentRepository:
         path: str = "",
         source_id: str = "",
         chunk_index: int = 0,
+        parent_id: str = "",
+        root_id: str = "",
+        node_type: str = "passage",
     ) -> str:
         """Insert or update a document and replace its FTS row."""
         now_iso = _utc_now_iso()
@@ -191,8 +200,9 @@ class SQLiteDocumentRepository:
             await self._engine.execute(
                 f"INSERT INTO {self._docs_table} "
                 "(doc_id, title, content, status, metadata_json, created_at, "
-                "updated_at, retrieval_text, path, source_id, chunk_index) "
-                "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?) "
+                "updated_at, retrieval_text, path, source_id, chunk_index, "
+                "parent_id, root_id, node_type) "
+                "VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(doc_id) DO UPDATE SET "
                 "title = excluded.title, "
                 "content = excluded.content, "
@@ -202,6 +212,9 @@ class SQLiteDocumentRepository:
                 "path = excluded.path, "
                 "source_id = excluded.source_id, "
                 "chunk_index = excluded.chunk_index, "
+                "parent_id = excluded.parent_id, "
+                "root_id = excluded.root_id, "
+                "node_type = excluded.node_type, "
                 "updated_at = excluded.updated_at",
                 (
                     doc_id,
@@ -214,6 +227,9 @@ class SQLiteDocumentRepository:
                     path,
                     source_id,
                     chunk_index,
+                    parent_id,
+                    root_id,
+                    node_type,
                 ),
             )
             await self._engine.execute(
@@ -234,6 +250,7 @@ class SQLiteDocumentRepository:
         row = await self._engine.fetch_one(
             f"SELECT doc_id, title, content, status, metadata_json, "
             f"retrieval_text, path, source_id, chunk_index, "
+            f"parent_id, root_id, node_type, "
             f"created_at, updated_at FROM {self._docs_table} "
             "WHERE doc_id = ?",
             (doc_id,),
@@ -277,6 +294,7 @@ class SQLiteDocumentRepository:
         rows = await self._engine.fetch_all(
             f"SELECT d.doc_id, d.title, d.content, d.status, d.metadata_json, "
             f"d.retrieval_text, d.path, d.source_id, d.chunk_index, "
+            f"d.parent_id, d.root_id, d.node_type, "
             f"d.created_at, d.updated_at, bm25({self._fts_table}) AS score "
             f"FROM {self._fts_table} "
             f"JOIN {self._docs_table} d ON d.doc_id = {self._fts_table}.doc_id "
@@ -305,6 +323,7 @@ class SQLiteDocumentRepository:
         rows = await self._engine.fetch_all(
             f"SELECT doc_id, title, content, status, metadata_json, "
             f"retrieval_text, path, source_id, chunk_index, "
+            f"parent_id, root_id, node_type, "
             f"created_at, updated_at, 0.0 AS score "
             f"FROM {self._docs_table} "
             "WHERE source_id = ? AND status = 'active' "
@@ -315,20 +334,125 @@ class SQLiteDocumentRepository:
         )
         return [self._doc_row_to_dict(row) for row in rows]
 
+    async def get_children(
+        self,
+        parent_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return direct children of a parent, ordered by chunk_index."""
+        rows = await self._engine.fetch_all(
+            f"SELECT doc_id, title, content, status, metadata_json, "
+            f"retrieval_text, path, source_id, chunk_index, "
+            f"parent_id, root_id, node_type, "
+            f"created_at, updated_at, 0.0 AS score "
+            f"FROM {self._docs_table} "
+            "WHERE parent_id = ? AND status = 'active' "
+            "ORDER BY chunk_index ASC "
+            "LIMIT ?",
+            (parent_id, max(1, limit)),
+        )
+        return [self._doc_row_to_dict(row) for row in rows]
+
+    async def get_subtree(
+        self,
+        root_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return all active nodes under a root, ordered by path + chunk_index."""
+        rows = await self._engine.fetch_all(
+            f"SELECT doc_id, title, content, status, metadata_json, "
+            f"retrieval_text, path, source_id, chunk_index, "
+            f"parent_id, root_id, node_type, "
+            f"created_at, updated_at, 0.0 AS score "
+            f"FROM {self._docs_table} "
+            "WHERE root_id = ? AND status = 'active' "
+            "ORDER BY path ASC, chunk_index ASC "
+            "LIMIT ?",
+            (root_id, max(1, limit)),
+        )
+        return [self._doc_row_to_dict(row) for row in rows]
+
+    async def get_descendants(
+        self,
+        node_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return a node and all its descendants via recursive parent walk.
+
+        Uses a recursive CTE to follow ``parent_id`` links downward from
+        ``node_id``. The starting node itself is included. Results are
+        ordered by path + chunk_index for natural document order.
+        """
+        rows = await self._engine.fetch_all(
+            f"WITH RECURSIVE subtree AS ("
+            f"  SELECT doc_id, title, content, status, metadata_json, "
+            f"  retrieval_text, path, source_id, chunk_index, "
+            f"  parent_id, root_id, node_type, "
+            f"  created_at, updated_at "
+            f"  FROM {self._docs_table} "
+            f"  WHERE doc_id = ? AND status = 'active' "
+            f"  UNION ALL "
+            f"  SELECT d.doc_id, d.title, d.content, d.status, d.metadata_json, "
+            f"  d.retrieval_text, d.path, d.source_id, d.chunk_index, "
+            f"  d.parent_id, d.root_id, d.node_type, "
+            f"  d.created_at, d.updated_at "
+            f"  FROM {self._docs_table} d "
+            f"  JOIN subtree s ON d.parent_id = s.doc_id "
+            f"  WHERE d.status = 'active' "
+            f") "
+            f"SELECT * FROM subtree "
+            f"ORDER BY path ASC, chunk_index ASC "
+            f"LIMIT ?",
+            (node_id, max(1, limit)),
+        )
+        return [self._doc_row_to_dict(row) for row in rows]
+
+    async def get_parents(self, node_id: str) -> list[dict[str, Any]]:
+        """Walk up the parent chain for a node, root last.
+
+        Returns an empty list when the node or its parent chain is not found.
+        An item with ``parent_id = ''`` terminates the walk.
+        """
+        result: list[dict[str, Any]] = []
+        current_id = node_id
+        for _ in range(20):  # safety cap
+            row = await self._engine.fetch_one(
+                f"SELECT doc_id, title, content, status, metadata_json, "
+                f"retrieval_text, path, source_id, chunk_index, "
+                f"parent_id, root_id, node_type, "
+                f"created_at, updated_at, 0.0 AS score "
+                f"FROM {self._docs_table} "
+                "WHERE doc_id = ? AND status = 'active'",
+                (current_id,),
+            )
+            if row is None:
+                break
+            result.append(self._doc_row_to_dict(row))
+            parent = str(row["parent_id"] or "")
+            if not parent:
+                break
+            current_id = parent
+        return result
+
     async def list_documents(
         self,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """List recent active documents."""
+        """List recent active documents with pagination."""
         rows = await self._engine.fetch_all(
             f"SELECT doc_id, title, content, status, metadata_json, "
             f"retrieval_text, path, source_id, chunk_index, "
+            f"parent_id, root_id, node_type, "
             f"created_at, updated_at, 0.0 AS score "
             f"FROM {self._docs_table} "
             "WHERE status = 'active' "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         return [self._doc_row_to_dict(row) for row in rows]
 
@@ -340,6 +464,7 @@ class SQLiteDocumentRepository:
         rows = await self._engine.fetch_all(
             f"SELECT doc_id, title, content, status, metadata_json, "
             f"retrieval_text, path, source_id, chunk_index, "
+            f"parent_id, root_id, node_type, "
             f"created_at, updated_at, 0.0 AS score "
             f"FROM {self._docs_table} "
             f"WHERE status = 'active' AND doc_id IN ({placeholders})",
@@ -525,5 +650,8 @@ class SQLiteDocumentRepository:
             "path": str(_get("path")),
             "source_id": str(_get("source_id")),
             "chunk_index": int(_get("chunk_index", "0") or 0),
+            "parent_id": str(_get("parent_id")),
+            "root_id": str(_get("root_id")),
+            "node_type": str(_get("node_type") or "passage"),
             "score": float(_get("score", "0.0")),
         }

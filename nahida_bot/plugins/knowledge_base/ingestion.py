@@ -46,6 +46,9 @@ class Chunk:
     source_id: str
     chunk_index: int
     path: str = ""
+    parent_id: str = ""
+    root_id: str = ""
+    node_type: str = "passage"
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -126,6 +129,9 @@ def split_into_chunks(
     title_prefix: str = "",
     path: str = "",
     chunk_id_prefix: str = "",
+    parent_id: str = "",
+    root_id: str = "",
+    node_type: str = "passage",
 ) -> list[Chunk]:
     """Split raw text into ``Chunk`` objects, each at most ~``chunk_size`` chars.
 
@@ -186,6 +192,9 @@ def split_into_chunks(
                 source_id=source_id,
                 chunk_index=idx,
                 path=path,
+                parent_id=parent_id,
+                root_id=root_id,
+                node_type=node_type,
             )
         )
 
@@ -240,58 +249,163 @@ def parse_markdown(
     chunk_size: int = 500,
     chunk_overlap: int = 50,
 ) -> list[Chunk]:
-    """Parse a Markdown document into chunks with full heading paths.
+    """Parse a Markdown document into hierarchical chunks.
 
-    Maintains a heading **stack** while walking the document: each chunk's
-    ``path`` is the joined ancestor headings at that point (e.g.
-    "原神角色资料 > 阿贝多 > 角色故事 5"). Splits on ``##`` (or deeper) headings;
-    sections larger than ``chunk_size`` are sub-split by ``split_into_chunks``.
+    Returns a mixed list of **section nodes** (``node_type='document'`` or
+    ``'section'``) and **passage chunks** (``node_type='passage'``). Section
+    nodes carry the heading title as ``content`` and link to their parent via
+    ``parent_id``; passage chunks link to the nearest ancestor section. Every
+    node within one source document shares the same ``root_id``.
+
+    Maintains a heading **stack** while walking the document so each node's
+    ``path`` is the joined ancestor headings (e.g.
+    "原神角色资料 > 阿贝多 > 角色故事 5").
     """
-    matches = list(_MD_HEADING.finditer(text))
-    # (path, heading_title, body) for each non-empty section.
-    sections: list[tuple[str, str, str]] = []
+    root_doc_id = _make_chunk_id(source_id, -1)  # unique root id
 
+    # ── No headings: flat document with a single root section ──
+    matches = list(_MD_HEADING.finditer(text))
     if not matches:
         body = text.strip()
-        if body:
-            sections.append(("", source_id, body))
-    else:
-        # Content before the first heading belongs to an untitled lead section.
-        pre = text[: matches[0].start()].strip()
-        if pre:
-            sections.append(("", source_id, pre))
-        stack: list[tuple[int, str]] = []
-        for i, m in enumerate(matches):
-            level = len(m.group(1))
-            heading_title = m.group(2).strip()
-            while stack and stack[-1][0] >= level:
-                stack.pop()
-            stack.append((level, heading_title))
-            path = " > ".join(title for _level, title in stack)
-            body_start = m.end()
-            body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-            body = text[body_start:body_end].strip()
-            if body:
-                sections.append((path, heading_title, body))
-
-    all_chunks: list[Chunk] = []
-    for section_index, (path, heading_title, body) in enumerate(sections):
-        # Per-section id prefix keeps duplicate headings' chunk ids unique.
-        section_id = (
-            f"{source_id}__{section_index}_{_safe_section_name(heading_title)}"
-            if heading_title
-            else source_id
+        if not body:
+            return []
+        root = Chunk(
+            doc_id=root_doc_id,
+            title=source_id,
+            content=source_id,
+            retrieval_text=_build_retrieval_text(
+                content=source_id, source_id=source_id, title=source_id
+            ),
+            source_id=source_id,
+            chunk_index=0,
+            path="",
+            parent_id="",
+            root_id=root_doc_id,
+            node_type="document",
         )
-        chunks = split_into_chunks(
+        chunks: list[Chunk] = [root]
+        passage_chunks = split_into_chunks(
             body,
             source_id=source_id,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            title_prefix=heading_title if heading_title else source_id,
-            path=path,
-            chunk_id_prefix=section_id,
+            title_prefix=source_id,
+            path="",
+            parent_id=root_doc_id,
+            root_id=root_doc_id,
         )
-        all_chunks.extend(chunks)
+        chunks.extend(passage_chunks)
+        return chunks
+
+    # ── Heading stack: build section nodes + passage chunks ──
+    all_chunks: list[Chunk] = []
+
+    # Pre-content before the first heading → root document's lead passage.
+    pre = text[: matches[0].start()].strip()
+    if pre:
+        all_chunks.append(
+            Chunk(
+                doc_id=root_doc_id,
+                title=source_id,
+                content=source_id,
+                retrieval_text=_build_retrieval_text(
+                    content=source_id, source_id=source_id, title=source_id
+                ),
+                source_id=source_id,
+                chunk_index=0,
+                path="",
+                parent_id="",
+                root_id=root_doc_id,
+                node_type="document",
+            )
+        )
+        passage_chunks = split_into_chunks(
+            pre,
+            source_id=source_id,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            title_prefix=source_id,
+            path="",
+            parent_id=root_doc_id,
+            root_id=root_doc_id,
+        )
+        all_chunks.extend(passage_chunks)
+    else:
+        # No pre-content: root document node with minimal content.
+        all_chunks.append(
+            Chunk(
+                doc_id=root_doc_id,
+                title=source_id,
+                content=source_id,
+                retrieval_text=_build_retrieval_text(
+                    content=source_id, source_id=source_id, title=source_id
+                ),
+                source_id=source_id,
+                chunk_index=0,
+                path="",
+                parent_id="",
+                root_id=root_doc_id,
+                node_type="document",
+            )
+        )
+
+    stack: list[tuple[int, str, str]] = []  # (level, heading_title, section_doc_id)
+    for i, m in enumerate(matches):
+        level = len(m.group(1))
+        heading_title = m.group(2).strip()
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        current_path = " > ".join(title for _lvl, title, _sid in stack)
+        if current_path:
+            current_path += " > " + heading_title
+        else:
+            current_path = heading_title
+
+        # Parent is the nearest ancestor section, or the document root.
+        section_parent_id = stack[-1][2] if stack else root_doc_id
+        section_doc_id = _make_chunk_id(
+            f"{source_id}__sec_{_safe_section_name(heading_title)}", i
+        )
+        stack.append((level, heading_title, section_doc_id))
+
+        body_start = m.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[body_start:body_end].strip()
+
+        # Section node: heading + first ~500 chars of immediate body.
+        section = Chunk(
+            doc_id=section_doc_id,
+            title=heading_title,
+            content=heading_title,
+            retrieval_text=_build_retrieval_text(
+                content=heading_title,
+                path=current_path,
+                source_id=source_id,
+                title=heading_title,
+            ),
+            source_id=source_id,
+            chunk_index=0,
+            path=current_path,
+            parent_id=section_parent_id,
+            root_id=root_doc_id,
+            node_type="section",
+        )
+        all_chunks.append(section)
+
+        if body:
+            section_prefix = f"{source_id}__{i}_{_safe_section_name(heading_title)}"
+            passage_chunks = split_into_chunks(
+                body,
+                source_id=source_id,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                title_prefix=heading_title,
+                path=current_path,
+                chunk_id_prefix=section_prefix,
+                parent_id=section_doc_id,
+                root_id=root_doc_id,
+            )
+            all_chunks.extend(passage_chunks)
 
     return all_chunks
 
@@ -349,13 +463,39 @@ async def import_document(
             chunk_overlap=chunk_overlap,
         )
     else:
-        chunks = split_into_chunks(
-            content,
+        # Plain text: create a document root + passage chunks (same pattern as
+        # Markdown no-headings), so context_read works for text imports too.
+        body = content.strip()
+        if not body:
+            logger.warning("kb.import_empty", source_id=source_id)
+            return 0
+        root_doc_id = _make_chunk_id(source_id, -1)
+        root = Chunk(
+            doc_id=root_doc_id,
+            title=source_id,
+            content=source_id,
+            retrieval_text=_build_retrieval_text(
+                content=source_id, source_id=source_id, title=source_id
+            ),
+            source_id=source_id,
+            chunk_index=0,
+            path="",
+            parent_id="",
+            root_id=root_doc_id,
+            node_type="document",
+        )
+        chunks = [root]
+        passage_chunks = split_into_chunks(
+            body,
             source_id=source_id,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             title_prefix=source_id,
+            path="",
+            parent_id=root_doc_id,
+            root_id=root_doc_id,
         )
+        chunks.extend(passage_chunks)
 
     if not chunks:
         logger.warning("kb.import_empty", source_id=source_id)
@@ -379,6 +519,9 @@ async def import_document(
             path=chunk.path,
             source_id=chunk.source_id,
             chunk_index=chunk.chunk_index,
+            parent_id=chunk.parent_id,
+            root_id=chunk.root_id,
+            node_type=chunk.node_type,
         )
 
     logger.info(

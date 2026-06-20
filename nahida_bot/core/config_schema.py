@@ -18,6 +18,7 @@ from pydantic.fields import FieldInfo
 from nahida_bot.core.config import (
     AgentConfig,
     ContextConfig,
+    KBAutoRecallConfig,
     MultimodalConfig,
     ProviderEntryConfig,
     RouterConfigModel,
@@ -161,6 +162,7 @@ _NESTED_MODELS: dict[str, type] = {
     "context": ContextConfig,
     "scheduler": SchedulerConfigModel,
     "router": RouterConfigModel,
+    "kb_auto_recall": KBAutoRecallConfig,
 }
 
 

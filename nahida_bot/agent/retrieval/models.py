@@ -31,7 +31,7 @@ class RetrievalRequest:
     vector_enabled: bool = False
     hybrid_enabled: bool = True
     allow_global_fallback: bool = False
-    min_score: float = 0.0
+    min_score: float = float("-inf")
 
 
 @dataclass(frozen=True, slots=True)

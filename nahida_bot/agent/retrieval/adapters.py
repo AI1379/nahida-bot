@@ -337,12 +337,13 @@ def _above_threshold(
 ) -> list[RetrievalResult]:
     """Drop results below ``min_score``.
 
-    ``min_score <= 0`` disables filtering so the default request preserves the
-    raw top-k ordering. Filtering happens per scope in the memory cascade so a
-    weak chat-scoped hit does not consume budget that the global fallback could
-    fill with a stronger match.
+    ``min_score`` is compared against each result's score; results below the
+    threshold are dropped.  The sentinel value ``float('-inf')`` (the default)
+    means "no filtering", preserving the raw top-k ordering.  Filtering happens
+    per scope in the memory cascade so a weak chat-scoped hit does not consume
+    budget that the global fallback could fill with a stronger match.
     """
-    if min_score <= 0.0:
+    if min_score == float("-inf"):
         return items
     return [item for item in items if item.score >= min_score]
 

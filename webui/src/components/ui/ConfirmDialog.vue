@@ -21,6 +21,8 @@ withDefaults(
     cancelLabel?: string;
     loading?: boolean;
     disabled?: boolean;
+    size?: "default" | "wide";
+    showCancel?: boolean;
   }>(),
   {
     description: "",
@@ -29,6 +31,8 @@ withDefaults(
     cancelLabel: "Cancel",
     loading: false,
     disabled: false,
+    size: "default",
+    showCancel: true,
   },
 );
 
@@ -42,7 +46,10 @@ const emit = defineEmits<{
   <DialogRoot :open="open" @update:open="emit('update:open', $event)">
     <DialogPortal>
       <DialogOverlay class="dialog-overlay" />
-      <DialogContent class="dialog-content">
+      <DialogContent
+        class="dialog-content"
+        :class="{ 'dialog-content--wide': size === 'wide' }"
+      >
         <div class="dialog-header">
           <DialogTitle class="dialog-title">{{ title }}</DialogTitle>
           <DialogClose as-child>
@@ -56,7 +63,7 @@ const emit = defineEmits<{
           <slot />
         </div>
         <div class="dialog-footer">
-          <DialogClose as-child>
+          <DialogClose v-if="showCancel" as-child>
             <Button variant="outline" size="sm" :disabled="loading">
               {{ cancelLabel }}
             </Button>
@@ -100,10 +107,15 @@ const emit = defineEmits<{
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   width: min(440px, 90vw);
+  max-height: calc(100dvh - 2rem);
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 32px oklch(0 0 0 / 0.2);
   animation: content-in 0.15s ease-out;
+}
+
+.dialog-content--wide {
+  width: min(48rem, calc(100vw - 2rem));
 }
 
 @keyframes content-in {
@@ -144,6 +156,8 @@ const emit = defineEmits<{
 
 .dialog-body {
   padding: 1rem;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .dialog-desc {

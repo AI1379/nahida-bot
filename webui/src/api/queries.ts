@@ -1,4 +1,10 @@
-import { useQuery, useMutation, useQueryClient } from "@tanstack/vue-query";
+import {
+  useQuery,
+  useQueries,
+  useMutation,
+  useQueryClient,
+  type Query,
+} from "@tanstack/vue-query";
 import { computed, type ComputedRef, type Ref } from "vue";
 import { api, toApiError } from "./client";
 import { useToastStore } from "@/stores/toast";
@@ -47,6 +53,8 @@ import type {
   SkillListResponse,
   SkillDetailResponse,
   KbCollectionListResponse,
+  KbDocumentListResponse,
+  KbCollectionStatusResponse,
   KbSearchResponse,
   KbBatchImportResponse,
   KbImportResponse,
@@ -626,6 +634,8 @@ export function useKbDeleteCollection() {
       api.del<KbActionResponse>(`/kb/collections/${encodeURIComponent(name)}`),
     onSuccess(_, name) {
       qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      qc.removeQueries({ queryKey: ["kb-documents", name] });
+      qc.removeQueries({ queryKey: ["kb-collection-status", name] });
       toast.add(`Collection "${name}" deleted.`, "success");
     },
     onError(err) {
@@ -654,6 +664,8 @@ export function useKbImportText() {
     },
     onSuccess(resp) {
       qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      qc.invalidateQueries({ queryKey: ["kb-documents", resp.collection] });
+      qc.invalidateQueries({ queryKey: ["kb-collection-status", resp.collection] });
       toast.add(
         `Imported "${resp.source}" → ${resp.chunks} chunks in "${resp.collection}".`,
         "success",
@@ -683,6 +695,8 @@ export function useKbImportFile() {
     },
     onSuccess(resp) {
       qc.invalidateQueries({ queryKey: ["kb", "collections"] });
+      qc.invalidateQueries({ queryKey: ["kb-documents", resp.collection] });
+      qc.invalidateQueries({ queryKey: ["kb-collection-status", resp.collection] });
       toast.add(
         `Imported "${resp.source}" → ${resp.chunks} chunks in "${resp.collection}".`,
         "success",
@@ -748,4 +762,53 @@ export function useKbSearch() {
       toast.add(`Search failed: ${toApiError(err).detail}`, "error");
     },
   });
+}
+
+export function useKbDocuments(
+  collection: Ref<string | null>,
+  options: { limit: number; offset: Ref<number> },
+) {
+  return useQuery<KbDocumentListResponse | null>({
+    queryKey: ["kb-documents", collection, options.limit, options.offset],
+    queryFn: async () => {
+      const c = collection.value;
+      if (!c) return null;
+      const params = new URLSearchParams({
+        limit: String(options.limit),
+        offset: String(options.offset.value),
+      });
+      const resp = await api.get<KbDocumentListResponse>(
+        `/kb/collections/${encodeURIComponent(c)}/documents?${params}`,
+      );
+      return resp;
+    },
+    enabled: computed(() => !!collection.value),
+    staleTime: 10_000,
+  });
+}
+
+export function useKbCollectionStatuses(collections: ComputedRef<string[]>) {
+  const queries = useQueries({
+    queries: computed(() =>
+      collections.value.map((collection) => ({
+        queryKey: ["kb-collection-status", collection],
+        queryFn: () =>
+          api.get<KbCollectionStatusResponse>(
+            `/kb/collections/${encodeURIComponent(collection)}/status`,
+          ),
+        staleTime: 10_000,
+        refetchInterval: (query: Query<KbCollectionStatusResponse>) =>
+          query.state.data?.embedding_status === "embedding" ? 2000 : false,
+      })),
+    ),
+  });
+
+  return computed<Record<string, string>>(() =>
+    Object.fromEntries(
+      collections.value.map((collection, index) => [
+        collection,
+        queries.value[index]?.data?.embedding_status ?? "idle",
+      ]),
+    ),
+  );
 }

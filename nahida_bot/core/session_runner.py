@@ -1425,14 +1425,18 @@ class SessionRunner:
         if not all_results:
             return None
 
-        # Sort descending by score, merge same-result from different collections
-        # (the adapter sets result_id = doc_id, so per-collection dedup is natural).
-        all_results.sort(key=lambda r: r.score, reverse=True)
+        # FTS BM25 scores are ascending (smaller = more relevant); sort
+        # accordingly so the best (most negative) hits come first.
+        all_results.sort(key=lambda r: r.score)
+        # Dedup by (collection, doc_id) — collections are physically isolated
+        # tables so doc_ids can collide across collections.
         seen: set[str] = set()
         top: list[RetrievalResult] = []
         for r in all_results:
-            if r.result_id in seen:
+            key = f"{r.metadata.get('collection', '')}:{r.result_id}"
+            if key in seen:
                 continue
+            seen.add(key)
             seen.add(r.result_id)
             top.append(r)
             if len(top) >= limit:

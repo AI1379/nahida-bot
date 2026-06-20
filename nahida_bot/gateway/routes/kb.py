@@ -20,7 +20,7 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 _MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
-_MAX_DOCUMENT_FILES = 20
+_MAX_DOCUMENT_FILES = 200
 
 
 # ── Response models ──────────────────────────────────
@@ -41,6 +41,9 @@ class KbDocumentResponse(BaseModel):
     title: str
     content: str
     score: float = 0.0
+    path: str = ""
+    source_id: str = ""
+    node_type: str = "passage"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -67,6 +70,19 @@ class KbBatchImportResponse(BaseModel):
     failed_files: int
     chunks: int
     results: list[KbBatchImportItem]
+
+
+class KbDocumentListResponse(BaseModel):
+    documents: list[KbDocumentResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class KbCollectionStatusResponse(BaseModel):
+    name: str
+    document_count: int
+    embedding_status: str  # "idle" | "embedding" | "embedded"
 
 
 class KbActionResponse(BaseModel):
@@ -344,6 +360,9 @@ async def search_collection(
                 title=r.title,
                 content=r.content,
                 score=r.score,
+                path=getattr(r, "path", ""),
+                source_id=getattr(r, "source_id", ""),
+                node_type=getattr(r, "node_type", "passage"),
                 metadata=r.metadata,
             )
             for r in results
@@ -389,4 +408,67 @@ async def create_collection(
     logger.info("kb.api.create_collection", collection=collection_name)
     return KbActionResponse(
         status="ok", detail=f"Created collection '{collection_name}'"
+    )
+
+
+@router.get(
+    "/api/kb/collections/{collection_name}/documents",
+    response_model=KbDocumentListResponse,
+)
+async def list_documents(
+    collection_name: str,
+    limit: int = 50,
+    offset: int = 0,
+    app=Depends(get_application),
+) -> KbDocumentListResponse:
+    """List documents in a collection with pagination."""
+    plugin = _require_kb_plugin(app)
+    try:
+        docs, total = await plugin.list_documents(
+            collection_name,
+            limit=min(limit, 500),
+            offset=max(0, offset),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_kb_error(exc)
+
+    return KbDocumentListResponse(
+        documents=[
+            KbDocumentResponse(
+                doc_id=d.doc_id,
+                title=d.title,
+                content=d.content,
+                score=0.0,
+                path=getattr(d, "path", ""),
+                source_id=getattr(d, "source_id", ""),
+                node_type=getattr(d, "node_type", "passage"),
+                metadata=d.metadata,
+            )
+            for d in docs
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/api/kb/collections/{collection_name}/status",
+    response_model=KbCollectionStatusResponse,
+)
+async def get_collection_status(
+    collection_name: str,
+    app=Depends(get_application),
+) -> KbCollectionStatusResponse:
+    """Get collection status including embedding progress."""
+    plugin = _require_kb_plugin(app)
+    try:
+        summary = await plugin.get_collection_summary(collection_name)
+    except Exception as exc:  # noqa: BLE001
+        _raise_kb_error(exc)
+
+    return KbCollectionStatusResponse(
+        name=str(summary.get("name", collection_name)),
+        document_count=int(summary.get("document_count", 0)),
+        embedding_status=str(summary.get("embedding_status", "idle")),
     )

@@ -66,6 +66,9 @@ class DocumentStore(ABC):
         path: str = "",
         source_id: str = "",
         chunk_index: int = 0,
+        parent_id: str = "",
+        root_id: str = "",
+        node_type: str = "passage",
     ) -> None:
         """Insert or replace a document chunk in the collection.
 

@@ -1,15 +1,16 @@
 # Knowledge Base 与统一上下文检索设计
 
-> 最近审计：2026-06-19
-> 状态：Phase 1（KB 文档索引重建）已完成；Phase 2（统一检索服务）已完成。
-> 下一阶段为 Phase 3（层级 Context Store）。
+> 最近审计：2026-06-20
+> 状态：Phase 1（KB 文档索引重建）已完成；Phase 2（统一检索服务）已完成；
+> Phase 3a（KB 层级 + context_read + §3.1 自动召回）已完成。
+> 下一阶段为 Phase 3b（Memory 层级 + 统一 ContextNode 表）。
 >
-> 本次修订要点（2026-06-19）：
+> 本次修订要点（2026-06-20）：
 >
 > - 标题树是 **containment（`parent_of`）**，不是 alias；alias 只是稀疏的横向等价（见 §5.3）。
 > - **FTS + 结构 + 别名为默认检索主线**，向量是可重建的派生缓存（见 §6、§8.5、§11）。
 > - embedding **不锁死**：版本化 + 内容哈希去重 + 双写切换（见 §8.5）。
-> - 当前架构**未解决 §3.1 的触发问题**，触发需独立策略。
+> - §3.1 KB 触发问题：**自动召回已落地**（每轮 FTS 轻量搜索 + 注入上下文）；跨 scope 意图触发仍待后续。
 > - 与 #7/#10/#12：**统一设计、分阶段实现**；scope/provenance 等共享 schema 契约（见 §5.1、§12）。
 > 相关文档：
 >
@@ -62,13 +63,16 @@ plugin_data              {collection}_docs
 
 当前行为：
 
-- Agent 通过 `kb_search` 工具按需检索，不会自动注入文档正文。
-- 静态 PromptSupplement 只告诉 Agent 当前有哪些 collection，并提示必要时调用
-  `kb_search`。
-- 支持 FTS、vector 和 hybrid 检索；默认配置仍是 FTS-only。
-- Markdown 按标题和段落分块，普通文本按段落分块。
-- 每个 collection 使用独立物理表。
-- 文本和 Markdown 无额外依赖。
+- Agent 通过 `kb_search` 工具按需检索；另可开启 `kb_auto_recall.enabled` 实现每轮自动
+  KB 召回（轻量 FTS，默认关闭）。
+- PromptSupplement 展示每 collection 的文档数，提示 Agent 必要时调用 `kb_search`。
+- 支持 FTS、vector 和 hybrid 检索；默认 FTS-only；自动召回路为 FTS-only。
+- Markdown 按标题层级生成 document→section→passage 树，携带 `parent_id`/`root_id`；
+  普通文本生成 document root + passage chunks。
+- 每个 collection 使用独立物理表（`{name}_docs` / `_doc_fts` / `_doc_embeddings`）。
+- `context_read` 工具支持从搜索结果展开子树、子节点或父链。
+- `retrieval_text`（含完整标题路径 + source_id + 正文）用于 FTS/embedding；
+  `content` 保留原始展示文本。超长段落按句子+字符窗口拆分，`chunk_size` 是硬上限。
 - 安装 `document-import` extra 后，可通过 MarkItDown 导入 PDF、DOCX、
   PPTX、XLS/XLSX、HTML、CSV、JSON、XML、EPUB、MSG 和 Notebook。
 
@@ -116,6 +120,10 @@ retrieval、两阶段检索解决的是**召回质量**问题。两者正交—�
 
 这些应作为统一 pipeline 的**触发层**单独设计，并纳入 Phase 0 评测。
 
+**KB 自动召回已落地（2026-06-19）**：`SessionRunner._load_relevant_knowledge()` 每轮
+用 FTS 遍历所有 collection（每 collection 只取 1 条），合并去重后注入 top-2 作为系统上下文。
+通过 `kb_auto_recall.enabled` 开启，默认关闭。PromptSupplement 同步改进，展示每 collection 文档数。
+
 **跨 scope 召回的意图触发**——触发层的一个具体、可独立设计的职责：用户常希望“在群聊
 里让 bot 召回我和她私聊的记忆”，且由**自然语言**触发而非固定命令。当前静态规则已经为
 **声明的 Person**自动注入其 person/account scope（见 person-identity-system.md §5.2），
@@ -135,10 +143,11 @@ retrieval、两阶段检索解决的是**召回质量**问题。两者正交—�
 该触发层以 #7 的身份解析为前置；#7 Phase 0-3 已落地（身份解析 + 身份感知记忆读写），故该
 触发层现在可以设计实现，当前默认仍走静态 cascade（声明 Person 自动注入、访客 chat→global）。
 
-### 3.2 分块后丢失文档身份和标题路径
+### 3.2 分块后丢失文档身份和标题路径 ✅ 已修复（Phase 1）
 
-当前 Markdown 解析主要保留局部标题。文件名、上级标题、章节路径和所属实体
-没有成为 chunk 的一等检索字段。
+Markdown 解析现已保留完整 heading path（如 "原神角色资料 > 阿贝多 > 角色故事 5"），
+文件名、source_id、路径和标题均写入 `retrieval_text` 并被 FTS 和 embedding 索引。
+Section 节点携带 `parent_id`/`root_id`，支持子树导航（Phase 3a）。
 
 例如原始结构：
 
@@ -160,10 +169,10 @@ content: ...
 此时用户查询“阿贝多的角色故事”时，局部片段与“阿贝多”已经割裂。单纯为片段
 生成 embedding 并不能恢复已经在预处理阶段丢失的结构。
 
-### 3.3 Chunk 大小不是硬约束
+### 3.3 Chunk 大小不是硬约束 ✅ 已修复（Phase 1）
 
-现有算法遇到单个超长段落时会直接把整个段落作为一个 chunk，不会继续按句子
-或字符窗口拆分。因此 `default_chunk_size` 实际只是段落聚合目标，不是上限。
+超长段落现按句子边界拆分（CJK 零宽 + Latin 空格感知），仍超长的单句按字符窗口切割。
+`chunk_size` 现在是真正的上限，段落的 overlap 携带也做了上限保护。
 
 2026-06-13 对本地 `Teyvat` 测试 collection 的审计结果：
 
@@ -710,10 +719,20 @@ durable memory 回填为 `source_type=conversation|human|tool` 的 ContextNode�
 
 ### Phase 3：层级 Context Store
 
-- [ ] 引入 parent/root/path/node_type。
-- [ ] 支持 document/section/passage 和 episode/memory/evidence。
-- [ ] 实现父级定位后子树检索。
-- [ ] 支持按 node id 继续展开父节点、子节点和邻居。
+#### Phase 3a：KB 层级 + context_read ✅ 已完成（2026-06-20）
+
+- [x] `{collection}_docs` 表引入 `parent_id` / `root_id` / `node_type` 列（`document` / `section` / `passage`）。
+- [x] `parse_markdown` 生成层级树：document root → heading section → passage chunks，携带完整 `parent_id` + `root_id`。
+- [x] 新增 `get_children` / `get_subtree` / `get_descendants`（递归 CTE）/ `get_parents` 查询。
+- [x] 新增 `context_read(node_id, expand=...)` Agent 工具，支持展开 children / subtree / parents。
+- [x] `kb_search` 输出 `doc_id` + `node_type`，可直接传给 `context_read`。
+- [x] 向后兼容：旧 collection ALTER TABLE 迁移 + 扁平 chunk 保持可用（重新导入后获得层级）。
+
+#### Phase 3b：Memory 层级 + 统一 ContextNode 表 🔲
+
+- [ ] 将 `parent_id` / `root_id` / `node_type` / `path` / `source_id` 引入 `memory_items`。
+- [ ] 统一 KB 与 Memory 的检索接口（共享 ContextNode schema）。
+- [ ] 支持 episode/memory/evidence 等 conversation 来源的 node_type。
 - [ ] 为现有 KB 和 Memory 提供可回滚迁移。
 
 ### Phase 4：按评测增加高级能力

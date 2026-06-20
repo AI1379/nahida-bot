@@ -15,6 +15,7 @@ v1 features:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from datetime import UTC, datetime
@@ -69,6 +70,37 @@ _KB_SEARCH_TOOL_SCHEMA: dict[str, Any] = {
     "required": ["query"],
 }
 
+_CONTEXT_READ_TOOL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "node_id": {
+            "type": "string",
+            "description": (
+                "Document node id (doc_id) to read. Obtain this from a prior "
+                "kb_search result's doc_id."
+            ),
+        },
+        "collection": {
+            "type": "string",
+            "description": (
+                "Knowledge base collection name containing this node. "
+                "If omitted, all collections are searched."
+            ),
+        },
+        "expand": {
+            "type": "string",
+            "enum": ["none", "children", "subtree", "parents"],
+            "description": (
+                "What to expand alongside the node: 'children' for direct "
+                "children, 'subtree' for all descendants, 'parents' for the "
+                "ancestor chain. Default: 'children'."
+            ),
+            "default": "children",
+        },
+    },
+    "required": ["node_id"],
+}
+
 
 class KnowledgeBasePlugin(Plugin):
     """Builtin plugin for importing and searching knowledge documents."""
@@ -81,6 +113,8 @@ class KnowledgeBasePlugin(Plugin):
         self._vector_indexes: dict[str, Any | None] = {}
         self._embedded_collections: set[str] = set()
         self._embedding_dimensions = self._config.embedding.dimensions
+        self._embedding_tasks: dict[str, asyncio.Task[None]] = {}
+        self._embedding_status: dict[str, str] = {}  # "idle" | "embedding" | "embedded"
 
     # ── Lifecycle ────────────────────────────────────────
 
@@ -126,6 +160,17 @@ class KnowledgeBasePlugin(Plugin):
             _KB_SEARCH_TOOL_SCHEMA,
             self._handle_kb_search,
         )
+        self.api.register_tool(
+            "context_read",
+            (
+                "Read a knowledge base node and optionally expand its "
+                "surrounding context (children, subtree, or parent chain). "
+                "Call this after a kb_search hit to get more detail around "
+                "a specific node."
+            ),
+            _CONTEXT_READ_TOOL_SCHEMA,
+            self._handle_context_read,
+        )
 
     async def _handle_kb_search(self, **kwargs: Any) -> str:
         """Handle the ``kb_search`` tool invocation."""
@@ -160,6 +205,7 @@ class KnowledgeBasePlugin(Plugin):
                     "path": getattr(r, "path", ""),
                     "source_id": getattr(r, "source_id", ""),
                     "chunk_index": getattr(r, "chunk_index", 0),
+                    "node_type": getattr(r, "node_type", "passage"),
                 }
                 for r in hits
             ]
@@ -183,6 +229,7 @@ class KnowledgeBasePlugin(Plugin):
                                 "path": getattr(result, "path", ""),
                                 "source_id": getattr(result, "source_id", ""),
                                 "chunk_index": getattr(result, "chunk_index", 0),
+                                "node_type": getattr(result, "node_type", "passage"),
                             },
                         )
                     )
@@ -196,9 +243,118 @@ class KnowledgeBasePlugin(Plugin):
         for r in results:
             source = r.get("collection", "")
             title = r.get("title", "")
+            doc_id = r.get("doc_id", "")
+            node_type = r.get("node_type", "passage")
             content = r.get("content", "")
-            lines.append(f"\n--- [{source}] {title} ---")
+            node_info = f" ({doc_id}, {node_type})" if doc_id else ""
+            lines.append(f"\n--- [{source}] {title}{node_info} ---")
+            if len(content) > 3000:
+                content = content[:3000].rstrip() + "..."
             lines.append(content)
+        return "\n".join(lines)
+
+    async def _handle_context_read(self, **kwargs: Any) -> str:
+        """Handle the ``context_read`` tool invocation."""
+        node_id = str(kwargs.get("node_id", ""))
+        collection = kwargs.get("collection")
+        expand = kwargs.get("expand", "children")
+
+        if not node_id:
+            return "Error: node_id is required."
+
+        manager = self._manager
+        if manager is None:
+            return "Error: knowledge base is not available."
+
+        # Resolve the store that owns this node.
+        if collection:
+            store = manager.get(collection)
+            if store is None:
+                return f"Error: collection '{collection}' not found."
+            stores: list[tuple[str, Any]] = [(collection, store)]
+        else:
+            stores = [
+                (name, manager.get(name))
+                for name in manager.list_collections()
+                if manager.get(name) is not None
+            ]
+
+        node_row: dict[str, Any] | None = None
+        found_store: Any = None
+        found_collection = ""
+        for name, store in stores:
+            item = await store.get(node_id)
+            if item is not None:
+                node_row = {
+                    k: getattr(item, k, "")
+                    for k in (
+                        "doc_id",
+                        "title",
+                        "content",
+                        "path",
+                        "source_id",
+                        "chunk_index",
+                        "parent_id",
+                        "root_id",
+                        "node_type",
+                    )
+                }
+                found_store = store
+                found_collection = name
+                break
+
+        if node_row is None:
+            return f"Node '{node_id}' not found in any collection."
+
+        lines = [
+            f"--- Context Read: [{found_collection}] {node_row['title']} ---",
+            f"path: {node_row['path'] or '(root)'}",
+            f"type: {node_row['node_type']}",
+            "",
+            node_row["content"],
+        ]
+
+        if expand == "none":
+            return "\n".join(lines)
+
+        # Expand surrounding context.
+        try:
+            if expand == "children":
+                get_children = getattr(found_store, "get_children", None)
+                if callable(get_children):
+                    get_children = cast(Any, get_children)
+                    children = await get_children(node_id, limit=30)
+                    if children:
+                        lines.append("\n--- Children ---")
+                        for c in children:
+                            lines.append(f"  [{c.doc_id}] {c.title} ({c.node_type})")
+            elif expand == "subtree":
+                get_descendants_fn = getattr(found_store, "get_descendants", None)
+                if callable(get_descendants_fn):
+                    get_descendants_fn = cast(Any, get_descendants_fn)
+                    nodes = await get_descendants_fn(node_id, limit=100)
+                    if nodes:
+                        lines.append(f"\n--- Subtree ({len(nodes)} nodes) ---")
+                        for n in nodes:
+                            indent = n.path.count(">") * 2 if n.path else 0
+                            prefix = " " * indent
+                            lines.append(
+                                f"{prefix}[{n.doc_id}] {n.title} ({n.node_type})"
+                            )
+            elif expand == "parents":
+                get_parents_fn = getattr(found_store, "get_parents", None)
+                if callable(get_parents_fn):
+                    get_parents_fn = cast(Any, get_parents_fn)
+                    ancestors = await get_parents_fn(node_id)
+                    if len(ancestors) > 1:
+                        lines.append("\n--- Parent chain ---")
+                        chain = " > ".join(
+                            a.title for a in reversed(ancestors) if a.doc_id != node_id
+                        )
+                        lines.append(f"  {chain}")
+        except Exception as exc:
+            lines.append(f"\n(expansion failed: {exc})")
+
         return "\n".join(lines)
 
     # ── Command Registration ─────────────────────────────
@@ -484,7 +640,34 @@ class KnowledgeBasePlugin(Plugin):
             "name": collection_name,
             "document_count": await store.count(),
             "created_at": str(meta.get(collection_name, {}).get("created_at", "")),
+            "embedding_status": self._embedding_status.get(collection_name, "idle"),
         }
+
+    async def list_documents(
+        self,
+        collection_name: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Any], int]:
+        """List documents in a collection with pagination.
+
+        Returns (documents, total_count).
+        """
+        collection_name = self._validate_collection_name(collection_name)
+        store = self._require_manager().get(collection_name)
+        if store is None:
+            raise LookupError(f"Collection '{collection_name}' not found.")
+        total = await store.count()
+        docs = await store.list_documents(limit=limit, offset=offset)
+        return docs, total
+
+    def get_embedding_status(self, collection_name: str) -> str:
+        """Return the current embedding status for a collection."""
+        status = self._embedding_status.get(collection_name, "idle")
+        if status == "idle" and collection_name in self._embedded_collections:
+            return "embedded"
+        return status
 
     async def create_collection(self, collection_name: str) -> None:
         """Create an empty collection and persist its metadata."""
@@ -522,11 +705,8 @@ class KnowledgeBasePlugin(Plugin):
         )
         await self._persist_collection_meta(collection_name)
         await self._refresh_supplement()
-        await self._refresh_embeddings_after_import(
-            collection_name,
-            store,
-            imported_count=count,
-        )
+        if self._config.embedding.enabled and self._config.embedding.embed_after_import:
+            self._start_background_embedding(collection_name, store, count)
         return count
 
     async def search_documents(
@@ -808,6 +988,37 @@ class KnowledgeBasePlugin(Plugin):
                 error=str(exc),
             )
         return provider, vector_index
+
+    def _start_background_embedding(
+        self,
+        collection_name: str,
+        store: Any,
+        count: int,
+    ) -> None:
+        """Start background embedding after import; track status per collection."""
+        self._embedding_status[collection_name] = "embedding"
+        self._embedded_collections.discard(collection_name)
+
+        async def _background() -> None:
+            try:
+                await self._refresh_embeddings_after_import(
+                    collection_name,
+                    store,
+                    imported_count=count,
+                )
+                if collection_name in self._embedded_collections:
+                    self._embedding_status[collection_name] = "embedded"
+                else:
+                    self._embedding_status[collection_name] = (
+                        "idle"  # partial or failed
+                    )
+            except Exception:
+                self._embedding_status[collection_name] = "idle"
+            finally:
+                self._embedding_tasks.pop(collection_name, None)
+
+        task = asyncio.create_task(_background())
+        self._embedding_tasks[collection_name] = task
 
     async def _refresh_embeddings_after_import(
         self,

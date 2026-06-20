@@ -43,6 +43,9 @@ def _row_to_item(row: dict[str, Any]) -> DocumentItem:
         path=str(row.get("path", "")),
         source_id=str(row.get("source_id", "")),
         chunk_index=int(row.get("chunk_index", 0) or 0),
+        parent_id=str(row.get("parent_id", "")),
+        root_id=str(row.get("root_id", "")),
+        node_type=str(row.get("node_type") or "passage"),
     )
 
 
@@ -137,6 +140,9 @@ class SQLiteDocumentStore(DocumentStore):
         path: str = "",
         source_id: str = "",
         chunk_index: int = 0,
+        parent_id: str = "",
+        root_id: str = "",
+        node_type: str = "passage",
     ) -> None:
         # FTS indexes the enriched retrieval text (source + heading path +
         # content) when present; falls back to title + content for pre-Phase-1
@@ -155,6 +161,9 @@ class SQLiteDocumentStore(DocumentStore):
             path=path,
             source_id=source_id,
             chunk_index=chunk_index,
+            parent_id=parent_id,
+            root_id=root_id,
+            node_type=node_type,
         )
 
     async def get_neighbors(
@@ -174,6 +183,32 @@ class SQLiteDocumentStore(DocumentStore):
         )
         return [_row_to_search_result(row) for row in rows]
 
+    async def get_children(
+        self, parent_id: str, *, limit: int = 50
+    ) -> list[SearchResult]:
+        """Return direct children of a parent node."""
+        rows = await self._repo.get_children(parent_id, limit=limit)
+        return [_row_to_search_result(row) for row in rows]
+
+    async def get_subtree(
+        self, root_id: str, *, limit: int = 100
+    ) -> list[SearchResult]:
+        """Return all nodes under a root."""
+        rows = await self._repo.get_subtree(root_id, limit=limit)
+        return [_row_to_search_result(row) for row in rows]
+
+    async def get_descendants(
+        self, node_id: str, *, limit: int = 100
+    ) -> list[SearchResult]:
+        """Return a node and all its descendants."""
+        rows = await self._repo.get_descendants(node_id, limit=limit)
+        return [_row_to_search_result(row) for row in rows]
+
+    async def get_parents(self, node_id: str) -> list[SearchResult]:
+        """Walk up the parent chain to the root."""
+        rows = await self._repo.get_parents(node_id)
+        return [_row_to_search_result(row) for row in rows]
+
     async def get(self, doc_id: str) -> DocumentItem | None:
         row = await self._repo.get_document(doc_id)
         if row is None:
@@ -185,6 +220,13 @@ class SQLiteDocumentStore(DocumentStore):
 
     async def count(self) -> int:
         return await self._repo.count_documents()
+
+    async def list_documents(
+        self, *, limit: int = 50, offset: int = 0
+    ) -> list[SearchResult]:
+        """List active documents with pagination."""
+        rows = await self._repo.list_documents(limit=limit, offset=offset)
+        return [_row_to_search_result(row) for row in rows]
 
     # ── FTS Search ────────────────────────────────────────
 
@@ -205,6 +247,9 @@ class SQLiteDocumentStore(DocumentStore):
                 path=str(row.get("path", "")),
                 source_id=str(row.get("source_id", "")),
                 chunk_index=int(row.get("chunk_index", 0) or 0),
+                parent_id=str(row.get("parent_id", "")),
+                root_id=str(row.get("root_id", "")),
+                node_type=str(row.get("node_type") or "passage"),
             )
             for row in rows
         ]
@@ -411,4 +456,7 @@ def _row_to_search_result(row: dict[str, Any], *, score: float = 0.0) -> SearchR
         path=str(row.get("path", "")),
         source_id=str(row.get("source_id", "")),
         chunk_index=int(row.get("chunk_index", 0) or 0),
+        parent_id=str(row.get("parent_id", "")),
+        root_id=str(row.get("root_id", "")),
+        node_type=str(row.get("node_type") or "passage"),
     )

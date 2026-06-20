@@ -571,6 +571,9 @@ export interface KbDocumentResponse {
   title: string;
   content: string;
   score: number;
+  path: string;
+  source_id: string;
+  node_type: string;
   metadata: Record<string, unknown>;
 }
 
@@ -597,6 +600,19 @@ export interface KbBatchImportResponse {
   failed_files: number;
   chunks: number;
   results: KbBatchImportItem[];
+}
+
+export interface KbDocumentListResponse {
+  documents: KbDocumentResponse[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface KbCollectionStatusResponse {
+  name: string;
+  document_count: number;
+  embedding_status: string;
 }
 
 export interface KbActionResponse {

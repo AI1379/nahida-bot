@@ -57,6 +57,9 @@ class _Store:
         path: str = "",
         source_id: str = "",
         chunk_index: int = 0,
+        parent_id: str = "",
+        root_id: str = "",
+        node_type: str = "passage",
     ) -> None:
         self.docs[doc_id] = {
             "content": content,
@@ -66,6 +69,9 @@ class _Store:
             "path": path,
             "source_id": source_id,
             "chunk_index": chunk_index,
+            "parent_id": parent_id,
+            "root_id": root_id,
+            "node_type": node_type,
         }
 
     async def count(self) -> int:
@@ -251,10 +257,10 @@ async def test_import_content_refreshes_prompt_supplement_and_persists_metadata(
         content="Paragraph one.\n\nParagraph two.",
     )
 
-    assert count == 1
+    assert count == 2  # document root + 1 passage chunk
     assert set(api.registered_prompt_supplements) == {"kb_context"}
     assert (
-        "python_docs (1 documents)"
+        "python_docs (2 documents)"
         in api.registered_prompt_supplements["kb_context"]["instruction"]
     )
 
@@ -264,7 +270,7 @@ async def test_import_content_refreshes_prompt_supplement_and_persists_metadata(
     assert summaries == [
         {
             "name": "python_docs",
-            "document_count": 1,
+            "document_count": 2,
             "created_at": meta["python_docs"]["created_at"],
         }
     ]
@@ -308,9 +314,9 @@ async def test_import_content_embeds_new_collection_without_extra_backfill() -> 
 
     results = await plugin.search_documents("python_docs", "Paragraph", limit=3)
 
-    assert count == 1
+    assert count == 2  # document root + 1 passage chunk
     assert [result.doc_id for result in results] == ["Guide_chunk_0"]
-    assert store.embed_calls == [(1, False)]
+    assert store.embed_calls == [(2, False)]
     assert store.search_hybrid_calls == [("Paragraph", 3, False)]
 
 
@@ -479,6 +485,12 @@ def test_parse_markdown_duplicate_headings_keep_unique_chunk_ids() -> None:
         source_id="guide",
     )
 
-    assert len(chunks) == 2
-    assert len({chunk.doc_id for chunk in chunks}) == 2
-    assert [chunk.title for chunk in chunks] == ["Example", "Example"]
+    # With hierarchy: root doc + 2 section nodes + 2 passage chunks.
+    assert len(chunks) >= 5
+    # Duplicate headings must get unique doc_ids.
+    passages = [c for c in chunks if c.node_type == "passage"]
+    sections = [c for c in chunks if c.node_type == "section"]
+    assert len(passages) == 2
+    assert len(sections) == 2
+    assert len({c.doc_id for c in chunks}) == len(chunks)
+    assert {s.title for s in sections} == {"Example"}

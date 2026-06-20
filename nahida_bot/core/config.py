@@ -321,7 +321,7 @@ class Settings(BaseModel):
     webui: WebUIConfigModel = WebUIConfigModel()
     model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
     memory: MemoryConfig = MemoryConfig()
-    knowledge_base: KBAutoRecallConfig = KBAutoRecallConfig()
+    kb_auto_recall: KBAutoRecallConfig = KBAutoRecallConfig()
     identity: IdentityConfig = IdentityConfig()
 
 
