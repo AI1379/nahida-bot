@@ -72,6 +72,8 @@ class SQLiteVecIndex:
     loadable. Call ``setup()`` before use; otherwise methods raise RuntimeError.
     """
 
+    _UPSERT_LOOKUP_BATCH_SIZE = 500
+
     def __init__(
         self,
         engine: "DatabaseEngine",
@@ -119,31 +121,62 @@ class SQLiteVecIndex:
 
     async def upsert(self, records: list[VectorRecord]) -> None:
         self._require_ready()
+        if not records:
+            return
         async with self._engine.write_lock:
-            for record in records:
-                existing = await self._engine.fetch_one(
-                    f"SELECT vec_rowid FROM {self._map_table} WHERE embedding_id = ?",
-                    (record.embedding_id,),
+            for start in range(0, len(records), self._UPSERT_LOOKUP_BATCH_SIZE):
+                record_batch = records[start : start + self._UPSERT_LOOKUP_BATCH_SIZE]
+                placeholders = ",".join("?" for _ in record_batch)
+                existing_rows = await self._engine.fetch_all(
+                    f"SELECT embedding_id, vec_rowid FROM {self._map_table} "
+                    f"WHERE embedding_id IN ({placeholders})",
+                    tuple(record.embedding_id for record in record_batch),
                 )
-                if existing is not None:
-                    vec_rowid = int(existing["vec_rowid"])
-                    await self._engine.execute(
-                        f"UPDATE {self._table_name} SET embedding = ? WHERE rowid = ?",
-                        (self._serialize(record.embedding), vec_rowid),
+                existing_by_id = {
+                    str(row["embedding_id"]): int(row["vec_rowid"])
+                    for row in existing_rows
+                }
+                persisted_ids = set(existing_by_id)
+
+                updates = [
+                    (
+                        self._serialize(record.embedding),
+                        existing_by_id[record.embedding_id],
                     )
-                    continue
-                cursor = await self._engine.execute(
-                    f"INSERT INTO {self._table_name} (embedding) VALUES (?)",
-                    (self._serialize(record.embedding),),
-                )
-                if cursor.lastrowid is None:
-                    raise RuntimeError("sqlite-vec insert did not return a rowid")
-                vec_rowid = int(cursor.lastrowid)
-                await self._engine.execute(
-                    f"INSERT INTO {self._map_table} (embedding_id, item_id, vec_rowid) "
-                    "VALUES (?, ?, ?)",
-                    (record.embedding_id, record.item_id, vec_rowid),
-                )
+                    for record in record_batch
+                    if record.embedding_id in persisted_ids
+                ]
+                if updates:
+                    await self._engine.db.executemany(
+                        f"UPDATE {self._table_name} SET embedding = ? WHERE rowid = ?",
+                        updates,
+                    )
+
+                for record in record_batch:
+                    if record.embedding_id in persisted_ids:
+                        continue
+                    if record.embedding_id in existing_by_id:
+                        await self._engine.execute(
+                            f"UPDATE {self._table_name} SET embedding = ? WHERE rowid = ?",
+                            (
+                                self._serialize(record.embedding),
+                                existing_by_id[record.embedding_id],
+                            ),
+                        )
+                        continue
+                    cursor = await self._engine.execute(
+                        f"INSERT INTO {self._table_name} (embedding) VALUES (?)",
+                        (self._serialize(record.embedding),),
+                    )
+                    if cursor.lastrowid is None:
+                        raise RuntimeError("sqlite-vec insert did not return a rowid")
+                    vec_rowid = int(cursor.lastrowid)
+                    await self._engine.execute(
+                        f"INSERT INTO {self._map_table} (embedding_id, item_id, vec_rowid) "
+                        "VALUES (?, ?, ?)",
+                        (record.embedding_id, record.item_id, vec_rowid),
+                    )
+                    existing_by_id[record.embedding_id] = vec_rowid
             await self._engine.db.commit()
 
     async def delete(self, ids: list[str]) -> None:

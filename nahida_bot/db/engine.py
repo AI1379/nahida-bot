@@ -335,17 +335,16 @@ _SCHEMA_MIGRATIONS = [
     CREATE UNIQUE INDEX IF NOT EXISTS idx_account_observations_unique
         ON account_observations(account_key, chat_address);
     """,
-    # Migration 017: memory tree columns (Phase 3b)
-    """
-    ALTER TABLE memory_items ADD COLUMN parent_id TEXT NOT NULL DEFAULT '';
-    ALTER TABLE memory_items ADD COLUMN root_id TEXT NOT NULL DEFAULT '';
-    ALTER TABLE memory_items ADD COLUMN node_type TEXT NOT NULL DEFAULT 'leaf';
-    ALTER TABLE memory_items ADD COLUMN path TEXT NOT NULL DEFAULT '';
-    ALTER TABLE memory_items ADD COLUMN source_id TEXT NOT NULL DEFAULT '';
-
-    CREATE INDEX IF NOT EXISTS idx_memory_items_tree
-        ON memory_items(parent_id, root_id);
-    """,
+    # Migration 017: memory tree columns (Phase 3b).
+    # The ALTERs + index are applied idempotently by _ensure_memory_tree_columns
+    # (run after _run_migrations) instead of inline here. Pure-SQL ALTER TABLE
+    # has no IF NOT EXISTS and executescript() is not atomic (it commits before
+    # running and isn't wrapped in a transaction), so an inline multi-ALTER
+    # script would wedge the DB on a partial run: a crash after the first ALTER
+    # leaves schema_version unchanged, and the next boot re-runs the script and
+    # raises "duplicate column name". This no-op keeps the version count at 17
+    # (no downgrade for DBs already at 17) while the columns are added safely.
+    "SELECT 1;",
 ]
 
 
@@ -446,4 +445,36 @@ class DatabaseEngine:
                     "UPDATE schema_version SET version = ?",
                     (new_version,),
                 )
+            await self.db.commit()
+
+        # Phase-3b memory-tree columns are added here (idempotent) rather than
+        # in migration 017 — see the comment on that migration entry.
+        await self._ensure_memory_tree_columns()
+
+    async def _ensure_memory_tree_columns(self) -> None:
+        """Idempotently add the memory-tree columns + index to ``memory_items``.
+
+        Each ``ALTER`` is guarded by ``PRAGMA table_info`` so a partial / crashed
+        prior run is recoverable: only the missing columns are added, never
+        raising "duplicate column name". The index uses ``IF NOT EXISTS``.
+        """
+        rows = await self.fetch_all("PRAGMA table_info(memory_items)")
+        existing = {str(row["name"]) for row in rows}
+        additions = [
+            ("parent_id", "TEXT NOT NULL DEFAULT ''"),
+            ("root_id", "TEXT NOT NULL DEFAULT ''"),
+            ("node_type", "TEXT NOT NULL DEFAULT 'leaf'"),
+            ("path", "TEXT NOT NULL DEFAULT ''"),
+            ("source_id", "TEXT NOT NULL DEFAULT ''"),
+        ]
+        async with self.write_lock:
+            for name, decl in additions:
+                if name not in existing:
+                    await self.db.execute(
+                        f"ALTER TABLE memory_items ADD COLUMN {name} {decl}"
+                    )
+            await self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_items_tree "
+                "ON memory_items(parent_id, root_id)"
+            )
             await self.db.commit()

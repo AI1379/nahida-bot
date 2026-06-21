@@ -143,8 +143,18 @@ class KnowledgeBasePlugin(Plugin):
         )
 
     async def on_disable(self) -> None:
-        # DocumentStoreManager owns the stores — nothing to close here.
-        pass
+        # DocumentStoreManager owns the stores — nothing to close here. But
+        # cancel any in-flight background embedding tasks so they don't outlive
+        # the plugin (orphaned coroutines would write to a torn-down store and
+        # surface as "Task exception was never retrieved").
+        for task in list(self._embedding_tasks.values()):
+            task.cancel()
+        for task in list(self._embedding_tasks.values()):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._embedding_tasks.clear()
 
     # ── Tool Registration ────────────────────────────────
 

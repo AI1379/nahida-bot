@@ -1392,35 +1392,42 @@ class SessionRunner:
 
         # Search every collection with a tiny per-collection budget, then merge.
         all_results: list[RetrievalResult] = []
-        for name in manager.list_collections():
-            store = manager.get(name)
-            if store is None:
-                continue
-            adapter = DocumentStoreRetrievalAdapter(
-                collection_name=name,
-                store=store,
-            )
-            service = RetrievalService({"knowledge_base": adapter})
-            try:
-                hits = await service.retrieve(
-                    RetrievalRequest(
-                        query=query,
-                        source_type="knowledge_base",
-                        collection=name,
-                        limit=1,
-                        fts_enabled=True,
-                        vector_enabled=False,
-                        hybrid_enabled=False,
-                        min_score=cfg.min_score,
+        try:
+            for name in manager.list_collections():
+                store = manager.get(name)
+                if store is None:
+                    continue
+                adapter = DocumentStoreRetrievalAdapter(
+                    collection_name=name,
+                    store=store,
+                )
+                service = RetrievalService({"knowledge_base": adapter})
+                try:
+                    hits = await service.retrieve(
+                        RetrievalRequest(
+                            query=query,
+                            source_type="knowledge_base",
+                            collection=name,
+                            limit=1,
+                            fts_enabled=True,
+                            vector_enabled=False,
+                            hybrid_enabled=False,
+                            min_score=cfg.min_score,
+                        )
                     )
-                )
-            except Exception:
-                logger.debug(
-                    "session_runner.kb_auto_recall_collection_failed",
-                    collection=name,
-                )
-                continue
-            all_results.extend(hits)
+                except Exception:
+                    logger.debug(
+                        "session_runner.kb_auto_recall_collection_failed",
+                        collection=name,
+                    )
+                    continue
+                all_results.extend(hits)
+        except Exception as exc:
+            # The document-store manager itself raised (e.g. transient DB error
+            # on list_collections/get) — degrade like _load_relevant_memory does
+            # rather than aborting the whole agent turn.
+            logger.warning("session_runner.kb_auto_recall_failed", error=str(exc))
+            return None
 
         if not all_results:
             return None

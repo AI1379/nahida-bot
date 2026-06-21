@@ -206,7 +206,13 @@ class KBAutoRecallConfig(BaseModel):
     enabled: bool = False
     max_items: int = Field(default=2, ge=0)
     max_chars: int = Field(default=2000, ge=0)
-    min_score: float = Field(default=-10.0)
+    # Off by default: FTS BM25 scores are *negative* (more negative = better),
+    # so a finite magnitude threshold is mode-dependent and fragile — the
+    # per-collection top-1 + cross-collection merge already picks the best
+    # hits. Set a finite value only if you understand the BM25 scale (a value
+    # like -10 would otherwise *drop* the strongest matches, since they score
+    # below -10). float('-inf') disables filtering.
+    min_score: float = Field(default=float("-inf"))
 
 
 class GroupContextConfig(BaseModel):

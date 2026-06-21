@@ -85,10 +85,17 @@ def _build_retrieval_text(
     surface the child chunk, which the old "pick one" fallback missed
     (knowledge-base.md Phase 1 §12 第 3 项).
     """
+    # Don't repeat the leaf heading: section nodes pass both path (which ends
+    # with the heading) and title=heading, which would triple-count the term
+    # in BM25/embeddings. source_id/title are only added if they aren't the
+    # path's last segment.
+    path_leaf = path.rsplit(">", 1)[-1].strip() if path else ""
     lines: list[str] = []
-    for candidate in (path, source_id, title):
+    if path.strip():
+        lines.append(path.strip())
+    for candidate in (source_id, title):
         val = candidate.strip()
-        if val:
+        if val and val != path_leaf:
             lines.append(val)
     if lines:
         return "\n".join(lines) + "\n" + content
@@ -132,6 +139,7 @@ def split_into_chunks(
     parent_id: str = "",
     root_id: str = "",
     node_type: str = "passage",
+    index_offset: int = 0,
 ) -> list[Chunk]:
     """Split raw text into ``Chunk`` objects, each at most ~``chunk_size`` chars.
 
@@ -165,17 +173,20 @@ def split_into_chunks(
     chunks: list[Chunk] = []
     current_parts: list[str] = []
     current_len = 0
-    index = 0
+    index = index_offset
 
     def emit(parts: list[str], idx: int, *, simplify_title: bool) -> None:
         chunk_text = "\n\n".join(parts)
+        # Part number is local to this call (relative to index_offset) so a
+        # section whose passages start at offset 5 still shows "part 1, 2, ...".
+        part = idx - index_offset
         title = (
             title_prefix
             if (simplify_title and title_prefix)
             else (
-                f"{title_prefix} (part {idx + 1})"
+                f"{title_prefix} (part {part + 1})"
                 if title_prefix
-                else f"Part {idx + 1}"
+                else f"Part {part + 1}"
             )
         )
         chunks.append(
@@ -293,32 +304,42 @@ def parse_markdown(
             path="",
             parent_id=root_doc_id,
             root_id=root_doc_id,
+            index_offset=1,
         )
         chunks.extend(passage_chunks)
         return chunks
 
     # ── Heading stack: build section nodes + passage chunks ──
     all_chunks: list[Chunk] = []
+    # Monotonic per-source chunk index so (source_id, chunk_index) is unique —
+    # neighbor expansion keys on that pair and must not return nodes from other
+    # sections (previously the root node, every section node, and every first
+    # passage all shared chunk_index=0 under one source_id).
+    seq = 0
 
-    # Pre-content before the first heading → root document's lead passage.
+    def _doc_node() -> Chunk:
+        return Chunk(
+            doc_id=root_doc_id,
+            title=source_id,
+            content=source_id,
+            retrieval_text=_build_retrieval_text(
+                content=source_id, source_id=source_id, title=source_id
+            ),
+            source_id=source_id,
+            chunk_index=seq,
+            path="",
+            parent_id="",
+            root_id=root_doc_id,
+            node_type="document",
+        )
+
+    # Root document node (lead section), always present.
+    all_chunks.append(_doc_node())
+    seq += 1
+
+    # Pre-content before the first heading → root document's lead passages.
     pre = text[: matches[0].start()].strip()
     if pre:
-        all_chunks.append(
-            Chunk(
-                doc_id=root_doc_id,
-                title=source_id,
-                content=source_id,
-                retrieval_text=_build_retrieval_text(
-                    content=source_id, source_id=source_id, title=source_id
-                ),
-                source_id=source_id,
-                chunk_index=0,
-                path="",
-                parent_id="",
-                root_id=root_doc_id,
-                node_type="document",
-            )
-        )
         passage_chunks = split_into_chunks(
             pre,
             source_id=source_id,
@@ -328,26 +349,10 @@ def parse_markdown(
             path="",
             parent_id=root_doc_id,
             root_id=root_doc_id,
+            index_offset=seq,
         )
+        seq += len(passage_chunks)
         all_chunks.extend(passage_chunks)
-    else:
-        # No pre-content: root document node with minimal content.
-        all_chunks.append(
-            Chunk(
-                doc_id=root_doc_id,
-                title=source_id,
-                content=source_id,
-                retrieval_text=_build_retrieval_text(
-                    content=source_id, source_id=source_id, title=source_id
-                ),
-                source_id=source_id,
-                chunk_index=0,
-                path="",
-                parent_id="",
-                root_id=root_doc_id,
-                node_type="document",
-            )
-        )
 
     stack: list[tuple[int, str, str]] = []  # (level, heading_title, section_doc_id)
     for i, m in enumerate(matches):
@@ -384,13 +389,14 @@ def parse_markdown(
                 title=heading_title,
             ),
             source_id=source_id,
-            chunk_index=0,
+            chunk_index=seq,
             path=current_path,
             parent_id=section_parent_id,
             root_id=root_doc_id,
             node_type="section",
         )
         all_chunks.append(section)
+        seq += 1
 
         if body:
             section_prefix = f"{source_id}__{i}_{_safe_section_name(heading_title)}"
@@ -404,7 +410,9 @@ def parse_markdown(
                 chunk_id_prefix=section_prefix,
                 parent_id=section_doc_id,
                 root_id=root_doc_id,
+                index_offset=seq,
             )
+            seq += len(passage_chunks)
             all_chunks.extend(passage_chunks)
 
     return all_chunks

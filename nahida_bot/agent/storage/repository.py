@@ -393,7 +393,7 @@ class SQLiteDocumentRepository:
             f"  parent_id, root_id, node_type, "
             f"  created_at, updated_at "
             f"  FROM {self._docs_table} "
-            f"  WHERE doc_id = ? AND status = 'active' "
+            f"  WHERE doc_id = ? "
             f"  UNION ALL "
             f"  SELECT d.doc_id, d.title, d.content, d.status, d.metadata_json, "
             f"  d.retrieval_text, d.path, d.source_id, d.chunk_index, "
@@ -401,9 +401,9 @@ class SQLiteDocumentRepository:
             f"  d.created_at, d.updated_at "
             f"  FROM {self._docs_table} d "
             f"  JOIN subtree s ON d.parent_id = s.doc_id "
-            f"  WHERE d.status = 'active' "
             f") "
             f"SELECT * FROM subtree "
+            f"WHERE status = 'active' "
             f"ORDER BY path ASC, chunk_index ASC "
             f"LIMIT ?",
             (node_id, max(1, limit)),
@@ -413,8 +413,11 @@ class SQLiteDocumentRepository:
     async def get_parents(self, node_id: str) -> list[dict[str, Any]]:
         """Walk up the parent chain for a node, root last.
 
-        Returns an empty list when the node or its parent chain is not found.
-        An item with ``parent_id = ''`` terminates the walk.
+        Returns an empty list when the node is not found. An item with
+        ``parent_id = ''`` terminates the walk. The walk is structural — it
+        follows ``parent_id`` regardless of ``status``, so a chain is not
+        silently truncated at a soft-deleted ancestor (the caller can filter on
+        ``status`` if it wants only active ancestors).
         """
         result: list[dict[str, Any]] = []
         current_id = node_id
@@ -425,7 +428,7 @@ class SQLiteDocumentRepository:
                 f"parent_id, root_id, node_type, "
                 f"created_at, updated_at, 0.0 AS score "
                 f"FROM {self._docs_table} "
-                "WHERE doc_id = ? AND status = 'active'",
+                "WHERE doc_id = ?",
                 (current_id,),
             )
             if row is None:

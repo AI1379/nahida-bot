@@ -423,10 +423,11 @@ async def list_documents(
 ) -> KbDocumentListResponse:
     """List documents in a collection with pagination."""
     plugin = _require_kb_plugin(app)
+    clamped_limit = min(limit, 500)
     try:
         docs, total = await plugin.list_documents(
             collection_name,
-            limit=min(limit, 500),
+            limit=clamped_limit,
             offset=max(0, offset),
         )
     except Exception as exc:  # noqa: BLE001
@@ -447,7 +448,7 @@ async def list_documents(
             for d in docs
         ],
         total=total,
-        limit=limit,
+        limit=clamped_limit,
         offset=offset,
     )
 
