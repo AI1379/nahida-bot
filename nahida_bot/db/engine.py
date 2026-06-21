@@ -345,6 +345,24 @@ _SCHEMA_MIGRATIONS = [
     # raises "duplicate column name". This no-op keeps the version count at 17
     # (no downgrade for DBs already at 17) while the columns are added safely.
     "SELECT 1;",
+    # Migration 018: chat_metadata — observed chat/group names for fuzzy
+    # name→ChatAddress lookup (find_chat tool). Populated best-effort from
+    # inbound events at the router; observe-only, no live channel backfill.
+    """
+    CREATE TABLE IF NOT EXISTS chat_metadata (
+        chat_address  TEXT PRIMARY KEY,
+        platform      TEXT NOT NULL DEFAULT '',
+        target_type   TEXT NOT NULL DEFAULT '',
+        target_id     TEXT NOT NULL DEFAULT '',
+        display_name  TEXT NOT NULL DEFAULT '',
+        first_seen_at TEXT NOT NULL,
+        last_seen_at  TEXT NOT NULL,
+        metadata_json TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_metadata_name
+        ON chat_metadata(display_name);
+    """,
 ]
 
 

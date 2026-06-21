@@ -102,6 +102,7 @@ class PluginManager:
         self._webhost_service = webhost_service
         self._task_manager = task_manager
         self._document_store_manager: Any | None = None
+        self._chat_metadata_store: Any | None = None
         self._loader = PluginLoader()
         self._tool_registry = ToolRegistry()
         self._handler_registry = HandlerRegistry()
@@ -124,6 +125,7 @@ class PluginManager:
         webhost_service: Any | None = None,
         task_manager: Any | None = None,
         document_store_manager: Any | None = None,
+        chat_metadata_store: Any | None = None,
     ) -> None:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
@@ -141,6 +143,8 @@ class PluginManager:
             self._task_manager = task_manager
         if document_store_manager is not None:
             self._document_store_manager = document_store_manager
+        if chat_metadata_store is not None:
+            self._chat_metadata_store = chat_metadata_store
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
@@ -154,6 +158,7 @@ class PluginManager:
                     webhost_service=self._webhost_service,
                     task_manager=self._task_manager,
                     document_store_manager=document_store_manager,
+                    chat_metadata_store=self._chat_metadata_store,
                 )
 
     @property

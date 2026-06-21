@@ -417,6 +417,39 @@ class BotAPI(Protocol):
         """Persist a record to the memory store."""
         ...
 
+    async def search_chat_history(
+        self,
+        query: str,
+        *,
+        chat_address: str = "",
+        role: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search raw conversation turns across ALL sessions (soft-gated).
+
+        Returns dicts with ``session_id`` / ``role`` / ``content`` / ``created_at``.
+        Soft-gated (no permission check, no scope restriction) — memory is soft
+        context; the gating lives in the calling tool's description.
+        """
+        ...
+
+    async def search_chats(
+        self, name: str, *, platform: str = ""
+    ) -> list[dict[str, Any]]:
+        """Fuzzy-search observed chat/group names → rows with ``chat_address``.
+
+        Returns dicts with ``chat_address`` / ``display_name`` / ``platform`` /
+        ``last_seen_at``. Only knows chats the bot has seen (observe-only).
+        """
+        ...
+
+    async def get_chat_names(self, chat_keys: list[str]) -> dict[str, str]:
+        """Bulk-resolve ``{chat_key: display_name}`` for observed chats.
+
+        Unseen keys are absent from the returned map. Empty map if unavailable.
+        """
+        ...
+
     # ── Plugin Data Store ─────────────────────────────
 
     async def plugin_data_get(self, key: str) -> Any | None:

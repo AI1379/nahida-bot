@@ -166,6 +166,7 @@ class RealBotAPI:
         self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
+        self._chat_metadata_store: Any | None = None
         self._logger = _PluginLogger(plugin_id)
         self._registrations_active = False
         self._decorated_registrations_added = False
@@ -737,6 +738,82 @@ class RealBotAPI:
             )
             for r in results
         ]
+
+    async def search_chat_history(
+        self,
+        query: str,
+        *,
+        chat_address: str = "",
+        role: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search raw conversation turns across ALL sessions (soft-gated).
+
+        Wraps ``SQLiteMemoryStore.search_turns`` — global cross-session LIKE
+        search over every role (user / assistant / system). Intentionally has
+        NO permission check and NO scope restriction: the gating is a soft
+        prompt in the tool description (memory is soft context; the worst case
+        is saying the wrong thing, per person-identity-system.md §2.5). Returns
+        raw rows; the caller (tool handler) sanitizes before showing the model.
+        """
+        if self._memory is None:
+            return []
+        search_turns = getattr(self._memory, "search_turns", None)
+        if not callable(search_turns):
+            return []
+        records = await cast(Any, search_turns)(
+            query,
+            chat_address=chat_address,
+            role=role,
+            limit=limit,
+        )
+        # Normalize MemoryRecord objects into plain dicts so tool handlers can
+        # treat results uniformly without importing the memory dataclass shape.
+        results: list[dict[str, Any]] = []
+        for record in records:
+            turn = getattr(record, "turn", None)
+            created_at = getattr(turn, "created_at", None) if turn else None
+            if created_at is not None and hasattr(created_at, "isoformat"):
+                created_str = cast(Any, created_at).isoformat()
+            else:
+                created_str = str(created_at) if created_at else ""
+            results.append(
+                {
+                    "session_id": getattr(record, "session_id", "") or "",
+                    "role": getattr(turn, "role", "") if turn else "",
+                    "content": getattr(turn, "content", "") if turn else "",
+                    "created_at": created_str,
+                }
+            )
+        return results
+
+    async def search_chats(
+        self, name: str, *, platform: str = ""
+    ) -> list[dict[str, Any]]:
+        """Fuzzy-search observed chat/group names → ChatAddress list.
+
+        Backed by the chat_metadata table populated at the router. Observe-only
+        (no live channel list API). Returns rows with chat_address / display_name
+        / platform / last_seen_at. Empty list if no store is wired.
+        """
+        if self._chat_metadata_store is None or not name:
+            return []
+        search_by_name = getattr(self._chat_metadata_store, "search_by_name", None)
+        if not callable(search_by_name):
+            return []
+        return await cast(Any, search_by_name)(name, platform=platform)
+
+    async def get_chat_names(self, chat_keys: list[str]) -> dict[str, str]:
+        """Bulk-resolve ``{chat_key: display_name}`` from observed chat metadata.
+
+        Returns an empty map if no store is wired or no keys resolve.
+        """
+        if self._chat_metadata_store is None or not chat_keys:
+            return {}
+        get_many = getattr(self._chat_metadata_store, "get_many", None)
+        if not callable(get_many):
+            return {}
+        return await cast(Any, get_many)(chat_keys)
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
@@ -1432,6 +1509,7 @@ class RealBotAPI:
         webhost_service: Any | None = None,
         task_manager: Any | None = None,
         document_store_manager: Any | None = None,
+        chat_metadata_store: Any | None = None,
     ) -> None:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
@@ -1441,6 +1519,8 @@ class RealBotAPI:
         self._model_router = model_router
         self._scheduler_service = scheduler_service
         self._orchestration_service = orchestration_service
+        if chat_metadata_store is not None:
+            self._chat_metadata_store = chat_metadata_store
         if webhost_service is not None:
             self._webhost_service = webhost_service
         if plugin_data_repo is not None:

@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import json
 import mimetypes
+import re
 import socket
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
@@ -55,6 +56,11 @@ _PRIVATE_NETWORKS = [
     ipaddress.ip_network("fc00::/7"),
 ]
 _PLAN_PATH = ".agent/plan.json"
+# Strip media noise from cross-session turn content before showing the model
+# (base64 data URLs and long base64 blobs blow up context; see
+# cross-session-messaging.md §4.3).
+_BASE64_DATA_URL_RE = re.compile(r"data:[^;\"]+;base64,[A-Za-z0-9+/=]+")
+_LONG_BASE64_RE = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
 
 
 class BuiltinCommandsPlugin(Plugin):
@@ -65,6 +71,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_workspace_tools()
         self._register_attachment_tools()
         self._register_memory_tools()
+        self._register_history_tools()
         self._register_exec_tool()
         self._register_web_fetch_tool()
         self._register_plan_tool()
@@ -273,6 +280,173 @@ class BuiltinCommandsPlugin(Plugin):
             },
             self._tool_memory_write,
         )
+
+    # ── Cross-session history & chat lookup ────────────────
+
+    def _register_history_tools(self) -> None:
+        self.api.register_tool(
+            "search_chat_history",
+            (
+                "Search ALL past conversations across every chat — both what users said "
+                "and what you said — to recall something from another session/chat. "
+                "Use sparingly, only when the user wants to remember something from "
+                "elsewhere (e.g. 'do you remember when we talked about X', or continuing "
+                "a thread from another group/private chat). Results may include private "
+                "1:1 content from other people — treat it as reference for your own "
+                "recall, and do not volunteer others' private messages in a group. "
+                "Narrow with chat_address (use find_chat to resolve a name) or role when "
+                "you can. This is a recall aid, not a way to surveil."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text to search for across all conversation history.",
+                    },
+                    "chat_address": {
+                        "type": "string",
+                        "description": (
+                            "Optional: narrow to one chat, e.g. 'milky:group:20001' "
+                            "(prefix match). Use find_chat to resolve a name to this."
+                        ),
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": ["user", "assistant", "system"],
+                        "description": "Optional: only return turns of this role.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results. Default 20, capped at 50.",
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            self._tool_search_chat_history,
+        )
+        self.api.register_tool(
+            "find_chat",
+            (
+                "Fuzzy-search a chat by group/chat name to resolve its address "
+                "(e.g. '原神' -> milky:group:20001). Use before search_chat_history "
+                "(to narrow) or the message tool (to target) when the user refers to "
+                "a chat by name rather than id. Only knows chats the bot has seen."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Chat/group name or substring to search.",
+                    },
+                    "platform": {
+                        "type": "string",
+                        "description": "Optional: limit to a platform (milky/telegram/onebot).",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            self._tool_find_chat,
+        )
+
+    async def _tool_search_chat_history(
+        self,
+        query: str,
+        chat_address: str = "",
+        role: str = "",
+        limit: int = 20,
+    ) -> str:
+        _logger.debug(
+            "tool.search_chat_history",
+            query=query,
+            chat_address=chat_address,
+            role=role,
+        )
+        capped_limit = max(min(int(limit or 20), 50), 1)
+        rows = await self.api.search_chat_history(
+            query,
+            chat_address=chat_address,
+            role=role,
+            limit=capped_limit,
+        )
+        if not rows:
+            return "No matching conversation history found."
+        # Annotate chat addresses with friendly names where observed.
+        addrs = [str(r.get("session_id", "")) for r in rows]
+        # session_id may carry a suffix; resolve on the base chat_key.
+        name_map = await self._resolve_chat_names(addrs)
+        lines = [f"Found {len(rows)} conversation matches (newest first):"]
+        for idx, row in enumerate(rows, start=1):
+            role_value = str(row.get("role", "") or "")
+            session_id = str(row.get("session_id", "") or "")
+            created = str(row.get("created_at", "") or "")
+            content = self._sanitize_turn_for_model(str(row.get("content", "") or ""))
+            label = name_map.get(self._base_chat_key(session_id)) or session_id or "?"
+            lines.append(
+                f"\n{idx}. [{role_value or 'turn'}] [{label}] {created}\n{content}"
+            )
+        return "\n".join(lines)
+
+    async def _tool_find_chat(self, name: str, platform: str = "") -> str:
+        _logger.debug("tool.find_chat", name=name, platform=platform)
+        rows = await self.api.search_chats(name, platform=platform)
+        if not rows:
+            return "No chats matched that name."
+        lines = [f"Found {len(rows)} chats:"]
+        for idx, row in enumerate(rows, start=1):
+            chat_address = str(row.get("chat_address", "") or "")
+            display_name = str(row.get("display_name", "") or "")
+            plat = str(row.get("platform", "") or "")
+            last_seen = str(row.get("last_seen_at", "") or "")
+            lines.append(
+                f"{idx}. [{chat_address}] {display_name} ({plat}, last seen {last_seen})"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _base_chat_key(session_id: str) -> str:
+        """Strip any session suffix from a session id to get its chat_key.
+
+        Session ids are ``channel:type:id`` or ``channel:type:id:suffix``; the
+        chat_key is the first three colon-segments. Falls back to the full id.
+        """
+        if not session_id:
+            return ""
+        parts = session_id.split(":")
+        if len(parts) >= 3:
+            return ":".join(parts[:3])
+        return session_id
+
+    async def _resolve_chat_names(self, session_ids: list[str]) -> dict[str, str]:
+        """Resolve chat_key -> display_name via the chat metadata store.
+
+        Returns an empty map if no store is wired (callers then show raw ids).
+        """
+        chat_keys = {self._base_chat_key(sid) for sid in session_ids if sid}
+        chat_keys.discard("")
+        if not chat_keys:
+            return {}
+        return await self.api.get_chat_names(list(chat_keys))
+
+    @staticmethod
+    def _sanitize_turn_for_model(content: str) -> str:
+        """Strip media/payload noise and truncate a turn for model consumption.
+
+        Replaces base64 data URLs and long base64 blobs with a placeholder, and
+        truncates to a safe length. Mirrors the filtering outlined in
+        cross-session-messaging.md §4.3 (sessions_history).
+        """
+        if not content:
+            return ""
+        sanitized = _BASE64_DATA_URL_RE.sub("[media omitted]", content)
+        sanitized = _LONG_BASE64_RE.sub("[data omitted]", sanitized)
+        max_chars = 1500
+        if len(sanitized) > max_chars:
+            sanitized = sanitized[:max_chars].rstrip() + "..."
+        return sanitized
 
     # ── exec Tool ──────────────────────────────────────────
 

@@ -92,6 +92,7 @@ class MessageRouter:
         workspace_manager: WorkspaceManager | None = None,
         config: RouterConfig | None = None,
         identity_resolver: IdentityResolver | None = None,
+        chat_metadata_store: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._commands = command_registry
@@ -101,6 +102,7 @@ class MessageRouter:
         self._workspace = workspace_manager
         self._config = config or RouterConfig()
         self._identity_resolver = identity_resolver
+        self._chat_metadata_store = chat_metadata_store
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
         self._agent_response_subscription: Subscription | None = None
@@ -138,6 +140,10 @@ class MessageRouter:
             if identity is not None:
                 sender_account_key = identity.sender_account_key
                 person_id = identity.person_id
+        # Observe the chat's human-readable name (e.g. group title) for the
+        # find_chat tool. Best-effort, never blocks message handling, and runs
+        # regardless of identity being enabled — chat names are not identity.
+        await self._observe_chat_name(inbound, address)
         return SessionContext(
             platform=inbound.platform,
             chat_id=inbound.chat_id,
@@ -153,6 +159,37 @@ class MessageRouter:
             sender_account_key=sender_account_key,
             person_id=person_id,
         )
+
+    async def _observe_chat_name(
+        self,
+        inbound: InboundMessage,
+        address: ChatAddress,
+    ) -> None:
+        """Record the chat's display name for fuzzy name→ChatAddress lookup.
+
+        Best-effort: any failure is swallowed so message handling never depends
+        on it. Only typed chats with a non-empty name are recorded.
+        """
+        store = self._chat_metadata_store
+        if store is None:
+            return
+        ctx = inbound.chat_context
+        name = ctx.display_name if ctx is not None else ""
+        if not name or not address.is_typed:
+            return
+        try:
+            await store.observe(
+                address.chat_key,
+                platform=address.channel,
+                target_type=address.target_type,
+                target_id=address.target_id,
+                display_name=name,
+            )
+        except Exception:
+            logger.debug(
+                "router.chat_name_observe_failed",
+                chat_address=address.chat_key,
+            )
 
     @property
     def agent(self) -> AgentLoop | None:

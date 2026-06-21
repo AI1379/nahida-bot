@@ -92,6 +92,7 @@ class Application:
         self.workspace_manager: WorkspaceManager | None = None
         self._db_engine: DatabaseEngine | None = None
         self.message_delivery_store: SQLiteMessageDeliveryStore | None = None
+        self.chat_metadata_store: Any | None = None
         self._provider_manager: ProviderManager | None = None
         self._model_router: ModelRouter | None = None
         self._memory_embedding_provider: Any | None = None
@@ -180,6 +181,7 @@ class Application:
                 orchestration_service=self.orchestration_service,
                 task_manager=self.task_manager,
                 document_store_manager=self.document_store_manager,
+                chat_metadata_store=self.chat_metadata_store,
             )
             if self.agent_loop is not None:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
@@ -198,6 +200,7 @@ class Application:
                 scheduler_service=self.scheduler_service,
                 orchestration_service=self.orchestration_service,
                 task_manager=self.task_manager,
+                chat_metadata_store=self.chat_metadata_store,
             )
 
             # Initialize webapi
@@ -243,6 +246,11 @@ class Application:
         self.memory_store = SQLiteMemoryStore(engine)
         self.message_delivery_store = SQLiteMessageDeliveryStore(engine)
         self._plugin_data_repo = SQLitePluginDataRepository(engine)
+        from nahida_bot.db.repositories.sqlite_chat_metadata_repo import (
+            SQLiteChatMetadataRepository,
+        )
+
+        self.chat_metadata_store = SQLiteChatMetadataRepository(engine)
 
         # Document store manager — reusable collection storage for KB and plugins
         from nahida_bot.agent.storage.manager import DocumentStoreManager
@@ -843,6 +851,7 @@ class Application:
                     enable_silent_reply=self.settings.enable_silent_reply,
                 ),
                 identity_resolver=self._identity_resolver,
+                chat_metadata_store=self.chat_metadata_store,
             )
             await self.message_router.start()
 
