@@ -6,13 +6,27 @@ import hashlib
 import html
 import re
 import shlex
+import tempfile
 from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 from urllib.parse import urlparse
+from uuid import uuid4
 from xml.etree import ElementTree
 
 import httpx
-from nahida_bot_sdk import ChatAddress, CommandResult, InboundMessage, OutboundMessage
+from nahida_bot_sdk import (
+    Attachment,
+    ChatAddress,
+    CommandResult,
+    InboundMessage,
+    OutboundMessage,
+)
 from nahida_bot_sdk import Plugin
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -70,6 +84,27 @@ class RSSRegistrationConfig(BaseModel):
     enabled: bool = True
 
 
+class RSSRenderingConfig(BaseModel):
+    """Notification rendering behavior."""
+
+    model_config = ConfigDict(extra="allow")
+
+    mode: str = "standard"
+    max_text_chars: int = Field(default=500, ge=0)
+    max_paragraphs: int = Field(default=3, ge=0)
+    include_images: bool = True
+    max_images: int = Field(default=1, ge=0)
+    send_image_attachments: bool = True
+    image_download_timeout_seconds: float = Field(default=20.0, ge=1.0)
+    max_image_bytes: int = Field(default=5_000_000, ge=1024)
+
+    @field_validator("mode")
+    @classmethod
+    def _normalize_mode(cls, value: str) -> str:
+        value = value.strip().lower()
+        return value if value in {"compact", "standard", "rich"} else "standard"
+
+
 class RSSNotifierConfig(BaseModel):
     """Plugin configuration."""
 
@@ -80,6 +115,7 @@ class RSSNotifierConfig(BaseModel):
     feeds: list[RSSFeedConfig] = Field(default_factory=list)
     polling: RSSPollingConfig = Field(default_factory=RSSPollingConfig)
     registration: RSSRegistrationConfig = Field(default_factory=RSSRegistrationConfig)
+    rendering: RSSRenderingConfig = Field(default_factory=RSSRenderingConfig)
 
     @field_validator("target_chat_addresses")
     @classmethod
@@ -103,12 +139,21 @@ class _FeedItem:
     link: str = ""
     published: str = ""
     summary: str = ""
+    paragraphs: tuple[str, ...] = ()
+    image_urls: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
 class _FeedFetchResult:
     title: str
     items: tuple[_FeedItem, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class _LatestEntry:
+    feed_title: str
+    item: _FeedItem
+    sequence: int
 
 
 class RSSNotifierPlugin(Plugin):
@@ -149,6 +194,15 @@ class RSSNotifierPlugin(Plugin):
                 "rss_poll",
                 self._cmd_poll,
                 description="Run one RSS/Atom polling pass now.",
+            )
+            self.api.register_command(
+                "rss_latest",
+                self._cmd_latest,
+                description=(
+                    "Show latest RSS/Atom items for the current chat. "
+                    "Usage: /rss_latest [n] [url-or-list-index-or-display-name]"
+                ),
+                aliases=["rss_recent"],
             )
 
         self.api.logger.info(
@@ -286,6 +340,61 @@ class RSSNotifierPlugin(Plugin):
         await self._poll_once_safely()
         return CommandResult.text("RSS polling pass completed.")
 
+    async def _cmd_latest(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> CommandResult:
+        del session_id
+        try:
+            limit, selector = _parse_latest_args(args)
+        except ValueError as exc:
+            return CommandResult.text(str(exc))
+
+        target = _address_from_inbound(inbound).chat_key
+        subscriptions = await self._subscriptions_for_target(target)
+        if not subscriptions:
+            return CommandResult.text("This chat is not subscribed to any RSS feeds.")
+
+        selected = _select_latest_subscriptions(subscriptions, selector)
+        if selected is None:
+            return CommandResult.text("No matching RSS subscription found.")
+
+        entries: list[_LatestEntry] = []
+        failures: list[str] = []
+        sequence = 0
+        for sub in selected:
+            try:
+                result = await self._fetch_feed(sub.url)
+            except Exception as exc:  # noqa: BLE001
+                failures.append(f"{sub.title or sub.url}: {exc}")
+                continue
+            feed_title = sub.title or result.title or sub.url
+            for item in result.items:
+                entries.append(
+                    _LatestEntry(
+                        feed_title=feed_title,
+                        item=item,
+                        sequence=sequence,
+                    )
+                )
+                sequence += 1
+
+        if not entries and failures:
+            return CommandResult.text(
+                "Failed to fetch RSS subscriptions:\n"
+                + "\n".join(f"- {failure}" for failure in failures[:5])
+            )
+        if not entries:
+            return CommandResult.text("No RSS items found.")
+
+        entries = sorted(entries, key=_latest_entry_sort_key, reverse=True)[:limit]
+        text = _format_latest_entries(
+            target=target,
+            entries=entries,
+            failures=failures,
+            limit=limit,
+        )
+        return CommandResult.text(text)
+
     async def _poll_once_safely(self) -> None:
         try:
             await self._poll_once()
@@ -365,39 +474,145 @@ class RSSNotifierPlugin(Plugin):
         *,
         feed_title: str,
     ) -> None:
+        attachments: list[Attachment] = []
+        fallback_image_urls: list[str] = []
+        try:
+            attachments, fallback_image_urls = await self._prepare_image_attachments(
+                item
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.api.logger.exception(
+                "rss_notifier.image_attachment_prepare_failed",
+                item_key=item.key,
+                error=str(exc),
+            )
+            fallback_image_urls = list(self._rendered_image_urls(item))
         text = _format_notification(
             feed_title=subscription.title or feed_title or subscription.url,
             item=item,
+            rendering=self._config.rendering,
+            fallback_image_urls=tuple(fallback_image_urls),
         )
-        for target in subscription.targets:
+        try:
+            for target in subscription.targets:
+                try:
+                    address = ChatAddress.parse(target)
+                    await self.api.send_message(
+                        address.target_id,
+                        OutboundMessage(
+                            text=text,
+                            extra={
+                                "chat_address": address.chat_key,
+                                "rss_feed_url": subscription.url,
+                                "rss_item_key": item.key,
+                                "rss_image_urls": list(item.image_urls),
+                            },
+                            attachments=attachments,
+                        ),
+                        channel=address.channel,
+                    )
+                    self.api.logger.info(
+                        "rss_notifier.notify_sent",
+                        feed_url=subscription.url,
+                        item_key=item.key,
+                        target=address.chat_key,
+                        attachment_count=len(attachments),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.api.logger.exception(
+                        "rss_notifier.notify_failed",
+                        feed_url=subscription.url,
+                        item_key=item.key,
+                        target=target,
+                        error=str(exc),
+                    )
+        finally:
+            _cleanup_temp_attachments(attachments)
+
+    async def _prepare_image_attachments(
+        self, item: _FeedItem
+    ) -> tuple[list[Attachment], list[str]]:
+        image_urls = list(self._rendered_image_urls(item))
+        if (
+            not image_urls
+            or not self._config.rendering.send_image_attachments
+            or self._config.rendering.mode == "compact"
+        ):
+            return [], image_urls
+
+        attachments: list[Attachment] = []
+        fallback_urls: list[str] = []
+        for image_url in image_urls:
             try:
-                address = ChatAddress.parse(target)
-                await self.api.send_message(
-                    address.target_id,
-                    OutboundMessage(
-                        text=text,
-                        extra={
-                            "chat_address": address.chat_key,
-                            "rss_feed_url": subscription.url,
-                            "rss_item_key": item.key,
-                        },
-                    ),
-                    channel=address.channel,
-                )
-                self.api.logger.info(
-                    "rss_notifier.notify_sent",
-                    feed_url=subscription.url,
-                    item_key=item.key,
-                    target=address.chat_key,
-                )
+                attachments.append(await self._download_image_attachment(image_url))
             except Exception as exc:  # noqa: BLE001
-                self.api.logger.exception(
-                    "rss_notifier.notify_failed",
-                    feed_url=subscription.url,
+                fallback_urls.append(image_url)
+                self.api.logger.warning(
+                    "rss_notifier.image_attachment_download_failed",
+                    image_url=image_url,
                     item_key=item.key,
-                    target=target,
                     error=str(exc),
                 )
+        return attachments, fallback_urls
+
+    def _rendered_image_urls(self, item: _FeedItem) -> tuple[str, ...]:
+        rendering = self._config.rendering
+        if not rendering.include_images or rendering.max_images <= 0:
+            return ()
+        return tuple(_dedupe(list(item.image_urls))[: rendering.max_images])
+
+    async def _download_image_attachment(self, image_url: str) -> Attachment:
+        if not _is_supported_feed_url(image_url):
+            raise ValueError("image URL must be http(s)")
+        rendering = self._config.rendering
+        headers = {"User-Agent": self._config.polling.user_agent}
+        async with httpx.AsyncClient(
+            timeout=rendering.image_download_timeout_seconds,
+            follow_redirects=True,
+            headers=headers,
+        ) as client:
+            async with client.stream("GET", image_url) as response:
+                response.raise_for_status()
+                content_type = _normalize_content_type(
+                    response.headers.get("content-type", "")
+                )
+                if content_type and not content_type.startswith("image/"):
+                    raise ValueError(f"image URL returned {content_type!r}")
+                content_length = _parse_int_header(
+                    response.headers.get("content-length", "")
+                )
+                if (
+                    content_length is not None
+                    and content_length > rendering.max_image_bytes
+                ):
+                    raise ValueError(f"image exceeds {rendering.max_image_bytes} bytes")
+
+                suffix = _image_suffix(image_url, content_type)
+                path = Path(tempfile.gettempdir()) / f"nahida-rss-{uuid4().hex}{suffix}"
+                total = 0
+                try:
+                    with path.open("wb") as file:
+                        async for chunk in response.aiter_bytes():
+                            total += len(chunk)
+                            if total > rendering.max_image_bytes:
+                                raise ValueError(
+                                    f"image exceeds {rendering.max_image_bytes} bytes"
+                                )
+                            file.write(chunk)
+                except Exception:
+                    _unlink_quietly(path)
+                    raise
+
+        if total <= 0:
+            _unlink_quietly(path)
+            raise ValueError("image response was empty")
+
+        return Attachment(
+            type="photo",
+            path=str(path),
+            filename=path.name,
+            mime_type=content_type or "image/*",
+        )
 
     async def _subscription_map(self) -> dict[str, _FeedSubscription]:
         merged = self._configured_subscription_map()
@@ -511,8 +726,17 @@ def _parse_atom(root: ElementTree.Element, *, max_items: int) -> _FeedFetchResul
         title = _clean_text(_child_text(entry, "title")) or "(untitled)"
         link = _atom_link(entry)
         published = _child_text(entry, "published") or _child_text(entry, "updated")
-        summary = _clean_text(
-            _child_text(entry, "summary") or _child_text(entry, "content")
+        content_fragment = _child_markup(entry, "summary") or _child_markup(
+            entry, "content"
+        )
+        content = _parse_html_content(content_fragment, base_url=link)
+        paragraphs = content.paragraphs
+        summary = _summary_from_paragraphs(paragraphs)
+        image_urls = _dedupe(
+            [
+                *_media_image_urls(entry, base_url=link),
+                *content.image_urls,
+            ]
         )
         key = (
             _child_text(entry, "id")
@@ -527,6 +751,8 @@ def _parse_atom(root: ElementTree.Element, *, max_items: int) -> _FeedFetchResul
                 link=link,
                 published=published,
                 summary=summary,
+                paragraphs=tuple(paragraphs),
+                image_urls=tuple(image_urls),
             )
         )
     return _FeedFetchResult(title=_clean_text(feed_title), items=tuple(items))
@@ -548,10 +774,19 @@ def _parse_rss(root: ElementTree.Element, *, max_items: int) -> _FeedFetchResult
             or _child_text(item, "published")
             or _child_text(item, "date")
         )
-        summary = _clean_text(
-            _child_text(item, "description")
-            or _child_text(item, "summary")
-            or _child_text(item, "encoded")
+        content_fragment = (
+            _child_markup(item, "description")
+            or _child_markup(item, "summary")
+            or _child_markup(item, "encoded")
+        )
+        content = _parse_html_content(content_fragment, base_url=link)
+        paragraphs = content.paragraphs
+        summary = _summary_from_paragraphs(paragraphs)
+        image_urls = _dedupe(
+            [
+                *_media_image_urls(item, base_url=link),
+                *content.image_urls,
+            ]
         )
         key = (
             _child_text(item, "guid")
@@ -567,6 +802,8 @@ def _parse_rss(root: ElementTree.Element, *, max_items: int) -> _FeedFetchResult
                 link=link.strip(),
                 published=published.strip(),
                 summary=summary,
+                paragraphs=tuple(paragraphs),
+                image_urls=tuple(image_urls),
             )
         )
     return _FeedFetchResult(title=_clean_text(feed_title), items=tuple(items))
@@ -594,6 +831,20 @@ def _child_text(element: ElementTree.Element, name: str) -> str:
     return "".join(child.itertext()).strip()
 
 
+def _child_markup(element: ElementTree.Element, name: str) -> str:
+    child = _first_child(element, name)
+    if child is None:
+        return ""
+    parts: list[str] = []
+    if child.text:
+        parts.append(child.text)
+    for sub in list(child):
+        parts.append(ElementTree.tostring(sub, encoding="unicode"))
+        if sub.tail:
+            parts.append(sub.tail)
+    return "".join(parts).strip()
+
+
 def _atom_link(entry: ElementTree.Element) -> str:
     fallback = ""
     for child in _children(entry, "link"):
@@ -608,21 +859,283 @@ def _atom_link(entry: ElementTree.Element) -> str:
     return fallback
 
 
+@dataclass(slots=True, frozen=True)
+class _ParsedHTMLContent:
+    paragraphs: tuple[str, ...] = ()
+    image_urls: tuple[str, ...] = ()
+
+
+class _HTMLContentParser(HTMLParser):
+    _BLOCK_TAGS = {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "dd",
+        "div",
+        "dt",
+        "figcaption",
+        "figure",
+        "footer",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "li",
+        "main",
+        "p",
+        "pre",
+        "section",
+        "td",
+        "th",
+        "tr",
+    }
+    _IGNORED_TAGS = {"script", "style", "iframe", "object", "noscript"}
+
+    def __init__(self, *, base_url: str = "") -> None:
+        super().__init__(convert_charrefs=True)
+        self._base_url = base_url
+        self._parts: list[str] = []
+        self.paragraphs: list[str] = []
+        self.image_urls: list[str] = []
+        self._ignored_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in self._IGNORED_TAGS:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+        if tag in self._BLOCK_TAGS:
+            self._flush()
+        elif tag == "br":
+            self._parts.append("\n")
+        elif tag == "img":
+            attrs_dict = {key.lower(): value or "" for key, value in attrs}
+            src = attrs_dict.get("src", "").strip()
+            if src:
+                self.image_urls.append(_absolute_url(src, self._base_url))
+            alt = attrs_dict.get("alt", "").strip()
+            if alt:
+                self._parts.append(f" {alt} ")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self._IGNORED_TAGS:
+            self._ignored_depth = max(0, self._ignored_depth - 1)
+            return
+        if self._ignored_depth:
+            return
+        if tag in self._BLOCK_TAGS:
+            self._flush()
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_depth:
+            return
+        if data:
+            self._parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._flush()
+
+    def _flush(self) -> None:
+        paragraph = _clean_paragraph("".join(self._parts))
+        self._parts.clear()
+        if paragraph:
+            self.paragraphs.append(paragraph)
+
+
+def _parse_html_content(fragment: str, *, base_url: str = "") -> _ParsedHTMLContent:
+    fragment = html.unescape(fragment or "")
+    if not fragment.strip():
+        return _ParsedHTMLContent()
+    parser = _HTMLContentParser(base_url=base_url)
+    try:
+        parser.feed(fragment)
+        parser.close()
+    except Exception:
+        fallback = _clean_text(fragment)
+        return _ParsedHTMLContent(paragraphs=(fallback,) if fallback else ())
+    return _ParsedHTMLContent(
+        paragraphs=tuple(parser.paragraphs),
+        image_urls=tuple(_dedupe(parser.image_urls)),
+    )
+
+
+def _media_image_urls(element: ElementTree.Element, *, base_url: str = "") -> list[str]:
+    urls: list[str] = []
+    for child in list(element):
+        local = _local_name(child.tag).lower()
+        attrs = {key.lower(): value for key, value in child.attrib.items()}
+        if local == "enclosure":
+            raw_url = attrs.get("url", "").strip()
+            raw_type = attrs.get("type", "").strip().lower()
+            if raw_url and (
+                raw_type.startswith("image/") or _looks_like_image_url(raw_url)
+            ):
+                urls.append(_absolute_url(raw_url, base_url))
+        elif local in {"thumbnail", "content"}:
+            raw_url = (attrs.get("url") or attrs.get("src") or "").strip()
+            raw_type = attrs.get("type", "").strip().lower()
+            medium = attrs.get("medium", "").strip().lower()
+            if raw_url and (
+                local == "thumbnail"
+                or medium == "image"
+                or raw_type.startswith("image/")
+                or _looks_like_image_url(raw_url)
+            ):
+                urls.append(_absolute_url(raw_url, base_url))
+        elif local == "link":
+            raw_url = attrs.get("href", "").strip()
+            raw_type = attrs.get("type", "").strip().lower()
+            rel = attrs.get("rel", "").strip().lower()
+            if raw_url and rel == "enclosure" and raw_type.startswith("image/"):
+                urls.append(_absolute_url(raw_url, base_url))
+    return _dedupe(urls)
+
+
 def _local_name(tag: str) -> str:
     if "}" in tag:
         return tag.rsplit("}", 1)[1]
     return tag.rsplit(":", 1)[-1]
 
 
-def _format_notification(*, feed_title: str, item: _FeedItem) -> str:
+def _format_notification(
+    *,
+    feed_title: str,
+    item: _FeedItem,
+    rendering: RSSRenderingConfig | None = None,
+    fallback_image_urls: tuple[str, ...] = (),
+) -> str:
+    rendering = rendering or RSSRenderingConfig()
     lines = [f"📰 {feed_title}", f"📌 {item.title}"]
     if item.published:
         lines.append(f"🕒 {item.published}")
     if item.link:
         lines.append(f"🔗 {item.link}")
-    if item.summary:
+    raw_paragraphs = item.paragraphs or ((item.summary,) if item.summary else ())
+    paragraphs = _select_paragraphs(raw_paragraphs, rendering)
+    if paragraphs:
         lines.append("")
-        lines.append(_truncate(item.summary, 300))
+        lines.append("\n\n".join(paragraphs))
+    if fallback_image_urls and rendering.include_images and rendering.mode != "compact":
+        lines.append("")
+        for image_url in fallback_image_urls[: rendering.max_images]:
+            lines.append(f"🖼 {image_url}")
+    return "\n".join(lines)
+
+
+def _parse_latest_args(args: str) -> tuple[int, str]:
+    try:
+        parts = shlex.split(args)
+    except ValueError as exc:
+        raise ValueError(f"Invalid arguments: {exc}") from exc
+
+    limit = 5
+    selector_parts = parts
+    if parts:
+        try:
+            parsed_limit = int(parts[0])
+        except ValueError:
+            parsed_limit = 0
+        if parsed_limit > 0:
+            limit = min(parsed_limit, 20)
+            selector_parts = parts[1:]
+    selector = " ".join(selector_parts).strip()
+    return limit, selector
+
+
+def _select_latest_subscriptions(
+    subscriptions: list[_FeedSubscription], selector: str
+) -> list[_FeedSubscription] | None:
+    if not selector:
+        return subscriptions
+    if selector.isdigit():
+        index = int(selector)
+        if 1 <= index <= len(subscriptions):
+            return [subscriptions[index - 1]]
+        return None
+    normalized = _normalize_url(selector)
+    selected = [sub for sub in subscriptions if sub.url == normalized]
+    if selected:
+        return selected
+
+    selector_key = selector.casefold()
+    selected = [
+        sub
+        for sub in subscriptions
+        if sub.title and sub.title.casefold() == selector_key
+    ]
+    if selected:
+        return selected
+
+    selected = [
+        sub
+        for sub in subscriptions
+        if sub.title and selector_key in sub.title.casefold()
+    ]
+    return selected or None
+
+
+def _latest_entry_sort_key(entry: _LatestEntry) -> tuple[int, int]:
+    timestamp = _published_timestamp(entry.item.published)
+    if timestamp is None:
+        return (0, -entry.sequence)
+    return (1, int(timestamp))
+
+
+def _published_timestamp(value: str) -> float | None:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        parsed = None
+    if parsed is None:
+        iso_value = value
+        if iso_value.endswith("Z"):
+            iso_value = iso_value[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(iso_value)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.timestamp()
+
+
+def _format_latest_entries(
+    *,
+    target: str,
+    entries: list[_LatestEntry],
+    failures: list[str],
+    limit: int,
+) -> str:
+    lines = [f"Latest {len(entries)} RSS item(s) for {target}:"]
+    for index, entry in enumerate(entries, start=1):
+        item = entry.item
+        lines.append(f"{index}. [{entry.feed_title}] {item.title}")
+        if item.published:
+            lines.append(f"   🕒 {item.published}")
+        if item.link:
+            lines.append(f"   🔗 {item.link}")
+        if item.paragraphs:
+            preview = _truncate(" ".join(item.paragraphs), 160)
+            if preview:
+                lines.append(f"   {preview}")
+        if item.image_urls:
+            lines.append(f"   🖼 {item.image_urls[0]}")
+    if failures:
+        lines.append("")
+        lines.append("Fetch failures:")
+        for failure in failures[: max(1, min(3, limit))]:
+            lines.append(f"- {failure}")
     return "\n".join(lines)
 
 
@@ -671,10 +1184,118 @@ def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _clean_paragraph(value: str) -> str:
+    lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in value.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _summary_from_paragraphs(paragraphs: tuple[str, ...]) -> str:
+    return " ".join(paragraphs).strip()
+
+
+def _select_paragraphs(
+    paragraphs: tuple[str, ...], rendering: RSSRenderingConfig
+) -> list[str]:
+    if rendering.mode == "compact":
+        max_paragraphs = 1
+        max_chars = (
+            min(rendering.max_text_chars, 240) if rendering.max_text_chars else 0
+        )
+    else:
+        max_paragraphs = rendering.max_paragraphs
+        max_chars = rendering.max_text_chars
+    if max_paragraphs <= 0 or max_chars <= 0:
+        return []
+
+    selected: list[str] = []
+    used = 0
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        remaining = max_chars - used
+        if remaining <= 0 or len(selected) >= max_paragraphs:
+            break
+        if len(paragraph) > remaining:
+            selected.append(_truncate(paragraph, remaining))
+            break
+        selected.append(paragraph)
+        used += len(paragraph)
+    return selected
+
+
 def _truncate(value: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
     if len(value) <= limit:
         return value
     return value[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _absolute_url(value: str, base_url: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    if value.startswith("//"):
+        parsed_base = urlparse(base_url)
+        scheme = (
+            parsed_base.scheme if parsed_base.scheme in {"http", "https"} else "https"
+        )
+        return f"{scheme}:{value}"
+    if base_url:
+        return urljoin(base_url, value)
+    return value
+
+
+def _looks_like_image_url(value: str) -> bool:
+    path = urlparse(value).path.lower()
+    return path.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"))
+
+
+def _normalize_content_type(value: str) -> str:
+    return value.split(";", 1)[0].strip().lower()
+
+
+def _parse_int_header(value: str) -> int | None:
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _image_suffix(image_url: str, content_type: str) -> str:
+    by_type = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/bmp": ".bmp",
+        "image/avif": ".avif",
+    }
+    suffix = by_type.get(content_type)
+    if suffix:
+        return suffix
+    path_suffix = Path(urlparse(image_url).path).suffix.lower()
+    if path_suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}:
+        return path_suffix
+    return ".img"
+
+
+def _cleanup_temp_attachments(attachments: list[Attachment]) -> None:
+    for attachment in attachments:
+        path = Path(attachment.path)
+        if path.name.startswith("nahida-rss-"):
+            _unlink_quietly(path)
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _dedupe(values: list[str]) -> list[str]:

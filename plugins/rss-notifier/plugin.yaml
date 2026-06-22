@@ -27,6 +27,15 @@ config:
     max_known_items_per_feed: 200
     max_new_items_per_feed_per_poll: 5
     user_agent: "nahida-bot-rss-notifier/0.1"
+  rendering:
+    mode: "standard"
+    max_text_chars: 500
+    max_paragraphs: 3
+    include_images: true
+    max_images: 1
+    send_image_attachments: true
+    image_download_timeout_seconds: 20
+    max_image_bytes: 5000000
   registration:
     enabled: true
 
@@ -82,6 +91,31 @@ config_schema:
           minimum: 1
         user_agent:
           type: string
+    rendering:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: ["compact", "standard", "rich"]
+        max_text_chars:
+          type: integer
+          minimum: 0
+        max_paragraphs:
+          type: integer
+          minimum: 0
+        include_images:
+          type: boolean
+        max_images:
+          type: integer
+          minimum: 0
+        send_image_attachments:
+          type: boolean
+        image_download_timeout_seconds:
+          type: number
+          minimum: 1
+        max_image_bytes:
+          type: integer
+          minimum: 1024
     registration:
       type: object
       properties:

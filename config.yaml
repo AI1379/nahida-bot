@@ -185,6 +185,14 @@ github-notifier:
 #   polling:
 #     enabled: true
 #     interval_seconds: 300
+#   rendering:
+#     mode: "standard"              # compact / standard / rich
+#     max_text_chars: 500
+#     max_paragraphs: 3
+#     include_images: true
+#     max_images: 1
+#     send_image_attachments: true  # 下载图片并作为 photo 附件发送；失败时退化为图片链接
+#     max_image_bytes: 5000000
 #   registration:
 #     enabled: true                 # 开启后可在聊天中使用 /rss_sub 动态订阅
 

@@ -13,15 +13,34 @@
       feeds:
         - url: "https://example.com/feed.xml"
           title: "Example"
-      polling:
-        enabled: true
-        interval_seconds: 300
-      registration:
-        enabled: true
+  polling:
+    enabled: true
+    interval_seconds: 300
+  rendering:
+    mode: "standard"
+    max_text_chars: 500
+    max_paragraphs: 3
+    include_images: true
+    max_images: 1
+    send_image_attachments: true
+  registration:
+    enabled: true
 
 feeds[].target_chat_addresses 可覆盖全局 target_chat_addresses。
 
 首次轮询只建立基线，不会把历史条目一次性刷屏；后续发现新 item 才推送。
+
+## 轻富文本渲染
+
+插件会通用解析 RSS/Atom 条目的 HTML 内容：
+
+- p/div/li/br 等块级结构会尽量保留为段落。
+- img、enclosure、media:thumbnail、media:content 会提取为图片。
+- 默认发送前 3 段正文、最多 500 字、最多 1 张图片。
+- send_image_attachments 为 true 时会下载图片并作为 photo 附件发送。
+- 图片下载失败时不会阻断通知，会退化为在文本中附上图片链接。
+
+渲染是通用规则，不针对某个 feed 或站点特化。
 
 ## 动态订阅命令
 
@@ -29,5 +48,7 @@ feeds[].target_chat_addresses 可覆盖全局 target_chat_addresses。
 - /rss_unsub <url-or-list-index>：当前聊天取消动态订阅。
 - /rss_list：列出当前聊天订阅。
 - /rss_poll：立即执行一次轮询。
+- /rss_latest [n] [url-or-list-index-or-display-name]：查看当前聊天订阅源的最新 n 条 item，不修改轮询去重状态。别名：/rss_recent。
+  display name 使用 `/rss_sub <url> [display title]` 或 `feeds[].title` 设置；匹配时 URL 优先，其次 display name 精确匹配，最后 display name 包含匹配。
 
 动态订阅存入插件数据表，会和 config.yaml 中的静态订阅合并。
