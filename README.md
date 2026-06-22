@@ -298,6 +298,16 @@ telegram:
 | [pixi-live2d-display](https://github.com/guansss/pixi-live2d-display) / [Tauri](https://v2.tauri.app/) | Desktop 桌宠的 Live2D 渲染与原生壳 |
 | [MarkItDown](https://github.com/microsoft/markitdown) | 知识库富文档到 Markdown 的转换 |
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=AI1379%2Fnahida-bot&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=AI1379/nahida-bot&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=AI1379/nahida-bot&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=AI1379/nahida-bot&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## License
 
 **AGPL-v3.0 License.**
