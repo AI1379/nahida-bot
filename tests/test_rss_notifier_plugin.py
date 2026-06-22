@@ -26,8 +26,6 @@ from nahida_plugin_rss_notifier.plugin import (  # noqa: E402
     _FeedFetchResult,
     _FeedItem,
     _FeedSubscription,
-    _LatestEntry,
-    _format_latest_entries,
     _format_notification,
     _parse_feed,
 )
@@ -181,6 +179,7 @@ async def test_latest_lists_recent_items_without_mutating_poll_state() -> None:
                 "target_chat_addresses": ["milky:group:100"],
                 "feeds": [{"url": "https://example.com/feed.xml", "title": "News"}],
                 "polling": {"enabled": False},
+                "rendering": {"send_image_attachments": False},
             }
         ),
     )
@@ -211,12 +210,13 @@ async def test_latest_lists_recent_items_without_mutating_poll_state() -> None:
     plugin._fetch_feed = _fetch  # type: ignore[method-assign]
     result = await plugin._cmd_latest(args="1", inbound=_inbound(), session_id="s")
 
-    assert result.message is not None
-    assert "Latest 1 RSS item(s) for milky:group:100" in result.message.text
-    assert "[News] New item" in result.message.text
-    assert "https://example.com/new" in result.message.text
-    assert "https://example.com/new.png" in result.message.text
-    assert "Old item" not in result.message.text
+    assert result.suppress_response is True
+    assert len(api.sent_messages) == 1
+    outbound = api.sent_messages[0][1]
+    assert "📰 News\n📌 New item" in outbound.text
+    assert "https://example.com/new" in outbound.text
+    assert "🖼 https://example.com/new.png" in outbound.text
+    assert "Old item" not in outbound.text
     assert await api.plugin_data_get(FEED_STATE_KEY) is None
 
 
@@ -255,8 +255,12 @@ async def test_latest_can_select_subscription_by_list_index() -> None:
     result = await plugin._cmd_latest(args="3 1", inbound=_inbound(), session_id="s")
 
     assert fetched == ["https://a.example/feed.xml"]
-    assert result.message is not None
-    assert "[A Feed] Item from https://a.example/feed.xml" in result.message.text
+    assert result.suppress_response is True
+    assert len(api.sent_messages) == 1
+    assert (
+        "📰 A Feed\n📌 Item from https://a.example/feed.xml"
+        in api.sent_messages[0][1].text
+    )
 
 
 @pytest.mark.asyncio
@@ -296,8 +300,12 @@ async def test_latest_can_select_subscription_by_display_name() -> None:
     )
 
     assert fetched == ["https://a.example/feed.xml"]
-    assert result.message is not None
-    assert "[原神 新闻] Item from https://a.example/feed.xml" in result.message.text
+    assert result.suppress_response is True
+    assert len(api.sent_messages) == 1
+    assert (
+        "📰 原神 新闻\n📌 Item from https://a.example/feed.xml"
+        in api.sent_messages[0][1].text
+    )
 
 
 def test_parse_rss_feed() -> None:
@@ -365,28 +373,6 @@ def test_notification_rendering_preserves_line_breaks() -> None:
     )
 
     assert "Line one\nLine two\n\nNext paragraph" in text
-
-
-def test_latest_rendering_preserves_multiline_preview() -> None:
-    text = _format_latest_entries(
-        target="milky:group:100",
-        entries=[
-            _LatestEntry(
-                feed_title="News",
-                item=_FeedItem(
-                    key="item",
-                    title="Fresh item",
-                    link="https://example.com/item",
-                    paragraphs=("Line one\nLine two", "Next paragraph"),
-                ),
-                sequence=0,
-            )
-        ],
-        failures=[],
-        limit=1,
-    )
-
-    assert "   Line one\n   Line two\n\n   Next paragraph" in text
 
 
 def test_parse_atom_feed() -> None:
@@ -511,7 +497,7 @@ async def test_latest_returns_image_attachment_when_rendering_allows() -> None:
     async def _download(image_url: str, **kwargs: Any) -> Attachment:
         assert image_url == "https://example.com/image.png"
         assert kwargs == {
-            "feed_url": "https://example.com/item",
+            "feed_url": "https://example.com/feed.xml",
             "item_key": "item",
             "cleanup_after_send": True,
         }
@@ -531,10 +517,76 @@ async def test_latest_returns_image_attachment_when_rendering_allows() -> None:
     plugin._download_image_attachment = _download  # type: ignore[method-assign]
     result = await plugin._cmd_latest(args="1", inbound=_inbound(), session_id="s")
 
-    assert result.message is not None
-    assert "[News] Fresh item" in result.message.text
-    assert len(result.message.attachments) == 1
-    assert result.message.attachments[0].extra["managed_temp_file"] is True
+    assert result.suppress_response is True
+    assert len(api.sent_messages) == 1
+    outbound = api.sent_messages[0][1]
+    assert "📰 News\n📌 Fresh item" in outbound.text
+    assert len(outbound.attachments) == 1
+    assert outbound.attachments[0].extra["managed_temp_file"] is True
+
+
+@pytest.mark.asyncio
+async def test_latest_sends_each_item_with_its_own_image_attachment() -> None:
+    api = _API()
+    plugin = RSSNotifierPlugin(
+        api=api,
+        manifest=_manifest(
+            {
+                "target_chat_addresses": ["milky:group:100"],
+                "feeds": [{"url": "https://example.com/feed.xml", "title": "News"}],
+                "polling": {"enabled": False},
+                "rendering": {
+                    "send_image_attachments": True,
+                    "max_images": 1,
+                },
+            }
+        ),
+    )
+
+    async def _fetch(url: str) -> _FeedFetchResult:
+        assert url == "https://example.com/feed.xml"
+        return _FeedFetchResult(
+            title="News",
+            items=(
+                _FeedItem(
+                    key="item-1",
+                    title="First item",
+                    link="https://example.com/1",
+                    published="Sun, 21 Jun 2026 04:00:00 GMT",
+                    paragraphs=("First paragraph.",),
+                    image_urls=("https://example.com/1.png",),
+                ),
+                _FeedItem(
+                    key="item-2",
+                    title="Second item",
+                    link="https://example.com/2",
+                    published="Sun, 21 Jun 2026 05:00:00 GMT",
+                    paragraphs=("Second paragraph.",),
+                    image_urls=("https://example.com/2.png",),
+                ),
+            ),
+        )
+
+    async def _download(image_url: str, **kwargs: Any) -> Attachment:
+        assert kwargs["feed_url"] == "https://example.com/feed.xml"
+        assert kwargs["cleanup_after_send"] is True
+        return Attachment(
+            type="photo",
+            path=f"{image_url.rsplit('/', 1)[-1]}",
+            filename=image_url.rsplit("/", 1)[-1],
+            mime_type="image/png",
+        )
+
+    plugin._fetch_feed = _fetch  # type: ignore[method-assign]
+    plugin._download_image_attachment = _download  # type: ignore[method-assign]
+    result = await plugin._cmd_latest(args="2", inbound=_inbound(), session_id="s")
+
+    assert result.suppress_response is True
+    assert len(api.sent_messages) == 2
+    assert "Second item" in api.sent_messages[0][1].text
+    assert api.sent_messages[0][1].attachments[0].filename == "2.png"
+    assert "First item" in api.sent_messages[1][1].text
+    assert api.sent_messages[1][1].attachments[0].filename == "1.png"
 
 
 @pytest.mark.asyncio

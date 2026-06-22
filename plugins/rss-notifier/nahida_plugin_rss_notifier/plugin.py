@@ -151,6 +151,7 @@ class _FeedFetchResult:
 @dataclass(slots=True, frozen=True)
 class _LatestEntry:
     feed_title: str
+    feed_url: str
     item: _FeedItem
     sequence: int
 
@@ -414,6 +415,7 @@ class RSSNotifierPlugin(Plugin):
                 entries.append(
                     _LatestEntry(
                         feed_title=feed_title,
+                        feed_url=sub.url,
                         item=item,
                         sequence=sequence,
                     )
@@ -429,72 +431,91 @@ class RSSNotifierPlugin(Plugin):
             return CommandResult.text("No RSS items found.")
 
         entries = sorted(entries, key=_latest_entry_sort_key, reverse=True)[:limit]
-        attachments: list[Attachment] = []
-        attached_image_item_keys: set[str] = set()
-        fallback_image_urls_by_item: dict[str, list[str]] = {}
-        if (
-            self._config.rendering.send_image_attachments
-            and self._config.rendering.mode != "compact"
-        ):
-            for entry in entries:
-                if len(attachments) >= self._config.rendering.max_images:
-                    break
-                image_urls = list(self._rendered_image_urls(entry.item))
-                if not image_urls:
-                    continue
-                item_fallbacks = fallback_image_urls_by_item.setdefault(
-                    entry.item.key, []
+        address = _address_from_inbound(inbound)
+        sent_count = 0
+        attachment_count = 0
+        delivery_failures: list[str] = []
+        for entry in entries:
+            outbound = await self._build_feed_item_outbound(
+                feed_url=entry.feed_url,
+                feed_title=entry.feed_title,
+                item=entry.item,
+                cleanup_after_send=True,
+                extra={
+                    "chat_address": address.chat_key,
+                    "rss_latest": True,
+                    "rss_target": target,
+                    "rss_selector": selector,
+                    "rss_feed_url": entry.feed_url,
+                    "rss_item_key": entry.item.key,
+                    "rss_image_urls": list(entry.item.image_urls),
+                },
+            )
+            attachment_count += len(outbound.attachments)
+            try:
+                await self.api.send_message(
+                    address.target_id,
+                    outbound,
+                    channel=address.channel,
                 )
-                for image_url in image_urls:
-                    if len(attachments) >= self._config.rendering.max_images:
-                        item_fallbacks.append(image_url)
-                        continue
+                sent_count += 1
+                self.api.logger.info(
+                    "rss_notifier.latest_sent",
+                    target=target,
+                    feed_url=entry.feed_url,
+                    feed_title=entry.feed_title,
+                    item_key=entry.item.key,
+                    item_title=entry.item.title,
+                    attachment_count=len(outbound.attachments),
+                )
+            except Exception as exc:  # noqa: BLE001
+                delivery_failures.append(
+                    f"{entry.feed_title}: {entry.item.title}: {exc}"
+                )
+                self.api.logger.exception(
+                    "rss_notifier.latest_send_failed",
+                    target=target,
+                    feed_url=entry.feed_url,
+                    feed_title=entry.feed_title,
+                    item_key=entry.item.key,
+                    item_title=entry.item.title,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                for attachment in outbound.attachments:
                     try:
-                        attachments.append(
-                            await self._download_image_attachment(
-                                image_url,
-                                feed_url=entry.item.link,
-                                item_key=entry.item.key,
-                                cleanup_after_send=True,
-                            )
-                        )
-                        attached_image_item_keys.add(entry.item.key)
-                    except Exception as exc:  # noqa: BLE001
-                        item_fallbacks.append(image_url)
+                        await self.api.cleanup_temp_attachment(attachment)
+                    except Exception as cleanup_exc:  # noqa: BLE001
                         self.api.logger.warning(
-                            "rss_notifier.latest_image_attachment_download_failed",
+                            "rss_notifier.latest_attachment_cleanup_failed",
                             target=target,
-                            image_url=image_url,
+                            feed_url=entry.feed_url,
                             item_key=entry.item.key,
-                            error_type=type(exc).__name__,
-                            error=str(exc),
+                            path=attachment.path,
+                            error_type=type(cleanup_exc).__name__,
+                            error=str(cleanup_exc),
                         )
-        text = _format_latest_entries(
-            target=target,
-            entries=entries,
-            failures=failures,
-            limit=limit,
-            fallback_image_urls_by_item=fallback_image_urls_by_item,
-            attached_image_item_keys=attached_image_item_keys,
-        )
         self.api.logger.info(
             "rss_notifier.latest_completed",
             target=target,
             returned_count=len(entries),
-            failure_count=len(failures),
-            attachment_count=len(attachments),
+            fetch_failure_count=len(failures),
+            delivery_failure_count=len(delivery_failures),
+            sent_count=sent_count,
+            attachment_count=attachment_count,
         )
-        return CommandResult.outbound(
-            OutboundMessage(
-                text=text,
-                attachments=attachments,
-                extra={
-                    "rss_latest": True,
-                    "rss_target": target,
-                    "rss_selector": selector,
-                },
+
+        if delivery_failures:
+            return CommandResult.text(
+                "Failed to send some RSS latest items:\n"
+                + "\n".join(f"- {failure}" for failure in delivery_failures[:5])
             )
-        )
+        if failures:
+            return CommandResult.text(
+                "Fetched RSS latest items, but some subscriptions failed:\n"
+                + "\n".join(f"- {failure}" for failure in failures[:5])
+            )
+        return CommandResult.none()
 
     async def _poll_once_safely(self) -> None:
         try:
@@ -723,8 +744,6 @@ class RSSNotifierPlugin(Plugin):
         *,
         feed_title: str,
     ) -> None:
-        attachments: list[Attachment] = []
-        fallback_image_urls: list[str] = []
         feed_label = subscription.title or feed_title or subscription.url
         self.api.logger.debug(
             "rss_notifier.notify_preparing",
@@ -735,44 +754,29 @@ class RSSNotifierPlugin(Plugin):
             target_count=len(subscription.targets),
             image_url_count=len(item.image_urls),
         )
-        try:
-            attachments, fallback_image_urls = await self._prepare_image_attachments(
-                item,
-                feed_url=subscription.url,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.api.logger.exception(
-                "rss_notifier.image_attachment_prepare_failed",
-                feed_url=subscription.url,
-                feed_title=feed_label,
-                item_key=item.key,
-                item_title=item.title,
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-            fallback_image_urls = list(self._rendered_image_urls(item))
-        text = _format_notification(
+        outbound = await self._build_feed_item_outbound(
+            feed_url=subscription.url,
             feed_title=feed_label,
             item=item,
-            rendering=self._config.rendering,
-            fallback_image_urls=tuple(fallback_image_urls),
+            cleanup_after_send=False,
+            extra={
+                "rss_feed_url": subscription.url,
+                "rss_item_key": item.key,
+                "rss_image_urls": list(item.image_urls),
+            },
         )
+        attachments = outbound.attachments
         try:
             for target in subscription.targets:
                 try:
                     address = ChatAddress.parse(target)
+                    message = _with_outbound_extra(
+                        outbound,
+                        {"chat_address": address.chat_key},
+                    )
                     await self.api.send_message(
                         address.target_id,
-                        OutboundMessage(
-                            text=text,
-                            extra={
-                                "chat_address": address.chat_key,
-                                "rss_feed_url": subscription.url,
-                                "rss_item_key": item.key,
-                                "rss_image_urls": list(item.image_urls),
-                            },
-                            attachments=attachments,
-                        ),
+                        message,
                         channel=address.channel,
                     )
                     self.api.logger.info(
@@ -784,7 +788,6 @@ class RSSNotifierPlugin(Plugin):
                         target=address.chat_key,
                         channel=address.channel,
                         attachment_count=len(attachments),
-                        fallback_image_url_count=len(fallback_image_urls),
                     )
                 except Exception as exc:  # noqa: BLE001
                     self.api.logger.exception(
@@ -811,8 +814,52 @@ class RSSNotifierPlugin(Plugin):
                         error=str(exc),
                     )
 
+    async def _build_feed_item_outbound(
+        self,
+        *,
+        feed_url: str,
+        feed_title: str,
+        item: _FeedItem,
+        cleanup_after_send: bool,
+        extra: dict[str, Any] | None = None,
+    ) -> OutboundMessage:
+        attachments: list[Attachment] = []
+        fallback_image_urls: list[str] = []
+        try:
+            attachments, fallback_image_urls = await self._prepare_image_attachments(
+                item,
+                feed_url=feed_url,
+                cleanup_after_send=cleanup_after_send,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.api.logger.exception(
+                "rss_notifier.image_attachment_prepare_failed",
+                feed_url=feed_url,
+                feed_title=feed_title,
+                item_key=item.key,
+                item_title=item.title,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            fallback_image_urls = list(self._rendered_image_urls(item))
+        text = _format_notification(
+            feed_title=feed_title,
+            item=item,
+            rendering=self._config.rendering,
+            fallback_image_urls=tuple(fallback_image_urls),
+        )
+        return OutboundMessage(
+            text=text,
+            extra=dict(extra or {}),
+            attachments=attachments,
+        )
+
     async def _prepare_image_attachments(
-        self, item: _FeedItem, *, feed_url: str
+        self,
+        item: _FeedItem,
+        *,
+        feed_url: str,
+        cleanup_after_send: bool = False,
     ) -> tuple[list[Attachment], list[str]]:
         image_urls = list(self._rendered_image_urls(item))
         if (
@@ -842,7 +889,7 @@ class RSSNotifierPlugin(Plugin):
                         image_url,
                         feed_url=feed_url,
                         item_key=item.key,
-                        cleanup_after_send=False,
+                        cleanup_after_send=cleanup_after_send,
                     )
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1366,6 +1413,20 @@ def _local_name(tag: str) -> str:
     return tag.rsplit(":", 1)[-1]
 
 
+def _with_outbound_extra(
+    outbound: OutboundMessage, extra: dict[str, Any]
+) -> OutboundMessage:
+    merged = dict(outbound.extra)
+    merged.update(extra)
+    return OutboundMessage(
+        text=outbound.text,
+        reply_to=outbound.reply_to,
+        reasoning=outbound.reasoning,
+        extra=merged,
+        attachments=outbound.attachments,
+    )
+
+
 def _format_notification(
     *,
     feed_title: str,
@@ -1475,43 +1536,6 @@ def _elapsed_ms(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
 
 
-def _format_latest_entries(
-    *,
-    target: str,
-    entries: list[_LatestEntry],
-    failures: list[str],
-    limit: int,
-    fallback_image_urls_by_item: dict[str, list[str]] | None = None,
-    attached_image_item_keys: set[str] | None = None,
-) -> str:
-    fallback_image_urls_by_item = fallback_image_urls_by_item or {}
-    attached_image_item_keys = attached_image_item_keys or set()
-    lines = [f"Latest {len(entries)} RSS item(s) for {target}:"]
-    for index, entry in enumerate(entries, start=1):
-        item = entry.item
-        lines.append(f"{index}. [{entry.feed_title}] {item.title}")
-        if item.published:
-            lines.append(f"   🕒 {item.published}")
-        if item.link:
-            lines.append(f"   🔗 {item.link}")
-        if item.paragraphs:
-            preview = _truncate("\n\n".join(item.paragraphs), 160)
-            if preview:
-                lines.extend(_indent_lines(preview, "   "))
-        image_url = next(iter(fallback_image_urls_by_item.get(item.key, ())), "")
-        if not image_url and item.image_urls:
-            if item.key not in attached_image_item_keys:
-                image_url = item.image_urls[0]
-        if image_url:
-            lines.append(f"   🖼 {image_url}")
-    if failures:
-        lines.append("")
-        lines.append("Fetch failures:")
-        for failure in failures[: max(1, min(3, limit))]:
-            lines.append(f"- {failure}")
-    return "\n".join(lines)
-
-
 def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:
     chat_type = ""
     if inbound.chat_context and inbound.chat_context.chat_type:
@@ -1564,12 +1588,6 @@ def _clean_paragraph(value: str) -> str:
 
 def _summary_from_paragraphs(paragraphs: tuple[str, ...]) -> str:
     return " ".join(paragraphs).strip()
-
-
-def _indent_lines(value: str, prefix: str) -> list[str]:
-    return [
-        f"{prefix}{line}" if line else prefix.rstrip() for line in value.splitlines()
-    ]
 
 
 def _select_paragraphs(
