@@ -1495,9 +1495,9 @@ def _format_latest_entries(
         if item.link:
             lines.append(f"   🔗 {item.link}")
         if item.paragraphs:
-            preview = _truncate(" ".join(item.paragraphs), 160)
+            preview = _truncate("\n\n".join(item.paragraphs), 160)
             if preview:
-                lines.append(f"   {preview}")
+                lines.extend(_indent_lines(preview, "   "))
         image_url = next(iter(fallback_image_urls_by_item.get(item.key, ())), "")
         if not image_url and item.image_urls:
             if item.key not in attached_image_item_keys:
@@ -1564,6 +1564,12 @@ def _clean_paragraph(value: str) -> str:
 
 def _summary_from_paragraphs(paragraphs: tuple[str, ...]) -> str:
     return " ".join(paragraphs).strip()
+
+
+def _indent_lines(value: str, prefix: str) -> list[str]:
+    return [
+        f"{prefix}{line}" if line else prefix.rstrip() for line in value.splitlines()
+    ]
 
 
 def _select_paragraphs(

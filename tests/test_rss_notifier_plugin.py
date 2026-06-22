@@ -26,6 +26,9 @@ from nahida_plugin_rss_notifier.plugin import (  # noqa: E402
     _FeedFetchResult,
     _FeedItem,
     _FeedSubscription,
+    _LatestEntry,
+    _format_latest_entries,
+    _format_notification,
     _parse_feed,
 )
 
@@ -348,6 +351,42 @@ def test_parse_rss_feed_preserves_paragraphs_and_extracts_images() -> None:
     assert item.paragraphs == ("Hello world", "Second\nline")
     assert item.summary == "Hello world Second\nline"
     assert item.image_urls == ("https://example.com/images/first.png",)
+
+
+def test_notification_rendering_preserves_line_breaks() -> None:
+    text = _format_notification(
+        feed_title="News",
+        item=_FeedItem(
+            key="item",
+            title="Fresh item",
+            link="https://example.com/item",
+            paragraphs=("Line one\nLine two", "Next paragraph"),
+        ),
+    )
+
+    assert "Line one\nLine two\n\nNext paragraph" in text
+
+
+def test_latest_rendering_preserves_multiline_preview() -> None:
+    text = _format_latest_entries(
+        target="milky:group:100",
+        entries=[
+            _LatestEntry(
+                feed_title="News",
+                item=_FeedItem(
+                    key="item",
+                    title="Fresh item",
+                    link="https://example.com/item",
+                    paragraphs=("Line one\nLine two", "Next paragraph"),
+                ),
+                sequence=0,
+            )
+        ],
+        failures=[],
+        limit=1,
+    )
+
+    assert "   Line one\n   Line two\n\n   Next paragraph" in text
 
 
 def test_parse_atom_feed() -> None:

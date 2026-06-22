@@ -36,7 +36,8 @@ feeds[].target_chat_addresses 可覆盖全局 target_chat_addresses。
 
 插件会通用解析 RSS/Atom 条目的 HTML 内容：
 
-- p/div/li/br 等块级结构会尽量保留为段落。
+- p/div/li 等块级结构会尽量保留为段落。
+- 普通换行和 `<br>` 会保留为消息内换行。
 - img、enclosure、media:thumbnail、media:content 会提取为图片。
 - 默认发送前 3 段正文、最多 500 字、最多 1 张图片。
 - send_image_attachments 为 true 时会下载图片并作为 photo 附件发送。
