@@ -76,6 +76,8 @@ class Application:
             log_file=self.settings.log_file,
             log_file_level=self.settings.log_file_level,
             log_file_json=self.settings.log_file_json,
+            dependency_log_level=self.settings.dependency_log_level,
+            logger_levels=self.settings.logger_levels,
         )
         self._initialized = False
         self._started = False

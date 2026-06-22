@@ -292,6 +292,8 @@ class Settings(BaseModel):
     log_file: str | None = None
     log_file_level: str | None = None
     log_file_json: bool = True
+    dependency_log_level: str = "WARNING"
+    logger_levels: dict[str, str] = Field(default_factory=dict)
 
     # Server
     host: str = "127.0.0.1"

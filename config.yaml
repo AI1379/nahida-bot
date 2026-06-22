@@ -9,6 +9,11 @@ log_level: "INFO"        # DEBUG / INFO / WARNING / ERROR
 # log_file: "./data/logs/nahida.log"  # 可选：把应用日志写入文件，不需要 tee
 # log_file_level: "DEBUG"             # 可选：文件日志级别；默认跟随 log_level
 # log_file_json: true                 # 文件日志默认使用 JSON Lines
+dependency_log_level: "WARNING"       # 三方库默认日志级别；避免 DEBUG 时被 httpx/websockets 等刷屏
+# logger_levels:                      # 可选：按 logger 名覆盖，适合只打开某个子系统
+#   nahida_bot.agent: "DEBUG"
+#   plugin.rss-notifier: "DEBUG"
+#   httpx: "WARNING"
 
 # ── 服务器 ────────────────────────────────────────────
 host: "127.0.0.1"

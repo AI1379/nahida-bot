@@ -230,12 +230,21 @@ class AgentLoop:
             "agent_loop.run",
             trace_id=trace.trace_id if trace else "",
             provider_name=getattr(active_provider, "name", ""),
+            provider_api_family=getattr(active_provider, "api_family", ""),
             provider_default_model=provider_default_model,
             model_override=model or "",
+            max_steps=self.config.max_steps,
+            provider_timeout_seconds=self.config.provider_timeout_seconds,
+            tool_timeout_seconds=self.config.tool_timeout_seconds,
             history_count=len(history_messages or []),
             history_roles=[m.role for m in (history_messages or [])[:6]],
             history_sources=[m.source for m in (history_messages or [])[:6]],
-            user_preview=user_message[:80],
+            user_message_chars=len(user_message),
+            system_prompt_chars=len(system_prompt),
+            tool_count=len(tools or []),
+            tool_names=[tool.name for tool in (tools or [])[:30]],
+            user_part_types=[part.type for part in (user_parts or [])],
+            stop_requested=stop_event.is_set() if stop_event is not None else False,
         )
 
         history = list(history_messages or [])
@@ -288,6 +297,7 @@ class AgentLoop:
                     message_count=len(prompt_messages),
                     roles=[m.role for m in prompt_messages],
                     sources=[m.source for m in prompt_messages],
+                    context_summary=self._message_summary(prompt_messages),
                     model_override=model or "",
                 )
 
@@ -314,6 +324,17 @@ class AgentLoop:
                         cache_creation_tokens=total_usage.cache_creation_tokens
                         + response.usage.cache_creation_tokens,
                     )
+
+                logger.debug(
+                    "agent_loop.step_response",
+                    trace_id=trace.trace_id if trace else "",
+                    step=step,
+                    response_summary=self._provider_response_summary(response),
+                    total_input_tokens=total_usage.input_tokens,
+                    total_output_tokens=total_usage.output_tokens,
+                    total_cached_tokens=total_usage.cached_tokens,
+                    total_reasoning_tokens=total_usage.reasoning_tokens,
+                )
 
                 assistant_message = self._build_assistant_message(response)
                 if assistant_message is not None:
@@ -370,6 +391,13 @@ class AgentLoop:
                     return
 
                 if self.tool_executor is None:
+                    logger.error(
+                        "agent_loop.tool_executor_missing",
+                        trace_id=trace.trace_id if trace else "",
+                        step=step,
+                        requested_tool_count=len(response.tool_calls),
+                        requested_tool_names=[tc.name for tc in response.tool_calls],
+                    )
                     raise RuntimeError(
                         "Provider requested tools but no tool executor is set"
                     )
@@ -393,6 +421,7 @@ class AgentLoop:
                     step=step,
                     tool_call_count=len(response.tool_calls),
                     tool_message_count=len(executed_messages),
+                    tool_message_sources=[m.source for m in executed_messages],
                 )
 
                 yield LoopEvent(
@@ -553,13 +582,18 @@ class AgentLoop:
                     "agent_loop.provider_call_failed",
                     trace_id=trace.trace_id if trace else "",
                     provider_name=getattr(active_provider, "name", ""),
+                    provider_api_family=getattr(active_provider, "api_family", ""),
                     requested_model=model or "",
                     effective_model=model or getattr(active_provider, "model", ""),
                     step=step,
                     attempt=attempts,
+                    max_attempts=self.config.retry_attempts + 1,
+                    latency_seconds=round(time.monotonic() - t0, 3),
                     error_code=exc.code,
+                    error=str(exc),
                     retryable=exc.retryable,
                     will_retry=can_retry,
+                    exc_info=not can_retry,
                 )
                 if not can_retry:
                     raise
@@ -774,12 +808,38 @@ class AgentLoop:
         messages: list[ContextMessage] = []
 
         definitions = self._index_tools(tools)
+        logger.debug(
+            "agent_loop.tool_batch_start",
+            trace_id=trace.trace_id if trace else "",
+            step=step,
+            requested_tool_count=len(response.tool_calls),
+            requested_tools=[
+                {
+                    "name": tool_call.name,
+                    "call_id": tool_call.call_id,
+                    "argument_keys": sorted(tool_call.arguments.keys()),
+                    "argument_count": len(tool_call.arguments),
+                }
+                for tool_call in response.tool_calls
+            ],
+            registered_tool_count=len(definitions),
+        )
         for tool_call in response.tool_calls:
             validation_error = self._validate_tool_call(
                 tool_call=tool_call,
                 definitions=definitions,
             )
             if validation_error is not None:
+                logger.warning(
+                    "agent_loop.tool_call_rejected",
+                    trace_id=trace.trace_id if trace else "",
+                    step=step,
+                    tool_name=tool_call.name,
+                    tool_call_id=tool_call.call_id,
+                    argument_keys=sorted(tool_call.arguments.keys()),
+                    error_code=validation_error.error_code or "",
+                    error_message=validation_error.error_message or "",
+                )
                 messages.append(
                     self._build_tool_message(
                         tool_call=tool_call,
@@ -825,6 +885,8 @@ class AgentLoop:
                 attempt=attempt,
                 max_attempts=max_attempts,
                 timeout_seconds=self.config.tool_timeout_seconds,
+                argument_keys=sorted(tool_call.arguments.keys()),
+                argument_count=len(tool_call.arguments),
             )
             try:
                 raw_result = await asyncio.wait_for(
@@ -857,7 +919,7 @@ class AgentLoop:
                     retryable=False,
                     logs=[str(exc)],
                 )
-                logger.warning(
+                logger.exception(
                     "agent_loop.tool_call_exception",
                     trace_id=trace.trace_id if trace else "",
                     step=step,
@@ -895,6 +957,7 @@ class AgentLoop:
                 error_code=result.error_code or "",
                 retryable=result.retryable,
                 latency_seconds=round(time.monotonic() - t0, 3),
+                result_summary=self._tool_result_summary(result),
             )
             return result, attempt, phase
 
@@ -914,6 +977,80 @@ class AgentLoop:
 
         # Backward compatibility: allow simple string-returning executors.
         return ToolExecutionResult.success(output=result)
+
+    def _message_summary(
+        self,
+        messages: list[ContextMessage],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "role": message.role,
+                "source": message.source,
+                "content_chars": len(message.content),
+                "part_types": [part.type for part in message.parts],
+                "has_reasoning": bool(message.reasoning),
+                "metadata_keys": (
+                    sorted(message.metadata.keys()) if message.metadata else []
+                ),
+            }
+            for message in messages
+        ]
+
+    def _provider_response_summary(
+        self,
+        response: ProviderResponse,
+    ) -> dict[str, object]:
+        usage = response.usage
+        return {
+            "finish_reason": response.finish_reason or "",
+            "content_chars": len(response.content or ""),
+            "display_chars": len(self._display_content(response)),
+            "reasoning_chars": len(response.reasoning_content or ""),
+            "refusal_chars": len(response.refusal or ""),
+            "tool_call_count": len(response.tool_calls),
+            "tool_names": [tool_call.name for tool_call in response.tool_calls],
+            "tool_call_ids": [tool_call.call_id for tool_call in response.tool_calls],
+            "extra_keys": sorted(response.extra.keys()),
+            "usage_input_tokens": usage.input_tokens if usage else 0,
+            "usage_output_tokens": usage.output_tokens if usage else 0,
+            "usage_cached_tokens": usage.cached_tokens if usage else 0,
+            "usage_reasoning_tokens": usage.reasoning_tokens if usage else 0,
+            "raw_response_summary": self._raw_response_summary(response.raw_response),
+        }
+
+    def _tool_result_summary(
+        self,
+        result: ToolExecutionResult,
+    ) -> dict[str, object]:
+        output = result.output
+        if isinstance(output, str):
+            output_summary: dict[str, object] = {
+                "type": "str",
+                "chars": len(output),
+            }
+        elif isinstance(output, dict):
+            output_summary = {
+                "type": "dict",
+                "keys": sorted(str(key) for key in output.keys())[:30],
+            }
+        elif isinstance(output, list):
+            output_summary = {
+                "type": "list",
+                "items": len(output),
+            }
+        elif output is None:
+            output_summary = {"type": "none"}
+        else:
+            output_summary = {"type": type(output).__name__}
+
+        return {
+            "is_error": result.is_error,
+            "error_code": result.error_code or "",
+            "retryable": result.retryable,
+            "log_count": len(result.logs),
+            "log_chars": sum(len(log) for log in result.logs),
+            "output": output_summary,
+        }
 
     def _index_tools(
         self,

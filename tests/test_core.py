@@ -66,6 +66,8 @@ class TestSettings:
         assert settings.log_file is None
         assert settings.log_file_level is None
         assert settings.log_file_json is True
+        assert settings.dependency_log_level == "WARNING"
+        assert settings.logger_levels == {}
         assert settings.port == 6185
 
     def test_custom_settings(self) -> None:
@@ -78,6 +80,8 @@ class TestSettings:
             log_file="./data/logs/nahida.log",
             log_file_level="DEBUG",
             log_file_json=True,
+            dependency_log_level="ERROR",
+            logger_levels={"nahida_bot.agent": "DEBUG", "httpx": "WARNING"},
             host="0.0.0.0",
             port=8000,
         )
@@ -88,6 +92,11 @@ class TestSettings:
         assert settings.log_file == "./data/logs/nahida.log"
         assert settings.log_file_level == "DEBUG"
         assert settings.log_file_json is True
+        assert settings.dependency_log_level == "ERROR"
+        assert settings.logger_levels == {
+            "nahida_bot.agent": "DEBUG",
+            "httpx": "WARNING",
+        }
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
 
