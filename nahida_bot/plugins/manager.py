@@ -26,6 +26,7 @@ from nahida_bot.plugins.registry import (
 if TYPE_CHECKING:
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.core.events import EventBus
+    from nahida_bot.core.temp_files import ManagedTempFileService
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
         SQLiteMessageDeliveryStore,
     )
@@ -88,6 +89,7 @@ class PluginManager:
         orchestration_service: Any | None = None,
         webhost_service: Any | None = None,
         task_manager: Any | None = None,
+        temp_file_service: ManagedTempFileService | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
@@ -101,6 +103,7 @@ class PluginManager:
         self._orchestration_service = orchestration_service
         self._webhost_service = webhost_service
         self._task_manager = task_manager
+        self._temp_file_service = temp_file_service
         self._document_store_manager: Any | None = None
         self._chat_metadata_store: Any | None = None
         self._loader = PluginLoader()
@@ -126,6 +129,7 @@ class PluginManager:
         task_manager: Any | None = None,
         document_store_manager: Any | None = None,
         chat_metadata_store: Any | None = None,
+        temp_file_service: ManagedTempFileService | None = None,
     ) -> None:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
@@ -145,6 +149,8 @@ class PluginManager:
             self._document_store_manager = document_store_manager
         if chat_metadata_store is not None:
             self._chat_metadata_store = chat_metadata_store
+        if temp_file_service is not None:
+            self._temp_file_service = temp_file_service
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
@@ -159,6 +165,7 @@ class PluginManager:
                     task_manager=self._task_manager,
                     document_store_manager=document_store_manager,
                     chat_metadata_store=self._chat_metadata_store,
+                    temp_file_service=self._temp_file_service,
                 )
 
     @property
@@ -272,6 +279,7 @@ class PluginManager:
             orchestration_service=self._orchestration_service,
             task_manager=self._task_manager,
             document_store_manager=self._document_store_manager,
+            temp_file_service=self._temp_file_service,
         )
 
         instance = plugin_class(api=api_bridge, manifest=record.manifest)

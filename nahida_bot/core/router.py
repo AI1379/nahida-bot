@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.core.events import EventContext, Subscription
     from nahida_bot.core.session_runner import SessionRunner
+    from nahida_bot.core.temp_files import ManagedTempFileService
     from nahida_bot.workspace.manager import WorkspaceManager
 
 logger = structlog.get_logger(__name__)
@@ -93,6 +94,7 @@ class MessageRouter:
         config: RouterConfig | None = None,
         identity_resolver: IdentityResolver | None = None,
         chat_metadata_store: Any | None = None,
+        temp_file_service: ManagedTempFileService | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._commands = command_registry
@@ -103,6 +105,7 @@ class MessageRouter:
         self._config = config or RouterConfig()
         self._identity_resolver = identity_resolver
         self._chat_metadata_store = chat_metadata_store
+        self._temp_file_service = temp_file_service
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
         self._agent_response_subscription: Subscription | None = None
@@ -1017,6 +1020,7 @@ class MessageRouter:
                 **_outbound_log_fields(outbound_message),
             )
             raise
+        await self._cleanup_message_temp_files(outbound_message, session_id=session_id)
 
         # Publish MessageSent event
         sent_result = await self._event_bus.publish(
@@ -1037,6 +1041,27 @@ class MessageRouter:
             message_sent_failure_count=len(sent_result.failures),
             **_outbound_log_fields(outbound_message),
         )
+
+    async def _cleanup_message_temp_files(
+        self, outbound: OutboundMessage, *, session_id: str
+    ) -> None:
+        if self._temp_file_service is None or not outbound.attachments:
+            return
+        try:
+            removed = await self._temp_file_service.cleanup_message(outbound)
+            if removed:
+                logger.debug(
+                    "message_router.managed_temp_cleanup",
+                    session_id=session_id,
+                    removed=removed,
+                    attachment_count=len(outbound.attachments),
+                )
+        except Exception:
+            logger.warning(
+                "message_router.managed_temp_cleanup_failed",
+                session_id=session_id,
+                exc_info=True,
+            )
 
     async def _execute_command(
         self,

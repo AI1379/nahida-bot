@@ -392,7 +392,12 @@ async def test_notify_downloads_image_attachment_and_cleans_temp_file(
     image_path = tmp_path / "nahida-rss-test.png"
     image_path.write_bytes(b"png")
 
-    async def _download(image_url: str) -> Attachment:
+    async def _download(image_url: str, **kwargs: Any) -> Attachment:
+        assert kwargs == {
+            "feed_url": "https://example.com/feed.xml",
+            "item_key": "item",
+            "cleanup_after_send": False,
+        }
         assert image_url == "https://example.com/image.png"
         return Attachment(
             type="photo",
@@ -426,7 +431,71 @@ async def test_notify_downloads_image_attachment_and_cleans_temp_file(
     assert len(outbound.attachments) == 1
     assert outbound.attachments[0].type == "photo"
     assert outbound.attachments[0].path == str(image_path)
-    assert not image_path.exists()
+    assert image_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_latest_returns_image_attachment_when_rendering_allows() -> None:
+    api = _API()
+    plugin = RSSNotifierPlugin(
+        api=api,
+        manifest=_manifest(
+            {
+                "target_chat_addresses": ["milky:group:100"],
+                "feeds": [{"url": "https://example.com/feed.xml", "title": "News"}],
+                "polling": {"enabled": False},
+                "rendering": {
+                    "send_image_attachments": True,
+                    "max_images": 1,
+                },
+            }
+        ),
+    )
+    image_path = Path("managed-image.png")
+
+    async def _fetch(url: str) -> _FeedFetchResult:
+        assert url == "https://example.com/feed.xml"
+        return _FeedFetchResult(
+            title="News",
+            items=(
+                _FeedItem(
+                    key="item",
+                    title="Fresh item",
+                    link="https://example.com/item",
+                    published="Sun, 21 Jun 2026 05:00:00 GMT",
+                    paragraphs=("Paragraph one.",),
+                    image_urls=("https://example.com/image.png",),
+                ),
+            ),
+        )
+
+    async def _download(image_url: str, **kwargs: Any) -> Attachment:
+        assert image_url == "https://example.com/image.png"
+        assert kwargs == {
+            "feed_url": "https://example.com/item",
+            "item_key": "item",
+            "cleanup_after_send": True,
+        }
+        return Attachment(
+            type="photo",
+            path=str(image_path),
+            filename=image_path.name,
+            mime_type="image/png",
+            extra={
+                "managed_temp_file": True,
+                "cleanup_token": "token",
+                "cleanup_after_send": True,
+            },
+        )
+
+    plugin._fetch_feed = _fetch  # type: ignore[method-assign]
+    plugin._download_image_attachment = _download  # type: ignore[method-assign]
+    result = await plugin._cmd_latest(args="1", inbound=_inbound(), session_id="s")
+
+    assert result.message is not None
+    assert "[News] Fresh item" in result.message.text
+    assert len(result.message.attachments) == 1
+    assert result.message.attachments[0].extra["managed_temp_file"] is True
 
 
 @pytest.mark.asyncio
@@ -444,7 +513,8 @@ async def test_notify_falls_back_to_image_url_when_download_fails() -> None:
         ),
     )
 
-    async def _download(image_url: str) -> Attachment:
+    async def _download(image_url: str, **kwargs: Any) -> Attachment:
+        del kwargs
         raise RuntimeError(f"cannot download {image_url}")
 
     plugin._download_image_attachment = _download  # type: ignore[method-assign]

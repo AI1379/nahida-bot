@@ -99,6 +99,7 @@ class Attachment:
     filename: str = ""
     mime_type: str = ""
     caption: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)

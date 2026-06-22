@@ -36,7 +36,15 @@ use `RecordingMockBotAPI` instead.
 
 #### `send_message(target: str, message: Any, channel: str = '')`
 
+#### `create_temp_file(suffix: str = '', prefix: str = '', purpose: str = '', ttl_seconds: int = 3600)`
+
+#### `cleanup_temp_files(expired_only: bool = True)`
+
+#### `cleanup_temp_attachment(attachment: Any)`
+
 #### `record_session_event(session_id: str, content: str, source: str = '', metadata: dict[str, Any] | None = None)`
+
+#### `request_agent_response(message: InboundMessage, session_id: str = '', reason: str = '', instruction: str = '', observed_messages: tuple[InboundMessage, ...] = (), reply_to_message_id: str | None = None)`
 
 #### `on_event(event_type: type)`
 
@@ -49,6 +57,8 @@ use `RecordingMockBotAPI` instead.
 #### `register_channel(channel: Any)`
 
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
+
+#### `register_webhook_endpoint(path: str, handler: Callable[..., Awaitable[Any]], methods: tuple[str, ...] = ('POST',))`
 
 #### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Any | None = None)`
 
@@ -63,6 +73,8 @@ use `RecordingMockBotAPI` instead.
 #### `clear_session(session_id: str)`
 
 #### `start_new_session(address: ChatAddress)`
+
+#### `get_active_session_id(address: ChatAddress)`
 
 #### `get_session_info(session_id: str)`
 
@@ -100,6 +112,12 @@ use `RecordingMockBotAPI` instead.
 
 #### `publish_event(event: Any)`
 
+#### `spawn_task(name: str, coro: Coroutine[Any, Any, Any], kind: str = 'oneshot')`
+
+#### `cancel_task(name: str)`
+
+#### `spawn_interval_task(name: str, func: Callable[[], Awaitable[None]], interval_seconds: float, initial_delay: float = 0.0)`
+
 
 ### RecordingMockBotAPI
 
@@ -114,6 +132,10 @@ Tracks: published events, registered tools, commands, handlers, services.
 #### published_events
 
 - **返回类型:** `list[Any]`
+
+#### agent_response_requests
+
+- **返回类型:** `list[dict[str, Any]]`
 
 #### registered_tools
 
@@ -135,7 +157,15 @@ Tracks: published events, registered tools, commands, handlers, services.
 
 - **返回类型:** `dict[str, dict[str, Any]]`
 
+#### registered_webhooks
+
+- **返回类型:** `dict[str, dict[str, Any]]`
+
 #### registered_prompt_supplements
+
+- **返回类型:** `dict[str, dict[str, Any]]`
+
+#### spawned_tasks
 
 - **返回类型:** `dict[str, dict[str, Any]]`
 
@@ -155,11 +185,15 @@ Tracks: published events, registered tools, commands, handlers, services.
 
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
 
+#### `register_webhook_endpoint(path: str, handler: Callable[..., Awaitable[Any]], methods: tuple[str, ...] = ('POST',))`
+
 #### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Any | None = None)`
 
 #### `unregister_prompt_supplement(key: str)`
 
 #### `publish_event(event: Any)`
+
+#### `request_agent_response(message: InboundMessage, session_id: str = '', reason: str = '', instruction: str = '', observed_messages: tuple[InboundMessage, ...] = (), reply_to_message_id: str | None = None)`
 
 #### `plugin_data_get(key: str)`
 
@@ -168,6 +202,18 @@ Tracks: published events, registered tools, commands, handlers, services.
 #### `plugin_data_delete(key: str)`
 
 #### `plugin_data_list(prefix: str = '')`
+
+#### `register_status_provider(key: str, handler: Any, label: str = '')`
+
+#### `unregister_status_provider(key: str)`
+
+#### `collect_status_providers(session_id: str, chat_key: str)`
+
+#### `spawn_task(name: str, coro: Coroutine[Any, Any, Any], kind: str = 'oneshot')`
+
+#### `cancel_task(name: str)`
+
+#### `spawn_interval_task(name: str, func: Callable[[], Awaitable[None]], interval_seconds: float, initial_delay: float = 0.0)`
 
 
 ### StubChannelService
@@ -204,6 +250,14 @@ can print responses.
 
 - **返回类型:** `list[tuple[str, OutboundMessage]]`
 
+#### agent_response_requests
+
+- **返回类型:** `list[dict[str, Any]]`
+
+#### spawned_tasks
+
+- **返回类型:** `dict[str, dict[str, Any]]`
+
 #### scheduler_service
 
 - **返回类型:** `Any | None`
@@ -229,6 +283,8 @@ can print responses.
 #### `send_message(target: str, message: OutboundMessage, channel: str = '')`
 
 #### `record_session_event(session_id: str, content: str, source: str = '', metadata: dict[str, Any] | None = None)`
+
+#### `request_agent_response(message: InboundMessage, session_id: str = '', reason: str = '', instruction: str = '', observed_messages: tuple[InboundMessage, ...] = (), reply_to_message_id: str | None = None)`
 
 #### `record_message_delivery(kw: Any = {})`
 
@@ -258,6 +314,8 @@ Dispatch a command by name and return the result text.
 
 #### `register_provider_type(type_key: str, factory: Any, config_schema: dict[str, Any] | None = None, description: str = '')`
 
+#### `register_webhook_endpoint(path: str, handler: Callable[..., Awaitable[Any]], methods: tuple[str, ...] = ('POST',))`
+
 #### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Any | None = None)`
 
 #### `unregister_prompt_supplement(key: str)`
@@ -267,6 +325,8 @@ Dispatch a command by name and return the result text.
 #### `clear_session(session_id: str)`
 
 #### `start_new_session(address: ChatAddress)`
+
+#### `get_active_session_id(address: ChatAddress)`
 
 #### `get_session_info(session_id: str)`
 
@@ -301,6 +361,12 @@ Dispatch a command by name and return the result text.
 #### `resolve_workspace_path(path: str)`
 
 #### `publish_event(event: Any)`
+
+#### `spawn_task(name: str, coro: Coroutine[Any, Any, Any], kind: str = 'oneshot')`
+
+#### `cancel_task(name: str)`
+
+#### `spawn_interval_task(name: str, func: Callable[[], Awaitable[None]], interval_seconds: float, initial_delay: float = 0.0)`
 
 
 ## 函数

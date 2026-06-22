@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from nahida_bot.agent.context import ContextMessage
     from nahida_bot.agent.providers.base import ChatProvider, ProviderResponse
     from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.core.temp_files import ManagedTempFileService
     from nahida_bot.core.events import EventBus
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
         SQLiteMessageDeliveryStore,
@@ -149,6 +150,7 @@ class RealBotAPI:
         webhost_service: Any | None = None,  # WebHostService
         task_manager: Any | None = None,  # TaskManager
         document_store_manager: Any | None = None,  # DocumentStoreManager
+        temp_file_service: ManagedTempFileService | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -190,6 +192,7 @@ class RealBotAPI:
         self._webhost_service = webhost_service
         self._task_manager = task_manager
         self._document_store_manager = document_store_manager
+        self._temp_file_service = temp_file_service
         self._registered_status_providers: dict[
             str, Any
         ] = {}  # global_key -> StatusProviderEntry
@@ -205,14 +208,71 @@ class RealBotAPI:
         if self._channel_registry is not None and channel:
             channel_plugin = self._channel_registry.get(channel)
             if channel_plugin is not None:
-                return await channel_plugin.send_message(target, message)
+                message_id = await channel_plugin.send_message(target, message)
+                await self._cleanup_message_temp_files(message)
+                return message_id
         self._logger.info(
             "send_message_fallback",
             target=target,
             channel=channel,
             text_length=len(message.text),
         )
+        await self._cleanup_message_temp_files(message)
         return f"msg_{self._plugin_id}_0"
+
+    async def create_temp_file(
+        self,
+        *,
+        suffix: str = "",
+        prefix: str = "",
+        purpose: str = "",
+        ttl_seconds: int = 3600,
+    ) -> Any:
+        """Allocate a plugin-scoped temporary file managed by the runtime."""
+        if self._temp_file_service is None:
+            raise RuntimeError("Managed temp file service is not available")
+        return await self._temp_file_service.create_temp_file(
+            plugin_id=self._plugin_id,
+            suffix=suffix,
+            prefix=prefix,
+            purpose=purpose,
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def cleanup_temp_files(self, *, expired_only: bool = True) -> int:
+        """Clean this plugin's managed temporary files."""
+        if self._temp_file_service is None:
+            return 0
+        return await self._temp_file_service.cleanup_plugin(
+            self._plugin_id,
+            expired_only=expired_only,
+        )
+
+    async def cleanup_temp_attachment(self, attachment: Any) -> bool:
+        """Clean one managed temporary attachment."""
+        if self._temp_file_service is None:
+            return False
+        return await self._temp_file_service.cleanup_attachment(
+            attachment,
+            ignore_cleanup_after_send=True,
+        )
+
+    async def _cleanup_message_temp_files(self, message: OutboundMessage) -> None:
+        if self._temp_file_service is None or not message.attachments:
+            return
+        try:
+            removed = await self._temp_file_service.cleanup_message(message)
+            if removed:
+                self._logger.debug(
+                    "managed_temp_file.message_cleanup",
+                    removed=removed,
+                    attachment_count=len(message.attachments),
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning(
+                "managed_temp_file.message_cleanup_failed",
+                error=str(exc),
+            )
 
     async def record_session_event(
         self,
@@ -1510,6 +1570,7 @@ class RealBotAPI:
         task_manager: Any | None = None,
         document_store_manager: Any | None = None,
         chat_metadata_store: Any | None = None,
+        temp_file_service: ManagedTempFileService | None = None,
     ) -> None:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
@@ -1529,6 +1590,8 @@ class RealBotAPI:
             self._task_manager = task_manager
         if document_store_manager is not None:
             self._document_store_manager = document_store_manager
+        if temp_file_service is not None:
+            self._temp_file_service = temp_file_service
 
     # ── Document Store ────────────────────────────────────
 

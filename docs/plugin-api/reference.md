@@ -178,7 +178,7 @@ class MyPlugin(Plugin):
 
 ## 3. BotAPI 协议
 
-插件通过 `self.api` 与 bot 运行时交互。所有方法都有权限检查，越权调用会抛出 `PermissionDenied`。
+插件通过 `self.api` 与 bot 运行时交互。访问外部网络、工作空间、记忆等受控能力的方法会执行权限检查，越权调用会抛出 `PermissionDenied`。
 
 ### 3.1 消息
 
@@ -199,6 +199,69 @@ await self.api.send_message(
     "group:12345",
     OutboundMessage(text="Hello!"),
 )
+```
+
+`OutboundMessage.attachments` 可携带图片、文件等出站附件。插件如果需要先生成或下载一个本地文件再作为附件发送，推荐使用下面的托管临时文件 API，而不是自行写入系统临时目录。
+
+#### 托管临时文件附件
+
+```python
+async def create_temp_file(
+    self,
+    *,
+    suffix: str = "",
+    prefix: str = "",
+    purpose: str = "",
+    ttl_seconds: int = 3600,
+) -> ManagedTempFile
+
+async def cleanup_temp_files(self, *, expired_only: bool = True) -> int
+async def cleanup_temp_attachment(self, attachment: Attachment) -> bool
+```
+
+`create_temp_file()` 会为当前插件分配一个插件隔离的临时文件路径，并由核心记录清理元数据。核心会周期性 GC 过期文件；通过 `send_message()` 或命令返回发送成功的托管附件，默认也会在发送后自动清理。
+
+```python
+from pathlib import Path
+
+from nahida_bot_sdk import CommandResult, OutboundMessage
+
+
+temp_file = await self.api.create_temp_file(
+    suffix=".png",
+    prefix="preview",
+    purpose="preview-image",
+    ttl_seconds=3600,
+)
+Path(temp_file.path).write_bytes(image_bytes)
+
+return CommandResult.outbound(
+    OutboundMessage(
+        text="Preview ready.",
+        attachments=[
+            temp_file.as_attachment(
+                type="photo",
+                filename="preview.png",
+                mime_type="image/png",
+            )
+        ],
+    )
+)
+```
+
+如果同一个附件要推送给多个目标，不要让第一条发送后立刻清理文件。应设置 `cleanup_after_send=False`，全部目标发送结束后在 `finally` 中调用 `cleanup_temp_attachment()`：
+
+```python
+attachment = temp_file.as_attachment(
+    type="photo",
+    mime_type="image/png",
+    cleanup_after_send=False,
+)
+try:
+    for target in targets:
+        await self.api.send_message(target, OutboundMessage(text="...", attachments=[attachment]))
+finally:
+    await self.api.cleanup_temp_attachment(attachment)
 ```
 
 #### record_session_event
@@ -261,6 +324,7 @@ async def _hello(
 | `str` | 作为纯文本回复发送 |
 | `OutboundMessage` | 结构化出站消息（可带附件） |
 | `CommandResult.text("...")` | 显式文本回复 |
+| `CommandResult.outbound(OutboundMessage(...))` | 显式结构化回复（可带附件） |
 | `CommandResult.none()` / `None` | 不发送任何回复 |
 
 ### 3.3 工具注册
@@ -503,7 +567,10 @@ class Attachment:
     filename: str
     mime_type: str
     caption: str
+    extra: dict    # 平台扩展参数；托管临时文件会在这里写入清理标记
 ```
+
+普通插件通常不需要手写托管临时文件的 `extra` 字段；使用 `ManagedTempFile.as_attachment(...)` 会自动填入 `managed_temp_file`、`cleanup_token`、`cleanup_after_send`。
 
 ### InboundAttachment（入站附件）
 
@@ -587,6 +654,8 @@ class CommandResult:
 
     @classmethod
     def text(cls, text: str) -> "CommandResult": ...
+    @classmethod
+    def outbound(cls, message: OutboundMessage) -> "CommandResult": ...
     @classmethod
     def none(cls) -> "CommandResult": ...
 

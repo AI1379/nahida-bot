@@ -6,17 +6,16 @@ import hashlib
 import html
 import re
 import shlex
-import tempfile
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from urllib.parse import urljoin
 from urllib.parse import urlparse
-from uuid import uuid4
 from xml.etree import ElementTree
 
 import httpx
@@ -217,6 +216,11 @@ class RSSNotifierPlugin(Plugin):
 
     async def on_enable(self) -> None:
         if not self._config.enabled or not self._config.polling.enabled:
+            self.api.logger.info(
+                "rss_notifier.polling_not_started",
+                enabled=self._config.enabled,
+                polling_enabled=self._config.polling.enabled,
+            )
             return
         self.api.spawn_interval_task(
             "rss-poll",
@@ -232,6 +236,7 @@ class RSSNotifierPlugin(Plugin):
 
     async def on_disable(self) -> None:
         self.api.cancel_task("rss-poll")
+        self.api.logger.info("rss_notifier.polling_stopped")
 
     async def _cmd_subscribe(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -268,6 +273,13 @@ class RSSNotifierPlugin(Plugin):
         await self._store_dynamic_data(data)
 
         label = str(record.get("title") or url)
+        self.api.logger.info(
+            "rss_notifier.subscription_added",
+            feed_url=url,
+            feed_title=label,
+            target=target,
+            target_count=len(record["targets"]),
+        )
         return CommandResult.text(f"Subscribed {target} to RSS feed: {label}")
 
     async def _cmd_unsubscribe(
@@ -314,6 +326,13 @@ class RSSNotifierPlugin(Plugin):
             feeds.pop(selected.key, None)
         await self._store_dynamic_data(data)
 
+        self.api.logger.info(
+            "rss_notifier.subscription_removed",
+            feed_url=selected.url,
+            feed_title=selected.title,
+            target=target,
+            remaining_target_count=len(record.get("targets", [])),
+        )
         return CommandResult.text(
             f"Unsubscribed {target} from RSS feed: {selected.url}"
         )
@@ -336,7 +355,9 @@ class RSSNotifierPlugin(Plugin):
     async def _cmd_poll(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> CommandResult:
-        del args, inbound, session_id
+        del args, session_id
+        target = _address_from_inbound(inbound).chat_key
+        self.api.logger.info("rss_notifier.poll_command_requested", target=target)
         await self._poll_once_safely()
         return CommandResult.text("RSS polling pass completed.")
 
@@ -356,8 +377,22 @@ class RSSNotifierPlugin(Plugin):
 
         selected = _select_latest_subscriptions(subscriptions, selector)
         if selected is None:
+            self.api.logger.info(
+                "rss_notifier.latest_no_matching_subscription",
+                target=target,
+                selector=selector,
+                subscription_count=len(subscriptions),
+            )
             return CommandResult.text("No matching RSS subscription found.")
 
+        self.api.logger.info(
+            "rss_notifier.latest_requested",
+            target=target,
+            limit=limit,
+            selector=selector,
+            subscription_count=len(subscriptions),
+            selected_count=len(selected),
+        )
         entries: list[_LatestEntry] = []
         failures: list[str] = []
         sequence = 0
@@ -365,6 +400,13 @@ class RSSNotifierPlugin(Plugin):
             try:
                 result = await self._fetch_feed(sub.url)
             except Exception as exc:  # noqa: BLE001
+                self.api.logger.exception(
+                    "rss_notifier.latest_feed_fetch_failed",
+                    feed_url=sub.url,
+                    feed_title=sub.title,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
                 failures.append(f"{sub.title or sub.url}: {exc}")
                 continue
             feed_title = sub.title or result.title or sub.url
@@ -387,39 +429,141 @@ class RSSNotifierPlugin(Plugin):
             return CommandResult.text("No RSS items found.")
 
         entries = sorted(entries, key=_latest_entry_sort_key, reverse=True)[:limit]
+        attachments: list[Attachment] = []
+        attached_image_item_keys: set[str] = set()
+        fallback_image_urls_by_item: dict[str, list[str]] = {}
+        if (
+            self._config.rendering.send_image_attachments
+            and self._config.rendering.mode != "compact"
+        ):
+            for entry in entries:
+                if len(attachments) >= self._config.rendering.max_images:
+                    break
+                image_urls = list(self._rendered_image_urls(entry.item))
+                if not image_urls:
+                    continue
+                item_fallbacks = fallback_image_urls_by_item.setdefault(
+                    entry.item.key, []
+                )
+                for image_url in image_urls:
+                    if len(attachments) >= self._config.rendering.max_images:
+                        item_fallbacks.append(image_url)
+                        continue
+                    try:
+                        attachments.append(
+                            await self._download_image_attachment(
+                                image_url,
+                                feed_url=entry.item.link,
+                                item_key=entry.item.key,
+                                cleanup_after_send=True,
+                            )
+                        )
+                        attached_image_item_keys.add(entry.item.key)
+                    except Exception as exc:  # noqa: BLE001
+                        item_fallbacks.append(image_url)
+                        self.api.logger.warning(
+                            "rss_notifier.latest_image_attachment_download_failed",
+                            target=target,
+                            image_url=image_url,
+                            item_key=entry.item.key,
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
         text = _format_latest_entries(
             target=target,
             entries=entries,
             failures=failures,
             limit=limit,
+            fallback_image_urls_by_item=fallback_image_urls_by_item,
+            attached_image_item_keys=attached_image_item_keys,
         )
-        return CommandResult.text(text)
+        self.api.logger.info(
+            "rss_notifier.latest_completed",
+            target=target,
+            returned_count=len(entries),
+            failure_count=len(failures),
+            attachment_count=len(attachments),
+        )
+        return CommandResult.outbound(
+            OutboundMessage(
+                text=text,
+                attachments=attachments,
+                extra={
+                    "rss_latest": True,
+                    "rss_target": target,
+                    "rss_selector": selector,
+                },
+            )
+        )
 
     async def _poll_once_safely(self) -> None:
         try:
             await self._poll_once()
         except Exception as exc:  # noqa: BLE001
-            self.api.logger.exception("rss_notifier.poll_failed", error=str(exc))
+            self.api.logger.exception(
+                "rss_notifier.poll_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     async def _poll_once(self) -> None:
+        started_at = perf_counter()
         subscriptions = await self._subscription_map()
         if not subscriptions:
             self.api.logger.debug("rss_notifier.poll_skipped_no_subscriptions")
             return
 
+        active_subscriptions = [sub for sub in subscriptions.values() if sub.targets]
+        if not active_subscriptions:
+            self.api.logger.debug(
+                "rss_notifier.poll_skipped_no_targets",
+                subscription_count=len(subscriptions),
+            )
+            return
+
+        self.api.logger.info(
+            "rss_notifier.poll_started",
+            subscription_count=len(subscriptions),
+            active_subscription_count=len(active_subscriptions),
+        )
         states = await self._load_feed_state()
+        fetched_count = 0
+        failed_count = 0
+        baselined_count = 0
+        new_item_count = 0
+        notification_item_count = 0
         for sub in subscriptions.values():
             if not sub.targets:
+                self.api.logger.debug(
+                    "rss_notifier.poll_feed_skipped_no_targets",
+                    feed_url=sub.url,
+                    feed_title=sub.title,
+                    source=sub.source,
+                )
                 continue
+            feed_started_at = perf_counter()
+            self.api.logger.debug(
+                "rss_notifier.poll_feed_started",
+                feed_url=sub.url,
+                feed_title=sub.title,
+                source=sub.source,
+                target_count=len(sub.targets),
+            )
             try:
                 result = await self._fetch_feed(sub.url)
             except Exception as exc:  # noqa: BLE001
+                failed_count += 1
                 self.api.logger.exception(
                     "rss_notifier.feed_fetch_failed",
-                    url=sub.url,
+                    feed_url=sub.url,
+                    feed_title=sub.title,
+                    source=sub.source,
+                    target_count=len(sub.targets),
+                    error_type=type(exc).__name__,
                     error=str(exc),
                 )
                 continue
+            fetched_count += 1
 
             state = states.get(sub.key)
             if not isinstance(state, dict):
@@ -430,11 +574,46 @@ class RSSNotifierPlugin(Plugin):
                 known = {}
                 state["items"] = known
             initialized = bool(state.get("initialized"))
+            known_item_count = len(known)
 
             new_items = [item for item in result.items if item.key not in known]
+            self.api.logger.info(
+                "rss_notifier.poll_feed_checked",
+                feed_url=sub.url,
+                feed_title=sub.title or result.title,
+                fetched_feed_title=result.title,
+                source=sub.source,
+                target_count=len(sub.targets),
+                item_count=len(result.items),
+                known_item_count=known_item_count,
+                new_item_count=len(new_items),
+                initialized=initialized,
+                elapsed_ms=_elapsed_ms(feed_started_at),
+            )
+            if not initialized:
+                baselined_count += 1
+                self.api.logger.info(
+                    "rss_notifier.feed_baselined",
+                    feed_url=sub.url,
+                    feed_title=sub.title or result.title,
+                    item_count=len(result.items),
+                    target_count=len(sub.targets),
+                )
             if initialized and new_items:
+                new_item_count += len(new_items)
                 limit = self._config.polling.max_new_items_per_feed_per_poll
-                for item in reversed(new_items[:limit]):
+                notify_items = new_items[:limit]
+                self.api.logger.info(
+                    "rss_notifier.feed_new_items_detected",
+                    feed_url=sub.url,
+                    feed_title=sub.title or result.title,
+                    new_item_count=len(new_items),
+                    notification_item_count=len(notify_items),
+                    suppressed_item_count=max(0, len(new_items) - len(notify_items)),
+                    target_count=len(sub.targets),
+                )
+                for item in reversed(notify_items):
+                    notification_item_count += 1
                     await self._notify(sub, item, feed_title=result.title)
 
             for item in result.items:
@@ -450,22 +629,92 @@ class RSSNotifierPlugin(Plugin):
             )
 
         await self._store_feed_state(states)
+        self.api.logger.info(
+            "rss_notifier.poll_completed",
+            subscription_count=len(subscriptions),
+            active_subscription_count=len(active_subscriptions),
+            fetched_count=fetched_count,
+            failed_count=failed_count,
+            baselined_count=baselined_count,
+            new_item_count=new_item_count,
+            notification_item_count=notification_item_count,
+            elapsed_ms=_elapsed_ms(started_at),
+        )
 
     async def _fetch_feed(self, url: str) -> _FeedFetchResult:
+        started_at = perf_counter()
         headers = {"User-Agent": self._config.polling.user_agent}
         async with httpx.AsyncClient(
             timeout=self._config.polling.timeout_seconds,
             follow_redirects=True,
             headers=headers,
         ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                response = exc.response
+                self.api.logger.warning(
+                    "rss_notifier.feed_http_error",
+                    feed_url=url,
+                    status_code=response.status_code,
+                    reason=response.reason_phrase,
+                    content_type=response.headers.get("content-type", ""),
+                    response_bytes=len(response.content),
+                    elapsed_ms=_elapsed_ms(started_at),
+                    error=str(exc),
+                )
+                raise
+            except httpx.HTTPError as exc:
+                self.api.logger.warning(
+                    "rss_notifier.feed_http_request_failed",
+                    feed_url=url,
+                    error_type=type(exc).__name__,
+                    elapsed_ms=_elapsed_ms(started_at),
+                    error=str(exc),
+                )
+                raise
         content = response.content
         if len(content) > self._config.polling.max_feed_bytes:
+            self.api.logger.warning(
+                "rss_notifier.feed_response_too_large",
+                feed_url=url,
+                response_bytes=len(content),
+                max_feed_bytes=self._config.polling.max_feed_bytes,
+                content_type=response.headers.get("content-type", ""),
+                status_code=response.status_code,
+                elapsed_ms=_elapsed_ms(started_at),
+            )
             raise ValueError(
                 f"Feed response exceeds {self._config.polling.max_feed_bytes} bytes"
             )
-        return _parse_feed(content, max_items=self._config.polling.max_items_per_feed)
+        try:
+            result = _parse_feed(
+                content, max_items=self._config.polling.max_items_per_feed
+            )
+        except ValueError as exc:
+            self.api.logger.warning(
+                "rss_notifier.feed_parse_failed",
+                feed_url=url,
+                response_bytes=len(content),
+                content_type=response.headers.get("content-type", ""),
+                status_code=response.status_code,
+                elapsed_ms=_elapsed_ms(started_at),
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
+        self.api.logger.debug(
+            "rss_notifier.feed_fetched",
+            feed_url=url,
+            feed_title=result.title,
+            status_code=response.status_code,
+            content_type=response.headers.get("content-type", ""),
+            response_bytes=len(content),
+            item_count=len(result.items),
+            elapsed_ms=_elapsed_ms(started_at),
+        )
+        return result
 
     async def _notify(
         self,
@@ -476,19 +725,34 @@ class RSSNotifierPlugin(Plugin):
     ) -> None:
         attachments: list[Attachment] = []
         fallback_image_urls: list[str] = []
+        feed_label = subscription.title or feed_title or subscription.url
+        self.api.logger.debug(
+            "rss_notifier.notify_preparing",
+            feed_url=subscription.url,
+            feed_title=feed_label,
+            item_key=item.key,
+            item_title=item.title,
+            target_count=len(subscription.targets),
+            image_url_count=len(item.image_urls),
+        )
         try:
             attachments, fallback_image_urls = await self._prepare_image_attachments(
-                item
+                item,
+                feed_url=subscription.url,
             )
         except Exception as exc:  # noqa: BLE001
             self.api.logger.exception(
                 "rss_notifier.image_attachment_prepare_failed",
+                feed_url=subscription.url,
+                feed_title=feed_label,
                 item_key=item.key,
+                item_title=item.title,
+                error_type=type(exc).__name__,
                 error=str(exc),
             )
             fallback_image_urls = list(self._rendered_image_urls(item))
         text = _format_notification(
-            feed_title=subscription.title or feed_title or subscription.url,
+            feed_title=feed_label,
             item=item,
             rendering=self._config.rendering,
             fallback_image_urls=tuple(fallback_image_urls),
@@ -514,23 +778,41 @@ class RSSNotifierPlugin(Plugin):
                     self.api.logger.info(
                         "rss_notifier.notify_sent",
                         feed_url=subscription.url,
+                        feed_title=feed_label,
                         item_key=item.key,
+                        item_title=item.title,
                         target=address.chat_key,
+                        channel=address.channel,
                         attachment_count=len(attachments),
+                        fallback_image_url_count=len(fallback_image_urls),
                     )
                 except Exception as exc:  # noqa: BLE001
                     self.api.logger.exception(
                         "rss_notifier.notify_failed",
                         feed_url=subscription.url,
+                        feed_title=feed_label,
                         item_key=item.key,
+                        item_title=item.title,
                         target=target,
+                        error_type=type(exc).__name__,
                         error=str(exc),
                     )
         finally:
-            _cleanup_temp_attachments(attachments)
+            for attachment in attachments:
+                try:
+                    await self.api.cleanup_temp_attachment(attachment)
+                except Exception as exc:  # noqa: BLE001
+                    self.api.logger.warning(
+                        "rss_notifier.image_attachment_cleanup_failed",
+                        feed_url=subscription.url,
+                        item_key=item.key,
+                        path=attachment.path,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
 
     async def _prepare_image_attachments(
-        self, item: _FeedItem
+        self, item: _FeedItem, *, feed_url: str
     ) -> tuple[list[Attachment], list[str]]:
         image_urls = list(self._rendered_image_urls(item))
         if (
@@ -538,19 +820,39 @@ class RSSNotifierPlugin(Plugin):
             or not self._config.rendering.send_image_attachments
             or self._config.rendering.mode == "compact"
         ):
+            if image_urls:
+                self.api.logger.debug(
+                    "rss_notifier.image_attachment_skipped",
+                    feed_url=feed_url,
+                    item_key=item.key,
+                    image_url_count=len(image_urls),
+                    send_image_attachments=(
+                        self._config.rendering.send_image_attachments
+                    ),
+                    rendering_mode=self._config.rendering.mode,
+                )
             return [], image_urls
 
         attachments: list[Attachment] = []
         fallback_urls: list[str] = []
         for image_url in image_urls:
             try:
-                attachments.append(await self._download_image_attachment(image_url))
+                attachments.append(
+                    await self._download_image_attachment(
+                        image_url,
+                        feed_url=feed_url,
+                        item_key=item.key,
+                        cleanup_after_send=False,
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 fallback_urls.append(image_url)
                 self.api.logger.warning(
                     "rss_notifier.image_attachment_download_failed",
+                    feed_url=feed_url,
                     image_url=image_url,
                     item_key=item.key,
+                    error_type=type(exc).__name__,
                     error=str(exc),
                 )
         return attachments, fallback_urls
@@ -561,9 +863,17 @@ class RSSNotifierPlugin(Plugin):
             return ()
         return tuple(_dedupe(list(item.image_urls))[: rendering.max_images])
 
-    async def _download_image_attachment(self, image_url: str) -> Attachment:
+    async def _download_image_attachment(
+        self,
+        image_url: str,
+        *,
+        feed_url: str,
+        item_key: str,
+        cleanup_after_send: bool = True,
+    ) -> Attachment:
         if not _is_supported_feed_url(image_url):
             raise ValueError("image URL must be http(s)")
+        started_at = perf_counter()
         rendering = self._config.rendering
         headers = {"User-Agent": self._config.polling.user_agent}
         async with httpx.AsyncClient(
@@ -571,47 +881,98 @@ class RSSNotifierPlugin(Plugin):
             follow_redirects=True,
             headers=headers,
         ) as client:
-            async with client.stream("GET", image_url) as response:
-                response.raise_for_status()
-                content_type = _normalize_content_type(
-                    response.headers.get("content-type", "")
+            try:
+                stream_cm = client.stream("GET", image_url)
+                async with stream_cm as response:
+                    response.raise_for_status()
+                    attachment = await self._read_image_attachment(
+                        response=response,
+                        image_url=image_url,
+                        max_image_bytes=rendering.max_image_bytes,
+                        content_type=response.headers.get("content-type", ""),
+                        cleanup_after_send=cleanup_after_send,
+                    )
+            except httpx.HTTPStatusError as exc:
+                response = exc.response
+                self.api.logger.warning(
+                    "rss_notifier.image_http_error",
+                    feed_url=feed_url,
+                    item_key=item_key,
+                    image_url=image_url,
+                    status_code=response.status_code,
+                    reason=response.reason_phrase,
+                    content_type=response.headers.get("content-type", ""),
+                    elapsed_ms=_elapsed_ms(started_at),
+                    error=str(exc),
                 )
-                if content_type and not content_type.startswith("image/"):
-                    raise ValueError(f"image URL returned {content_type!r}")
-                content_length = _parse_int_header(
-                    response.headers.get("content-length", "")
+                raise
+            except httpx.HTTPError as exc:
+                self.api.logger.warning(
+                    "rss_notifier.image_http_request_failed",
+                    feed_url=feed_url,
+                    item_key=item_key,
+                    image_url=image_url,
+                    error_type=type(exc).__name__,
+                    elapsed_ms=_elapsed_ms(started_at),
+                    error=str(exc),
                 )
-                if (
-                    content_length is not None
-                    and content_length > rendering.max_image_bytes
-                ):
-                    raise ValueError(f"image exceeds {rendering.max_image_bytes} bytes")
+                raise
+        self.api.logger.debug(
+            "rss_notifier.image_attachment_downloaded",
+            feed_url=feed_url,
+            item_key=item_key,
+            image_url=image_url,
+            path=attachment.path,
+            mime_type=attachment.mime_type,
+            elapsed_ms=_elapsed_ms(started_at),
+        )
+        return attachment
 
-                suffix = _image_suffix(image_url, content_type)
-                path = Path(tempfile.gettempdir()) / f"nahida-rss-{uuid4().hex}{suffix}"
-                total = 0
-                try:
-                    with path.open("wb") as file:
-                        async for chunk in response.aiter_bytes():
-                            total += len(chunk)
-                            if total > rendering.max_image_bytes:
-                                raise ValueError(
-                                    f"image exceeds {rendering.max_image_bytes} bytes"
-                                )
-                            file.write(chunk)
-                except Exception:
-                    _unlink_quietly(path)
-                    raise
+    async def _read_image_attachment(
+        self,
+        *,
+        response: httpx.Response,
+        image_url: str,
+        max_image_bytes: int,
+        content_type: str,
+        cleanup_after_send: bool,
+    ) -> Attachment:
+        content_type = _normalize_content_type(content_type)
+        if content_type and not content_type.startswith("image/"):
+            raise ValueError(f"image URL returned {content_type!r}")
+        content_length = _parse_int_header(response.headers.get("content-length", ""))
+        if content_length is not None and content_length > max_image_bytes:
+            raise ValueError(f"image exceeds {max_image_bytes} bytes")
+
+        suffix = _image_suffix(image_url, content_type)
+        temp_file = await self.api.create_temp_file(
+            suffix=suffix,
+            prefix="rss-image",
+            purpose="rss-image-attachment",
+            ttl_seconds=3600,
+        )
+        path = Path(temp_file.path)
+        total = 0
+        try:
+            with path.open("wb") as file:
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > max_image_bytes:
+                        raise ValueError(f"image exceeds {max_image_bytes} bytes")
+                    file.write(chunk)
+        except Exception:
+            _unlink_quietly(path)
+            raise
 
         if total <= 0:
             _unlink_quietly(path)
             raise ValueError("image response was empty")
 
-        return Attachment(
+        return temp_file.as_attachment(
             type="photo",
-            path=str(path),
             filename=path.name,
             mime_type=content_type or "image/*",
+            cleanup_after_send=cleanup_after_send,
         )
 
     async def _subscription_map(self) -> dict[str, _FeedSubscription]:
@@ -1110,13 +1471,21 @@ def _published_timestamp(value: str) -> float | None:
     return parsed.timestamp()
 
 
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
 def _format_latest_entries(
     *,
     target: str,
     entries: list[_LatestEntry],
     failures: list[str],
     limit: int,
+    fallback_image_urls_by_item: dict[str, list[str]] | None = None,
+    attached_image_item_keys: set[str] | None = None,
 ) -> str:
+    fallback_image_urls_by_item = fallback_image_urls_by_item or {}
+    attached_image_item_keys = attached_image_item_keys or set()
     lines = [f"Latest {len(entries)} RSS item(s) for {target}:"]
     for index, entry in enumerate(entries, start=1):
         item = entry.item
@@ -1129,8 +1498,12 @@ def _format_latest_entries(
             preview = _truncate(" ".join(item.paragraphs), 160)
             if preview:
                 lines.append(f"   {preview}")
-        if item.image_urls:
-            lines.append(f"   🖼 {item.image_urls[0]}")
+        image_url = next(iter(fallback_image_urls_by_item.get(item.key, ())), "")
+        if not image_url and item.image_urls:
+            if item.key not in attached_image_item_keys:
+                image_url = item.image_urls[0]
+        if image_url:
+            lines.append(f"   🖼 {image_url}")
     if failures:
         lines.append("")
         lines.append("Fetch failures:")
@@ -1282,13 +1655,6 @@ def _image_suffix(image_url: str, content_type: str) -> str:
     if path_suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"}:
         return path_suffix
     return ".img"
-
-
-def _cleanup_temp_attachments(attachments: list[Attachment]) -> None:
-    for attachment in attachments:
-        path = Path(attachment.path)
-        if path.name.startswith("nahida-rss-"):
-            _unlink_quietly(path)
 
 
 def _unlink_quietly(path: Path) -> None:

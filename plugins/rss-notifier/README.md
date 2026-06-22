@@ -6,13 +6,14 @@
 
 在主配置文件加入顶层 rss-notifier：
 
-    rss-notifier:
-      enabled: true
-      target_chat_addresses:
-        - "milky:group:123456789"
-      feeds:
-        - url: "https://example.com/feed.xml"
-          title: "Example"
+```yaml
+rss-notifier:
+  enabled: true
+  target_chat_addresses:
+    - "milky:group:123456789"
+  feeds:
+    - url: "https://example.com/feed.xml"
+      title: "Example"
   polling:
     enabled: true
     interval_seconds: 300
@@ -25,6 +26,7 @@
     send_image_attachments: true
   registration:
     enabled: true
+```
 
 feeds[].target_chat_addresses 可覆盖全局 target_chat_addresses。
 
@@ -39,8 +41,11 @@ feeds[].target_chat_addresses 可覆盖全局 target_chat_addresses。
 - 默认发送前 3 段正文、最多 500 字、最多 1 张图片。
 - send_image_attachments 为 true 时会下载图片并作为 photo 附件发送。
 - 图片下载失败时不会阻断通知，会退化为在文本中附上图片链接。
+- 图片附件使用核心托管临时文件 API，发送成功后由核心/插件清理，不会长期留在系统临时目录。
 
 渲染是通用规则，不针对某个 feed 或站点特化。
+
+自动轮询发现新 item 时，会向订阅目标发送一条 `OutboundMessage`：文本中包含订阅源名、标题、发布时间、链接和正文摘要；如果配置允许且图片下载成功，会附带图片附件。`/rss_latest` 也使用同一套渲染逻辑查询最近条目，并且可以返回图片附件。
 
 ## 动态订阅命令
 

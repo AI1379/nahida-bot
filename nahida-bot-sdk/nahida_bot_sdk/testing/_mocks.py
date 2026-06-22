@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
 from unittest.mock import MagicMock
+from uuid import uuid4
 
+from nahida_bot_sdk.api import ManagedTempFile
 from nahida_bot_sdk.chat_address import ChatAddress
 from nahida_bot_sdk.messaging import InboundMessage, OutboundMessage
 from nahida_bot_sdk.plugin import bind_decorated_registrations
@@ -27,6 +31,36 @@ class MockBotAPI:
         self, target: str, message: Any, *, channel: str = ""
     ) -> str:
         return ""
+
+    async def create_temp_file(
+        self,
+        *,
+        suffix: str = "",
+        prefix: str = "",
+        purpose: str = "",
+        ttl_seconds: int = 3600,
+    ) -> ManagedTempFile:
+        del purpose
+        suffix = suffix if not suffix or suffix.startswith(".") else f".{suffix}"
+        path = (
+            Path(tempfile.gettempdir())
+            / f"{prefix or 'nahida-test'}-{uuid4().hex}{suffix}"
+        )
+        path.touch(exist_ok=False)
+        return ManagedTempFile(
+            path=str(path),
+            plugin_id="test",
+            cleanup_token=uuid4().hex,
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def cleanup_temp_files(self, *, expired_only: bool = True) -> int:
+        del expired_only
+        return 0
+
+    async def cleanup_temp_attachment(self, attachment: Any) -> bool:
+        del attachment
+        return False
 
     async def record_session_event(
         self,

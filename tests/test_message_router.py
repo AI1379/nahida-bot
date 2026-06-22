@@ -28,6 +28,7 @@ from nahida_bot.core.events import (
 )
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.session_runner import SessionRunner
+from nahida_bot.core.temp_files import ManagedTempFileService
 from nahida_bot.plugins.base import InboundMessage, OutboundMessage, Plugin
 from nahida_bot.plugins.commands import (
     CommandEntry,
@@ -193,6 +194,7 @@ def _make_router(
     tool_registry: ToolRegistry | None = None,
     workspace_manager: WorkspaceManager | None = None,
     config: RouterConfig | None = None,
+    temp_file_service: ManagedTempFileService | None = None,
 ) -> tuple[MessageRouter, EventBus, ChannelRegistry, CommandRegistry]:
     event_bus = EventBus(EventContext(app=None, settings=None, logger=MagicMock()))  # type: ignore[arg-type]
     command_registry = CommandRegistry()
@@ -219,6 +221,7 @@ def _make_router(
         runner=runner,
         workspace_manager=workspace_manager,
         config=config,
+        temp_file_service=temp_file_service,
     )
     return router, event_bus, channel_registry, command_registry
 
@@ -440,6 +443,56 @@ class TestMessageRouterCommandDispatch:
         channel = channel_registry.get("test")
         assert isinstance(channel, _StubChannel)
         assert channel.sent[0][1] is outbound
+
+    async def test_command_returned_managed_temp_attachment_is_cleaned(
+        self, tmp_path: Path
+    ) -> None:
+        temp_file_service = ManagedTempFileService(tmp_path / "plugin_temp")
+        temp_file = await temp_file_service.create_temp_file(
+            plugin_id="p1",
+            suffix=".png",
+            purpose="test-command",
+        )
+        temp_path = Path(temp_file.path)
+        temp_path.write_bytes(b"png")
+        meta_path = temp_path.with_name(f"{temp_path.name}.meta.json")
+        router, event_bus, channel_registry, command_registry = _make_router(
+            temp_file_service=temp_file_service
+        )
+        handler = AsyncMock(
+            return_value=CommandResult.outbound(
+                OutboundMessage(
+                    text="file attached",
+                    attachments=[
+                        temp_file.as_attachment(type="photo", mime_type="image/png")
+                    ],
+                )
+            )
+        )
+        command_registry.register(
+            CommandEntry(
+                name="report",
+                handler=handler,
+                description="Report",
+                aliases=(),
+                plugin_id="p1",
+            )
+        )
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(message=_inbound("/report"), session_id=""),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        channel = channel_registry.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert len(channel.sent[0][1].attachments) == 1
+        assert not temp_path.exists()
+        assert not meta_path.exists()
 
     async def test_onebot_outbound_includes_typed_chat_address(self) -> None:
         from nahida_bot.plugins.base import ChatContext

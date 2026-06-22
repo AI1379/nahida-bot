@@ -111,6 +111,7 @@ class Application:
         self.webhost_service: WebHostService = WebHostService()
         self._usage_ledger: UsageRecorder | None = None
         self._media_cache: MediaCache | None = None
+        self.temp_file_service: Any | None = None
         self.task_manager = TaskManager()
 
         logger.debug(
@@ -150,14 +151,19 @@ class Application:
 
             # Initialize plugin manager early so pre-agent plugins can register
             # provider types before ProviderManager is built.
+            from nahida_bot.core.temp_files import ManagedTempFileService
             from nahida_bot.plugins.manager import PluginManager
             from nahida_bot.plugins.tool_executor import RegistryToolExecutor
 
+            self.temp_file_service = ManagedTempFileService(
+                Path(self.settings.db_path).parent / "plugin_temp"
+            )
             self.plugin_manager = PluginManager(
                 event_bus=self.event_bus,
                 channel_registry=self.channel_registry,
                 webhost_service=self.webhost_service,
                 task_manager=self.task_manager,
+                temp_file_service=self.temp_file_service,
             )
             await self._discover_plugins()
             self._inject_plugin_configs()
@@ -184,6 +190,7 @@ class Application:
                 task_manager=self.task_manager,
                 document_store_manager=self.document_store_manager,
                 chat_metadata_store=self.chat_metadata_store,
+                temp_file_service=self.temp_file_service,
             )
             if self.agent_loop is not None:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
@@ -203,6 +210,7 @@ class Application:
                 orchestration_service=self.orchestration_service,
                 task_manager=self.task_manager,
                 chat_metadata_store=self.chat_metadata_store,
+                temp_file_service=self.temp_file_service,
             )
 
             # Initialize webapi
@@ -699,6 +707,7 @@ class Application:
                 orchestration_service=self.orchestration_service,
                 task_manager=self.task_manager,
                 document_store_manager=self.document_store_manager,
+                temp_file_service=self.temp_file_service,
             )
         logger.info("application.scheduler_initialized")
 
@@ -854,6 +863,7 @@ class Application:
                 ),
                 identity_resolver=self._identity_resolver,
                 chat_metadata_store=self.chat_metadata_store,
+                temp_file_service=self.temp_file_service,
             )
             await self.message_router.start()
 
@@ -880,6 +890,14 @@ class Application:
                     self._media_cache_cleanup_once,
                     owner="core.media",
                     interval_seconds=max(self._media_cache._ttl, 300),
+                )
+
+            if self.temp_file_service is not None:
+                self.task_manager.spawn_interval(
+                    "plugin-temp-cleanup",
+                    self._plugin_temp_cleanup_once,
+                    owner="core.temp",
+                    interval_seconds=300,
                 )
 
             # Start webapi (after scheduler)
@@ -926,6 +944,18 @@ class Application:
                 logger.debug("media_cache.cleanup", removed=removed)
         except Exception:
             logger.warning("media_cache.cleanup_failed", exc_info=True)
+
+    async def _plugin_temp_cleanup_once(self) -> None:
+        """Purge expired plugin-managed temporary files."""
+        service = self.temp_file_service
+        if service is None:
+            return
+        try:
+            removed = await service.cleanup_expired()
+            if removed:
+                logger.debug("plugin_temp.cleanup", removed=removed)
+        except Exception:
+            logger.warning("plugin_temp.cleanup_failed", exc_info=True)
 
     async def stop(self) -> None:
         """Stop the application gracefully."""

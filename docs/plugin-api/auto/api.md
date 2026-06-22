@@ -86,6 +86,60 @@ Handle returned by subscribe(); call unsubscribe() to detach.
 #### `unsubscribe()`
 
 
+### WebhookHandle
+
+Handle returned by register_webhook_endpoint().
+
+- **基类:** `Protocol`
+
+**方法:**
+
+#### `unsubscribe()`
+
+
+### WebhookRequest
+
+Raw HTTP request delivered to a plugin-owned webhook endpoint.
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `method` | `str` | `—` |  |
+| `path` | `str` | `—` |  |
+| `headers` | `dict[str, str]` | `—` |  |
+| `query` | `dict[str, str]` | `—` |  |
+| `body` | `bytes` | `—` |  |
+| `client_host` | `str` | ``''`` |  |
+
+
+### WebhookResponse
+
+Raw HTTP response returned by a plugin-owned webhook endpoint.
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `status_code` | `int` | ``204`` |  |
+| `body` | `bytes | str` | ``b''`` |  |
+| `headers` | `dict[str, str]` | ``{}`` |  |
+
+
+### ManagedTempFile
+
+A plugin-owned temporary file path managed by the bot runtime.
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `path` | `str` | `—` |  |
+| `plugin_id` | `str` | ``''`` |  |
+| `cleanup_token` | `str` | ``''`` |  |
+| `ttl_seconds` | `int` | ``3600`` |  |
+
+**方法:**
+
+#### `as_attachment(type: str, filename: str = '', mime_type: str = '', caption: str = '', cleanup_after_send: bool = True)`
+
+Create an outbound attachment bound to this managed temporary file.
+
+
 ### ChannelService
 
 Runtime contract for a channel service exposed by a plugin.
@@ -146,9 +200,25 @@ Send a message to an external target. Returns platform message ID.
 
 Write a system turn into a session's history without triggering a run.
 
+#### `request_agent_response(message: InboundMessage, session_id: str = '', reason: str = '', instruction: str = '', observed_messages: tuple[InboundMessage, ...] = (), reply_to_message_id: str | None = None)`
+
+Ask the main router to run the agent for a group conversation.
+
 #### `record_message_delivery(target: ChatAddress | str, text: str, source: str, delivery_mode: str = '', status: str = 'sent', message_id: str = '', error: str = '', metadata: dict[str, Any] | None = None, source_session_id: str = '', source_chat_address: str = '', source_user_id: str = '')`
 
 Write an outbound delivery audit record without affecting memory.
+
+#### `create_temp_file(suffix: str = '', prefix: str = '', purpose: str = '', ttl_seconds: int = 3600)`
+
+Allocate a plugin-scoped temporary file managed by the bot runtime.
+
+#### `cleanup_temp_files(expired_only: bool = True)`
+
+Clean this plugin's managed temporary files.
+
+#### `cleanup_temp_attachment(attachment: Attachment)`
+
+Clean one managed temporary attachment.
 
 #### `on_event(event_type: type)`
 
@@ -174,6 +244,10 @@ Register a channel service implemented by this plugin.
 
 Register a provider type that can be used from YAML config.
 
+#### `register_webhook_endpoint(path: str, handler: Callable[[WebhookRequest], Awaitable[WebhookResponse | None]], methods: tuple[str, ...] = ('POST',))`
+
+Register a plugin-owned raw HTTP webhook endpoint.
+
 #### `register_prompt_supplement(key: str, instruction: str, channel: str | None = None, filter: Callable[[MessageContext], bool] | None = None)`
 
 Register a supplemental instruction to inject into the system prompt.
@@ -195,6 +269,23 @@ Args:
 
 Remove a previously registered prompt supplement. Returns `True` if found.
 
+#### `register_status_provider(key: str, handler: Callable[..., Awaitable[str | None]], label: str = '')`
+
+Register a provider that contributes text to `/status` output.
+
+The *handler* is an async callable invoked with keyword arguments
+`session_id` and `chat_key`.  It should return a short text
+block describing the plugin's state for that chat, or `None` to
+contribute nothing.
+
+#### `unregister_status_provider(key: str)`
+
+Remove a previously registered status provider. Returns `True` if found.
+
+#### `collect_status_providers(session_id: str, chat_key: str)`
+
+Collect text blocks from all registered status providers.
+
 #### `register_command(name: str, handler: Callable[..., Awaitable[CommandHandlerResult]], description: str = '', aliases: list[str] | None = None)`
 
 Register a /command that is matched from incoming messages.
@@ -210,6 +301,10 @@ Delete all turns for a session and return the number removed.
 #### `start_new_session(address: ChatAddress)`
 
 Switch the active chat to a new session and return its id.
+
+#### `get_active_session_id(address: ChatAddress)`
+
+Return the current active session id for a chat address.
 
 #### `get_session_info(session_id: str)`
 
@@ -267,6 +362,27 @@ Search the memory store for relevant records.
 
 Persist a record to the memory store.
 
+#### `search_chat_history(query: str, chat_address: str = '', role: str = '', limit: int = 20)`
+
+Search raw conversation turns across ALL sessions (soft-gated).
+
+Returns dicts with `session_id` / `role` / `content` / `created_at`.
+Soft-gated (no permission check, no scope restriction) — memory is soft
+context; the gating lives in the calling tool's description.
+
+#### `search_chats(name: str, platform: str = '')`
+
+Fuzzy-search observed chat/group names → rows with `chat_address`.
+
+Returns dicts with `chat_address` / `display_name` / `platform` /
+`last_seen_at`. Only knows chats the bot has seen (observe-only).
+
+#### `get_chat_names(chat_keys: list[str])`
+
+Bulk-resolve `{chat_key: display_name}` for observed chats.
+
+Unseen keys are absent from the returned map. Empty map if unavailable.
+
 #### `plugin_data_get(key: str)`
 
 Read a value from this plugin's data store. Returns parsed JSON or `None`.
@@ -305,3 +421,26 @@ Returns `None` when the workspace manager is unavailable.
 #### `publish_event(event: Any)`
 
 Publish an event on the event bus.
+
+#### `spawn_task(name: str, coro: Coroutine[Any, Any, Any], kind: str = 'oneshot')`
+
+Spawn a named background task owned by this plugin.
+
+The task is automatically cancelled when the plugin is disabled.
+The coroutine runs in the bot's event loop.  Uncaught exceptions
+are logged automatically.
+
+#### `cancel_task(name: str)`
+
+Cancel a previously spawned task by name.  Returns `True` if found.
+
+#### `spawn_interval_task(name: str, func: Callable[[], Awaitable[None]], interval_seconds: float, initial_delay: float = 0.0)`
+
+Spawn a periodic task owned by this plugin.
+
+#### `get_document_store_manager()`
+
+Return the `DocumentStoreManager` for creating/accessing document collections.
+
+Returns `None` if the document store subsystem is not available.
+Requires the `llm_access` permission.

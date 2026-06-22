@@ -30,6 +30,10 @@ Structured result returned by a command handler.
 
 Create a result that sends a plain text response.
 
+#### `outbound(message: OutboundMessage)`
+
+Create a result that sends a full outbound message.
+
 #### `none()`
 
 Create a result that intentionally sends no response.

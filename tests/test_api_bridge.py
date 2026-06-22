@@ -22,6 +22,7 @@ from nahida_bot.core.events import (
     EventBus,
     EventContext,
 )
+from nahida_bot.core.temp_files import ManagedTempFileService
 from nahida_bot.plugins.api_bridge import RealBotAPI
 from nahida_bot.plugins.base import ChatContext, InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import CommandRegistry
@@ -223,6 +224,7 @@ def _api(
     workspace = WorkspaceManager(tmp_path / "workspace")
     workspace.initialize()
     channel_registry = _ChannelRegistry()
+    temp_file_service = ManagedTempFileService(tmp_path / "plugin_temp")
     webhost_service = WebHostService()
     tool_registry = ToolRegistry()
     command_registry = CommandRegistry()
@@ -238,6 +240,7 @@ def _api(
         command_registry=command_registry,
         channel_registry=channel_registry,
         webhost_service=webhost_service,
+        temp_file_service=temp_file_service,
         provider_manager=_ProviderManager(),
         model_router=None,
     )
@@ -271,6 +274,30 @@ async def test_send_message_uses_channel_when_available(tmp_path: Path) -> None:
 
     assert msg_id == "platform-msg-1"
     assert channel_registry.sent[0][1].text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_managed_temp_file_is_cleaned_after_send(tmp_path: Path) -> None:
+    api, _, _, _ = _api(tmp_path)
+    temp_file = await api.create_temp_file(
+        suffix=".png",
+        prefix="test-image",
+        purpose="test",
+        ttl_seconds=3600,
+    )
+    path = Path(temp_file.path)
+    path.write_bytes(b"image")
+    meta_path = path.with_name(f"{path.name}.meta.json")
+
+    attachment = temp_file.as_attachment(type="photo", mime_type="image/png")
+    await api.send_message(
+        "chat-123",
+        OutboundMessage(text="hello", attachments=[attachment]),
+        channel="telegram",
+    )
+
+    assert not path.exists()
+    assert not meta_path.exists()
 
 
 @pytest.mark.asyncio

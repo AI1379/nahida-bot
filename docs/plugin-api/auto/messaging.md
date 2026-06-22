@@ -122,6 +122,7 @@ A file attachment for an outbound message.
 | `filename` | `str` | ``''`` |  |
 | `mime_type` | `str` | ``''`` |  |
 | `caption` | `str` | ``''`` |  |
+| `extra` | `dict[str, Any]` | ``{}`` |  |
 
 
 ### OutboundMessage

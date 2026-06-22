@@ -160,6 +160,10 @@ Capability declarations for a plugin.
 
 - **返回类型:** `list[str]`
 
+#### emits
+
+- **返回类型:** `list[str]`
+
 
 ### PluginDependency
 

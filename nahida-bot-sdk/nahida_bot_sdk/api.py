@@ -14,7 +14,12 @@ from typing import (
 )
 
 from nahida_bot_sdk.chat_address import ChatAddress
-from nahida_bot_sdk.messaging import InboundMessage, MessageContext, OutboundMessage
+from nahida_bot_sdk.messaging import (
+    Attachment,
+    InboundMessage,
+    MessageContext,
+    OutboundMessage,
+)
 
 if TYPE_CHECKING:
     from nahida_bot_sdk.commands import CommandHandlerResult, CommandInfo
@@ -102,6 +107,40 @@ class WebhookResponse:
     headers: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(slots=True, frozen=True)
+class ManagedTempFile:
+    """A plugin-owned temporary file path managed by the bot runtime."""
+
+    path: str
+    plugin_id: str = ""
+    cleanup_token: str = ""
+    ttl_seconds: int = 3600
+
+    def as_attachment(
+        self,
+        *,
+        type: str,
+        filename: str = "",
+        mime_type: str = "",
+        caption: str = "",
+        cleanup_after_send: bool = True,
+    ) -> Attachment:
+        """Create an outbound attachment bound to this managed temporary file."""
+        extra = {
+            "managed_temp_file": True,
+            "cleanup_token": self.cleanup_token,
+            "cleanup_after_send": cleanup_after_send,
+        }
+        return Attachment(
+            type=type,
+            path=self.path,
+            filename=filename,
+            mime_type=mime_type,
+            caption=caption,
+            extra=extra,
+        )
+
+
 @runtime_checkable
 class ChannelService(Protocol):
     """Runtime contract for a channel service exposed by a plugin.
@@ -179,6 +218,25 @@ class BotAPI(Protocol):
         source_user_id: str = "",
     ) -> str:
         """Write an outbound delivery audit record without affecting memory."""
+        ...
+
+    async def create_temp_file(
+        self,
+        *,
+        suffix: str = "",
+        prefix: str = "",
+        purpose: str = "",
+        ttl_seconds: int = 3600,
+    ) -> ManagedTempFile:
+        """Allocate a plugin-scoped temporary file managed by the bot runtime."""
+        ...
+
+    async def cleanup_temp_files(self, *, expired_only: bool = True) -> int:
+        """Clean this plugin's managed temporary files."""
+        ...
+
+    async def cleanup_temp_attachment(self, attachment: Attachment) -> bool:
+        """Clean one managed temporary attachment."""
         ...
 
     # ── Event System ───────────────────────────────────

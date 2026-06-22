@@ -20,6 +20,11 @@ class CommandResult:
         return cls(message=OutboundMessage(text=text))
 
     @classmethod
+    def outbound(cls, message: OutboundMessage) -> "CommandResult":
+        """Create a result that sends a full outbound message."""
+        return cls(message=message)
+
+    @classmethod
     def none(cls) -> "CommandResult":
         """Create a result that intentionally sends no response."""
         return cls(suppress_response=True)

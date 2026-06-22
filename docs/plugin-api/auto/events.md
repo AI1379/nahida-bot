@@ -150,6 +150,30 @@ Raised for inbound messages recorded as context but not handled by agent.
 - **基类:** `Event[MessagePayload]`
 
 
+### AgentResponseRequestPayload
+
+Payload for a plugin-initiated request to run the main agent.
+
+| 字段 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `message` | `Any` | `—` |  |
+| `session_id` | `str` | `—` |  |
+| `chat_address` | `ChatAddress` | `—` |  |
+| `requester_plugin_id` | `str` | `—` |  |
+| `reason` | `str` | `—` |  |
+| `instruction` | `str` | ``''`` |  |
+| `synthetic` | `bool` | ``False`` |  |
+| `observed_messages` | `tuple[Any, ...]` | ``()`` |  |
+| `reply_to_message_id` | `str | None` | ``None`` |  |
+
+
+### AgentResponseRequested
+
+Raised when a plugin asks the router to let the agent join a chat.
+
+- **基类:** `Event[AgentResponseRequestPayload]`
+
+
 ### MessageSending
 
 Raised before sending a message for observation and audit hooks.
