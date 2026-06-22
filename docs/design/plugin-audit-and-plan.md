@@ -8,6 +8,7 @@
 >
 > - [plugin-system.md](../architecture/plugin-system.md)
 > - [webui-design.md](webui-design.md)
+> - [plugin-web-panels.md](plugin-web-panels.md)
 > - [channel-plugin.md](../architecture/channel-plugin.md)
 > - [runtime-flows.md](../architecture/runtime-flows.md)
 
@@ -504,6 +505,8 @@ AstrBot 是另一个 Python LLM bot 框架，有自己的插件 API（`astrbot.c
 ### 3.1 目标
 
 在 WebUI 中新增一个独立的 "Plugins" 页面，提供插件发现、状态监控、配置管理的可视化界面。
+
+> 自定义插件业务页面（例如 RSS notifier 的订阅管理面板）不应硬编码进主 WebUI。本节只覆盖通用插件管理页；插件自带 Web 面板、iframe bridge 和插件 Admin API 详见 [plugin-web-panels.md](plugin-web-panels.md)。
 
 ### 3.2 信息架构
 

@@ -68,7 +68,7 @@
 - [x] Cron Session 模式：`main`（注入主 session）、`isolated`（独立 session）、`named`（持久命名 session，跨 run 累积上下文）
 - [x] 回复信号协议：`NO_REPLY` 静默抑制 + `HEARTBEAT_OK` 心跳空转保护
 - [x] SDK 独立成包：`nahida-bot-sdk` 作为 workspace 成员，插件作者可用稳定 API 开发与发布
-- [x] 设计文档 16 份：Agent Core、ChatAddress/SessionID、Cross-Session、Memory System/Scoping、Agent Compaction、Model Routing、Runtime Settings、WebUI、Cron/WebAPI、OneBot Channel、Conversation Joiner、Knowledge Base、Desktop App、Person Identity、MCP Dynamic Servers、Tool-Produced Image Media
+- [x] 设计文档 17 份：Agent Core、ChatAddress/SessionID、Cross-Session、Memory System/Scoping、Agent Compaction、Model Routing、Runtime Settings、WebUI、Plugin Web Panels、Cron/WebAPI、OneBot Channel、Conversation Joiner、Knowledge Base、Desktop App、Person Identity、MCP Dynamic Servers、Tool-Produced Image Media
 
 ### 🚧 正在进行的光合作用
 
@@ -268,7 +268,7 @@ telegram:
 | [DEVELOPMENT](docs/guide/development.md) | 代码风格、测试规范、类型检查 |
 | [CONFIGURATION](docs/guide/configuration.md) | 配置指南、环境变量、完整参考 |
 | [config.yaml](config.yaml) | 带注释的完整配置参考 |
-| [设计文档](docs/design/) | WebUI、Memory、OneBot Channel、Knowledge Base、Desktop App 等 16 份专题设计 |
+| [设计文档](docs/design/) | WebUI、Plugin Web Panels、Memory、OneBot Channel、Knowledge Base、Desktop App 等 17 份专题设计 |
 
 ## 🧩 内置与示例插件
 
@@ -280,7 +280,7 @@ telegram:
 | `image_generation` | OpenAI 兼容 Images API 生图，含配额管理 |
 | `conversation_joiner` | 群聊上下文观察 + 主动接入决策 |
 | `onebot` | OneBot v11/v12 Channel（NapCat/Lagrange/LLOneBot） |
-| [plugins/echo](plugins/echo) · [plugins/github-notifier](plugins/github-notifier) | 可独立安装的示例插件（含独立 pyproject） |
+| [plugins/echo](plugins/echo) · [plugins/github-notifier](plugins/github-notifier) · [plugins/rss-notifier](plugins/rss-notifier) | 可独立安装的示例插件（含独立 pyproject） |
 
 插件作者可基于 [`nahida-bot-sdk`](nahida-bot-sdk) 在独立仓库开发并通过 `plugin.yaml` 声明能力、权限与配置 schema。
 

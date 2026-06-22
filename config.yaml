@@ -168,6 +168,21 @@ github-notifier:
   registration:
     enabled: false                 # 开启后可在聊天中使用 /github_watch 动态订阅
 
+# RSS/Atom 订阅通知（外部插件 plugins/rss-notifier）
+# rss-notifier:
+#   enabled: true
+#   # 默认推送目标；feed 未设置 target_chat_addresses 时使用这里。
+#   target_chat_addresses:
+#     - "milky:group:123456789"
+#   feeds:
+#     - url: "https://example.com/feed.xml"
+#       title: "Example"
+#   polling:
+#     enabled: true
+#     interval_seconds: 300
+#   registration:
+#     enabled: true                 # 开启后可在聊天中使用 /rss_sub 动态订阅
+
 conversation_joiner:
   # 主动入话题默认关闭。开启前需要对应群频道启用 group_context_capture，
   # 让未触发消息先进入 MessageObserved。

@@ -8,6 +8,7 @@
 >
 > - [ROADMAP.md](../ROADMAP.md)
 > - [cron-and-webapi-optimization.md](cron-and-webapi-optimization.md)
+> - [plugin-web-panels.md](plugin-web-panels.md)
 > - [plugin-system.md](../architecture/plugin-system.md)
 > - [runtime-flows.md](../architecture/runtime-flows.md)
 
