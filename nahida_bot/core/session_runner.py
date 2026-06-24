@@ -616,8 +616,13 @@ class SessionRunner:
                 run_kwargs["context_builder"] = (
                     context_builder or provider_slot.context_builder
                 )
+                run_kwargs["provider_id"] = provider_slot.id
             if selected_model is not None:
                 run_kwargs["model"] = selected_model
+            # Canonical-ledger run context (Phase 1): always passed; the loop
+            # ignores them when the ledger store is the no-op default.
+            run_kwargs["session_id"] = session_id
+            run_kwargs["workspace_id"] = workspace_id
 
             logger.debug(
                 "session_runner.agent_run_start",

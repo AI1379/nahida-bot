@@ -1196,3 +1196,108 @@ async def test_terminal_outcome_not_recorded_without_metrics() -> None:
 
     assert result.final_response == "hello"
     assert result.trace_id is None  # no metrics → no trace_id (unchanged)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — canonical ledger reconstruction (acceptance criterion)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_canonical_ledger_reconstructs_multi_tool_run() -> None:
+    """A multi-tool run must be fully reconstructable from the ledger DB.
+
+    Acceptance for Phase 1: user → assistant → tool_call → tool_result →
+    assistant → terminal, with a paired receipt and no orphan results — and
+    the loop's user-facing result is unchanged.
+    """
+    from nahida_bot.db.engine import DatabaseEngine
+    from nahida_bot.db.repositories.sqlite_agent_run_repo import SQLiteAgentRunStore
+
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    store = SQLiteAgentRunStore(engine)
+    try:
+        metrics = MetricsCollector()
+        provider = _QueuedProvider(
+            responses=[
+                ProviderResponse(
+                    content="calling tool",
+                    tool_calls=[
+                        ToolCall(
+                            call_id="tc_1", name="read_file", arguments={"path": "a"}
+                        )
+                    ],
+                ),
+                ProviderResponse(content="done", tool_calls=[]),
+            ]
+        )
+        loop = AgentLoop(
+            provider=provider,
+            context_builder=_metrics_builder(),
+            tool_executor=_RecorderToolExecutor(),
+            metrics=metrics,
+            run_store=store,
+        )
+
+        result = await loop.run(
+            user_message="hi",
+            system_prompt="sys",
+            tools=[
+                ToolDefinition(
+                    name="read_file",
+                    description="read",
+                    parameters={"type": "object", "properties": {}},
+                )
+            ],
+        )
+
+        # Behaviour unchanged.
+        assert result.final_response == "done"
+        assert result.steps == 2
+        run_id = result.trace_id
+        assert run_id is not None
+
+        # Run finalized as completed.
+        run = await store.get_run(run_id)
+        assert run is not None
+        assert run["terminal_state"] == "completed"
+
+        # Canonical event order reconstructed faithfully.
+        events = await store.list_events(run_id)
+        assert [e["event_type"] for e in events] == [
+            "user_input",
+            "assistant_output",
+            "tool_call",
+            "tool_result",
+            "assistant_output",
+            "terminal",
+        ]
+        assert [e["sequence"] for e in events] == [1, 2, 3, 4, 5, 6]
+
+        # One paired receipt, no orphans.
+        receipts = await store.list_receipts(run_id)
+        assert len(receipts) == 1
+        receipt = receipts[0]
+        assert receipt["call_id"] == "tc_1"
+        assert receipt["tool_name"] == "read_file"
+        assert receipt["status"] == "ok"
+        assert receipt["verification_status"] == "unverified"
+        assert receipt["input_fingerprint"]
+        assert "output_hash" in receipt["evidence_json"]
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_canonical_ledger_disabled_by_default_is_noop() -> None:
+    """Without a run_store the loop uses the null store: no ledger writes, run works."""
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="hello", tool_calls=[])]
+    )
+    loop = AgentLoop(provider=provider, context_builder=_metrics_builder())
+
+    result = await loop.run(user_message="hi", system_prompt="sys")
+
+    assert result.final_response == "hello"
+    # Null store → nothing persisted; run unaffected (Phase 0 behaviour preserved).

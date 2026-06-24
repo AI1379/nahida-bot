@@ -266,6 +266,14 @@ class Application:
 
         self.chat_metadata_store = SQLiteChatMetadataRepository(engine)
 
+        # Canonical agent-run ledger (Phase 1). Always constructed; only handed
+        # to the agent loop when agent_runtime.canonical_ledger_enabled is true.
+        from nahida_bot.db.repositories.sqlite_agent_run_repo import (
+            SQLiteAgentRunStore,
+        )
+
+        self._agent_run_store = SQLiteAgentRunStore(engine)
+
         # Document store manager — reusable collection storage for KB and plugins
         from nahida_bot.agent.storage.manager import DocumentStoreManager
 
@@ -404,6 +412,11 @@ class Application:
                 provider=default_slot.provider,
                 context_builder=default_slot.context_builder,
                 metrics=self._metrics,
+                run_store=(
+                    self._agent_run_store
+                    if self.settings.agent_runtime.canonical_ledger_enabled
+                    else None
+                ),
                 config=AgentLoopConfig(
                     max_steps=self.settings.agent.max_steps,
                     provider_timeout_seconds=self.settings.agent.provider_timeout_seconds,

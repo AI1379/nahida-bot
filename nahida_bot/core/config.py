@@ -74,6 +74,22 @@ class AgentConfig(BaseModel):
     )
 
 
+class AgentRuntimeConfig(BaseModel):
+    """Agent runtime / canonical-ledger configuration (agent-loop repair).
+
+    Phase 1 adds the canonical run ledger (best-effort dual-write of run
+    events + execution receipts). It is purely additive — no user-facing
+    behaviour change — so the flag only controls whether the ledger is
+    written. Default off in code; enabled in this repo's config.yaml to
+    collect data. Later phases add receipt verification, channel progress,
+    and legacy-history mode under the same block.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    canonical_ledger_enabled: bool = False
+
+
 ReasoningPolicyValue = Literal["strip", "append", "budget"]
 
 
@@ -322,6 +338,7 @@ class Settings(BaseModel):
 
     # Internal subsystem configs
     agent: AgentConfig = AgentConfig()
+    agent_runtime: AgentRuntimeConfig = AgentRuntimeConfig()
     context: ContextConfig = ContextConfig()
     scheduler: SchedulerConfigModel = SchedulerConfigModel()
     router: RouterConfigModel = RouterConfigModel()

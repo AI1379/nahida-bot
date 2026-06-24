@@ -315,6 +315,12 @@ telegram:
 #   # tool_use_system_prompt: "..."     # 注入的工具使用提示
 #   # provider_error_template: "..."    # Provider 错误消息模板
 
+# ── Agent Runtime（canonical ledger，修复 #24 地基）─────────
+# Phase 1：best-effort 把每个 run 的 canonical 事件流与执行回执落库（附加双写，
+# 不改对外行为）。reading/重放端属 Phase 5。默认代码里为 false；这里置 true 以采集数据。
+agent_runtime:
+  canonical_ledger_enabled: true
+
 # ── Context Budget ──────────────────────────────────────
 # 控制未知模型 fallback 上下文窗口和 reasoning chain 预算。
 # 模型声明 providers.*.models[].capabilities.context_window 时优先使用模型窗口。

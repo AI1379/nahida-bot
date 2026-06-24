@@ -363,6 +363,58 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_chat_metadata_name
         ON chat_metadata(display_name);
     """,
+    # Migration 019: canonical agent run ledger (agent-loop repair Phase 1).
+    # Append-only, additive: best-effort dual-write of each agent run's
+    # canonical event stream + execution receipts. No reader yet (replay/
+    # projection is Phase 5); nothing here changes existing behaviour.
+    """
+    CREATE TABLE IF NOT EXISTS agent_runs (
+        run_id                   TEXT PRIMARY KEY,
+        session_id               TEXT,
+        workspace_id             TEXT,
+        provider_id              TEXT,
+        model                    TEXT,
+        api_family               TEXT,
+        terminal_state           TEXT NOT NULL,
+        completion_contract_json TEXT,
+        trace_id                 TEXT,
+        started_at               TEXT NOT NULL,
+        ended_at                 TEXT,
+        failure_code             TEXT,
+        failure_detail           TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_runs_trace   ON agent_runs(trace_id);
+
+    CREATE TABLE IF NOT EXISTS agent_run_events (
+        event_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id       TEXT NOT NULL,
+        sequence     INTEGER NOT NULL,
+        event_type   TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        UNIQUE(run_id, sequence)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_run_events_run ON agent_run_events(run_id, sequence);
+
+    CREATE TABLE IF NOT EXISTS agent_execution_receipts (
+        receipt_id          TEXT PRIMARY KEY,
+        run_id              TEXT NOT NULL,
+        call_id             TEXT NOT NULL,
+        tool_name           TEXT NOT NULL,
+        status              TEXT NOT NULL,
+        verification_status TEXT NOT NULL,
+        input_fingerprint   TEXT NOT NULL,
+        evidence_json       TEXT NOT NULL,
+        started_at          TEXT NOT NULL,
+        finished_at         TEXT,
+        UNIQUE(run_id, call_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_receipts_run ON agent_execution_receipts(run_id);
+    """,
 ]
 
 

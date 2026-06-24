@@ -10,11 +10,18 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 import structlog
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage, ContextPart
 from nahida_bot.agent.metrics import MetricsCollector, Trace
+from nahida_bot.agent.runtime import (
+    AgentRunContext,
+    AgentRunStore,
+    NullAgentRunStore,
+    RunRecorder,
+)
 from nahida_bot.agent.providers import (
     ChatProvider,
     ProviderError,
@@ -145,12 +152,17 @@ class AgentLoop:
         config: AgentLoopConfig | None = None,
         tool_executor: ToolExecutor | None = None,
         metrics: MetricsCollector | None = None,
+        run_store: AgentRunStore | None = None,
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
         self.config = config or AgentLoopConfig()
         self.tool_executor = tool_executor
         self.metrics = metrics
+        # Canonical run ledger (Phase 1). Defaults to a no-op store so the loop
+        # can drive the recorder unconditionally; app.py passes a real store
+        # when agent_runtime.canonical_ledger_enabled is true.
+        self.run_store: AgentRunStore = run_store or NullAgentRunStore()
 
     async def run(
         self,
@@ -210,6 +222,9 @@ class AgentLoop:
         context_builder: ContextBuilder | None = None,
         model: str | None = None,
         stop_event: asyncio.Event | None = None,
+        session_id: str | None = None,
+        workspace_id: str | None = None,
+        provider_id: str | None = None,
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -224,6 +239,23 @@ class AgentLoop:
         provider_default_model = getattr(active_provider, "model", "")
         effective_system_prompt = self._system_prompt_with_tool_guidance(
             system_prompt, tools
+        )
+
+        # Canonical run ledger (Phase 1): best-effort dual-write of this run's
+        # event stream + receipts. run_id reuses trace_id so log ↔ ledger
+        # join is trivial; falls back to a uuid when metrics is absent.
+        run_context = AgentRunContext(
+            run_id=trace.trace_id if trace else uuid4().hex,
+            trace_id=trace.trace_id if trace else "",
+            session_id=session_id,
+            workspace_id=workspace_id,
+            provider_id=provider_id,
+        )
+        recorder = RunRecorder(self.run_store, run_context)
+        await recorder.run_started(
+            user_message=user_message,
+            model=model or provider_default_model,
+            api_family=getattr(active_provider, "api_family", ""),
         )
 
         logger.debug(
@@ -276,6 +308,9 @@ class AgentLoop:
                         step=max(step - 1, 0),
                         terminal_state="cancelled",
                         reason="cancelled",
+                    )
+                    await recorder.terminal(
+                        terminal_state="cancelled", reason="cancelled"
                     )
                     yield LoopEvent(
                         type="done",
@@ -354,6 +389,14 @@ class AgentLoop:
                         type="text", text=display or None, reasoning=reasoning
                     )
 
+                await recorder.assistant_output(
+                    step=step,
+                    content=display or "",
+                    finish_reason=response.finish_reason or "",
+                    tool_call_count=len(response.tool_calls),
+                    protocol_anomaly=response.tool_protocol_anomaly or "",
+                )
+
                 if not response.tool_calls:
                     self._log_terminal_without_tool_calls(
                         response=response,
@@ -392,6 +435,11 @@ class AgentLoop:
                         tool_call_count=0,
                         protocol_anomaly=protocol_anomaly,
                     )
+                    await recorder.terminal(
+                        terminal_state="completed",
+                        reason=completion_reason,
+                        finish_reason=response.finish_reason or "",
+                    )
                     yield LoopEvent(
                         type="done",
                         final_response=display,
@@ -409,6 +457,9 @@ class AgentLoop:
                         step=step,
                         terminal_state="cancelled",
                         reason="cancelled",
+                    )
+                    await recorder.terminal(
+                        terminal_state="cancelled", reason="cancelled"
                     )
                     yield LoopEvent(
                         type="done",
@@ -443,6 +494,7 @@ class AgentLoop:
                     tools=tools,
                     step=step,
                     trace=trace,
+                    recorder=recorder,
                 )
                 tool_messages.extend(executed_messages)
                 active_turn_messages.extend(executed_messages)
@@ -484,6 +536,9 @@ class AgentLoop:
                 reason="max_steps_reached",
                 tool_call_count=0,
             )
+            await recorder.terminal(
+                terminal_state="incomplete", reason="max_steps_reached"
+            )
             yield LoopEvent(
                 type="done",
                 final_response=final_fallback,
@@ -518,6 +573,11 @@ class AgentLoop:
                 terminal_state="failed",
                 reason="provider_error",
             )
+            await recorder.terminal(
+                terminal_state="failed",
+                reason="provider_error",
+                failure_code=exc.code,
+            )
             fallback = assistant_messages[-1].content if assistant_messages else ""
             if not fallback:
                 fallback = self.config.provider_error_template.format(code=exc.code)
@@ -531,6 +591,11 @@ class AgentLoop:
                 error=exc.code,
                 total_usage=total_usage,
             )
+        finally:
+            # Guarantee the ledger run is finalized even if an unexpected
+            # exception escapes the known exit paths. A no-op when an exit
+            # path already recorded a terminal event.
+            await recorder.ensure_finalized()
 
     def _record_terminal_outcome(
         self,
@@ -879,6 +944,7 @@ class AgentLoop:
         tools: list[ToolDefinition] | None,
         step: int = 0,
         trace: Trace | None = None,
+        recorder: RunRecorder | None = None,
     ) -> list[ContextMessage]:
         messages: list[ContextMessage] = []
 
@@ -923,8 +989,14 @@ class AgentLoop:
                         result=validation_error,
                     )
                 )
+                if recorder is not None:
+                    await recorder.end_tool_call(
+                        tool_call, validation_error, attempt=0, phase="prepare_failed"
+                    )
                 continue
 
+            if recorder is not None:
+                await recorder.begin_tool_call(tool_call)
             result, attempt, phase = await self._execute_tool_with_lifecycle(
                 tool_call, step=step, trace=trace
             )
@@ -936,6 +1008,10 @@ class AgentLoop:
                     result=result,
                 )
             )
+            if recorder is not None:
+                await recorder.end_tool_call(
+                    tool_call, result, attempt=attempt, phase=phase
+                )
         return messages
 
     async def _execute_tool_with_lifecycle(
