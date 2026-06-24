@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -41,6 +44,7 @@ from nahida_bot.core.router import MessageRouter
 from nahida_bot.plugins.base import (
     InboundAttachment,
     InboundMessage,
+    MediaDownloadResult,
     OutboundMessage,
     Plugin,
 )
@@ -65,6 +69,7 @@ class MilkyPlugin(Plugin):
         self._outbound_converter: MilkyOutboundConverter | None = None
         self._self_id = 0
         self._scene_by_peer: OrderedDict[str, str] = OrderedDict()
+        self._file_context_cache: OrderedDict[str, dict[str, object]] = OrderedDict()
         self._login_info_task: asyncio.Task[None] | None = None
 
     @property
@@ -123,6 +128,7 @@ class MilkyPlugin(Plugin):
         await self._event_stream.start()
         if self.config.enable_media_download_tool:
             self._register_resource_tool()
+            self._register_file_download_tool()
         logger.info("milky.event_stream_started", channel=self.channel_id)
 
     async def on_disable(self) -> None:
@@ -203,6 +209,11 @@ class MilkyPlugin(Plugin):
             )
             return
 
+        # Resolve file download URLs only for messages that pass the
+        # policy gate, so that filtered-out messages never trigger
+        # API calls or eager downloads.
+        inbound = await self._resolve_file_attachment_urls(inbound)
+
         scene = str(data.get("message_scene") or "")
         if scene:
             self._remember_scene(inbound.chat_id, scene)
@@ -278,6 +289,30 @@ class MilkyPlugin(Plugin):
             )
             return
 
+        # Apply allowlist filter (same logic as converter._is_allowed).
+        if inbound.is_group:
+            if (
+                self._config.allowed_groups
+                and inbound.chat_id not in self._config.allowed_groups
+            ):
+                logger.debug(
+                    "milky.file_upload_not_allowed",
+                    channel=self.channel_id,
+                    chat_id=inbound.chat_id,
+                )
+                return
+        else:
+            if (
+                self._config.allowed_friends
+                and inbound.chat_id not in self._config.allowed_friends
+            ):
+                logger.debug(
+                    "milky.file_upload_not_allowed",
+                    channel=self.channel_id,
+                    chat_id=inbound.chat_id,
+                )
+                return
+
         decision = GroupInteractionPolicy(
             mode=self.config.group_trigger_mode,
             observe_untriggered=self.config.group_context_capture,
@@ -302,6 +337,10 @@ class MilkyPlugin(Plugin):
                 mentions_bot=inbound.mentions_bot,
             )
             return
+
+        # Resolve file download URLs only for events that pass the
+        # policy gate.
+        inbound = await self._resolve_file_attachment_urls(inbound)
 
         scene = "group" if inbound.is_group else "friend"
         self._remember_scene(inbound.chat_id, scene)
@@ -713,6 +752,362 @@ class MilkyPlugin(Plugin):
             _handler,
         )
 
+    # -- file attachment URL resolution ---------------------------------
+
+    _MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+    async def _resolve_file_attachment_urls(
+        self, inbound: InboundMessage
+    ) -> InboundMessage:
+        """Resolve download URLs for file attachments and cache context.
+
+        Always caches file context so that ``download_media()`` works for
+        every file attachment (including file-upload events that already
+        carry a ``download_url``).
+        """
+        resolved: list[InboundAttachment] = []
+        changed = False
+        for att in inbound.attachments:
+            if att.kind == "file" and att.platform_id:
+                self._cache_file_context(att)
+                if not att.url:
+                    url = await self._get_file_download_url(att)
+                    if url:
+                        att = replace(att, url=url)
+                        changed = True
+                        logger.debug(
+                            "milky.file_url_resolved",
+                            file_id=att.platform_id,
+                            file_name=att.metadata.get("file_name", ""),
+                        )
+                # Eager-download for any file attachment that hasn't been
+                # persisted yet, regardless of whether the URL came from
+                # the event or was just resolved above.
+                if self._config.cache_media_on_receive and not att.path:
+                    downloaded = await self._eager_download_attachment(att)
+                    if downloaded.path:
+                        att = downloaded
+                        changed = True
+            resolved.append(att)
+        if not changed:
+            return inbound
+        return replace(inbound, attachments=resolved)
+
+    async def _eager_download_attachment(
+        self, att: InboundAttachment
+    ) -> InboundAttachment:
+        """Download file content eagerly so the attachment carries a local path."""
+        file_name = coerce_str(att.metadata.get("file_name"))
+        if att.url:
+            # Direct download from existing URL (avoids extra API call)
+            result = await self._stream_download_url(
+                att.url, file_name=file_name, file_id=att.platform_id
+            )
+        else:
+            result = await self.download_media(att.platform_id, file_name=file_name)
+        if result is not None and result.path:
+            return replace(
+                att,
+                path=result.path,
+                mime_type=result.mime_type or att.mime_type,
+                file_size=result.file_size or att.file_size,
+            )
+        return att
+
+    def _cache_file_context(self, att: InboundAttachment) -> None:
+        """Store file resolution context for later ``download_media()`` calls."""
+        meta = att.metadata
+        scene = coerce_str(meta.get("_milky_scene"))
+        # File upload events carry group_id / user_id directly.
+        if not scene:
+            if meta.get("group_id"):
+                scene = "group"
+            elif meta.get("user_id"):
+                scene = "friend"
+        peer_id = coerce_str(
+            meta.get("_milky_peer_id") or meta.get("group_id") or meta.get("user_id")
+        )
+        if not att.platform_id or not peer_id:
+            return
+        self._file_context_cache[att.platform_id] = {
+            "scene": scene,
+            "peer_id": peer_id,
+            "file_hash": coerce_str(meta.get("file_hash")),
+        }
+        self._file_context_cache.move_to_end(att.platform_id)
+        while len(self._file_context_cache) > self._config.scene_cache_size:
+            self._file_context_cache.popitem(last=False)
+
+    async def _get_file_download_url(self, att: InboundAttachment) -> str:
+        """Get a download URL for a file attachment via the Milky API."""
+        meta = att.metadata
+        scene = coerce_str(meta.get("_milky_scene"))
+        if not scene:
+            if meta.get("group_id"):
+                scene = "group"
+            else:
+                scene = "friend"
+        peer_id_str = coerce_str(
+            meta.get("_milky_peer_id") or meta.get("group_id") or meta.get("user_id")
+        )
+        file_id = att.platform_id
+        file_hash = coerce_str(meta.get("file_hash"))
+
+        if not peer_id_str or not file_id:
+            return ""
+
+        try:
+            peer_id = int(peer_id_str)
+        except (ValueError, TypeError):
+            return ""
+
+        client = self._ensure_client()
+        try:
+            if scene == "group":
+                return await client.get_group_file_download_url(
+                    group_id=peer_id, file_id=file_id
+                )
+            return await client.get_private_file_download_url(
+                user_id=peer_id, file_id=file_id, file_hash=file_hash
+            )
+        except Exception:
+            logger.warning(
+                "milky.file_url_failed",
+                file_id=file_id,
+                scene=scene,
+                peer_id=peer_id_str,
+            )
+            return ""
+
+    async def download_media(
+        self, file_id: str, *, file_name: str = ""
+    ) -> MediaDownloadResult | None:
+        """Download a file from Milky by platform ``file_id``.
+
+        Only accepts Milky file IDs (not arbitrary URLs).  The file context
+        must have been cached by a prior inbound message or file-upload event.
+        """
+        ctx = self._file_context_cache.get(file_id)
+        if ctx is None:
+            logger.warning(
+                "milky.download_media_no_context",
+                file_id=file_id,
+            )
+            return None
+
+        scene = str(ctx.get("scene", ""))
+        peer_id_str = str(ctx.get("peer_id", ""))
+        file_hash = str(ctx.get("file_hash", ""))
+
+        if not peer_id_str:
+            return None
+
+        try:
+            peer_id = int(peer_id_str)
+        except (ValueError, TypeError):
+            return None
+
+        client = self._ensure_client()
+        try:
+            if scene == "group":
+                url = await client.get_group_file_download_url(
+                    group_id=peer_id, file_id=file_id
+                )
+            else:
+                url = await client.get_private_file_download_url(
+                    user_id=peer_id,
+                    file_id=file_id,
+                    file_hash=file_hash,
+                )
+        except Exception:
+            logger.warning(
+                "milky.download_media_url_failed",
+                file_id=file_id,
+            )
+            return None
+
+        if not url:
+            return None
+
+        return await self._stream_download_url(
+            url, file_name=file_name, file_id=file_id
+        )
+
+    async def _stream_download_url(
+        self, url: str, *, file_name: str, file_id: str
+    ) -> MediaDownloadResult | None:
+        """Download *url* with SSRF protection, size limit, and atomic write."""
+        import hashlib
+        import ipaddress
+        import socket
+        import tempfile
+
+        import httpx
+        from urllib.parse import urlparse
+
+        # --- SSRF / host validation ---------------------------------------
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        if not parsed.hostname:
+            return None
+        host = parsed.hostname.strip().lower()
+        if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+            return None
+        try:
+            addr = ipaddress.ip_address(host)
+            if _is_disallowed_ip(addr):
+                return None
+        except ValueError:
+            try:
+                infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+            except socket.gaierror:
+                return None
+            for info in infos:
+                raw_addr = info[4][0] if info[4] else ""
+                if not raw_addr:
+                    continue
+                try:
+                    if _is_disallowed_ip(ipaddress.ip_address(raw_addr)):
+                        return None
+                except ValueError:
+                    continue
+
+        # --- Build unique destination path --------------------------------
+        media_dir = Path(self._config.media_download_dir)
+        media_dir.mkdir(parents=True, exist_ok=True)
+
+        hash_prefix = hashlib.sha256((file_id or url).encode()).hexdigest()[:16]
+        safe_name = (
+            _safe_filename(file_name, fallback="download")
+            if file_name
+            else _safe_filename(
+                _extract_filename_from_url(url),
+                fallback=hash_prefix + ".dat",
+            )
+        )
+        dest_path = media_dir / f"{hash_prefix}_{safe_name}"
+
+        # --- Stream to temp file, then atomically rename ------------------
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                async with http_client.stream(
+                    "GET", url, follow_redirects=False
+                ) as response:
+                    response.raise_for_status()
+
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            if int(content_length) > self._MAX_DOWNLOAD_BYTES:
+                                logger.warning(
+                                    "milky.download_too_large",
+                                    file_id=file_id,
+                                    content_length=int(content_length),
+                                    max_bytes=self._MAX_DOWNLOAD_BYTES,
+                                )
+                                return None
+                        except ValueError:
+                            pass
+
+                    tmp_fd, tmp_path = tempfile.mkstemp(
+                        suffix=".tmp", dir=str(media_dir)
+                    )
+                    download_ok = False
+                    try:
+                        written = 0
+                        async for chunk in response.aiter_bytes():
+                            written += len(chunk)
+                            if written > self._MAX_DOWNLOAD_BYTES:
+                                break
+                            os.write(tmp_fd, chunk)
+                        else:
+                            download_ok = True
+                    finally:
+                        os.close(tmp_fd)
+                        if not download_ok:
+                            try:
+                                os.unlink(tmp_path)
+                            except OSError:
+                                pass
+
+                    if not download_ok:
+                        logger.warning(
+                            "milky.download_too_large",
+                            file_id=file_id,
+                            max_bytes=self._MAX_DOWNLOAD_BYTES,
+                        )
+                        return None
+
+            os.replace(tmp_path, str(dest_path))
+            file_size = dest_path.stat().st_size
+            mime_type = response.headers.get("content-type", "")
+
+            logger.info(
+                "milky.file_downloaded",
+                file_id=file_id,
+                path=str(dest_path),
+                file_size=file_size,
+            )
+            return MediaDownloadResult(
+                path=str(dest_path),
+                file_name=dest_path.name,
+                mime_type=mime_type,
+                file_size=file_size,
+            )
+        except Exception as exc:
+            logger.warning(
+                "milky.download_media_failed",
+                file_id=file_id,
+                error=str(exc),
+            )
+            return None
+
+    def _register_file_download_tool(self) -> None:
+        """Register ``milky_download_file`` tool for the agent."""
+
+        async def _handler(*, file_id: str, file_name: str = "") -> str:
+            result = await self.download_media(file_id, file_name=file_name)
+            if result is None:
+                return json.dumps({"error": f"Failed to download file: {file_id}"})
+            return json.dumps(
+                {
+                    "path": result.path,
+                    "file_name": result.file_name,
+                    "mime_type": result.mime_type,
+                    "file_size": result.file_size,
+                }
+            )
+
+        self.api.register_tool(
+            "milky_download_file",
+            "Download a file from Milky (QQ) by file_id. "
+            "The file_id comes from a [File: name=..., file_id=...] segment "
+            "in a received message. Returns the local path, file name, "
+            "MIME type, and file size of the downloaded file.",
+            {
+                "type": "object",
+                "properties": {
+                    "file_id": {
+                        "type": "string",
+                        "description": (
+                            "The Milky file_id from a file segment "
+                            "in a received message."
+                        ),
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": (
+                            "Optional filename hint for the downloaded file."
+                        ),
+                    },
+                },
+                "required": ["file_id"],
+                "additionalProperties": False,
+            },
+            _handler,
+        )
+
 
 def _pick_int(mapping: dict[str, Any], *keys: str) -> int:
     for key in keys:
@@ -791,3 +1186,41 @@ def _render_file_upload_text(
 ) -> str:
     name = file_name or "<unknown>"
     return f"[File: name={name}, file_id={file_id}, size={file_size}]"
+
+
+def _is_disallowed_ip(addr: object) -> bool:
+    """Return True if *addr* is private, loopback, link-local, etc."""
+    # Accept both ipaddress objects and raw address strings.
+    if isinstance(addr, str):
+        import ipaddress
+
+        try:
+            addr = ipaddress.ip_address(addr)
+        except ValueError:
+            return True
+    return (
+        getattr(addr, "is_private", False)
+        or getattr(addr, "is_loopback", False)
+        or getattr(addr, "is_link_local", False)
+        or getattr(addr, "is_multicast", False)
+        or getattr(addr, "is_reserved", False)
+        or getattr(addr, "is_unspecified", False)
+    )
+
+
+def _extract_filename_from_url(url: str) -> str:
+    """Extract a plausible filename from a URL path."""
+    path = re.sub(r"[?#].*$", "", url)
+    name = os.path.basename(path)
+    if name and "." in name:
+        return name
+    return ""
+
+
+def _safe_filename(name: str, *, fallback: str) -> str:
+    """Return a single safe filename component for media output."""
+    candidate = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    candidate = re.sub(r"[\x00-\x1f<>:\"|?*]", "_", candidate)
+    if candidate in {"", ".", ".."}:
+        candidate = fallback
+    return candidate

@@ -101,6 +101,19 @@ class MilkyMessageConverter:
             return None
 
         attachments = self._extract_attachments(segments)
+        # Enrich file attachments with Milky scene/peer context so that
+        # downstream URL resolution knows whether to call the group or
+        # private file-download API.
+        for i, att in enumerate(attachments):
+            if att.kind == "file" and not att.url and scene and peer_id:
+                attachments[i] = replace(
+                    att,
+                    metadata={
+                        **att.metadata,
+                        "_milky_scene": scene,
+                        "_milky_peer_id": peer_id,
+                    },
+                )
         sender_context = sender_context_from_values(
             display_name=self._sender_display_name(message_data),
             platform_user_id=sender_id or "0",

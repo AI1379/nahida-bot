@@ -40,6 +40,7 @@ class MediaPolicy:
     """Configuration for media validation and caching."""
 
     max_image_bytes: int = 10 * 1024 * 1024
+    max_file_bytes: int = 50 * 1024 * 1024
     supported_mime_types: tuple[str, ...] = ("image/jpeg", "image/png", "image/webp")
     max_images_per_turn: int = 4
     cache_ttl_seconds: int = 3600
@@ -146,7 +147,9 @@ class MediaResolver:
                 file_size=size,
             )
 
-        b64 = self.encode_base64(data)
+        # Only base64-encode images; large non-image files should not be
+        # read entirely into memory for encoding that will never be used.
+        b64 = self.encode_base64(data) if mime and mime.startswith("image/") else ""
         return ResolvedMedia(
             local_path=str(path),
             base64_data=b64,
@@ -178,7 +181,11 @@ class MediaResolver:
                         file_size=size,
                     )
                 width, height = self._read_image_dimensions(data, mime)
-                b64 = self.encode_base64(data)
+                b64 = (
+                    self.encode_base64(data)
+                    if mime and mime.startswith("image/")
+                    else ""
+                )
                 return ResolvedMedia(
                     local_path=cached,
                     base64_data=b64,
@@ -226,7 +233,7 @@ class MediaResolver:
 
         size = len(data)
         width, height = self._read_image_dimensions(data, mime)
-        b64 = self.encode_base64(data)
+        b64 = self.encode_base64(data) if mime and mime.startswith("image/") else ""
 
         return ResolvedMedia(
             local_path=cached_path,
@@ -240,13 +247,17 @@ class MediaResolver:
         )
 
     def _validate(self, data: bytes, mime_type: str) -> bool:
-        if (
-            self._policy.max_image_bytes > 0
-            and len(data) > self._policy.max_image_bytes
-        ):
-            return False
-        if mime_type and mime_type not in self._policy.supported_mime_types:
-            return False
+        # Only apply image-specific checks to image MIME types.
+        # Non-image files (documents, audio, etc.) are allowed through
+        # so that channels like Milky can cache them for the agent.
+        if mime_type and mime_type.startswith("image/"):
+            if (
+                self._policy.max_image_bytes > 0
+                and len(data) > self._policy.max_image_bytes
+            ):
+                return False
+            if mime_type not in self._policy.supported_mime_types:
+                return False
         return True
 
     @staticmethod
@@ -299,8 +310,13 @@ class MediaResolver:
         try:
             async with client.stream("GET", url, follow_redirects=False) as response:
                 response.raise_for_status()
-                data = await self._read_limited_response(response)
                 mime = response.headers.get("content-type", "").split(";")[0].strip()
+                # Image content → max_image_bytes; everything else → max_file_bytes.
+                if mime.startswith("image/"):
+                    limit = self._policy.max_image_bytes
+                else:
+                    limit = self._policy.max_file_bytes
+                data = await self._read_limited_response(response, limit=limit)
                 if not mime:
                     mime = self._detect_mime(data)
                 return data, mime
@@ -308,8 +324,9 @@ class MediaResolver:
             if self._client is None:
                 await client.aclose()
 
-    async def _read_limited_response(self, response: httpx.Response) -> bytes:
-        limit = self._policy.max_image_bytes
+    async def _read_limited_response(
+        self, response: httpx.Response, *, limit: int = 0
+    ) -> bytes:
         content_length = response.headers.get("content-length")
         if limit > 0 and content_length:
             try:
