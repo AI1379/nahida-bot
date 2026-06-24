@@ -4,13 +4,16 @@
 # ── 应用 ──────────────────────────────────────────────
 app_name: "Nahida Bot"
 debug: false
-log_level: "INFO"        # DEBUG / INFO / WARNING / ERROR
+log_level: "INFO"        # DEBUG / INFO / WARNING / ERROR（控制台级别）
 # log_json: true          # 设为 true 输出 JSON 格式日志（生产环境推荐）
-# log_file: "./data/logs/nahida.log"  # 可选：把应用日志写入文件，不需要 tee
-# log_file_level: "DEBUG"             # 可选：文件日志级别；默认跟随 log_level
-# log_file_json: true                 # 文件日志默认使用 JSON Lines
+# 可复盘基线（agent-loop 修复 Phase 0）：默认把应用日志落盘到 JSON Lines 文件，
+# 文件级别 DEBUG 以便保留 agent_loop.run_completed 的 terminal_state/reason、
+# provider 协议异常、context 来源等字段。控制台仍保持 INFO，不被 DEBUG 刷屏。
+log_file: "./data/logs/nahida.log"
+log_file_level: "DEBUG"
+log_file_json: true
 dependency_log_level: "WARNING"       # 三方库默认日志级别；避免 DEBUG 时被 httpx/websockets 等刷屏
-# logger_levels:                      # 可选：按 logger 名覆盖，适合只打开某个子系统
+# logger_levels:                      # 可选：按 logger 名覆盖（注意：会同时作用于控制台与文件）
 #   nahida_bot.agent: "DEBUG"
 #   plugin.rss-notifier: "DEBUG"
 #   httpx: "WARNING"

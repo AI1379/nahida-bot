@@ -289,7 +289,12 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
         # --- Extract usage statistics ---
         usage = self._parse_usage(body)
 
-        if finish_reason == "tool_calls" and not tool_calls:
+        tool_protocol_anomaly = (
+            "tool_finish_without_parsed_calls"
+            if finish_reason == "tool_calls" and not tool_calls
+            else None
+        )
+        if tool_protocol_anomaly is not None:
             logger.warning(
                 "provider.openai_compatible.tool_finish_without_parsed_calls",
                 provider_name=self.name,
@@ -321,6 +326,7 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
             reasoning_content=reasoning_content,
             refusal=refusal,
             usage=usage,
+            tool_protocol_anomaly=tool_protocol_anomaly,
         )
 
     def _raise_for_status(self, response: httpx.Response) -> None:

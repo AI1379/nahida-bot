@@ -660,6 +660,8 @@ class SessionRunner:
                 "session_runner.agent_run_done",
                 session_id=session_id,
                 trace_id=done_data.get("trace_id"),
+                provider_id=provider_slot.id if provider_slot is not None else "",
+                effective_model=effective_model,
                 steps=done_data.get("steps"),
                 error=done_data.get("error"),
                 response_chars=len(str(done_data.get("final_response", ""))),

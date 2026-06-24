@@ -640,7 +640,12 @@ class AnthropicProvider(ChatProvider):
             block.get("type") if isinstance(block, dict) else type(block).__name__
             for block in content_blocks
         ]
-        if finish_reason == "tool_calls" and not tool_calls:
+        tool_protocol_anomaly = (
+            "tool_finish_without_parsed_calls"
+            if finish_reason == "tool_calls" and not tool_calls
+            else None
+        )
+        if tool_protocol_anomaly is not None:
             logger.warning(
                 "provider.anthropic.tool_finish_without_parsed_calls",
                 provider_name=self.name,
@@ -673,6 +678,7 @@ class AnthropicProvider(ChatProvider):
             has_redacted_thinking=has_redacted_thinking,
             refusal=refusal,
             usage=usage,
+            tool_protocol_anomaly=tool_protocol_anomaly,
         )
 
     def _parse_tool_use_block(self, block: dict[str, object]) -> ToolCall | None:

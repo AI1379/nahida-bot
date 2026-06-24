@@ -535,3 +535,53 @@ async def test_openai_provider_serializes_assistant_tool_calls_from_metadata(
     assert (
         assistant_message["tool_calls"][0]["function"]["arguments"] == '{"q": "nahida"}'
     )
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_flags_tool_protocol_anomaly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """finish_reason=tool_calls with no parseable calls must surface a structured flag.
+
+    Regression guard for the agent-loop repair Phase 0: this signal used to be a
+    warning log only. It now lives on ``ProviderResponse.tool_protocol_anomaly``
+    so the loop can count it instead of silently completing.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "I will check that.",
+                        # finish_reason says tool_calls, but none are present.
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        return httpx.Response(200, json=payload)
+
+    transport = _build_transport(handler)
+
+    class _MockClient(httpx.AsyncClient):
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(
+        "nahida_bot.agent.providers.openai_compatible.httpx.AsyncClient", _MockClient
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.com/v1",
+        api_key="x",
+        model="gpt-test",
+    )
+    result = await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert result.tool_calls == []
+    assert result.finish_reason == "tool_calls"
+    assert result.tool_protocol_anomaly == "tool_finish_without_parsed_calls"

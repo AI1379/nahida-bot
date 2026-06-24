@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from nahida_bot.agent.media.cache import MediaCache
+from nahida_bot.agent.metrics import MetricsCollector
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.config import Settings, load_settings
 from nahida_bot.core.events import (
@@ -111,6 +112,9 @@ class Application:
         self.webhost_service: WebHostService = WebHostService()
         self._usage_ledger: UsageRecorder | None = None
         self._media_cache: MediaCache | None = None
+        # Agent-loop observability. Wired into AgentLoop so every run gets a
+        # non-empty trace_id and terminal-outcome counters (repair Phase 0).
+        self._metrics: MetricsCollector = MetricsCollector()
         self.temp_file_service: Any | None = None
         self.task_manager = TaskManager()
 
@@ -399,6 +403,7 @@ class Application:
             self.agent_loop = AgentLoop(
                 provider=default_slot.provider,
                 context_builder=default_slot.context_builder,
+                metrics=self._metrics,
                 config=AgentLoopConfig(
                     max_steps=self.settings.agent.max_steps,
                     provider_timeout_seconds=self.settings.agent.provider_timeout_seconds,
@@ -411,7 +416,6 @@ class Application:
                     tool_use_system_prompt=self.settings.agent.tool_use_system_prompt,
                     provider_error_template=self.settings.agent.provider_error_template,
                 ),
-                # Inject lazy — wired after _init_webapi creates the recorder
             )
         else:
             logger.warning(

@@ -271,6 +271,12 @@ class AgentLoop:
         try:
             for step in range(1, self.config.max_steps + 1):
                 if stop_event is not None and stop_event.is_set():
+                    self._record_terminal_outcome(
+                        trace=trace,
+                        step=max(step - 1, 0),
+                        terminal_state="cancelled",
+                        reason="cancelled",
+                    )
                     yield LoopEvent(
                         type="done",
                         final_response=(
@@ -355,17 +361,36 @@ class AgentLoop:
                         step=step,
                         trace=trace,
                     )
+                    protocol_anomaly = response.tool_protocol_anomaly or ""
+                    # Distinguish a run that ended after tool results were
+                    # produced from one that never called a tool at all. The
+                    # latter is the #21 candidate pool (claim-without-calling).
+                    completion_reason = (
+                        "tool_calls_completed" if tool_messages else "no_tool_calls"
+                    )
                     logger.info(
                         "agent_loop.run_completed",
                         trace_id=trace.trace_id if trace else "",
-                        reason="no_tool_calls",
+                        reason=completion_reason,
+                        terminal_state="completed",
                         step=step,
                         max_steps=self.config.max_steps,
                         finish_reason=response.finish_reason or "",
+                        tool_call_count=0,
+                        protocol_anomaly=protocol_anomaly,
                         total_input_tokens=total_usage.input_tokens,
                         total_output_tokens=total_usage.output_tokens,
                         total_cached_tokens=total_usage.cached_tokens,
                         total_reasoning_tokens=total_usage.reasoning_tokens,
+                    )
+                    self._record_terminal_outcome(
+                        trace=trace,
+                        step=step,
+                        terminal_state="completed",
+                        reason=completion_reason,
+                        finish_reason=response.finish_reason or "",
+                        tool_call_count=0,
+                        protocol_anomaly=protocol_anomaly,
                     )
                     yield LoopEvent(
                         type="done",
@@ -379,6 +404,12 @@ class AgentLoop:
                     return
 
                 if stop_event is not None and stop_event.is_set():
+                    self._record_terminal_outcome(
+                        trace=trace,
+                        step=step,
+                        terminal_state="cancelled",
+                        reason="cancelled",
+                    )
                     yield LoopEvent(
                         type="done",
                         final_response=display or "",
@@ -436,6 +467,7 @@ class AgentLoop:
                 "agent_loop.run_completed",
                 trace_id=trace.trace_id if trace else "",
                 reason="max_steps_reached",
+                terminal_state="incomplete",
                 step=self.config.max_steps,
                 max_steps=self.config.max_steps,
                 assistant_message_count=len(assistant_messages),
@@ -444,6 +476,13 @@ class AgentLoop:
                 total_output_tokens=total_usage.output_tokens,
                 total_cached_tokens=total_usage.cached_tokens,
                 total_reasoning_tokens=total_usage.reasoning_tokens,
+            )
+            self._record_terminal_outcome(
+                trace=trace,
+                step=self.config.max_steps,
+                terminal_state="incomplete",
+                reason="max_steps_reached",
+                tool_call_count=0,
             )
             yield LoopEvent(
                 type="done",
@@ -464,6 +503,7 @@ class AgentLoop:
                 "agent_loop.run_completed",
                 trace_id=trace.trace_id if trace else "",
                 reason="provider_error",
+                terminal_state="failed",
                 step=step,
                 max_steps=self.config.max_steps,
                 error_code=exc.code,
@@ -471,6 +511,12 @@ class AgentLoop:
                 total_output_tokens=total_usage.output_tokens,
                 total_cached_tokens=total_usage.cached_tokens,
                 total_reasoning_tokens=total_usage.reasoning_tokens,
+            )
+            self._record_terminal_outcome(
+                trace=trace,
+                step=step,
+                terminal_state="failed",
+                reason="provider_error",
             )
             fallback = assistant_messages[-1].content if assistant_messages else ""
             if not fallback:
@@ -485,6 +531,35 @@ class AgentLoop:
                 error=exc.code,
                 total_usage=total_usage,
             )
+
+    def _record_terminal_outcome(
+        self,
+        *,
+        trace: Trace | None,
+        step: int,
+        terminal_state: str,
+        reason: str,
+        finish_reason: str = "",
+        tool_call_count: int = 0,
+        protocol_anomaly: str = "",
+    ) -> None:
+        """Record terminal-outcome telemetry (agent-loop repair Phase 0).
+
+        Pure observability: bumps metrics counters only. It never changes the
+        emitted ``LoopEvent`` or the returned ``AgentRunResult`` — Phase 0 keeps
+        today's behaviour identical and only makes *why* a run ended queryable.
+        """
+        if trace is None or self.metrics is None:
+            return
+        self.metrics.record_terminal_outcome(
+            trace,
+            step=step,
+            terminal_state=terminal_state,
+            reason=reason,
+            finish_reason=finish_reason,
+            tool_call_count=tool_call_count,
+            protocol_anomaly=protocol_anomaly,
+        )
 
     def _system_prompt_with_tool_guidance(
         self,

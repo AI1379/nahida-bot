@@ -86,6 +86,26 @@ class CacheUsageRecord:
     total_input_tokens: int
 
 
+@dataclass(slots=True, frozen=True)
+class TerminalOutcomeRecord:
+    """Snapshot of how a single agent loop run terminated.
+
+    Phase 0 of the agent-loop repair only *records* terminal outcomes for
+    observability; it does not change the public ``LoopEvent`` / ``AgentRunResult``
+    types or any user-facing behaviour. ``terminal_state`` classifies the exit
+    path (completed / incomplete / failed / cancelled) and ``reason`` gives the
+    finer cause (e.g. ``no_tool_calls``, ``max_steps_reached``).
+    """
+
+    trace_id: str
+    step: int
+    terminal_state: str
+    reason: str
+    finish_reason: str = ""
+    tool_call_count: int = 0
+    protocol_anomaly: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Trace – one per AgentLoop.run() invocation
 # ---------------------------------------------------------------------------
@@ -104,6 +124,8 @@ class Trace:
     media_resolves: list[MediaResolveRecord] = field(default_factory=list)
     image_fallbacks: list[ImageFallbackRecord] = field(default_factory=list)
     cache_usage: list[CacheUsageRecord] = field(default_factory=list)
+    # Single terminal outcome per run; None until the run records one.
+    terminal_outcome: TerminalOutcomeRecord | None = None
 
     @property
     def total_duration_seconds(self) -> float:
@@ -127,6 +149,11 @@ class MetricsCollector:
     def __init__(self, *, max_traces: int = 100) -> None:
         self._max_traces = max_traces
         self._traces: list[Trace] = []
+        # Application-wide labeled counters for terminal outcomes and protocol
+        # anomalies. Keyed by (terminal_state, reason). These persist across
+        # trace eviction so long-run totals stay queryable.
+        self._terminal_counters: dict[tuple[str, str], int] = {}
+        self._protocol_anomaly_total: int = 0
 
     def new_trace(self) -> Trace:
         trace = Trace()
@@ -253,6 +280,37 @@ class MetricsCollector:
             )
         )
 
+    def record_terminal_outcome(
+        self,
+        trace: Trace,
+        *,
+        step: int,
+        terminal_state: str,
+        reason: str,
+        finish_reason: str = "",
+        tool_call_count: int = 0,
+        protocol_anomaly: str = "",
+    ) -> None:
+        """Record how a run terminated and bump application-wide counters.
+
+        Called once per run on every exit path. Pure telemetry in Phase 0: it
+        does not influence the loop's emitted events or returned result.
+        """
+        record = TerminalOutcomeRecord(
+            trace_id=trace.trace_id,
+            step=step,
+            terminal_state=terminal_state,
+            reason=reason,
+            finish_reason=finish_reason,
+            tool_call_count=tool_call_count,
+            protocol_anomaly=protocol_anomaly,
+        )
+        trace.terminal_outcome = record
+        key = (terminal_state, reason)
+        self._terminal_counters[key] = self._terminal_counters.get(key, 0) + 1
+        if protocol_anomaly:
+            self._protocol_anomaly_total += 1
+
     # -- aggregate queries ------------------------------------------------
 
     @property
@@ -313,6 +371,23 @@ class MetricsCollector:
             rec.total_input_tokens for t in self._traces for rec in t.cache_usage
         )
         return cached / total_input if total_input > 0 else 0.0
+
+    def terminal_outcome_counts(self) -> dict[str, int]:
+        """Return terminal-outcome counts keyed by ``"state:reason"``.
+
+        Captures the #21 signal surface: e.g. ``"completed:no_tool_calls"`` is
+        the pool of runs that ended without any tool call (the candidate set
+        for unverified-completion), regardless of whether that is currently
+        treated as success.
+        """
+        return {
+            f"{state}:{reason}": count
+            for (state, reason), count in self._terminal_counters.items()
+        }
+
+    def protocol_anomaly_total(self) -> int:
+        """Return total runs that hit a provider tool-protocol anomaly."""
+        return self._protocol_anomaly_total
 
     @staticmethod
     def _compute_stats(values: list[float]) -> dict[str, float]:

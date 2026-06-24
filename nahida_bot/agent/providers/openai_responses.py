@@ -705,7 +705,12 @@ class OpenAIResponsesProvider(ChatProvider):
             item.get("type") if isinstance(item, dict) else type(item).__name__
             for item in output_items
         ]
-        if finish_reason == "tool_calls" and not tool_calls:
+        tool_protocol_anomaly = (
+            "tool_finish_without_parsed_calls"
+            if finish_reason == "tool_calls" and not tool_calls
+            else None
+        )
+        if tool_protocol_anomaly is not None:
             logger.warning(
                 "provider.openai_responses.tool_finish_without_parsed_calls",
                 provider_name=self.name,
@@ -737,6 +742,7 @@ class OpenAIResponsesProvider(ChatProvider):
             refusal=refusal,
             usage=usage,
             extra=extra,
+            tool_protocol_anomaly=tool_protocol_anomaly,
         )
 
     def _extract_replay_output(

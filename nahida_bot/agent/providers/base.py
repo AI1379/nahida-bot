@@ -140,6 +140,12 @@ class ProviderResponse:
     # Refusal / safety
     refusal: str | None = None
 
+    # Tool-protocol anomaly (agent-loop repair Phase 0): non-None when the
+    # provider reported a tool-call finish but no calls could be parsed. This
+    # used to be a warning log only; surfacing it here lets the agent loop count
+    # the signal instead of silently treating the turn as a normal completion.
+    tool_protocol_anomaly: str | None = None
+
     # Usage statistics
     usage: TokenUsage | None = None
 

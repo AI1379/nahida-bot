@@ -996,3 +996,203 @@ async def test_agent_loop_stop_event_preserves_partial_messages() -> None:
     ]
     # The loop stopped before consuming the second queued provider response.
     assert provider.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 — terminal-outcome telemetry (observability only, no behaviour change)
+# ---------------------------------------------------------------------------
+
+
+def _metrics_builder() -> ContextBuilder:
+    return ContextBuilder(
+        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_plain_answer_is_completed_no_tool_calls() -> None:
+    """A plain answer with no tool call records completed/no_tool_calls.
+
+    This is the #21 candidate pool: runs that claim completion without ever
+    calling a tool. Phase 0 only *counts* them; it must not change the result.
+    """
+    metrics = MetricsCollector()
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="hello", tool_calls=[])]
+    )
+    loop = AgentLoop(
+        provider=provider, context_builder=_metrics_builder(), metrics=metrics
+    )
+
+    result = await loop.run(user_message="hi", system_prompt="sys")
+
+    assert result.final_response == "hello"  # behaviour unchanged
+    assert result.trace_id is not None
+    assert metrics.terminal_outcome_counts() == {"completed:no_tool_calls": 1}
+    assert metrics.protocol_anomaly_total() == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_after_tools_is_tool_calls_completed() -> None:
+    """A run that executed tools before answering is completed/tool_calls_completed."""
+    metrics = MetricsCollector()
+    provider = _QueuedProvider(
+        responses=[
+            ProviderResponse(
+                content="calling",
+                tool_calls=[
+                    ToolCall(call_id="tc_1", name="read", arguments={"p": "a"})
+                ],
+            ),
+            ProviderResponse(content="done", tool_calls=[]),
+        ]
+    )
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=_metrics_builder(),
+        tool_executor=_RecorderToolExecutor(),
+        metrics=metrics,
+    )
+
+    await loop.run(
+        user_message="hi",
+        system_prompt="sys",
+        tools=[
+            ToolDefinition(
+                name="read",
+                description="read",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    assert metrics.terminal_outcome_counts() == {"completed:tool_calls_completed": 1}
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_records_protocol_anomaly() -> None:
+    """A provider tool-protocol anomaly (finish=tool_calls, none parsed) is counted.
+
+    This is the previously-swallowed signal: the adapter sets
+    ``tool_protocol_anomaly`` and the loop now records it instead of silently
+    treating the turn as a normal completion.
+    """
+    metrics = MetricsCollector()
+    provider = _QueuedProvider(
+        responses=[
+            ProviderResponse(
+                content="I checked it",
+                tool_calls=[],
+                finish_reason="tool_calls",
+                tool_protocol_anomaly="tool_finish_without_parsed_calls",
+            )
+        ]
+    )
+    loop = AgentLoop(
+        provider=provider, context_builder=_metrics_builder(), metrics=metrics
+    )
+
+    result = await loop.run(user_message="hi", system_prompt="sys")
+
+    # Behaviour unchanged: still a "completed" run with the model's text.
+    assert result.final_response == "I checked it"
+    assert metrics.terminal_outcome_counts() == {"completed:no_tool_calls": 1}
+    assert metrics.protocol_anomaly_total() == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_max_steps_is_incomplete() -> None:
+    """Reaching max_steps records incomplete/max_steps_reached, fallback preserved."""
+    metrics = MetricsCollector()
+    provider = _QueuedProvider(
+        responses=[
+            ProviderResponse(
+                content="working",
+                tool_calls=[
+                    ToolCall(call_id="tc_1", name="read", arguments={"p": "a"})
+                ],
+            ),
+            ProviderResponse(
+                content="working more",
+                tool_calls=[
+                    ToolCall(call_id="tc_2", name="read", arguments={"p": "b"})
+                ],
+            ),
+        ]
+    )
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=_metrics_builder(),
+        tool_executor=_RecorderToolExecutor(),
+        config=AgentLoopConfig(max_steps=2),
+        metrics=metrics,
+    )
+
+    result = await loop.run(
+        user_message="hi",
+        system_prompt="sys",
+        tools=[
+            ToolDefinition(
+                name="read",
+                description="read",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    # Regression guard: max_steps still falls back to the last assistant text.
+    assert result.final_response == "working more"
+    assert metrics.terminal_outcome_counts() == {"incomplete:max_steps_reached": 1}
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_provider_error_is_failed() -> None:
+    """A non-retryable provider error records failed/provider_error."""
+    metrics = MetricsCollector()
+    provider = _QueuedProvider(failures=[ProviderAuthError()])
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=_metrics_builder(),
+        config=AgentLoopConfig(retry_attempts=0),
+        metrics=metrics,
+    )
+
+    await loop.run(user_message="hi", system_prompt="sys")
+
+    assert metrics.terminal_outcome_counts() == {"failed:provider_error": 1}
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_stop_event_is_cancelled() -> None:
+    """A graceful stop records cancelled/cancelled."""
+    metrics = MetricsCollector()
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="hello", tool_calls=[])]
+    )
+    loop = AgentLoop(
+        provider=provider, context_builder=_metrics_builder(), metrics=metrics
+    )
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    async for _event in loop.run_stream(
+        user_message="hi", system_prompt="sys", stop_event=stop_event
+    ):
+        pass
+
+    assert metrics.terminal_outcome_counts() == {"cancelled:cancelled": 1}
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_not_recorded_without_metrics() -> None:
+    """Without a metrics collector the loop behaves exactly as before."""
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="hello", tool_calls=[])]
+    )
+    loop = AgentLoop(provider=provider, context_builder=_metrics_builder())
+
+    result = await loop.run(user_message="hi", system_prompt="sys")
+
+    assert result.final_response == "hello"
+    assert result.trace_id is None  # no metrics → no trace_id (unchanged)
