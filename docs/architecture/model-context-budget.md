@@ -19,7 +19,7 @@
 
 ## 2. Codex 参考
 
-`D:/Projects/codex` 中相关默认值：
+本地审计的 Codex 比较检出中，相关默认值为：
 
 - 未知模型 fallback metadata：`context_window = 272_000`
 - `effective_context_window_percent = 95`

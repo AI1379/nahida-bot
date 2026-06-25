@@ -67,6 +67,10 @@ export const sidebar: DefaultTheme.Sidebar = {
           link: "/architecture/provider-architecture",
         },
         { text: "Agent 编排", link: "/architecture/agent-orchestration" },
+        {
+          text: "Agent Loop 审计（#21 / #24）",
+          link: "/architecture/agent-loop-context-audit",
+        },
         { text: "沙箱安全", link: "/architecture/sandbox-security" },
         { text: "模型上下文预算", link: "/architecture/model-context-budget" },
         { text: "模型路由", link: "/architecture/model-routing" },
@@ -113,6 +117,10 @@ export const sidebar: DefaultTheme.Sidebar = {
         {
           text: "工具产出的图片/媒体",
           link: "/design/tool-produced-image-media-design",
+        },
+        {
+          text: "AgentLoop 改造计划",
+          link: "/design/agent-loop-repair-plan",
         },
       ],
     },

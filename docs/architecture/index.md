@@ -47,6 +47,7 @@ Nahida Bot 的核心目标：
 | [sandbox-security.md](sandbox-security.md) | Workspace 沙盒安全增强方案 |
 | [provider-architecture.md](provider-architecture.md) | Provider 多后端架构、格式调研与实现细节 |
 | [agent-orchestration.md](agent-orchestration.md) | Agent/Subagent 编排、后台任务、跨会话管理与本地队列设计 |
+| [agent-loop-context-audit.md](agent-loop-context-audit.md) | Agent Loop、Context Builder、Workspace 与 Memory 的审计报告（#21 / #24） |
 | [model-context-budget.md](model-context-budget.md) | 模型上下文窗口与动态预算机制 |
 | [model-routing.md](model-routing.md) | Model spec 解析与 ModelRouter 路由机制 |
 | [plugin-system.md](plugin-system.md) | Plugin 系统完整设计（SDK、Manifest、生命周期、权限、事件集成） |
