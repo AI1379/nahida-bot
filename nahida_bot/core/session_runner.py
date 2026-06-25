@@ -625,6 +625,10 @@ class SessionRunner:
             # ignores them when the ledger store is the no-op default.
             run_kwargs["session_id"] = session_id
             run_kwargs["workspace_id"] = workspace_id
+            # Phase 0.5 telemetry: run origin (trigger source) for Phase 3
+            # contract-source sizing. Reuses source_tag ("user_input" /
+            # "cron_trigger" / "proactive_join" / ...).
+            run_kwargs["origin"] = source_tag
 
             logger.debug(
                 "session_runner.agent_run_start",

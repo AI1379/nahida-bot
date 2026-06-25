@@ -228,6 +228,7 @@ class AgentLoop:
         session_id: str | None = None,
         workspace_id: str | None = None,
         provider_id: str | None = None,
+        origin: str = "",
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -264,6 +265,7 @@ class AgentLoop:
         logger.debug(
             "agent_loop.run",
             trace_id=trace.trace_id if trace else "",
+            origin=origin,
             provider_name=getattr(active_provider, "name", ""),
             provider_api_family=getattr(active_provider, "api_family", ""),
             provider_default_model=provider_default_model,
@@ -419,6 +421,7 @@ class AgentLoop:
                         "agent_loop.run_completed",
                         trace_id=trace.trace_id if trace else "",
                         reason=completion_reason,
+                        final_response_preview=(display or "")[:200],
                         terminal_state="completed",
                         step=step,
                         max_steps=self.config.max_steps,
@@ -525,6 +528,7 @@ class AgentLoop:
                 "agent_loop.run_completed",
                 trace_id=trace.trace_id if trace else "",
                 reason="max_steps_reached",
+                final_response_preview=final_fallback[:200],
                 terminal_state="incomplete",
                 step=self.config.max_steps,
                 max_steps=self.config.max_steps,
@@ -565,6 +569,9 @@ class AgentLoop:
                 "agent_loop.run_completed",
                 trace_id=trace.trace_id if trace else "",
                 reason="provider_error",
+                final_response_preview=(
+                    assistant_messages[-1].content if assistant_messages else ""
+                )[:200],
                 terminal_state="failed",
                 step=step,
                 max_steps=self.config.max_steps,
