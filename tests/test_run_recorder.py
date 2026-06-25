@@ -46,6 +46,12 @@ class _CapturingStore(AgentRunStore):
     async def list_receipts(self, run_id):
         return []
 
+    async def save_transcript(self, run_id, messages):
+        return None
+
+    async def list_recent_transcripts(self, session_id, *, limit=20):
+        return []
+
 
 class _ExplodingStore(_CapturingStore):
     async def create_run(self, *args, **kwargs):

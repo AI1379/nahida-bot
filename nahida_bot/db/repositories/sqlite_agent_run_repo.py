@@ -187,5 +187,31 @@ class SQLiteAgentRunStore(AgentRunStore):
         )
         return [dict(row) for row in rows]
 
+    async def save_transcript(
+        self, run_id: str, messages: list[dict[str, Any]]
+    ) -> None:
+        # Post-finalize write: a plain UPDATE, deliberately NOT going through
+        # append_event's running-state guard. Idempotent overwrite.
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "UPDATE agent_runs SET transcript_json = ? WHERE run_id = ?",
+                (json.dumps(messages, ensure_ascii=False), run_id),
+            )
+            await self._engine.db.commit()
+
+    async def list_recent_transcripts(
+        self, session_id: str, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        rows = await self._engine.fetch_all(
+            "SELECT run_id, started_at, terminal_state, transcript_json "
+            "FROM agent_runs "
+            "WHERE session_id = ? AND transcript_json IS NOT NULL "
+            "ORDER BY started_at DESC LIMIT ?",
+            (session_id, limit),
+        )
+        ordered = [dict(row) for row in rows]
+        ordered.reverse()  # oldest-first, for natural replay order
+        return ordered
+
 
 __all__ = ["SQLiteAgentRunStore"]

@@ -137,7 +137,7 @@ builtin-commands:
   allow_external_attachment_paths: false
   # 可选白名单目录；为空表示打开上方开关后允许任意绝对路径。
   # external_attachment_roots:
-  #   - "D:/Pictures"
+  #   - "<absolute-directory>"
   external_attachment_roots: []
 
 # OpenAI-compatible 图片生成（可选）
@@ -320,6 +320,11 @@ telegram:
 # 不改对外行为）。reading/重放端属 Phase 5。默认代码里为 false；这里置 true 以采集数据。
 agent_runtime:
   canonical_ledger_enabled: true
+  # Phase 5：把每个 run 的有序 tool transcript 落到 agent_runs.transcript_json，
+  # 下一轮由 TranscriptProjector 投影成成对 tool_use/tool_result 注入历史，
+  # 替代被剥离的纯文本叙述（#24 根因）。默认代码里为 false；这里置 true 采集数据。
+  # 旧 run（无 transcript_json）自动回退到原文本历史路径。
+  transcript_replay_enabled: true
 
 # ── Context Budget ──────────────────────────────────────
 # 控制未知模型 fallback 上下文窗口和 reasoning chain 预算。

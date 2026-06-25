@@ -86,6 +86,30 @@ class AgentRunStore(ABC):
     async def list_receipts(self, run_id: str) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    @abstractmethod
+    async def save_transcript(
+        self, run_id: str, messages: list[dict[str, Any]]
+    ) -> None:
+        """Persist a run's ordered raw transcript for cross-turn replay.
+
+        ``messages`` is a JSON-serializable list of ContextMessage dicts
+        (the loop's ``active_turn_messages`` snapshot). Best-effort and
+        idempotent (overwrite). Written AFTER the run is finalized, so this
+        intentionally does NOT go through the running-state guard that
+        :meth:`append_event` enforces.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_recent_transcripts(
+        self, session_id: str, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Return ``[{run_id, started_at, terminal_state, transcript_json}]``
+        for the session's most recent runs that HAVE a transcript, ordered
+        oldest-first. Runs with NULL ``transcript_json`` are excluded.
+        """
+        raise NotImplementedError
+
 
 class NullAgentRunStore(AgentRunStore):
     """No-op store used when the ledger is disabled.
@@ -136,4 +160,14 @@ class NullAgentRunStore(AgentRunStore):
         return []
 
     async def list_receipts(self, run_id: str) -> list[dict[str, Any]]:
+        return []
+
+    async def save_transcript(
+        self, run_id: str, messages: list[dict[str, Any]]
+    ) -> None:
+        return None
+
+    async def list_recent_transcripts(
+        self, session_id: str, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
         return []

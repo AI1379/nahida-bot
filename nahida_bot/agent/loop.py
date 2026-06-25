@@ -117,6 +117,7 @@ class AgentRunResult:
     final_response: str
     assistant_messages: list[ContextMessage] = field(default_factory=list)
     tool_messages: list[ContextMessage] = field(default_factory=list)
+    ordered_transcript: list[ContextMessage] = field(default_factory=list)
     steps: int = 0
     trace_id: str | None = None
     error: str | None = None
@@ -135,6 +136,7 @@ class LoopEvent:
     final_response: str | None = None
     assistant_messages: list[ContextMessage] | None = None
     tool_messages: list[ContextMessage] | None = None
+    ordered_transcript: list[ContextMessage] | None = None
     steps: int = 0
     trace_id: str | None = None
     error: str | None = None
@@ -202,6 +204,7 @@ class AgentLoop:
                     final_response=event.final_response or "",
                     assistant_messages=list(event.assistant_messages or []),
                     tool_messages=list(event.tool_messages or []),
+                    ordered_transcript=list(event.ordered_transcript or []),
                     steps=event.steps,
                     trace_id=event.trace_id,
                     error=event.error,
@@ -319,6 +322,7 @@ class AgentLoop:
                         ),
                         assistant_messages=list(assistant_messages),
                         tool_messages=list(tool_messages),
+                        ordered_transcript=list(active_turn_messages),
                         steps=step - 1,
                         error="cancelled",
                         total_usage=total_usage,
@@ -445,6 +449,7 @@ class AgentLoop:
                         final_response=display,
                         assistant_messages=list(assistant_messages),
                         tool_messages=list(tool_messages),
+                        ordered_transcript=list(active_turn_messages),
                         steps=step,
                         trace_id=trace.trace_id if trace else None,
                         total_usage=total_usage,
@@ -466,6 +471,7 @@ class AgentLoop:
                         final_response=display or "",
                         assistant_messages=list(assistant_messages),
                         tool_messages=list(tool_messages),
+                        ordered_transcript=list(active_turn_messages),
                         steps=step,
                         error="cancelled",
                         total_usage=total_usage,
@@ -544,6 +550,7 @@ class AgentLoop:
                 final_response=final_fallback,
                 assistant_messages=list(assistant_messages),
                 tool_messages=list(tool_messages),
+                ordered_transcript=list(active_turn_messages),
                 steps=self.config.max_steps,
                 trace_id=trace.trace_id if trace else None,
                 total_usage=total_usage,
@@ -586,6 +593,7 @@ class AgentLoop:
                 final_response=fallback,
                 assistant_messages=list(assistant_messages),
                 tool_messages=list(tool_messages),
+                ordered_transcript=list(active_turn_messages),
                 steps=step,
                 trace_id=trace.trace_id if trace else None,
                 error=exc.code,

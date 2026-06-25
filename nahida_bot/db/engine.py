@@ -415,6 +415,15 @@ _SCHEMA_MIGRATIONS = [
 
     CREATE INDEX IF NOT EXISTS idx_agent_receipts_run ON agent_execution_receipts(run_id);
     """,
+    # Migration 020: cross-turn transcript replay (agent-loop repair Phase 5).
+    # The ``transcript_json`` column itself is added idempotently in
+    # ``_ensure_agent_runs_transcript_column`` (PRAGMA-guarded), mirroring the
+    # Phase-3b memory-tree pattern, so a partial/crashed apply is recoverable
+    # rather than wedging on a duplicate-column error. This entry exists to
+    # bump ``schema_version`` so it reflects that Phase 5 has landed.
+    """
+    -- Phase 5 transcript replay: transcript_json added in post-migration guard.
+    """,
 ]
 
 
@@ -520,6 +529,7 @@ class DatabaseEngine:
         # Phase-3b memory-tree columns are added here (idempotent) rather than
         # in migration 017 — see the comment on that migration entry.
         await self._ensure_memory_tree_columns()
+        await self._ensure_agent_runs_transcript_column()
 
     async def _ensure_memory_tree_columns(self) -> None:
         """Idempotently add the memory-tree columns + index to ``memory_items``.
@@ -546,5 +556,23 @@ class DatabaseEngine:
             await self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_items_tree "
                 "ON memory_items(parent_id, root_id)"
+            )
+            await self.db.commit()
+
+    async def _ensure_agent_runs_transcript_column(self) -> None:
+        """Idempotently add ``transcript_json`` to ``agent_runs`` (Phase 5).
+
+        PRAGMA-guarded so a partial/crashed prior run recovers: the column is
+        added only if missing, never raising "duplicate column name". Mirrors
+        :meth:`_ensure_memory_tree_columns`. Nullable: legacy runs and runs
+        written while ``transcript_replay_enabled=false`` stay NULL.
+        """
+        rows = await self.fetch_all("PRAGMA table_info(agent_runs)")
+        existing = {str(row["name"]) for row in rows}
+        if "transcript_json" in existing:
+            return
+        async with self.write_lock:
+            await self.db.execute(
+                "ALTER TABLE agent_runs ADD COLUMN transcript_json TEXT"
             )
             await self.db.commit()

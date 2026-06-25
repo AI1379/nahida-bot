@@ -166,6 +166,7 @@ class SessionRunner:
         enable_silent_reply: bool = True,
         document_store_manager: Any | None = None,
         kb_auto_recall_config: Any | None = None,
+        transcript_projector: Any | None = None,
     ) -> None:
         self._agent = agent_loop
         self._memory = memory_store
@@ -195,6 +196,7 @@ class SessionRunner:
         self._enable_silent_reply = enable_silent_reply
         self._document_store_manager = document_store_manager
         self._kb_auto_recall_config = kb_auto_recall_config
+        self._transcript_projector = transcript_projector
         self._run_tracker = ActiveRunTracker()
 
     @property
@@ -1074,6 +1076,43 @@ class SessionRunner:
         *,
         capabilities: ModelCapabilities | None = None,
     ) -> list[ContextMessage]:
+        # Phase 5: when transcript replay is wired, rebuild history from the
+        # canonical run transcripts (paired tool_use/tool_result) instead of
+        # the stripped plain-text turns — the #24 fix. Falls back to the text
+        # path below when there are no transcripts yet (legacy) or projection
+        # fails.
+        if self._transcript_projector is not None:
+            try:
+                replay = await self._transcript_projector.project(
+                    session_id, capabilities=capabilities
+                )
+            except Exception:
+                logger.warning(
+                    "session_runner.transcript_replay_failed",
+                    session_id=session_id,
+                    exc_info=True,
+                )
+                replay = []
+            if replay:
+                messages = replay
+                if len(messages) > self._max_history_turns:
+                    messages = messages[-self._max_history_turns :]
+                if self._multimodal_config is not None and any(
+                    m.parts for m in messages if m.role == "user"
+                ):
+                    messages = self._apply_media_context_policy(
+                        messages,
+                        policy=self._multimodal_config.media_context_policy,
+                        capabilities=capabilities,
+                    )
+                logger.debug(
+                    "session_runner.history_context_built",
+                    session_id=session_id,
+                    message_count=len(messages),
+                    protocol_summary=self._context_protocol_summary(messages),
+                    transcript_replay=True,
+                )
+                return messages
         messages: list[ContextMessage] = []
         for r in records:
             metadata = r.turn.metadata
@@ -2640,6 +2679,8 @@ class SessionRunner:
             for assistant_turn in assistant_turns:
                 await self._memory.append_turn(session_id, assistant_turn)
 
+        await self._persist_transcript(session_id, result)
+
         await self._consolidate_memory_after_turn(
             session_id=session_id,
             user_message=user_message,
@@ -2654,6 +2695,31 @@ class SessionRunner:
             workspace_id=workspace_id or "",
             persisted_assistant_turn_count=len(assistant_turns),
         )
+
+    async def _persist_transcript(self, session_id: str, result: Any) -> None:
+        """Best-effort persist of this run's ordered transcript (Phase 5).
+
+        run_id reuses ``result.trace_id`` (the loop's run_id == trace_id), so
+        the replay reader can join transcript ↔ ledger ↔ logs. Best-effort:
+        any failure is logged and swallowed, never affecting the run.
+        """
+        if self._transcript_projector is None:
+            return
+        run_id = getattr(result, "trace_id", None)
+        if not isinstance(run_id, str) or not run_id:
+            return
+        ordered = getattr(result, "ordered_transcript", None)
+        if not isinstance(ordered, list) or not ordered:
+            return
+        try:
+            await self._transcript_projector.save_transcript(run_id, ordered)
+        except Exception:
+            logger.warning(
+                "session_runner.transcript_persist_failed",
+                session_id=session_id,
+                run_id=run_id,
+                exc_info=True,
+            )
 
     async def _consolidate_memory_after_turn(
         self,

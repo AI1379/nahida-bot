@@ -585,6 +585,18 @@ class Application:
         )
         media_resolver = MediaResolver(cache=self._media_cache, policy=media_policy)
 
+        # Phase 5 transcript replay projector. Built only when the flag is on
+        # and the canonical-run store is available; SessionRunner falls back to
+        # the legacy plain-text history path otherwise.
+        transcript_projector = None
+        if (
+            self.settings.agent_runtime.transcript_replay_enabled
+            and self._agent_run_store is not None
+        ):
+            from nahida_bot.agent.runtime.transcript import TranscriptProjector
+
+            transcript_projector = TranscriptProjector(self._agent_run_store)
+
         self.session_runner = SessionRunner(
             agent_loop=self.agent_loop,
             memory_store=self.memory_store,
@@ -618,6 +630,7 @@ class Application:
             enable_silent_reply=self.settings.enable_silent_reply,
             document_store_manager=self.document_store_manager,
             kb_auto_recall_config=self.settings.kb_auto_recall,
+            transcript_projector=transcript_projector,
         )
 
         from nahida_bot.agent.orchestration import (

@@ -89,6 +89,8 @@ class AgentRuntimeConfig(BaseModel):
 
     canonical_ledger_enabled: bool = False
 
+    transcript_replay_enabled: bool = False
+
 
 ReasoningPolicyValue = Literal["strip", "append", "budget"]
 
