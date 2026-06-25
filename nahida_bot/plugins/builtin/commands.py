@@ -1278,6 +1278,9 @@ class BuiltinCommandsPlugin(Plugin):
                 "affect the target session's history. Use 'record' delivery to "
                 "also write the message into the target session's conversation "
                 "history, so the agent there can see it in context next time."
+                "Note that your output text will be sent to the current session "
+                "as well, so DO NOT use this tool to reply to the current "
+                "session's message. Only use it to send messages to other sessions."
             ),
             {
                 "type": "object",
