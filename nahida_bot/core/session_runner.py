@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 
     from nahida_bot.agent.loop import AgentLoop, LoopEvent
     from nahida_bot.agent.media.resolver import MediaResolver
+    from nahida_bot.agent.runtime.transcript import TranscriptProjector
     from nahida_bot.agent.storage.embedding import EmbeddingProvider
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.storage.vector import VectorIndex
@@ -175,7 +176,7 @@ class SessionRunner:
         enable_silent_reply: bool = True,
         document_store_manager: Any | None = None,
         kb_auto_recall_config: Any | None = None,
-        transcript_projector: Any | None = None,
+        transcript_projector: TranscriptProjector | None = None,
     ) -> None:
         self._agent = agent_loop
         self._memory = memory_store
@@ -383,15 +384,7 @@ class SessionRunner:
                 done = event
         if done is None:
             return AgentRunResult(final_response="")
-        return AgentRunResult(
-            final_response=done.final_response or "",
-            assistant_messages=list(done.assistant_messages or []),
-            tool_messages=list(done.tool_messages or []),
-            ordered_transcript=list(done.ordered_transcript or []),
-            steps=done.steps,
-            trace_id=done.trace_id,
-            error=done.error,
-        )
+        return AgentRunResult.from_done_event(done)
 
     async def run_stream(
         self,
@@ -429,7 +422,7 @@ class SessionRunner:
             reasoning_effort=reasoning_effort,
         )
         runtime_token = current_runtime_settings.set(runtime_settings)
-        done_data: dict[str, Any] = {}
+        done_event: LoopEvent | None = None
         logger.debug(
             "session_runner.run_stream_start",
             session_id=session_id,
@@ -667,34 +660,35 @@ class SessionRunner:
                     error=event.error or "",
                 )
                 if event.type == "done":
-                    done_data = {
-                        "final_response": event.final_response or "",
-                        "assistant_messages": list(event.assistant_messages or []),
-                        "tool_messages": list(event.tool_messages or []),
-                        "ordered_transcript": list(event.ordered_transcript or []),
-                        "steps": event.steps,
-                        "trace_id": event.trace_id,
-                        "error": event.error,
-                        "total_usage": event.total_usage,
-                    }
+                    done_event = event
                 yield event
             logger.debug(
                 "session_runner.agent_run_done",
                 session_id=session_id,
-                trace_id=done_data.get("trace_id"),
+                trace_id=done_event.trace_id if done_event is not None else None,
                 provider_id=provider_slot.id if provider_slot is not None else "",
                 effective_model=effective_model,
-                steps=done_data.get("steps"),
-                error=done_data.get("error"),
-                response_chars=len(str(done_data.get("final_response", ""))),
-                assistant_message_count=len(done_data.get("assistant_messages", [])),
-                tool_message_count=len(done_data.get("tool_messages", [])),
+                steps=done_event.steps if done_event is not None else 0,
+                error=done_event.error if done_event is not None else None,
+                response_chars=(
+                    len(done_event.final_response or "")
+                    if done_event is not None
+                    else 0
+                ),
+                assistant_message_count=(
+                    len(done_event.assistant_messages or [])
+                    if done_event is not None
+                    else 0
+                ),
+                tool_message_count=(
+                    len(done_event.tool_messages or []) if done_event is not None else 0
+                ),
             )
             await self._persist_turns(
                 session_id,
                 user_message,
-                AgentRunResult(**done_data)
-                if done_data
+                AgentRunResult.from_done_event(done_event)
+                if done_event is not None
                 else AgentRunResult(final_response=""),
                 attachments=list(attachments_for_turn),
                 image_descriptions=persisted_image_descriptions,
@@ -2525,7 +2519,7 @@ class SessionRunner:
 
     def _assistant_visible_turns(
         self,
-        result: Any,
+        result: AgentRunResult,
         *,
         include_message_context: bool,
     ) -> list[ConversationTurn]:
@@ -2535,8 +2529,7 @@ class SessionRunner:
         assistant answer that also requested tools should be replayed as normal
         natural-language history, not as an unfinished provider tool transcript.
         """
-        raw_messages = getattr(result, "assistant_messages", None)
-        assistant_messages = raw_messages if isinstance(raw_messages, list) else []
+        assistant_messages = result.assistant_messages
         visible: list[tuple[str, Any | None]] = []
         seen: set[str] = set()
 
@@ -2547,9 +2540,7 @@ class SessionRunner:
             visible.append((content, message))
             seen.add(content)
 
-        final_response = strip_envelope_prefix(
-            str(getattr(result, "final_response", "") or "")
-        )
+        final_response = strip_envelope_prefix(str(result.final_response or ""))
         fallback_metadata_source = (
             assistant_messages[-1] if assistant_messages else None
         )
@@ -2665,7 +2656,7 @@ class SessionRunner:
         self,
         session_id: str,
         user_message: str,
-        result: Any,
+        result: AgentRunResult,
         *,
         attachments: list[InboundAttachment],
         image_descriptions: dict[str, str] | None = None,
@@ -2690,7 +2681,7 @@ class SessionRunner:
             user_message_chars=len(user_message),
             attachment_count=len(attachments),
             attachment_kinds=[att.kind for att in attachments],
-            final_response_chars=len(str(getattr(result, "final_response", "") or "")),
+            final_response_chars=len(result.final_response or ""),
             **_message_context_log_fields(message_context),
         )
         metadata = await self._build_user_turn_metadata(
@@ -2708,42 +2699,25 @@ class SessionRunner:
             include_message_context=message_context is not None,
         )
         if assistant_turns:
-            assistant_messages = getattr(result, "assistant_messages", None)
-            tool_messages = getattr(result, "tool_messages", None)
-            final_response = str(getattr(result, "final_response", "") or "")
+            assistant_messages = result.assistant_messages
+            tool_messages = result.tool_messages
+            final_response = str(result.final_response or "")
             logger.debug(
                 "session_runner.persist_agent_result",
                 session_id=session_id,
                 final_response_chars=len(final_response),
                 final_response_preview=final_response[:200],
-                assistant_message_count=(
-                    len(assistant_messages)
-                    if isinstance(assistant_messages, list)
-                    else 0
-                ),
+                assistant_message_count=len(assistant_messages),
                 persisted_assistant_turn_count=len(assistant_turns),
-                tool_message_count=(
-                    len(tool_messages) if isinstance(tool_messages, list) else 0
-                ),
+                tool_message_count=len(tool_messages),
                 assistant_sources=[
-                    getattr(message, "source", "")
-                    for message in assistant_messages[:10]
-                ]
-                if isinstance(assistant_messages, list)
-                else [],
+                    message.source for message in assistant_messages[:10]
+                ],
                 assistant_metadata_keys=[
-                    sorted(message.metadata.keys())
-                    if getattr(message, "metadata", None)
-                    else []
+                    sorted(message.metadata.keys()) if message.metadata else []
                     for message in assistant_messages[:10]
-                ]
-                if isinstance(assistant_messages, list)
-                else [],
-                tool_sources=[
-                    getattr(message, "source", "") for message in tool_messages[:10]
-                ]
-                if isinstance(tool_messages, list)
-                else [],
+                ],
+                tool_sources=[message.source for message in tool_messages[:10]],
             )
             for assistant_turn in assistant_turns:
                 await self._memory.append_turn(session_id, assistant_turn)
@@ -2774,7 +2748,7 @@ class SessionRunner:
     async def _persist_transcript(
         self,
         session_id: str,
-        result: Any,
+        result: AgentRunResult,
         *,
         attachment_refs: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -2792,11 +2766,11 @@ class SessionRunner:
         """
         if self._transcript_projector is None:
             return
-        run_id = getattr(result, "trace_id", None)
-        if not isinstance(run_id, str) or not run_id:
+        run_id = result.trace_id
+        if not run_id:
             return
-        ordered = getattr(result, "ordered_transcript", None)
-        if not isinstance(ordered, list) or not ordered:
+        ordered = result.ordered_transcript
+        if not ordered:
             return
         ordered = self._attach_image_refs_to_transcript(ordered, attachment_refs)
         try:

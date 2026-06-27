@@ -123,6 +123,26 @@ class AgentRunResult:
     error: str | None = None
     total_usage: TokenUsage | None = None
 
+    @classmethod
+    def from_done_event(cls, event: LoopEvent) -> AgentRunResult:
+        """Reconstruct a result from a ``done`` :class:`LoopEvent`.
+
+        Centralized so the ``LoopEvent`` → ``AgentRunResult`` mapping is in one
+        place — adding a field to either type can't silently drop it the way
+        the field-by-field copies did (the Phase 5 ``ordered_transcript``
+        omission that left replay dormant in production).
+        """
+        return cls(
+            final_response=event.final_response or "",
+            assistant_messages=list(event.assistant_messages or []),
+            tool_messages=list(event.tool_messages or []),
+            ordered_transcript=list(event.ordered_transcript or []),
+            steps=event.steps,
+            trace_id=event.trace_id,
+            error=event.error,
+            total_usage=event.total_usage,
+        )
+
 
 @dataclass(slots=True, frozen=True)
 class LoopEvent:
@@ -200,16 +220,7 @@ class AgentLoop:
             stop_event=stop_event,
         ):
             if event.type == "done":
-                return AgentRunResult(
-                    final_response=event.final_response or "",
-                    assistant_messages=list(event.assistant_messages or []),
-                    tool_messages=list(event.tool_messages or []),
-                    ordered_transcript=list(event.ordered_transcript or []),
-                    steps=event.steps,
-                    trace_id=event.trace_id,
-                    error=event.error,
-                    total_usage=event.total_usage,
-                )
+                return AgentRunResult.from_done_event(event)
         return AgentRunResult(final_response="")
 
     async def run_stream(
