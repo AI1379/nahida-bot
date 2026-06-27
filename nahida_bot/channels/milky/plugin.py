@@ -212,7 +212,7 @@ class MilkyPlugin(Plugin):
         # Resolve file download URLs only for messages that pass the
         # policy gate, so that filtered-out messages never trigger
         # API calls or eager downloads.
-        inbound = await self._resolve_file_attachment_urls(inbound)
+        inbound = await self._resolve_attachment_urls(inbound)
 
         scene = str(data.get("message_scene") or "")
         if scene:
@@ -340,7 +340,7 @@ class MilkyPlugin(Plugin):
 
         # Resolve file download URLs only for events that pass the
         # policy gate.
-        inbound = await self._resolve_file_attachment_urls(inbound)
+        inbound = await self._resolve_attachment_urls(inbound)
 
         scene = "group" if inbound.is_group else "friend"
         self._remember_scene(inbound.chat_id, scene)
@@ -756,14 +756,20 @@ class MilkyPlugin(Plugin):
 
     _MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MiB
 
-    async def _resolve_file_attachment_urls(
-        self, inbound: InboundMessage
-    ) -> InboundMessage:
-        """Resolve download URLs for file attachments and cache context.
+    async def _resolve_attachment_urls(self, inbound: InboundMessage) -> InboundMessage:
+        """Resolve download/temp URLs for attachments and cache file context.
 
-        Always caches file context so that ``download_media()`` works for
-        every file attachment (including file-upload events that already
-        carry a ``download_url``).
+        - ``file`` attachments: resolve via the group/private file-download
+          API and cache file context so ``download_media()`` works later
+          (including file-upload events that already carry a ``download_url``).
+        - ``image``/``video``/``record`` attachments: upstream sometimes omits
+          ``temp_url``; when it is missing, proactively fetch one via
+          ``get_resource_temp_url(resource_id)``. Without this, the segment
+          carries no URL and the image is silently dropped downstream (#28).
+
+        When ``cache_media_on_receive`` is set, eagerly download every
+        unresolved attachment to a local ``path`` so it survives temp-URL
+        expiry and can be reconstructed in later turns.
         """
         resolved: list[InboundAttachment] = []
         changed = False
@@ -788,6 +794,29 @@ class MilkyPlugin(Plugin):
                     if downloaded.path:
                         att = downloaded
                         changed = True
+            elif att.kind in {"image", "video", "record"} and att.platform_id:
+                # Image/voice/video segments use resource_id + temp_url, which
+                # upstream may leave empty. Resolve it explicitly so the media
+                # is not silently lost (#28 root cause A).
+                if not att.url:
+                    url = await self._get_media_temp_url(att)
+                    if url:
+                        att = replace(
+                            att,
+                            url=url,
+                            metadata={**att.metadata, "trusted_url": True},
+                        )
+                        changed = True
+                        logger.debug(
+                            "milky.media_url_resolved",
+                            kind=att.kind,
+                            resource_id=att.platform_id,
+                        )
+                if self._config.cache_media_on_receive and not att.path:
+                    downloaded = await self._eager_download_attachment(att)
+                    if downloaded.path:
+                        att = downloaded
+                        changed = True
             resolved.append(att)
         if not changed:
             return inbound
@@ -796,15 +825,23 @@ class MilkyPlugin(Plugin):
     async def _eager_download_attachment(
         self, att: InboundAttachment
     ) -> InboundAttachment:
-        """Download file content eagerly so the attachment carries a local path."""
+        """Download content eagerly so the attachment carries a local path."""
         file_name = coerce_str(att.metadata.get("file_name"))
         if att.url:
             # Direct download from existing URL (avoids extra API call)
             result = await self._stream_download_url(
                 att.url, file_name=file_name, file_id=att.platform_id
             )
-        else:
+        elif att.kind == "file":
+            # Files without a URL resolve through the cached file-download
+            # context populated by _cache_file_context().
             result = await self.download_media(att.platform_id, file_name=file_name)
+        else:
+            # Image/video/record without a URL: there is no file context to
+            # fall back on, so there is nothing to download here. Leave the
+            # attachment as-is; downstream surfaces an explicit "image
+            # unavailable" notice rather than hallucinating (#28).
+            return att
         if result is not None and result.path:
             return replace(
                 att,
@@ -878,6 +915,32 @@ class MilkyPlugin(Plugin):
                 peer_id=peer_id_str,
             )
             return ""
+
+    async def _get_media_temp_url(self, att: InboundAttachment) -> str:
+        """Resolve a temp URL for an image/video/record ``resource_id``.
+
+        Returns an empty string when Milky has no URL for the resource or the
+        call fails; the caller then leaves ``att.url`` empty so downstream can
+        surface an explicit "image unavailable" notice instead of hallucinating
+        (see SessionRunner._build_vision_parts, #28).
+        """
+        client = self._ensure_client()
+        try:
+            url = await client.get_resource_temp_url(att.platform_id)
+        except Exception:
+            logger.warning(
+                "milky.media_url_failed",
+                resource_id=att.platform_id,
+                kind=att.kind,
+            )
+            return ""
+        if not url:
+            logger.debug(
+                "milky.media_url_empty",
+                resource_id=att.platform_id,
+                kind=att.kind,
+            )
+        return url
 
     async def download_media(
         self, file_id: str, *, file_name: str = ""

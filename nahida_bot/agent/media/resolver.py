@@ -81,6 +81,15 @@ class MediaResolver:
             return await self._resolve_from_url(attachment)
 
         # 4. Description only
+        if not attachment.alt_text:
+            # No path, no URL, and no description: the attachment carries
+            # nothing the model can use. Surface this so it is traceable in
+            # logs instead of degrading to an empty, silent placeholder (#28).
+            logger.warning(
+                "media_resolver.description_only_empty",
+                media_id=media_id,
+                kind=attachment.kind,
+            )
         return ResolvedMedia(
             media_id=media_id,
             source="description_only",

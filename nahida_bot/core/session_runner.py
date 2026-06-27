@@ -79,6 +79,15 @@ _FALLBACK_VISION_PROMPT = (
     "Describe this image in detail. Include any visible text (OCR). "
     "Note any safety concerns."
 )
+# Injected in place of an image that could not be loaded, so the model never
+# faces a silently-vanished attachment and hallucinates a plausible answer
+# (#28). Reused for both current-turn vision parts and history reconstruction.
+_IMAGE_UNAVAILABLE_NOTICE = (
+    "[The user sent an image here, but its content could not be loaded, so "
+    "you CANNOT actually see it. Do NOT guess, fabricate, or infer what it "
+    "shows from context. If the image matters for the request, ask the user "
+    "to resend it or describe it in text.]"
+)
 _GROUP_CONTEXT_HISTORY_OVERFETCH_FACTOR = 4
 _GROUP_CONTEXT_HISTORY_OVERFETCH_MIN = 50
 
@@ -1101,6 +1110,12 @@ class SessionRunner:
                 messages = replay
                 if len(messages) > self._max_history_turns:
                     messages = messages[-self._max_history_turns :]
+                # Transcript replay strips image parts (message_to_dict keeps
+                # text only), so re-attach them from the compact attachment
+                # refs stamped on each user turn at persist time (#28 root
+                # cause B). Without this, every prior user image vanishes on
+                # the next turn even though it was seen on the turn it landed.
+                messages = await self._merge_replay_image_parts(messages)
                 if self._multimodal_config is not None and any(
                     m.parts for m in messages if m.role == "user"
                 ):
@@ -1616,7 +1631,7 @@ class SessionRunner:
                 parts.append(
                     ContextPart(
                         type="image_description",
-                        text=f"[Image: {attachment.platform_id}]",
+                        text=_IMAGE_UNAVAILABLE_NOTICE,
                         media_id=attachment.platform_id,
                         mime_type=attachment.mime_type,
                     )
@@ -1646,12 +1661,40 @@ class SessionRunner:
                 parts.append(
                     ContextPart(
                         type="image_description",
-                        text=f"[Image: {attachment.platform_id}]",
+                        text=_IMAGE_UNAVAILABLE_NOTICE,
                         media_id=attachment.platform_id,
                         mime_type=attachment.mime_type,
                     )
                 )
         return parts
+
+    async def _merge_replay_image_parts(
+        self, messages: list[ContextMessage]
+    ) -> list[ContextMessage]:
+        """Re-attach image parts to replayed user turns from their metadata.
+
+        Transcript replay rebuilds user turns as text-only (``message_to_dict``
+        drops image parts), but each user turn carries compact ``attachments``
+        refs in its metadata (stamped by ``_persist_transcript``). Reconstruct
+        native image parts from those refs so historical images survive across
+        turns (#28 root cause B). The media-context policy applied by the
+        caller then degrades older images as configured.
+        """
+        rebuilt: list[ContextMessage] = []
+        for message in messages:
+            if message.role != "user":
+                rebuilt.append(message)
+                continue
+            metadata = message.metadata if isinstance(message.metadata, dict) else None
+            if not metadata or "attachments" not in metadata:
+                rebuilt.append(message)
+                continue
+            image_parts = await self._reconstruct_parts_for_history(metadata)
+            if not image_parts:
+                rebuilt.append(message)
+                continue
+            rebuilt.append(replace(message, parts=[*message.parts, *image_parts]))
+        return rebuilt
 
     @staticmethod
     def _attachments_from_metadata(
@@ -2062,6 +2105,24 @@ class SessionRunner:
                     ContextPart(
                         type="image_description",
                         text=attachment.alt_text,
+                        media_id=attachment.platform_id,
+                    )
+                )
+            else:
+                # No pixels and no description could be produced. Never drop
+                # the image silently — that is how the model ends up answering
+                # as if it saw an image it never saw (#28). Surface an explicit
+                # notice so it knows to ask the user instead of guessing.
+                logger.warning(
+                    "session_runner.image_dropped",
+                    media_id=attachment.platform_id,
+                    source=resolved.source or "unknown",
+                    reason="no_payload",
+                )
+                parts.append(
+                    ContextPart(
+                        type="image_description",
+                        text=_IMAGE_UNAVAILABLE_NOTICE,
                         media_id=attachment.platform_id,
                     )
                 )
@@ -2683,7 +2744,13 @@ class SessionRunner:
             for assistant_turn in assistant_turns:
                 await self._memory.append_turn(session_id, assistant_turn)
 
-        await self._persist_transcript(session_id, result)
+        await self._persist_transcript(
+            session_id,
+            result,
+            attachment_refs=(
+                metadata.get("attachments") if isinstance(metadata, dict) else None
+            ),
+        )
 
         await self._consolidate_memory_after_turn(
             session_id=session_id,
@@ -2700,12 +2767,24 @@ class SessionRunner:
             persisted_assistant_turn_count=len(assistant_turns),
         )
 
-    async def _persist_transcript(self, session_id: str, result: Any) -> None:
+    async def _persist_transcript(
+        self,
+        session_id: str,
+        result: Any,
+        *,
+        attachment_refs: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Best-effort persist of this run's ordered transcript (Phase 5).
 
         run_id reuses ``result.trace_id`` (the loop's run_id == trace_id), so
         the replay reader can join transcript ↔ ledger ↔ logs. Best-effort:
         any failure is logged and swallowed, never affecting the run.
+
+        ``attachment_refs`` carries compact image references (no base64) for
+        the current turn's user message so that transcript replay can rebuild
+        image parts on later turns (#28 root cause B — without this, replayed
+        user turns carry no image history because ``message_to_dict`` drops
+        image parts and the loop's user message has no metadata).
         """
         if self._transcript_projector is None:
             return
@@ -2715,6 +2794,7 @@ class SessionRunner:
         ordered = getattr(result, "ordered_transcript", None)
         if not isinstance(ordered, list) or not ordered:
             return
+        ordered = self._attach_image_refs_to_transcript(ordered, attachment_refs)
         try:
             await self._transcript_projector.save_transcript(run_id, ordered)
         except Exception:
@@ -2724,6 +2804,38 @@ class SessionRunner:
                 run_id=run_id,
                 exc_info=True,
             )
+
+    @staticmethod
+    def _attach_image_refs_to_transcript(
+        ordered: list[Any], attachment_refs: list[dict[str, Any]] | None
+    ) -> list[Any]:
+        """Return a copy of ``ordered`` with image refs stamped on the user turn.
+
+        Only image references are attached, and only base64-free fields are
+        kept, so ``transcript_json`` stays bounded. The first ``role="user"``
+        message (the loop's ``user_input`` turn) is the target; the rest of the
+        transcript is passed through untouched. Returns the original list when
+        there is nothing to attach.
+        """
+        if not attachment_refs:
+            return ordered
+        image_refs = [ref for ref in attachment_refs if ref.get("kind") == "image"]
+        if not image_refs:
+            return ordered
+        result: list[Any] = []
+        stamped = False
+        for message in ordered:
+            if not stamped and getattr(message, "role", None) == "user":
+                base_meta = getattr(message, "metadata", None)
+                merged_meta: dict[str, Any] = (
+                    dict(base_meta) if isinstance(base_meta, dict) else {}
+                )
+                merged_meta["attachments"] = image_refs
+                result.append(replace(message, metadata=merged_meta))
+                stamped = True
+            else:
+                result.append(message)
+        return result
 
     async def _consolidate_memory_after_turn(
         self,

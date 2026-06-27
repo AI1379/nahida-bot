@@ -556,3 +556,144 @@ async def test_reenable_recreates_client_after_disable() -> None:
 
 def _scene_cache(plugin: MilkyPlugin) -> dict[str, str]:
     return dict(getattr(plugin, "_scene_by_peer"))
+
+
+# ---------------------------------------------------------------------------
+# Issue #28: image/video/record temp_url resolution on the inbound path.
+# Upstream Milky events sometimes omit ``temp_url``; the converter used to pass
+# an empty URL straight through, so the image was silently dropped downstream.
+# These tests pin the proactive ``get_resource_temp_url`` resolution.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingMediaClient(_FakeClient):
+    """FakeClient that records ``get_resource_temp_url`` calls."""
+
+    def __init__(self, *, url_template: str = "https://cdn.example.com/{rid}") -> None:
+        super().__init__()
+        self.temp_url_calls: list[str] = []
+        self._url_template = url_template
+
+    async def get_resource_temp_url(self, resource_id: str) -> str:
+        self.temp_url_calls.append(resource_id)
+        return self._url_template.format(rid=resource_id)
+
+
+class _FailingMediaClient(_RecordingMediaClient):
+    async def get_resource_temp_url(self, resource_id: str) -> str:
+        self.temp_url_calls.append(resource_id)
+        raise MilkyAPIError("no url", api_name="get_resource_temp_url", retcode=1)
+
+
+def _image_message_event(
+    *, resource_id: str, temp_url: str, scene: str = "friend"
+) -> dict[str, Any]:
+    return {
+        "event_type": "message_receive",
+        "data": {
+            "message_scene": scene,
+            "peer_id": 10001,
+            "sender_id": 10001,
+            "message_seq": 200,
+            "time": 1700000000,
+            "segments": [
+                {"type": "text", "data": {"text": "看看这张图"}},
+                {
+                    "type": "image",
+                    "data": {
+                        "resource_id": resource_id,
+                        "temp_url": temp_url,
+                    },
+                },
+            ],
+        },
+    }
+
+
+async def test_image_with_empty_temp_url_resolves_via_api() -> None:
+    """Empty temp_url ⇒ plugin proactively calls get_resource_temp_url (#28)."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(cache_media_on_receive=False))
+    client = _RecordingMediaClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        _image_message_event(resource_id="img-1", temp_url="")
+    )
+
+    assert client.temp_url_calls == ["img-1"]
+    assert len(api.published_events) == 1
+    attachment = api.published_events[0].payload.message.attachments[0]
+    assert attachment.kind == "image"
+    assert attachment.url == "https://cdn.example.com/img-1"
+    assert attachment.metadata.get("trusted_url") is True
+
+
+async def test_image_with_present_temp_url_skips_api_call() -> None:
+    """A pre-filled temp_url must not trigger a redundant API call."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(cache_media_on_receive=False))
+    client = _RecordingMediaClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        _image_message_event(resource_id="img-2", temp_url="https://pre/a.png")
+    )
+
+    assert client.temp_url_calls == []
+    attachment = api.published_events[0].payload.message.attachments[0]
+    assert attachment.url == "https://pre/a.png"
+
+
+async def test_image_temp_url_resolution_failure_is_swallowed() -> None:
+    """A failing get_resource_temp_url must not crash inbound handling."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(cache_media_on_receive=False))
+    client = _FailingMediaClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        _image_message_event(resource_id="img-3", temp_url="")
+    )
+
+    assert client.temp_url_calls == ["img-3"]
+    # Message still published; url stays empty (downstream surfaces a notice).
+    attachment = api.published_events[0].payload.message.attachments[0]
+    assert attachment.url == ""
+
+
+async def test_image_eager_download_materializes_local_path(
+    tmp_path,
+) -> None:
+    """cache_media_on_receive ⇒ resolved temp_url is eagerly downloaded (#28)."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(cache_media_on_receive=True))
+    client = _RecordingMediaClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    from nahida_bot.plugins.base import MediaDownloadResult
+
+    downloaded = MediaDownloadResult(
+        path=str(tmp_path / "img.png"),
+        file_name="img.png",
+        mime_type="image/png",
+        file_size=123,
+    )
+    with patch.object(
+        plugin,
+        "_stream_download_url",
+        new=AsyncMock(return_value=downloaded),
+    ):
+        await plugin.handle_inbound_event(
+            _image_message_event(resource_id="img-4", temp_url="")
+        )
+
+    assert client.temp_url_calls == ["img-4"]
+    attachment = api.published_events[0].payload.message.attachments[0]
+    assert attachment.url == "https://cdn.example.com/img-4"
+    assert attachment.path == str(tmp_path / "img.png")
+    assert attachment.mime_type == "image/png"

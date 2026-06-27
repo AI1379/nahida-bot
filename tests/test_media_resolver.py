@@ -76,6 +76,36 @@ class TestMediaResolver:
         assert result.description == "a beautiful sunset"
         assert result.base64_data == ""
 
+    async def test_empty_description_only_logs_warning(
+        self, resolver: MediaResolver
+    ) -> None:
+        """No url/path/alt_text ⇒ description_only with empty description + warning (#28)."""
+        from unittest.mock import patch
+
+        attachment = InboundAttachment(kind="image", platform_id="ghost")
+        with patch("nahida_bot.agent.media.resolver.logger") as mock_logger:
+            result = await resolver.resolve(attachment)
+        assert result.source == "description_only"
+        assert result.description == ""
+        mock_logger.warning.assert_called_once_with(
+            "media_resolver.description_only_empty",
+            media_id="ghost",
+            kind="image",
+        )
+
+    async def test_description_only_with_alt_text_does_not_warn(
+        self, resolver: MediaResolver
+    ) -> None:
+        """A real alt_text fallback must not trip the empty-description warning."""
+        from unittest.mock import patch
+
+        attachment = InboundAttachment(
+            kind="image", platform_id="ok", alt_text="a sunset"
+        )
+        with patch("nahida_bot.agent.media.resolver.logger") as mock_logger:
+            await resolver.resolve(attachment)
+        mock_logger.warning.assert_not_called()
+
     async def test_resolve_nonexistent_path_falls_back(
         self, resolver: MediaResolver
     ) -> None:
