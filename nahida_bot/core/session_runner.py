@@ -1094,11 +1094,11 @@ class SessionRunner:
         # the stripped plain-text turns — the #24 fix. Falls back to the text
         # path below when there are no transcripts yet (legacy) or projection
         # fails.
-        if self._transcript_projector is not None:
+        projector = self._transcript_projector
+        replay_wired = projector is not None
+        if projector is not None:
             try:
-                replay = await self._transcript_projector.project(
-                    session_id, capabilities=capabilities
-                )
+                replay = await projector.project(session_id, capabilities=capabilities)
             except Exception:
                 logger.warning(
                     "session_runner.transcript_replay_failed",
@@ -1196,6 +1196,8 @@ class SessionRunner:
             session_id=session_id,
             message_count=len(messages),
             protocol_summary=self._context_protocol_summary(messages),
+            transcript_replay=False,
+            replay_wired=replay_wired,
         )
 
         return messages
@@ -2797,6 +2799,12 @@ class SessionRunner:
         ordered = self._attach_image_refs_to_transcript(ordered, attachment_refs)
         try:
             await self._transcript_projector.save_transcript(run_id, ordered)
+            logger.debug(
+                "session_runner.transcript_persisted",
+                session_id=session_id,
+                run_id=run_id,
+                message_count=len(ordered),
+            )
         except Exception:
             logger.warning(
                 "session_runner.transcript_persist_failed",
