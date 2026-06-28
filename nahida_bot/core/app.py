@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 import signal
+import sys
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
@@ -51,6 +53,8 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+ShutdownMode = Literal["drain", "abort"]
+
 
 class Application:
     """Main application container and lifecycle manager."""
@@ -84,6 +88,8 @@ class Application:
         self._started = False
         self._started_at: datetime | None = None
         self._shutdown_event: asyncio.Event | None = None
+        self._shutdown_abort_event: asyncio.Event | None = None
+        self._shutdown_mode: ShutdownMode = "drain"
         self.event_bus = EventBus(
             EventContext(app=self, settings=self.settings, logger=logger)
         )
@@ -987,7 +993,12 @@ class Application:
         except Exception:
             logger.warning("plugin_temp.cleanup_failed", exc_info=True)
 
-    async def stop(self) -> None:
+    async def stop(
+        self,
+        *,
+        mode: ShutdownMode = "drain",
+        abort_event: asyncio.Event | None = None,
+    ) -> None:
         """Stop the application gracefully."""
         was_started = self._started
         try:
@@ -1022,7 +1033,10 @@ class Application:
 
                 # Shut down message router before plugins
                 if self.message_router is not None:
-                    await self.message_router.stop()
+                    await self.message_router.stop(
+                        mode=mode,
+                        abort_event=abort_event,
+                    )
 
                 # Shut down plugins before event bus
                 if self.plugin_manager is not None:
@@ -1064,21 +1078,67 @@ class Application:
             )
             raise ApplicationError(f"Failed to stop application: {e}") from e
 
-    def request_shutdown(self) -> None:
-        """Request application shutdown from external callers."""
+    def request_shutdown(self, sig: signal.Signals | None = None) -> None:
+        """Request application shutdown from external callers or signals."""
+        shutdown_already_requested = (
+            self._shutdown_event is not None and self._shutdown_event.is_set()
+        )
+
+        if sig == signal.SIGTERM:
+            self._request_shutdown_abort()
+            logger.info("application.shutdown_requested", signal="SIGTERM")
+        elif sig == signal.SIGINT:
+            if shutdown_already_requested:
+                if (
+                    self._shutdown_abort_event is not None
+                    and not self._shutdown_abort_event.is_set()
+                ):
+                    self._print_shutdown_notice(
+                        "Second Ctrl+C received. Aborting active agent run(s)."
+                    )
+                self._request_shutdown_abort()
+            else:
+                self._shutdown_mode = "drain"
+                active_runs = self._active_agent_run_count()
+                if active_runs:
+                    self._print_shutdown_notice(
+                        "Shutdown requested. Waiting for "
+                        f"{active_runs} active agent run(s) to finish. "
+                        "Press Ctrl+C again to abort."
+                    )
+                else:
+                    self._print_shutdown_notice("Shutdown requested. Exiting.")
+        elif not shutdown_already_requested:
+            self._shutdown_mode = "drain"
+
         if self._shutdown_event is not None:
             self._shutdown_event.set()
+
+    def _request_shutdown_abort(self) -> None:
+        self._shutdown_mode = "abort"
+        if self._shutdown_abort_event is not None:
+            self._shutdown_abort_event.set()
+
+    def _active_agent_run_count(self) -> int:
+        if self.message_router is None:
+            return 0
+        return self.message_router.active_agent_run_count
+
+    def _print_shutdown_notice(self, message: str) -> None:
+        print(f"\n{message}", file=sys.stderr, flush=True)
 
     async def run(self) -> None:
         """Run the application until interrupted."""
         self._shutdown_event = asyncio.Event()
+        self._shutdown_abort_event = asyncio.Event()
+        self._shutdown_mode = "drain"
         await self.start()
 
         loop = asyncio.get_running_loop()
         registered_signals: list[signal.Signals] = []
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(sig, self.request_shutdown)
+                loop.add_signal_handler(sig, self.request_shutdown, sig)
                 registered_signals.append(sig)
             except (NotImplementedError, RuntimeError):
                 # Signal handlers may be unavailable on some platforms/runtimes.
@@ -1091,20 +1151,37 @@ class Application:
         try:
             await self._shutdown_event.wait()
         except (KeyboardInterrupt, asyncio.CancelledError):
+            self.request_shutdown(signal.SIGINT)
             logger.info("application.interrupt_received")
         finally:
-            for sig in registered_signals:
-                loop.remove_signal_handler(sig)
-            # Shield stop() from a second KeyboardInterrupt during cleanup.
+            stop_task = asyncio.create_task(
+                self.stop(
+                    mode=self._shutdown_mode,
+                    abort_event=self._shutdown_abort_event,
+                )
+            )
             try:
-                await asyncio.shield(self.stop())
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                # On Windows a second Ctrl+C during shutdown is common.
-                # Force best-effort cleanup.
-                try:
-                    await self.stop()
-                except Exception:  # noqa: BLE001
-                    pass
+                while True:
+                    try:
+                        await asyncio.shield(stop_task)
+                        break
+                    except (KeyboardInterrupt, asyncio.CancelledError):
+                        # On platforms where add_signal_handler is unavailable,
+                        # a second Ctrl+C cancels the main task. Convert it into
+                        # the same abort signal used by Unix handlers.
+                        self.request_shutdown(signal.SIGINT)
+                        if stop_task.done():
+                            break
+            finally:
+                for sig in registered_signals:
+                    loop.remove_signal_handler(sig)
+                if not stop_task.done():
+                    self._request_shutdown_abort()
+                    stop_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await stop_task
+                elif stop_task.exception() is not None:
+                    stop_task.result()
 
     @property
     def is_initialized(self) -> bool:

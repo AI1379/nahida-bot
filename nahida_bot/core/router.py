@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from contextlib import suppress
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import structlog
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
     from nahida_bot.workspace.manager import WorkspaceManager
 
 logger = structlog.get_logger(__name__)
+
+RouterStopMode = Literal["drain", "abort"]
 
 
 @dataclass(slots=True)
@@ -260,8 +263,21 @@ class MessageRouter:
         await self.restore_active_sessions()
         logger.info("message_router.started")
 
-    async def stop(self) -> None:
-        """Unsubscribe from events and wait for active agent runs to finish."""
+    async def stop(
+        self,
+        *,
+        mode: RouterStopMode = "drain",
+        abort_event: asyncio.Event | None = None,
+        abort_timeout_seconds: float = 5.0,
+    ) -> None:
+        """Unsubscribe from events and stop active routing work.
+
+        ``drain`` preserves the previous behavior: wait for active agent runs to
+        finish naturally. ``abort`` requests stop on active runs, then cancels
+        stragglers after a short grace period. Supplying ``abort_event`` lets a
+        second shutdown signal promote a drain into an abort while this method is
+        already waiting.
+        """
         self._stopping = True
         if self._subscription is not None:
             self._subscription.unsubscribe()
@@ -278,13 +294,114 @@ class MessageRouter:
 
         # Wait for active agent runs to finish, then cancel stragglers
         if self._runner is not None:
-            tracker = self._runner.run_tracker
-            tasks = [run.task for run in tracker.all_runs if not run.task.done()]
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._stop_active_runs(
+                mode=mode,
+                abort_event=abort_event,
+                abort_timeout_seconds=abort_timeout_seconds,
+            )
 
         self._pending.clear()
         logger.info("message_router.stopped")
+
+    @property
+    def active_agent_run_count(self) -> int:
+        """Return the number of active agent run tasks."""
+        if self._runner is None:
+            return 0
+        return sum(
+            1 for run in self._runner.run_tracker.all_runs if not run.task.done()
+        )
+
+    async def _stop_active_runs(
+        self,
+        *,
+        mode: RouterStopMode,
+        abort_event: asyncio.Event | None,
+        abort_timeout_seconds: float,
+    ) -> None:
+        runner = self._runner
+        if runner is None:
+            return
+
+        tracker = runner.run_tracker
+        runs = [run for run in tracker.all_runs if not run.task.done()]
+        if not runs:
+            return
+
+        if mode == "abort":
+            await self._abort_active_runs(
+                abort_timeout_seconds=abort_timeout_seconds,
+            )
+            return
+
+        abort_requested = await self._wait_for_active_runs_or_abort(
+            [run.task for run in runs],
+            abort_event=abort_event,
+        )
+        if abort_requested:
+            await self._abort_active_runs(
+                abort_timeout_seconds=abort_timeout_seconds,
+            )
+
+    async def _wait_for_active_runs_or_abort(
+        self,
+        tasks: list[asyncio.Task[None]],
+        *,
+        abort_event: asyncio.Event | None,
+    ) -> bool:
+        if not tasks:
+            return False
+        if abort_event is None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return False
+
+        abort_task = asyncio.create_task(abort_event.wait())
+        pending_tasks = {task for task in tasks if not task.done()}
+        abort_requested = False
+        try:
+            while pending_tasks and not abort_requested:
+                done, _ = await asyncio.wait(
+                    [*pending_tasks, abort_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if abort_task in done and abort_event.is_set():
+                    abort_requested = True
+                    break
+                pending_tasks.difference_update(done)
+        finally:
+            abort_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await abort_task
+
+        if not abort_requested:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return abort_requested
+
+    async def _abort_active_runs(self, *, abort_timeout_seconds: float) -> None:
+        runner = self._runner
+        if runner is None:
+            return
+
+        tracker = runner.run_tracker
+        runs = [run for run in tracker.all_runs if not run.task.done()]
+        if not runs:
+            return
+
+        for run in runs:
+            tracker.request_stop(run.session_id)
+
+        tasks = [run.task for run in runs if not run.task.done()]
+        if tasks and abort_timeout_seconds > 0:
+            _, pending = await asyncio.wait(tasks, timeout=abort_timeout_seconds)
+        else:
+            pending = set(tasks)
+
+        if pending:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def get_session_run_status(self, session_id: str) -> dict[str, Any]:
         """Return the current agent run status for a session.

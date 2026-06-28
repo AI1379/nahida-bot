@@ -1067,6 +1067,61 @@ class TestMessageRouterAgentStop:
         )
         await router.stop()
 
+    async def test_stop_abort_requests_stop_then_cancels_straggler(self) -> None:
+        """Abort shutdown signals stop_event, then cancels a task that ignores it."""
+        router, _, _, _ = _make_router()
+        await router.start()
+        runner = cast(Any, router)._runner
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(asyncio.sleep(60))
+        runner.run_tracker.start("test:private:c1", task, stop_event)
+
+        try:
+            await router.stop(mode="abort", abort_timeout_seconds=0.01)
+
+            assert stop_event.is_set()
+            assert task.cancelled()
+        finally:
+            runner.run_tracker.finish("test:private:c1")
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_stop_drain_can_be_promoted_to_abort_by_abort_event(self) -> None:
+        """Second Ctrl+C can promote shutdown drain into graceful run abort."""
+        router, _, _, _ = _make_router()
+        await router.start()
+        runner = cast(Any, router)._runner
+        stop_event = asyncio.Event()
+
+        async def _worker() -> None:
+            await stop_event.wait()
+
+        task = asyncio.create_task(_worker())
+        runner.run_tracker.start("test:private:c1", task, stop_event)
+        abort_event = asyncio.Event()
+        stop_task = asyncio.create_task(
+            router.stop(
+                mode="drain",
+                abort_event=abort_event,
+                abort_timeout_seconds=1.0,
+            )
+        )
+
+        try:
+            await asyncio.sleep(0)
+            assert not stop_task.done()
+
+            abort_event.set()
+            await asyncio.wait_for(stop_task, timeout=1.0)
+
+            assert stop_event.is_set()
+            assert task.done()
+            assert not task.cancelled()
+        finally:
+            runner.run_tracker.finish("test:private:c1")
+            task.cancel()
+            await asyncio.gather(task, stop_task, return_exceptions=True)
+
 
 class TestMessageRouterAgentRunLifecycle:
     """AgentRunStarted/Cancelled/Finished are published per run."""

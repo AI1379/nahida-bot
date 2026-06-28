@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import signal
 from pathlib import Path
 
 import pytest
@@ -218,3 +219,36 @@ class TestApplication:
 
         await asyncio.wait_for(run_task, timeout=1)
         assert application.is_started is False
+
+    @pytest.mark.asyncio
+    async def test_sigint_first_drains_second_aborts(
+        self, test_settings: Settings
+    ) -> None:
+        """First Ctrl+C drains active work; second Ctrl+C requests abort."""
+        application = Application(settings=test_settings)
+        application._shutdown_event = asyncio.Event()
+        application._shutdown_abort_event = asyncio.Event()
+
+        application.request_shutdown(signal.SIGINT)
+
+        assert application._shutdown_event.is_set()
+        assert application._shutdown_mode == "drain"
+        assert not application._shutdown_abort_event.is_set()
+
+        application.request_shutdown(signal.SIGINT)
+
+        assert application._shutdown_mode == "abort"
+        assert application._shutdown_abort_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_sigterm_requests_abort(self, test_settings: Settings) -> None:
+        """SIGTERM is non-interactive: abort active work immediately."""
+        application = Application(settings=test_settings)
+        application._shutdown_event = asyncio.Event()
+        application._shutdown_abort_event = asyncio.Event()
+
+        application.request_shutdown(signal.SIGTERM)
+
+        assert application._shutdown_event.is_set()
+        assert application._shutdown_mode == "abort"
+        assert application._shutdown_abort_event.is_set()
