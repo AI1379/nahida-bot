@@ -3,6 +3,14 @@
 import logging
 from unittest.mock import MagicMock
 
+import pytest
+
+from nahida_bot.core.events import (
+    AgentRunFinished,
+    AgentRunPayload,
+    AgentStopPayload,
+    AgentStopRequested,
+)
 from nahida_bot.gateway.services.event_broadcaster import (
     _CLIENT_QUEUE_MAXSIZE,
     _should_bridge_log_record,
@@ -62,3 +70,46 @@ def test_log_bridge_keeps_application_records() -> None:
     )
 
     assert _should_bridge_log_record(record) is True
+
+
+@pytest.mark.asyncio
+async def test_agent_stop_requested_event_is_broadcast_without_run_payload_fields() -> (
+    None
+):
+    broadcaster = EventBroadcaster(MagicMock())
+    q = broadcaster.subscribe()
+
+    await broadcaster._on_agent_run_event(
+        AgentStopRequested(payload=AgentStopPayload(session_id="s1")),
+        None,
+    )
+
+    payload = q.get_nowait()
+    assert payload is not None
+    assert payload.startswith("event: agent_run.stop_requested\n")
+    assert '"session_id": "s1"' in payload
+    assert '"workspace_id": ""' in payload
+
+
+@pytest.mark.asyncio
+async def test_agent_finished_event_includes_terminal_and_error() -> None:
+    broadcaster = EventBroadcaster(MagicMock())
+    q = broadcaster.subscribe()
+
+    await broadcaster._on_agent_run_event(
+        AgentRunFinished(
+            payload=AgentRunPayload(
+                session_id="s1",
+                workspace_id="default",
+                terminal="failed",
+                error="provider_auth_failed",
+            )
+        ),
+        None,
+    )
+
+    payload = q.get_nowait()
+    assert payload is not None
+    assert payload.startswith("event: agent_run.finished\n")
+    assert '"terminal": "failed"' in payload
+    assert '"error": "provider_auth_failed"' in payload

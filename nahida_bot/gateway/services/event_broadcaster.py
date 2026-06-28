@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from nahida_bot.core.events import (
+    AgentRunCancelled,
+    AgentRunFinished,
+    AgentRunStarted,
+    AgentStopRequested,
     Event,
     MessageReceived,
     MessageSent,
@@ -95,6 +99,17 @@ class EventBroadcaster:
                 priority=10,
             )
         )
+        # Agent run lifecycle + stop requests → reactive webui run status
+        # (replaces polling get_session_run_status).
+        for run_event_type in (
+            AgentRunStarted,
+            AgentRunCancelled,
+            AgentRunFinished,
+            AgentStopRequested,
+        ):
+            self._subscriptions.append(
+                bus.subscribe(run_event_type, self._on_agent_run_event, priority=10)
+            )
 
         # Bridge log capture
         capture = get_log_capture()
@@ -208,6 +223,38 @@ class EventBroadcaster:
                 "plugin_id": payload.plugin_id,
                 "method": payload.method,
                 "error": payload.error,
+            },
+        )
+
+    async def _on_agent_run_event(self, event: Event[Any], ctx: Any) -> None:
+        payload = event.payload
+        if isinstance(event, AgentStopRequested):
+            event_name = "agent_run.stop_requested"
+            workspace_id = ""
+            terminal = ""
+            error = ""
+        elif isinstance(event, AgentRunStarted):
+            event_name = "agent_run.started"
+            workspace_id = payload.workspace_id
+            terminal = payload.terminal
+            error = payload.error
+        elif isinstance(event, AgentRunCancelled):
+            event_name = "agent_run.cancelled"
+            workspace_id = payload.workspace_id
+            terminal = payload.terminal
+            error = payload.error
+        else:
+            event_name = "agent_run.finished"
+            workspace_id = payload.workspace_id
+            terminal = payload.terminal
+            error = payload.error
+        self._push_event(
+            event_name,
+            {
+                "session_id": payload.session_id,
+                "workspace_id": workspace_id,
+                "terminal": terminal,
+                "error": error,
             },
         )
 

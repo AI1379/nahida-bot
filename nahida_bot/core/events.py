@@ -26,6 +26,12 @@ from typing import (
 from nahida_bot_sdk.events import (  # noqa: F401
     AgentResponseRequested,
     AgentResponseRequestPayload,
+    AgentRunCancelled,
+    AgentRunFinished,
+    AgentRunPayload,
+    AgentRunStarted,
+    AgentStopPayload,
+    AgentStopRequested,
     AppInitializing,
     AppLifecyclePayload,
     AppStarted,

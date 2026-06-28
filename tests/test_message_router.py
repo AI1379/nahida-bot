@@ -20,6 +20,11 @@ from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.events import (
     AgentResponseRequested,
     AgentResponseRequestPayload,
+    AgentRunCancelled,
+    AgentRunFinished,
+    AgentRunStarted,
+    AgentStopPayload,
+    AgentStopRequested,
     EventBus,
     EventContext,
     MessageObserved,
@@ -990,6 +995,151 @@ class TestMessageRouterAgentDispatch:
         await router.stop()
 
         assert agent.calls[0]["workspace_root"] == manager.workspace_path("default")
+
+
+class TestMessageRouterAgentStop:
+    """AgentStopRequested event + /new cancellation of in-flight runs."""
+
+    async def test_agent_stop_requested_sets_stop_event(self) -> None:
+        """Publishing AgentStopRequested signals the active run's stop_event."""
+        router, event_bus, _, _ = _make_router()
+        await router.start()
+        runner = cast(Any, router)._runner
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(asyncio.sleep(60))
+        runner.run_tracker.start("test:private:c1", task, stop_event)
+        try:
+            assert not stop_event.is_set()
+            await event_bus.publish(
+                AgentStopRequested(
+                    payload=AgentStopPayload(session_id="test:private:c1"),
+                    source="test",
+                )
+            )
+            assert stop_event.is_set()
+            # Unknown session is a no-op (request_stop returns False), no error.
+            result = await event_bus.publish(
+                AgentStopRequested(
+                    payload=AgentStopPayload(session_id="test:private:other"),
+                    source="test",
+                )
+            )
+            assert not result.failures
+        finally:
+            runner.run_tracker.finish("test:private:c1")
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await router.stop()
+
+    async def test_set_active_session_cancels_inflight_old_run(self) -> None:
+        """/new switching session stops a run still in flight on the old one."""
+        router, _, _, _ = _make_router()
+        await router.start()
+        runner = cast(Any, router)._runner
+        address = ChatAddress(channel="test", target_type="private", target_id="c1")
+        key = address.chat_key
+        # The chat's current active session is "old" (e.g. from a prior /new),
+        # and a run is in flight on it.
+        cast(Any, router)._active_sessions[key] = "test:private:old"
+        old_stop = asyncio.Event()
+        old_task = asyncio.create_task(asyncio.sleep(60))
+        runner.run_tracker.start("test:private:old", old_task, old_stop)
+        try:
+            assert not old_stop.is_set()
+            router.set_active_session(address, "test:private:new")
+            # Old session's run was signalled to stop, and the override moved.
+            assert old_stop.is_set()
+            assert cast(Any, router)._active_sessions[key] == "test:private:new"
+        finally:
+            runner.run_tracker.finish("test:private:old")
+            old_task.cancel()
+            await asyncio.gather(old_task, return_exceptions=True)
+            await router.stop()
+
+    async def test_set_active_session_does_not_cancel_when_no_active_run(self) -> None:
+        """Switching to a new session is a no-op when nothing is running."""
+        router, _, _, _ = _make_router()
+        await router.start()
+        # No run started; this must not raise or request any stop.
+        router.set_active_session(
+            ChatAddress(channel="test", target_type="private", target_id="c1"),
+            "test:private:new",
+        )
+        await router.stop()
+
+
+class TestMessageRouterAgentRunLifecycle:
+    """AgentRunStarted/Cancelled/Finished are published per run."""
+
+    async def _drain_nowait(self, event_bus: EventBus) -> None:
+        if event_bus._pending_tasks:  # type: ignore[attr-defined]
+            await asyncio.gather(
+                *event_bus._pending_tasks,
+                return_exceptions=True,  # type: ignore[attr-defined]
+            )
+
+    async def test_normal_run_emits_started_then_finished(self) -> None:
+        agent = _MockAgentLoop(response="done")
+        router, event_bus, _, _ = _make_router(agent=agent)
+        seen: list[str] = []
+
+        async def _capture(event: Any, ctx: Any) -> None:
+            if isinstance(event, AgentRunStarted):
+                seen.append("started")
+            elif isinstance(event, AgentRunCancelled):
+                seen.append("cancelled")
+            elif isinstance(event, AgentRunFinished):
+                seen.append(f"finished:{event.payload.terminal}")
+
+        event_bus.subscribe(AgentRunStarted, _capture, priority=10)
+        event_bus.subscribe(AgentRunCancelled, _capture, priority=10)
+        event_bus.subscribe(AgentRunFinished, _capture, priority=10)
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=_inbound("hi"), session_id="test:private:c1"
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+        await self._drain_nowait(event_bus)
+
+        assert seen == ["started", "finished:completed"]
+
+    async def test_provider_error_done_emits_failed_finished(self) -> None:
+        class _ProviderErrorAgent:
+            async def run_stream(self, **kwargs: Any) -> Any:
+                yield LoopEvent(
+                    type="done",
+                    final_response="Service temporarily unavailable.",
+                    error="provider_auth_failed",
+                )
+
+        router, event_bus, _, _ = _make_router(agent=_ProviderErrorAgent())
+        seen: list[tuple[str, str]] = []
+
+        async def _capture(event: Any, ctx: Any) -> None:
+            if isinstance(event, AgentRunFinished):
+                seen.append((event.payload.terminal, event.payload.error))
+
+        event_bus.subscribe(AgentRunFinished, _capture, priority=10)
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=_inbound("hi"), session_id="test:private:c1"
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+        await self._drain_nowait(event_bus)
+
+        assert seen == [("failed", "provider_auth_failed")]
 
 
 class TestMessageRouterMemory:

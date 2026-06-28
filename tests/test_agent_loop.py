@@ -92,6 +92,37 @@ class _HangingToolExecutor(ToolExecutor):
         return ToolExecutionResult.success(output="too late")
 
 
+@dataclass
+class _BlockingProvider(ChatProvider):
+    """Provider that blocks inside ``chat`` until ``proceed`` is set.
+
+    Simulates a long model generation so the stop-interruption path can be
+    exercised: when the loop cancels the in-flight call, ``cancelled`` flips.
+    """
+
+    name: str = "blocking-provider"
+    chat_started: asyncio.Event = field(default_factory=asyncio.Event)
+    proceed: asyncio.Event = field(default_factory=asyncio.Event)
+    cancelled: bool = False
+    completed: bool = False
+
+    @property
+    def tokenizer(self):  # noqa: D102
+        return None
+
+    async def _chat_impl(  # noqa: ANN001
+        self, *, messages, tools=None, timeout_seconds=None, model=None
+    ):
+        self.chat_started.set()
+        try:
+            await self.proceed.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        self.completed = True
+        return ProviderResponse(content="should not be reached", tool_calls=[])
+
+
 @pytest.mark.asyncio
 async def test_agent_loop_returns_direct_response_without_tools() -> None:
     """Loop should terminate immediately when provider returns plain content."""
@@ -995,6 +1026,103 @@ async def test_agent_loop_stop_event_preserves_partial_messages() -> None:
         "tool_result:search"
     ]
     # The loop stopped before consuming the second queued provider response.
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_stop_event_interrupts_inflight_provider_call() -> None:
+    """stop_event set during ``provider.chat()`` aborts the in-flight call.
+
+    Regression for the production symptom where ``/stop`` set 2s into an 18.5s
+    call was honored only after the call finished: the provider call was a
+    single uninterruptible await. Now the call is raced against ``stop_event``
+    and the HTTP task is cancelled, so the loop emits a cancelled ``done``
+    event promptly. Also asserts the bug-B fix: cancelled done-events carry
+    ``trace_id`` (previously omitted, which skipped transcript persistence).
+    """
+    provider = _BlockingProvider()
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    metrics = MetricsCollector()
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=builder,
+        metrics=metrics,
+    )
+    stop_event = asyncio.Event()
+
+    async def _stop_once_chat_starts() -> None:
+        await provider.chat_started.wait()
+        stop_event.set()
+
+    asyncio.create_task(_stop_once_chat_starts())
+
+    done_event = None
+    event_loop = asyncio.get_running_loop()
+    t0 = event_loop.time()
+    async for event in loop.run_stream(
+        user_message="hi", system_prompt="sys", stop_event=stop_event
+    ):
+        if event.type == "done":
+            done_event = event
+    elapsed = event_loop.time() - t0
+
+    assert done_event is not None
+    assert done_event.error == "cancelled"
+    # Bug-B fix: cancelled done-events now carry trace_id so transcript persist
+    # + ledger join work for cancelled runs.
+    assert done_event.trace_id
+    # The user turn is still carried so SessionRunner persists it (#28).
+    assert done_event.ordered_transcript
+    # The blocking call was actually interrupted, not run to completion.
+    assert provider.cancelled is True
+    assert provider.completed is False
+    # Interrupted promptly — without the race this hangs ~provider_timeout (120s).
+    assert elapsed < 5.0
+    assert metrics.terminal_outcome_counts() == {"cancelled:cancelled": 1}
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_stop_event_during_retry_backoff_aborts() -> None:
+    """Stop set during provider retry backoff aborts instead of retrying.
+
+    The backoff sleep is a second uninterruptible await; it must also honor
+    stop so /stop during a retry storm is prompt.
+    """
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="after retry", tool_calls=[])],
+        failures=[ProviderRateLimitError()],
+    )
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    loop = AgentLoop(
+        provider=provider,
+        context_builder=builder,
+        config=AgentLoopConfig(retry_attempts=2, retry_backoff_seconds=5.0),
+    )
+    stop_event = asyncio.Event()
+
+    async def _stop_shortly() -> None:
+        await asyncio.sleep(0.1)
+        stop_event.set()
+
+    asyncio.create_task(_stop_shortly())
+
+    done_event = None
+    async for event in loop.run_stream(
+        user_message="hi", system_prompt="sys", stop_event=stop_event
+    ):
+        if event.type == "done":
+            done_event = event
+
+    assert done_event is not None
+    assert done_event.error == "cancelled"
+    # First (failing) call consumed the failure; the backoff was interrupted
+    # before the retry, so the provider was never called a second time.
     assert provider.calls == 1
 
 

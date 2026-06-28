@@ -388,6 +388,7 @@ class TestPersistTurnsMetadata:
         class _FakeResult:
             final_response = "ok"
             assistant_messages: list[Any] = []
+            tool_messages: list[Any] = []
 
         await runner._persist_turns(
             "session_1",
@@ -529,6 +530,9 @@ class TestPersistTurnsMetadata:
         runner = SessionRunner(memory_store=cast(MemoryStore, _FakeMemory()))
 
         class _FakeContextMessage:
+            content = "here is my answer"
+            source = "provider_response"
+            metadata: dict[str, Any] = {}
             reasoning = "I thought about it"
             reasoning_signature = "sig_123"
             has_redacted_thinking = True
@@ -536,6 +540,7 @@ class TestPersistTurnsMetadata:
         class _FakeResult:
             final_response = "here is my answer"
             assistant_messages = [_FakeContextMessage()]
+            tool_messages: list[Any] = []
 
         await runner._persist_turns(
             "session_1",

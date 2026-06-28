@@ -6,7 +6,8 @@ import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -32,6 +33,17 @@ from nahida_bot.agent.providers import (
 )
 
 logger = structlog.get_logger(__name__)
+
+
+class _StopRequested(Exception):
+    """Internal sentinel: stop was requested mid provider-call.
+
+    Raised by ``_call_provider_with_retry`` when ``stop_event`` fires during an
+    in-flight ``provider.chat()`` (the call is cancelled so httpx aborts the
+    request). Caught in ``run_stream`` to emit the cancelled ``done`` event with
+    the partial turn. Deliberately NOT a ``ProviderError`` subclass so it
+    bypasses the retry path.
+    """
 
 
 class ToolExecutor(ABC):
@@ -328,16 +340,15 @@ class AgentLoop:
                     await recorder.terminal(
                         terminal_state="cancelled", reason="cancelled"
                     )
-                    yield LoopEvent(
-                        type="done",
+                    yield self._cancelled_done_event(
+                        trace=trace,
+                        steps=max(step - 1, 0),
                         final_response=(
                             assistant_messages[-1].content if assistant_messages else ""
                         ),
-                        assistant_messages=list(assistant_messages),
-                        tool_messages=list(tool_messages),
-                        ordered_transcript=list(active_turn_messages),
-                        steps=step - 1,
-                        error="cancelled",
+                        assistant_messages=assistant_messages,
+                        tool_messages=tool_messages,
+                        ordered_transcript=active_turn_messages,
                         total_usage=total_usage,
                     )
                     return
@@ -366,6 +377,7 @@ class AgentLoop:
                     trace=trace,
                     provider=active_provider,
                     model=model,
+                    stop_event=stop_event,
                 )
 
                 # Accumulate token usage across all steps
@@ -480,14 +492,13 @@ class AgentLoop:
                     await recorder.terminal(
                         terminal_state="cancelled", reason="cancelled"
                     )
-                    yield LoopEvent(
-                        type="done",
-                        final_response=display or "",
-                        assistant_messages=list(assistant_messages),
-                        tool_messages=list(tool_messages),
-                        ordered_transcript=list(active_turn_messages),
+                    yield self._cancelled_done_event(
+                        trace=trace,
                         steps=step,
-                        error="cancelled",
+                        final_response=display or "",
+                        assistant_messages=assistant_messages,
+                        tool_messages=tool_messages,
+                        ordered_transcript=active_turn_messages,
                         total_usage=total_usage,
                     )
                     return
@@ -568,6 +579,43 @@ class AgentLoop:
                 ordered_transcript=list(active_turn_messages),
                 steps=self.config.max_steps,
                 trace_id=trace.trace_id if trace else None,
+                total_usage=total_usage,
+            )
+        except _StopRequested:
+            # Stop fired during an in-flight provider call (the call was
+            # cancelled in _call_chat_interruptible). Emit the cancelled done
+            # event with whatever assistant/tool messages prior steps produced
+            # so SessionRunner persists the partial turn (#28). Placed before
+            # ``except ProviderError`` because _StopRequested is not a
+            # ProviderError and must bypass retry.
+            completed_steps = max(step - 1, 0)
+            logger.info(
+                "agent_loop.run_completed",
+                trace_id=trace.trace_id if trace else "",
+                reason="cancelled",
+                final_response_preview=(
+                    assistant_messages[-1].content if assistant_messages else ""
+                )[:200],
+                terminal_state="cancelled",
+                step=step,
+                max_steps=self.config.max_steps,
+            )
+            self._record_terminal_outcome(
+                trace=trace,
+                step=completed_steps,
+                terminal_state="cancelled",
+                reason="cancelled",
+            )
+            await recorder.terminal(terminal_state="cancelled", reason="cancelled")
+            yield self._cancelled_done_event(
+                trace=trace,
+                steps=completed_steps,
+                final_response=(
+                    assistant_messages[-1].content if assistant_messages else ""
+                ),
+                assistant_messages=assistant_messages,
+                tool_messages=tool_messages,
+                ordered_transcript=active_turn_messages,
                 total_usage=total_usage,
             )
         except ProviderError as exc:
@@ -652,6 +700,36 @@ class AgentLoop:
             protocol_anomaly=protocol_anomaly,
         )
 
+    def _cancelled_done_event(
+        self,
+        *,
+        trace: Trace | None,
+        steps: int,
+        final_response: str,
+        assistant_messages: list[ContextMessage],
+        tool_messages: list[ContextMessage],
+        ordered_transcript: list[ContextMessage],
+        total_usage: TokenUsage,
+    ) -> LoopEvent:
+        """Build the cancelled ``done`` event shared by all three stop exits.
+
+        Centralized so every cancelled exit — top-of-step, post-response, and
+        mid-call (``_StopRequested``) — carries ``trace_id`` (previously
+        omitted, which silently skipped transcript persistence for cancelled
+        runs) and identical field shape.
+        """
+        return LoopEvent(
+            type="done",
+            final_response=final_response,
+            assistant_messages=list(assistant_messages),
+            tool_messages=list(tool_messages),
+            ordered_transcript=list(ordered_transcript),
+            steps=steps,
+            trace_id=trace.trace_id if trace else None,
+            error="cancelled",
+            total_usage=total_usage,
+        )
+
     def _system_prompt_with_tool_guidance(
         self,
         system_prompt: str,
@@ -670,6 +748,7 @@ class AgentLoop:
         trace: Trace | None = None,
         provider: ChatProvider | None = None,
         model: str | None = None,
+        stop_event: asyncio.Event | None = None,
     ) -> ProviderResponse:
         active_provider = provider or self.provider
         attempts = 0
@@ -693,11 +772,13 @@ class AgentLoop:
                     roles=[m.role for m in messages],
                     sources=[m.source for m in messages],
                 )
-                response = await active_provider.chat(
+                response = await self._call_chat_interruptible(
+                    active_provider,
                     messages=messages,
                     tools=tools,
                     timeout_seconds=self.config.provider_timeout_seconds,
                     model=model,
+                    stop_event=stop_event,
                 )
                 logger.debug(
                     "agent_loop.provider_call_done",
@@ -763,7 +844,89 @@ class AgentLoop:
                 )
                 if not can_retry:
                     raise
-                await asyncio.sleep(self.config.retry_backoff_seconds)
+                if stop_event is not None:
+                    # Honor a stop that arrived during the failed call, and make
+                    # the backoff itself interruptible so /stop during retry is
+                    # prompt (the sleep is otherwise a second uninterruptible
+                    # await). wait_for returns early if stop fires first; a
+                    # timeout means the backoff elapsed without a stop.
+                    if stop_event.is_set():
+                        raise _StopRequested
+                    try:
+                        await asyncio.wait_for(
+                            stop_event.wait(),
+                            timeout=self.config.retry_backoff_seconds,
+                        )
+                    except TimeoutError:
+                        pass
+                    if stop_event.is_set():
+                        raise _StopRequested
+                else:
+                    await asyncio.sleep(self.config.retry_backoff_seconds)
+
+    async def _call_chat_interruptible(
+        self,
+        provider: ChatProvider,
+        *,
+        messages: list[ContextMessage],
+        tools: list[ToolDefinition] | None,
+        timeout_seconds: float,
+        model: str | None,
+        stop_event: asyncio.Event | None,
+    ) -> ProviderResponse:
+        """Call ``provider.chat``, aborting mid-call if ``stop_event`` fires.
+
+        Without this the provider HTTP request is a single uninterruptible
+        await that dominates run wall-clock, so ``/stop`` only took effect
+        after the call returned (production logs showed an 18.5s call where
+        stop set 2s in was honored 16.8s late). Here the call is raced against
+        ``stop_event.wait()``; if stop wins the in-flight task is cancelled
+        (httpx aborts the request; the shared client survives per-request
+        cancellation) and ``_StopRequested`` is raised so ``run_stream`` emits
+        the cancelled ``done`` event with the partial turn. If the call wins,
+        its result — or ``ProviderError`` — is returned/raised for the normal
+        retry path.
+        """
+        chat_coro: Awaitable[ProviderResponse] = provider.chat(
+            messages=messages,
+            tools=tools,
+            timeout_seconds=timeout_seconds,
+            model=model,
+        )
+        if stop_event is None:
+            return await chat_coro
+
+        chat_task = asyncio.ensure_future(chat_coro)
+        stop_task = asyncio.ensure_future(stop_event.wait())
+        try:
+            await asyncio.wait(
+                {chat_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # The run task itself was cancelled; clean up both children.
+            chat_task.cancel()
+            stop_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await chat_task
+            with suppress(asyncio.CancelledError):
+                await stop_task
+            raise
+
+        if stop_event.is_set():
+            chat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await chat_task
+            stop_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stop_task
+            raise _StopRequested
+
+        # Chat finished first; cancel the stop waiter and surface the result
+        # (or ProviderError) for the retry path.
+        stop_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await stop_task
+        return chat_task.result()
 
     def _log_terminal_without_tool_calls(
         self,

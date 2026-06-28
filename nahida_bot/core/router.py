@@ -15,6 +15,11 @@ from nahida_bot.core.chat_address import ChatAddress, classify_session_key
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
     AgentResponseRequested,
+    AgentRunCancelled,
+    AgentRunFinished,
+    AgentRunPayload,
+    AgentRunStarted,
+    AgentStopRequested,
     EventBus,
     MessagePayload,
     MessageObserved,
@@ -109,6 +114,7 @@ class MessageRouter:
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
         self._agent_response_subscription: Subscription | None = None
+        self._agent_stop_subscription: Subscription | None = None
         # Maps deterministic session key → active session id (for /new)
         # TODO(capacity): bound or page restored active-session overrides if
         # untrusted traffic can create many distinct chat keys.
@@ -245,6 +251,12 @@ class MessageRouter:
             priority=0,
             timeout=120.0,
         )
+        self._agent_stop_subscription = self._event_bus.subscribe(
+            AgentStopRequested,
+            self._handle_agent_stop_requested,
+            priority=0,
+            timeout=30.0,
+        )
         await self.restore_active_sessions()
         logger.info("message_router.started")
 
@@ -260,6 +272,9 @@ class MessageRouter:
         if self._agent_response_subscription is not None:
             self._agent_response_subscription.unsubscribe()
             self._agent_response_subscription = None
+        if self._agent_stop_subscription is not None:
+            self._agent_stop_subscription.unsubscribe()
+            self._agent_stop_subscription = None
 
         # Wait for active agent runs to finish, then cancel stragglers
         if self._runner is not None:
@@ -398,6 +413,20 @@ class MessageRouter:
             raise ValueError("Cannot set an active session for an untyped address")
         key = address.chat_key
         old = self._active_sessions.get(key, self.make_session_id(address))
+
+        # /new switches the chat to a fresh session. If a run is still in
+        # flight on the previous session, stop it so its (now-stale) answer
+        # doesn't land in the old chat after the switch. request_stop is a
+        # no-op when nothing is active; both checks are sync with no await
+        # between them. request_stop only signals — the loop's interruptible
+        # provider call does the actual abort and still persists the partial
+        # turn (#28).
+        if (
+            old != session_id
+            and self._runner is not None
+            and self._runner.run_tracker.is_active(old)
+        ):
+            self._runner.run_tracker.request_stop(old)
 
         self._active_sessions[key] = session_id
         self._persist_override(key, session_id)
@@ -552,6 +581,28 @@ class MessageRouter:
             )
         finally:
             current_session.reset(token)
+
+    async def _handle_agent_stop_requested(
+        self, event: AgentStopRequested, ctx: EventContext
+    ) -> None:
+        """Gracefully stop the active run for a session (``/stop``, ``/new``).
+
+        This is the single funnel for stop requests: any component may publish
+        ``AgentStopRequested`` instead of reaching into the router's run tracker.
+        ``request_stop`` only sets the event; the agent loop observes it at the
+        next provider-call checkpoint (which is now interruptible) and emits a
+        cancelled ``done`` event, so the partial turn is still persisted (#28).
+        """
+        runner = self._runner
+        if runner is None:
+            logger.debug(
+                "router.agent_stop_skipped",
+                reason="no_runner",
+                session_id=event.payload.session_id,
+                source=event.source,
+            )
+            return
+        runner.run_tracker.request_stop(event.payload.session_id)
 
     async def _dispatch_message(
         self,
@@ -713,6 +764,9 @@ class MessageRouter:
         """Run agent loop in background, streaming responses as they arrive."""
         tracker = runner.run_tracker
         last_sent = ""
+        cancelled = False
+        crashed = False
+        done_error = ""
         reasoning_display = await self._load_reasoning_display_config(session_id)
         logger.debug(
             "router.agent_run_start",
@@ -721,6 +775,17 @@ class MessageRouter:
             reasoning_display=reasoning_display.show,
             reasoning_max_chars=reasoning_display.max_chars,
             **_inbound_log_fields(inbound),
+        )
+        # Lifecycle: signal run start reactively (webui etc.) instead of polling
+        # run_tracker. publish_nowait so observers can never block the run.
+        self._event_bus.publish_nowait(
+            AgentRunStarted(
+                payload=AgentRunPayload(
+                    session_id=session_id,
+                    workspace_id=workspace_id or "",
+                ),
+                source="message_router",
+            )
         )
         try:
             async for event in runner.run_stream(
@@ -782,6 +847,7 @@ class MessageRouter:
                         )
                 elif event.type == "done":
                     if event.error == "cancelled":
+                        cancelled = True
                         await self._send_response(
                             inbound,
                             session_id,
@@ -789,6 +855,7 @@ class MessageRouter:
                             reply_to_override=reply_to_override,
                         )
                     else:
+                        done_error = event.error or ""
                         final = event.final_response or ""
                         if self._config.enable_silent_reply and final:
                             sr = detect_sentinel(final)
@@ -811,9 +878,13 @@ class MessageRouter:
                                 reply_to_override=reply_to_override,
                             )
         except asyncio.CancelledError:
+            # External cancellation (e.g. shutdown) — flag so the finally
+            # publishes AgentRunCancelled, not AgentRunFinished.
+            cancelled = True
             logger.debug("router.agent_cancelled", session_id=session_id)
             raise
         except Exception:
+            crashed = True
             logger.exception("router.agent_run_failed", session_id=session_id)
             try:
                 await self._send_response(
@@ -826,6 +897,28 @@ class MessageRouter:
                 logger.debug("router.error_send_failed", session_id=session_id)
         finally:
             tracker.finish(session_id)
+            # Lifecycle: publish exactly one terminal event — Cancelled covers
+            # both internal stop and external task cancellation; Finished
+            # covers completed / max_steps / provider_error / crash.
+            terminal = (
+                "cancelled"
+                if cancelled
+                else (
+                    "crashed" if crashed else ("failed" if done_error else "completed")
+                )
+            )
+            terminal_event_cls = AgentRunCancelled if cancelled else AgentRunFinished
+            self._event_bus.publish_nowait(
+                terminal_event_cls(
+                    payload=AgentRunPayload(
+                        session_id=session_id,
+                        workspace_id=workspace_id or "",
+                        terminal=terminal,
+                        error=done_error,
+                    ),
+                    source="message_router",
+                )
+            )
             logger.debug("router.agent_run_finished", session_id=session_id)
             if self._stopping:
                 self._pending.pop(session_id, None)

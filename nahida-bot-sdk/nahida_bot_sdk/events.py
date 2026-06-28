@@ -151,3 +151,54 @@ class MessageSending(Event[MessagePayload]):
 @dataclass(slots=True, frozen=True)
 class MessageSent(Event[MessagePayload]):
     """Raised after a message has been successfully sent."""
+
+
+# ── Agent Run Events ──────────────────────────────────────────
+
+
+@dataclass(slots=True, frozen=True)
+class AgentStopPayload:
+    """Payload for a request to stop an in-flight agent run."""
+
+    session_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class AgentStopRequested(Event[AgentStopPayload]):
+    """Raised to request graceful cancellation of the active run for a session.
+
+    Decouples stop sources (``/stop``, ``/new``, future webui/watchdog) from the
+    router's run tracker: any component may publish this; the router subscribes
+    and maps it to ``request_stop``.
+    """
+
+
+@dataclass(slots=True, frozen=True)
+class AgentRunPayload:
+    """Payload for agent-run lifecycle events."""
+
+    session_id: str
+    workspace_id: str = ""
+    # ``terminal`` is set on the terminal events only ("cancelled" / "completed" /
+    # "failed" / "incomplete" / "crashed"); empty on ``AgentRunStarted``.
+    terminal: str = ""
+    error: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class AgentRunStarted(Event[AgentRunPayload]):
+    """Raised when an agent run begins executing for a session."""
+
+
+@dataclass(slots=True, frozen=True)
+class AgentRunCancelled(Event[AgentRunPayload]):
+    """Raised when an agent run ends because it was stopped/cancelled."""
+
+
+@dataclass(slots=True, frozen=True)
+class AgentRunFinished(Event[AgentRunPayload]):
+    """Raised when an agent run ends any way other than cancellation.
+
+    Covers natural completion, max_steps, provider error, and crashes. Exactly
+    one of ``AgentRunCancelled`` / ``AgentRunFinished`` is emitted per run.
+    """

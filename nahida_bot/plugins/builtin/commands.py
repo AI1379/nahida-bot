@@ -35,6 +35,7 @@ from nahida_bot.core.chat_address import (
     classify_session_key,
 )
 from nahida_bot.core.context import current_session
+from nahida_bot.core.events import AgentStopPayload, AgentStopRequested
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     runtime_settings_from_meta,
@@ -2266,6 +2267,11 @@ class BuiltinCommandsPlugin(Plugin):
             return "No active session runner."
 
         tracker = runner.run_tracker
+        # Read tracker state only to choose the reply text. The stop *action*
+        # is decoupled: it goes through the event bus (AgentStopRequested), so
+        # any component can request a stop without reaching into router
+        # internals. publish_event runs the router's priority-0 handler inline,
+        # so the stop_event is set before this returns.
         run = tracker.get(session_id)
         if run is None:
             return "No active agent run for this session."
@@ -2273,16 +2279,19 @@ class BuiltinCommandsPlugin(Plugin):
             tracker.finish(session_id)
             return "Agent already finished."
 
-        stopped = tracker.request_stop(session_id)
-        if stopped:
-            _logger.info(
-                "cmd.stop",
-                session_id=session_id,
-                platform=inbound.platform,
-                chat_id=inbound.chat_id,
+        await self.api.publish_event(
+            AgentStopRequested(
+                payload=AgentStopPayload(session_id=session_id),
+                source="builtin_commands.stop",
             )
-            return "Agent stopped."
-        return "No active agent run for this session."
+        )
+        _logger.info(
+            "cmd.stop",
+            session_id=session_id,
+            platform=inbound.platform,
+            chat_id=inbound.chat_id,
+        )
+        return "Agent stopped."
 
     def _get_router(self) -> Any:
         return getattr(self.api, "message_router", None)
