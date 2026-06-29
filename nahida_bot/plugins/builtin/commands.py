@@ -281,11 +281,14 @@ class BuiltinCommandsPlugin(Plugin):
                         "description": (
                             "Sensitivity tag (Piece A4). Default public — soft, recallable "
                             "across chats, written to the Markdown notebook. Use 'private' "
-                            "when the user asks to keep it between you ('别告诉别人'/'私下') "
-                            "or 'secret_like' for secrets; sensitive notes are stored ONLY "
-                            "in the protected durable store (never the auto-injected "
-                            "Markdown) so they won't surface in other chats. 'target' is "
-                            "ignored when sensitivity is private/secret_like."
+                            "when the user asks to keep it between you ('别告诉别人'/'私下'), "
+                            "or 'secret_like' for content that must NEVER leave this chat "
+                            "(e.g. sensitive personal matters you promised to keep secret). "
+                            "Raw credentials (passwords/api keys/tokens) are NEVER stored — "
+                            "do not use this to save them. private/secret_like notes are "
+                            "stored ONLY in the protected durable store (never the "
+                            "auto-injected Markdown) so they won't surface in other chats; "
+                            "'target' is ignored for them."
                         ),
                     },
                 },

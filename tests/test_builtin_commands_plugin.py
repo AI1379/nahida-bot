@@ -619,7 +619,7 @@ async def test_memory_write_private_skips_markdown_and_persists_structured() -> 
     assert api.files == {}
     # Routed to the structured store with the explicit sensitivity tag.
     assert api.stored_memories
-    key, content, metadata = api.stored_memories[-1]
+    _key, content, metadata = api.stored_memories[-1]
     assert content == "this stays between us"
     assert metadata is not None and metadata.get("sensitivity") == "private"
     assert "protected" in result.lower() or "sensitivity" in result.lower()

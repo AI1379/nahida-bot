@@ -14,9 +14,6 @@ from typing import Any, Literal
 Sensitivity = Literal["public", "private", "secret_like"]
 SensitivitySource = Literal["default", "dream", "explicit"]
 
-_SENSITIVITY_VALUES = frozenset({"public", "private", "secret_like"})
-_SENSITIVITY_SOURCE_VALUES = frozenset({"default", "dream", "explicit"})
-
 
 def normalize_sensitivity(value: object) -> Sensitivity:
     """Coerce an arbitrary value to a canonical ``Sensitivity``.
@@ -24,10 +21,16 @@ def normalize_sensitivity(value: object) -> Sensitivity:
     Falls back to the soft ``public`` baseline on anything unrecognized
     (typos, wrong casing, None) rather than rejecting the write — the
     soft-scope model is fail-open on the public baseline, never fail-closed
-    into a restricted tag.
+    into a restricted tag. Explicit ``if`` branches (rather than a membership
+    check) so each return is a literal ``Sensitivity`` and no ``type: ignore``
+    is needed.
     """
     text = str(value).strip().casefold()
-    return text if text in _SENSITIVITY_VALUES else "public"  # type: ignore[return-value]
+    if text == "private":
+        return "private"
+    if text == "secret_like":
+        return "secret_like"
+    return "public"
 
 
 def normalize_sensitivity_source(value: object) -> SensitivitySource:
@@ -36,7 +39,11 @@ def normalize_sensitivity_source(value: object) -> SensitivitySource:
     Falls back to ``default`` on anything unrecognized.
     """
     text = str(value).strip().casefold()
-    return text if text in _SENSITIVITY_SOURCE_VALUES else "default"  # type: ignore[return-value]
+    if text == "dream":
+        return "dream"
+    if text == "explicit":
+        return "explicit"
+    return "default"
 
 
 @dataclass(slots=True, frozen=True)

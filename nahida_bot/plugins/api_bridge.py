@@ -796,8 +796,14 @@ class RealBotAPI:
                     self._memory, "search_items_public_all_scopes", None
                 )
                 if callable(search_public):
+                    # Over-fetch by len(seen): the public pool includes in-scope
+                    # public items already returned, so fetching only
+                    # ``remaining`` can starve cross-scope recall (all top hits
+                    # may dedupe against ``seen``). See adapter._cascade.
                     public_items = list(
-                        await cast(Any, search_public)(query, limit=remaining)
+                        await cast(Any, search_public)(
+                            query, limit=remaining + len(seen)
+                        )
                     )
                     for item in public_items:
                         item_id = getattr(item, "item_id", "")

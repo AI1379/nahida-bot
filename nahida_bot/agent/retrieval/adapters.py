@@ -298,8 +298,16 @@ class MemoryStoreRetrievalAdapter:
                     break
 
         if soft_scope and remaining > 0:
+            # Over-fetch by len(seen): the all-scopes public pool includes the
+            # in-scope public items already in ``seen``, so fetching only
+            # ``remaining`` can return items that dedupe to nothing and starve
+            # cross-scope recall (the pool's top hits may all be already-seen
+            # in-scope items). At most ``len(seen)`` fetched items can already
+            # be in ``seen``, so ``remaining + len(seen)`` guarantees enough
+            # headroom to fill the remaining budget with genuinely new items.
+            fetch = remaining + len(seen)
             public_items = _above_threshold(
-                await self._search_public_all_scopes(query, remaining),
+                await self._search_public_all_scopes(query, fetch),
                 min_score,
             )
             for item in public_items:

@@ -262,3 +262,47 @@ async def test_soft_scope_dedups_in_scope_items(store: SQLiteMemoryStore) -> Non
     results = await adapter.retrieve(_chat_a_request())
     in_scope_hits = [r for r in results if r.title == "alpha in-scope"]
     assert len(in_scope_hits) == 1
+
+
+@pytest.mark.asyncio
+async def test_soft_scope_over_fetches_so_in_scope_public_does_not_starve(
+    store: SQLiteMemoryStore,
+) -> None:
+    """Soft pass must over-fetch, else already-returned in-scope public items
+    eat the budget and cross-scope public never surfaces (review starvation).
+
+    The in-scope (chatA) item ranks #1 in the public pool (higher term
+    frequency), so fetching only ``remaining`` would re-fetch it and dedupe to
+    nothing. With a tight ``limit=2`` the chatB item must still come through.
+    """
+    await store.append_item(
+        content="pineapples alpha note pineapples detail",
+        title="alpha in-scope",
+        scope_type="chat",
+        scope_id="chatA",
+        kind="fact",
+        sensitivity="public",
+    )
+    await store.append_item(
+        content="pineapples beta note other detail",
+        title="beta cross-scope",
+        scope_type="chat",
+        scope_id="chatB",
+        kind="fact",
+        sensitivity="public",
+    )
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store, soft_scope=True)
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="pineapples",
+            source_type="memory",
+            scopes=(
+                RetrievalScope("chat", "chatA"),
+                RetrievalScope("global", "__global__"),
+            ),
+            limit=2,
+        )
+    )
+    titles = {r.title for r in results}
+    assert "alpha in-scope" in titles
+    assert "beta cross-scope" in titles  # starved without over-fetch
