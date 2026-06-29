@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Awaitable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import structlog
@@ -31,6 +31,12 @@ from nahida_bot.agent.providers import (
     ToolCall,
     ToolDefinition,
 )
+
+if TYPE_CHECKING:
+    # AuthorizationGate is referenced only in annotations + duck-typed at
+    # runtime (self.authorization.authorize). Imported under TYPE_CHECKING to
+    # avoid a top-level loop → identity → plugins → loop circular import.
+    from nahida_bot.identity.authorization import AuthorizationGate
 
 logger = structlog.get_logger(__name__)
 
@@ -187,6 +193,7 @@ class AgentLoop:
         tool_executor: ToolExecutor | None = None,
         metrics: MetricsCollector | None = None,
         run_store: AgentRunStore | None = None,
+        authorization: AuthorizationGate | None = None,
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
@@ -197,6 +204,10 @@ class AgentLoop:
         # can drive the recorder unconditionally; app.py passes a real store
         # when agent_runtime.canonical_ledger_enabled is true.
         self.run_store: AgentRunStore = run_store or NullAgentRunStore()
+        # Phase A action-authorization gate. None ⇒ no gating (legacy). When
+        # present, privileged tools (exec/message/workspace_write) require the
+        # run's sender_account_key to be a declared admin. Decoupled from memory.
+        self.authorization = authorization
 
     async def run(
         self,
@@ -252,6 +263,7 @@ class AgentLoop:
         workspace_id: str | None = None,
         provider_id: str | None = None,
         origin: str = "",
+        sender_account_key: str = "",
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -526,6 +538,7 @@ class AgentLoop:
                     step=step,
                     trace=trace,
                     recorder=recorder,
+                    sender_account_key=sender_account_key,
                 )
                 tool_messages.extend(executed_messages)
                 active_turn_messages.extend(executed_messages)
@@ -1134,6 +1147,7 @@ class AgentLoop:
         step: int = 0,
         trace: Trace | None = None,
         recorder: RunRecorder | None = None,
+        sender_account_key: str = "",
     ) -> list[ContextMessage]:
         messages: list[ContextMessage] = []
 
@@ -1187,7 +1201,10 @@ class AgentLoop:
             if recorder is not None:
                 await recorder.begin_tool_call(tool_call)
             result, attempt, phase = await self._execute_tool_with_lifecycle(
-                tool_call, step=step, trace=trace
+                tool_call,
+                step=step,
+                trace=trace,
+                sender_account_key=sender_account_key,
             )
             messages.append(
                 self._build_tool_message(
@@ -1209,9 +1226,40 @@ class AgentLoop:
         *,
         step: int = 0,
         trace: Trace | None = None,
+        sender_account_key: str = "",
     ) -> tuple[ToolExecutionResult, int, str]:
         if self.tool_executor is None:
             raise RuntimeError("Tool executor is not set")
+        # Phase A action-authorization: privileged tools require an admin sender.
+        # Runs at the tool-dispatch boundary, before any execution attempt. A
+        # denied call short-circuits to a clean tool error the model can see;
+        # memory subsystem code is never involved (decoupling, see authz module).
+        if self.authorization is not None:
+            # Lazy import avoids the loop → identity → plugins → loop cycle.
+            from nahida_bot.identity.authorization import NotAuthorized
+
+            try:
+                self.authorization.authorize(tool_call.name, sender_account_key)
+            except NotAuthorized:
+                logger.warning(
+                    "agent_loop.tool_not_authorized",
+                    trace_id=trace.trace_id if trace else "",
+                    step=step,
+                    tool_name=tool_call.name,
+                    sender_account_key=sender_account_key,
+                )
+                return (
+                    ToolExecutionResult.error(
+                        code="not_authorized",
+                        message=(
+                            f"Tool '{tool_call.name}' requires admin "
+                            "authorization. The action was not executed."
+                        ),
+                        retryable=False,
+                    ),
+                    0,
+                    "not_authorized",
+                )
         max_attempts = max(1, self.config.tool_retry_attempts + 1)
 
         for attempt in range(1, max_attempts + 1):

@@ -277,6 +277,11 @@ class IdentityConfig(BaseModel):
 
     enabled: bool = False
     people: list[IdentityPersonSeed] = Field(default_factory=list)
+    # Phase A action-authorization (see docs/design/memory-soft-scope-and-authz.md).
+    # Account keys authorized for privileged tools (exec/message/workspace_write/
+    # management). Decoupled from ``people``: declaring someone a Person does NOT
+    # make them an admin. Only consulted when ``enabled`` is true.
+    admins: list[IdentityAccountSeed] = Field(default_factory=list)
 
 
 class RouterConfigModel(BaseModel):

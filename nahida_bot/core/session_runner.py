@@ -632,6 +632,14 @@ class SessionRunner:
             # contract-source sizing. Reuses source_tag ("user_input" /
             # "cron_trigger" / "proactive_join" / ...).
             run_kwargs["origin"] = source_tag
+            # Phase A authorization: thread the sender's account_key into the
+            # loop so the AuthorizationGate can check privileged tools at the
+            # dispatch boundary. Empty when identity is off / unresolved — the
+            # gate is then a no-op (identity off) or denies privileged tools.
+            sess_ctx = current_session.get()
+            run_kwargs["sender_account_key"] = (
+                sess_ctx.sender_account_key if sess_ctx is not None else ""
+            )
 
             logger.debug(
                 "session_runner.agent_run_start",

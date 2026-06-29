@@ -108,6 +108,9 @@ class Application:
         self._memory_vector_index: Any | None = None
         self._identity_store: Any | None = None
         self._identity_resolver: Any | None = None
+        # Phase A action-authorization gate (privileged tool calls). None until
+        # identity is initialized; the gate is a no-op when identity is off.
+        self._authorization_gate: Any | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
         self.session_runner: SessionRunner | None = None
         self.scheduler_service: SchedulerService | None = None
@@ -291,6 +294,7 @@ class Application:
         from nahida_bot.identity import (
             AccountKey,
             AccountLink,
+            AuthorizationGate,
             IdentityResolver,
             Person,
             SQLiteIdentityStore,
@@ -325,6 +329,16 @@ class Application:
         self._identity_store = identity_store
         self._identity_resolver = IdentityResolver(
             identity_store, enabled=identity_cfg.enabled
+        )
+        # Phase A action-authorization gate: privileged tools require a sender
+        # whose account_key is in the config-declared admin set. Decoupled from
+        # people (declaring a Person is NOT admin). No-op when identity is off.
+        admin_keys = frozenset(
+            str(AccountKey.from_parts(account.channel, account.platform_account_id))
+            for account in identity_cfg.admins
+        )
+        self._authorization_gate = AuthorizationGate(
+            admin_keys, enabled=identity_cfg.enabled
         )
 
         # Build providers from config
@@ -423,6 +437,7 @@ class Application:
                     if self.settings.agent_runtime.canonical_ledger_enabled
                     else None
                 ),
+                authorization=self._authorization_gate,
                 config=AgentLoopConfig(
                     max_steps=self.settings.agent.max_steps,
                     provider_timeout_seconds=self.settings.agent.provider_timeout_seconds,

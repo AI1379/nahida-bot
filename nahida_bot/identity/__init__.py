@@ -6,6 +6,7 @@ whoami``. Identity-aware memory read/write (Phase 2/3), management commands
 and WebUI (Phase 4), and self-service linking (Phase 5) build on this base.
 """
 
+from nahida_bot.identity.authorization import AuthorizationGate, NotAuthorized
 from nahida_bot.identity.models import (
     AccountKey,
     AccountLink,
@@ -28,11 +29,13 @@ from nahida_bot.identity.store import IdentityStore
 __all__ = [
     "AccountKey",
     "AccountLink",
+    "AuthorizationGate",
     "IdentityResolution",
     "IdentityResolver",
     "IdentityStore",
     "MemoryReadRequest",
     "MemoryWriteRequest",
+    "NotAuthorized",
     "ParticipantObservation",
     "Person",
     "SQLiteIdentityStore",
