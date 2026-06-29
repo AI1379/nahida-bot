@@ -56,6 +56,50 @@ _VALID_KINDS = {
     "warning",
     "summary",
 }
+
+# --- Sensitivity classification (Piece A3) ----------------------------------
+# Conservative auto-tagging so the soft-scope retrieval filter (A2) has
+# provenance to protect. ``secret_like`` never crosses scopes; ``private``
+# relaxes only when the origin parties are present; the soft ``public``
+# baseline is the default. Over-tags slightly (宁可多标): once soft-scope is on,
+# a missed sensitive item can surface in another chat.
+_SECRET_SIGNAL_RE = re.compile(
+    r"(password|passwd|api[_-]?key|secret|bearer|cookie|private[_-]?key|"
+    r"密码|密钥|口令|令牌|凭证|私钥)",
+    re.IGNORECASE,
+)
+# Strong PII: CN mobile, ID-card-like, card-like, account identifiers.
+_PII_RE = re.compile(
+    r"(?:\b1[3-9]\d{9}\b"
+    r"|\b\d{15,18}[Xx]?\b"
+    r"|\b(?:62|4[0-9]|5[1-5])\d{14,17}\b"
+    r"|身份证|银行卡|手机号|微信号|qq号|qq[:：])"
+)
+# Explicit "keep this between us" markers — the strongest private signal, often
+# set in 1:1 chats and the highest leak risk if surfaced in a group.
+_PRIVACY_MARKER_RE = re.compile(
+    r"(别告诉|不要告诉|不要说|别说|私下|秘密|保密|仅限你我|只给你|"
+    r"don'?t tell|keep it (?:private|between|to yourself)|just between us|"
+    r"this is private|off the record)",
+    re.IGNORECASE,
+)
+
+
+def classify_sensitivity(content: str, *, title: str = "") -> tuple[str, str]:
+    """Conservative sensitivity classification for a consolidated memory.
+
+    Returns ``(sensitivity, sensitivity_source)``: restricted items get
+    ``sensitivity_source='dream'``; the soft ``public`` baseline gets
+    ``'default'``.
+    """
+    text = f"{title}\n{content}"
+    if _SECRET_SIGNAL_RE.search(text):
+        return "secret_like", "dream"
+    if _PII_RE.search(text) or _PRIVACY_MARKER_RE.search(text):
+        return "private", "dream"
+    return "public", "default"
+
+
 _DREAM_SYSTEM_PROMPT_BODY = """
 
 Your job is to convert recent conversation into durable memory changes.
@@ -461,6 +505,9 @@ class MemoryConsolidator:
                 "candidate_id": candidate_id,
                 "consolidated_at": datetime.now(UTC).isoformat(),
             }
+            sensitivity, sensitivity_source = classify_sensitivity(
+                memory.content, title=memory.title
+            )
             await cast(Any, append_item)(
                 title=memory.title,
                 content=memory.content,
@@ -470,6 +517,8 @@ class MemoryConsolidator:
                 source="consolidation",
                 confidence=memory.confidence,
                 importance=memory.importance,
+                sensitivity=sensitivity,
+                sensitivity_source=sensitivity_source,
                 evidence=memory.evidence,
                 metadata=metadata,
             )

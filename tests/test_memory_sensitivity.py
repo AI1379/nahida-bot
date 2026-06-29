@@ -12,6 +12,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
+from nahida_bot.agent.memory.consolidation import classify_sensitivity
 from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
 from nahida_bot.db.engine import DatabaseEngine
 
@@ -64,3 +65,32 @@ async def test_new_item_defaults_to_soft_public(store: SQLiteMemoryStore) -> Non
     item = results[0]
     assert item.sensitivity == "public"
     assert item.sensitivity_source == "default"
+
+
+# --- A3: consolidation auto-tagging -----------------------------------------
+
+
+def test_classify_secret_signal_is_secret_like() -> None:
+    sensitivity, source = classify_sensitivity("the api_key is abc123")
+    assert sensitivity == "secret_like"
+    assert source == "dream"
+
+
+def test_classify_pii_is_private() -> None:
+    sensitivity, source = classify_sensitivity("user mobile is 13800138000")
+    assert sensitivity == "private"
+    assert source == "dream"
+
+
+def test_classify_privacy_marker_is_private() -> None:
+    sensitivity, source = classify_sensitivity("这事别告诉群里其他人", title="私下说的")
+    assert sensitivity == "private"
+    assert source == "dream"
+
+
+def test_classify_normal_content_is_public() -> None:
+    sensitivity, source = classify_sensitivity(
+        "user prefers Chinese for architecture discussion"
+    )
+    assert sensitivity == "public"
+    assert source == "default"
