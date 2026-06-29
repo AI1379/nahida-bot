@@ -14,7 +14,13 @@ from nahida_bot.agent.providers.registry import (
     create_provider,
     unregister_runtime_provider,
 )
-from nahida_bot.agent.memory.models import ConversationTurn, MemoryItem, MemoryRecord
+from nahida_bot.agent.memory.models import (
+    ConversationTurn,
+    MemoryItem,
+    MemoryRecord,
+    Sensitivity,
+    SensitivitySource,
+)
 from nahida_bot.core.exceptions import PermissionDenied
 from nahida_bot.core.events import (
     AgentResponseRequested,
@@ -84,8 +90,8 @@ class _Memory:
         source: str = "plugin",
         confidence: float = 1.0,
         importance: float = 0.5,
-        sensitivity: str = "private",
-        sensitivity_source: str = "default",
+        sensitivity: Sensitivity = "private",
+        sensitivity_source: SensitivitySource = "default",
         evidence: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
@@ -214,6 +220,8 @@ def _api(
     tmp_path: Path,
     *,
     manifest: PluginManifest | None = None,
+    memory_store: Any | None = None,
+    memory_soft_scope: bool = False,
 ) -> tuple[RealBotAPI, _ChannelRegistry, ToolRegistry, CommandRegistry]:
     manifest = manifest or _manifest()
     event_bus = EventBus(
@@ -235,7 +243,8 @@ def _api(
         manifest=manifest,
         event_bus=event_bus,
         workspace_manager=workspace,
-        memory_store=cast(Any, _Memory()),
+        memory_store=cast(Any, memory_store or _Memory()),
+        memory_soft_scope=memory_soft_scope,
         permission_checker=PermissionChecker(manifest),
         tool_registry=tool_registry,
         handler_registry=HandlerRegistry(),
@@ -355,6 +364,57 @@ async def test_memory_store_invalid_sensitivity_falls_back(tmp_path: Path) -> No
     item = cast(Any, api)._memory.items[-1]
     assert item.sensitivity == "public"
     assert item.sensitivity_source == "default"
+
+
+class _ScopedMemoryStore:
+    """Minimal store mock for memory_search soft-scope tests (review #2)."""
+
+    def __init__(self) -> None:
+        self.public_calls = 0
+
+    async def search_items(
+        self, query: str, *, scope_type: str, scope_id: str, limit: int
+    ) -> list[Any]:
+        return []  # the identity cascade finds nothing
+
+    async def search_items_public_all_scopes(
+        self, query: str, *, limit: int
+    ) -> list[Any]:
+        self.public_calls += 1
+        return [
+            SimpleNamespace(
+                item_id="mem_pub",
+                content="public cross-scope fact",
+                score=0.5,
+                scope_type="chat",
+                scope_id="chatB",
+                kind="fact",
+                title="",
+                source="consolidation",
+            )
+        ]
+
+
+@pytest.mark.asyncio
+async def test_memory_search_soft_scope_supplements_cross_scope_public(
+    tmp_path: Path,
+) -> None:
+    """memory_search admits cross-scope public items when soft_scope is on (#2)."""
+    store = _ScopedMemoryStore()
+    api, _, _, _ = _api(tmp_path, memory_store=store, memory_soft_scope=True)
+    results = await api.memory_search("fact", limit=5)
+    assert store.public_calls == 1
+    assert results and results[0].key == "mem_pub"
+    assert results[0].content == "public cross-scope fact"
+
+
+@pytest.mark.asyncio
+async def test_memory_search_soft_scope_off_skips_cross_scope(tmp_path: Path) -> None:
+    """With soft_scope off, memory_search does NOT query the public all-scope pool."""
+    store = _ScopedMemoryStore()
+    api, _, _, _ = _api(tmp_path, memory_store=store, memory_soft_scope=False)
+    await api.memory_search("fact", limit=5)
+    assert store.public_calls == 0
 
 
 def test_tool_and_command_registration(tmp_path: Path) -> None:

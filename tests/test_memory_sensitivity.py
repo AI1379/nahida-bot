@@ -12,7 +12,10 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
-from nahida_bot.agent.memory.consolidation import classify_sensitivity
+from nahida_bot.agent.memory.consolidation import (
+    MemoryConsolidator,
+    classify_sensitivity,
+)
 from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
 from nahida_bot.agent.retrieval.adapters import MemoryStoreRetrievalAdapter
 from nahida_bot.agent.retrieval.models import RetrievalRequest, RetrievalScope
@@ -73,6 +76,10 @@ async def test_new_item_defaults_to_soft_public(store: SQLiteMemoryStore) -> Non
 
 
 def test_classify_secret_signal_is_secret_like() -> None:
+    # Unit test of the classifier in isolation. NOTE: the real consolidation
+    # pipeline runs validate_memory_content() FIRST, which blocks English
+    # secret markers (api_key/password/...) before classify_sensitivity is
+    # reached — see test_consolidation_skips_english_secret_content below.
     sensitivity, source = classify_sensitivity("the api_key is abc123")
     assert sensitivity == "secret_like"
     assert source == "dream"
@@ -110,6 +117,47 @@ def test_classify_normal_content_is_public() -> None:
     )
     assert sensitivity == "public"
     assert source == "default"
+
+
+# --- A3/A5: real consolidation path (not just the helper) --------------------
+
+
+@pytest.mark.asyncio
+async def test_consolidation_skips_english_secret_marked_content(
+    store: SQLiteMemoryStore,
+) -> None:
+    """validate_memory_content blocks English secret markers BEFORE classify.
+
+    Content like ``api_key`` is skipped by the dreaming pipeline's safety
+    filter, so it is never stored as ``secret_like`` — the helper-level
+    ``secret_like`` result does not apply on this path (review #5).
+    """
+    consolidator = MemoryConsolidator(store)
+    applied = await consolidator.consolidate_turn(
+        session_id="test-session",
+        user_message="记住: the api_key is abc123",
+        assistant_message="",
+    )
+    assert applied == 0
+
+
+@pytest.mark.asyncio
+async def test_consolidation_tags_secret_signal_that_passes_validation(
+    store: SQLiteMemoryStore,
+) -> None:
+    """A secret signal not in _SECRET_MARKERS (e.g. Chinese 密钥) passes the
+    safety filter and is tagged ``secret_like`` by the real pipeline."""
+    consolidator = MemoryConsolidator(store)
+    applied = await consolidator.consolidate_turn(
+        session_id="test-session",
+        user_message="记住: 这是数据库的密钥 千万别丢",
+        assistant_message="",
+    )
+    assert applied >= 1
+    items = await store.search_items(
+        "", scope_type="global", scope_id="__global__", limit=10
+    )
+    assert any(item.sensitivity == "secret_like" for item in items)
 
 
 # --- A2: soft-scope retrieval filter ----------------------------------------

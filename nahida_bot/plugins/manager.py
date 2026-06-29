@@ -90,10 +90,12 @@ class PluginManager:
         webhost_service: Any | None = None,
         task_manager: Any | None = None,
         temp_file_service: ManagedTempFileService | None = None,
+        memory_soft_scope: bool = False,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
+        self._memory_soft_scope = memory_soft_scope
         self._message_delivery_store = message_delivery_store
         self._plugin_data_repo = plugin_data_repo
         self._channel_registry = channel_registry
@@ -263,6 +265,7 @@ class PluginManager:
             event_bus=self._event_bus,
             workspace_manager=self._workspace,
             memory_store=self._memory,
+            memory_soft_scope=self._memory_soft_scope,
             message_delivery_store=self._message_delivery_store,
             plugin_data_repo=self._plugin_data_repo,
             permission_checker=checker,

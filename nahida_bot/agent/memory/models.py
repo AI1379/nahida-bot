@@ -4,7 +4,39 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
+
+# Canonical sensitivity domain (Piece A). The soft-scope retrieval filter
+# matches ``sensitivity='public'`` at the SQL layer, so values MUST be the
+# exact lowercase canonical strings — a typo or different casing would either
+# leak (treated as non-public when it should be public) or silently under-recall.
+# Use the normalizers below at every write/read boundary.
+Sensitivity = Literal["public", "private", "secret_like"]
+SensitivitySource = Literal["default", "dream", "explicit"]
+
+_SENSITIVITY_VALUES = frozenset({"public", "private", "secret_like"})
+_SENSITIVITY_SOURCE_VALUES = frozenset({"default", "dream", "explicit"})
+
+
+def normalize_sensitivity(value: object) -> Sensitivity:
+    """Coerce an arbitrary value to a canonical ``Sensitivity``.
+
+    Falls back to the soft ``public`` baseline on anything unrecognized
+    (typos, wrong casing, None) rather than rejecting the write — the
+    soft-scope model is fail-open on the public baseline, never fail-closed
+    into a restricted tag.
+    """
+    text = str(value).strip().casefold()
+    return text if text in _SENSITIVITY_VALUES else "public"  # type: ignore[return-value]
+
+
+def normalize_sensitivity_source(value: object) -> SensitivitySource:
+    """Coerce an arbitrary value to a canonical ``SensitivitySource``.
+
+    Falls back to ``default`` on anything unrecognized.
+    """
+    text = str(value).strip().casefold()
+    return text if text in _SENSITIVITY_SOURCE_VALUES else "default"  # type: ignore[return-value]
 
 
 @dataclass(slots=True, frozen=True)
@@ -41,14 +73,14 @@ class MemoryItem:
     status: str = "active"
     confidence: float = 1.0
     importance: float = 0.5
-    sensitivity: str = "public"
+    sensitivity: Sensitivity = "public"
     # Provenance of the sensitivity value: "default" (system default, soft /
     # recallable), "dream" (consolidation classified it restricted), "explicit"
     # (chat partner requested restriction). The soft-scope retrieval filter
     # excludes restricted items (private/secret_like) from cross-scope recall;
     # only dream/explicit items are truly restricted, so the backfill script
     # reinterprets legacy "default private" rows as public.
-    sensitivity_source: str = "default"
+    sensitivity_source: SensitivitySource = "default"
     source: str = "plugin"
     evidence: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)

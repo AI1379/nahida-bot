@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
 import structlog
 
 from nahida_bot.agent.context import MessageRole
+from nahida_bot.agent.memory.models import (
+    Sensitivity,
+    SensitivitySource,
+    normalize_sensitivity,
+)
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import (
     ChannelService,
@@ -151,12 +156,17 @@ class RealBotAPI:
         task_manager: Any | None = None,  # TaskManager
         document_store_manager: Any | None = None,  # DocumentStoreManager
         temp_file_service: ManagedTempFileService | None = None,
+        memory_soft_scope: bool = False,
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
+        # Whether soft-scope cross-scope public recall is on (Piece A2). Mirrors
+        # the SessionRunner flag so plugin memory_search / /memory search stay
+        # consistent with auto-injection. Default off = no behavior change.
+        self._memory_soft_scope = memory_soft_scope
         self._message_delivery_store = message_delivery_store
         self._plugin_data_repo = plugin_data_repo
         self._permissions = permission_checker
@@ -774,6 +784,30 @@ class RealBotAPI:
                     remaining -= 1
                     if remaining <= 0:
                         break
+            # Soft-scope cross-scope recall (Piece A2). When enabled, fill any
+            # remaining budget with a global pass that admits ONLY public items
+            # from outside the cascade — same semantics as the retrieval
+            # adapter, so /memory search and plugin memory_search stay
+            # consistent with auto-injection. The store enforces
+            # sensitivity='public' at the SQL layer; restricted items never
+            # surface here.
+            if self._memory_soft_scope and remaining > 0:
+                search_public = getattr(
+                    self._memory, "search_items_public_all_scopes", None
+                )
+                if callable(search_public):
+                    public_items = list(
+                        await cast(Any, search_public)(query, limit=remaining)
+                    )
+                    for item in public_items:
+                        item_id = getattr(item, "item_id", "")
+                        if not item_id or item_id in seen:
+                            continue
+                        seen.add(item_id)
+                        items.append(item)
+                        remaining -= 1
+                        if remaining <= 0:
+                            break
             return [
                 MemoryRef(
                     key=item.item_id,
@@ -1658,23 +1692,21 @@ def _address_from_inbound_message(message: InboundMessage) -> ChatAddress:
     )
 
 
-_VALID_SENSITIVITY = frozenset({"public", "private", "secret_like"})
-
-
-def _resolve_sensitivity(metadata: dict[str, Any]) -> tuple[str, str]:
+def _resolve_sensitivity(
+    metadata: dict[str, Any],
+) -> tuple[Sensitivity, SensitivitySource]:
     """Pop and validate ``sensitivity`` from plugin write metadata.
 
-    Returns ``(sensitivity, sensitivity_source)``. An explicit value yields
-    ``sensitivity_source='explicit'`` (Piece A4: explicit > dream); the
-    absence of a value yields the soft ``public`` baseline with ``'default'``
-    provenance — matching the consolidation default so plugin writes and
-    dreaming agree on the soft baseline. An invalid value falls back to
-    ``public``/``'default'`` rather than rejecting the write.
+    Only an explicit RESTRICTION (``private``/``secret_like``) earns
+    ``sensitivity_source='explicit'`` (Piece A4: explicit > dream). The soft
+    ``public`` baseline — whether omitted, explicitly passed, or a fallback
+    for an unrecognized value — gets ``'default'`` provenance, matching the
+    consolidation default so plugin writes and dreaming agree. The shared
+    normalizer handles casing/typos so they can't defeat the SQL filter; an
+    unrecognized value is a no-op (public/default) rather than a rejected write.
     """
     raw = metadata.pop("sensitivity", None)
-    if raw is None:
-        return "public", "default"
-    value = str(raw).strip()
-    if value not in _VALID_SENSITIVITY:
-        return "public", "default"
-    return value, "explicit"
+    canonical = normalize_sensitivity(raw)
+    if canonical in {"private", "secret_like"}:
+        return canonical, "explicit"
+    return "public", "default"

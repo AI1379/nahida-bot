@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sqlite3
 import sys
 from collections import Counter
@@ -263,11 +262,28 @@ def _require_sensitivity_source_column(conn: sqlite3.Connection) -> None:
 
 
 def _backup_database(db_path: Path) -> Path:
+    """WAL-safe snapshot of the database to a timestamped sidecar.
+
+    The engine runs ``PRAGMA journal_mode=WAL``, so a raw ``shutil.copy2`` of
+    the main file misses uncheckpointed pages held in the ``-wal`` sidecar —
+    the backup would silently be stale/consistent-only-by-luck. SQLite's online
+    backup API copies a transactionally consistent snapshot (WAL pages
+    included) without requiring the bot to be stopped or checkpointed.
+    """
+    if str(db_path) == ":memory:" or not db_path.exists():
+        raise RuntimeError(f"cannot back up non-file database: {db_path}")
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = db_path.with_suffix(
         db_path.suffix + f".memory-sensitivity-{timestamp}.bak"
     )
-    shutil.copy2(db_path, backup_path)
+    src = sqlite3.connect(str(db_path))
+    dst = sqlite3.connect(str(backup_path))
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
     return backup_path
 
 

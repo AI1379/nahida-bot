@@ -177,6 +177,7 @@ class Application:
                 webhost_service=self.webhost_service,
                 task_manager=self.task_manager,
                 temp_file_service=self.temp_file_service,
+                memory_soft_scope=self.settings.memory.retrieval.soft_scope,
             )
             await self._discover_plugins()
             self._inject_plugin_configs()

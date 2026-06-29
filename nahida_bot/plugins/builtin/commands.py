@@ -280,10 +280,12 @@ class BuiltinCommandsPlugin(Plugin):
                         "enum": ["public", "private", "secret_like"],
                         "description": (
                             "Sensitivity tag (Piece A4). Default public — soft, recallable "
-                            "across chats. Use 'private' when the user asks to keep it "
-                            "between you ('别告诉别人'/'私下') or 'secret_like' for secrets "
-                            "(passwords/keys); these are also stored as protected durable "
-                            "memory so they won't surface in other chats."
+                            "across chats, written to the Markdown notebook. Use 'private' "
+                            "when the user asks to keep it between you ('别告诉别人'/'私下') "
+                            "or 'secret_like' for secrets; sensitive notes are stored ONLY "
+                            "in the protected durable store (never the auto-injected "
+                            "Markdown) so they won't surface in other chats. 'target' is "
+                            "ignored when sensitivity is private/secret_like."
                         ),
                     },
                 },
@@ -771,6 +773,30 @@ class BuiltinCommandsPlugin(Plugin):
         if sensitivity not in {"public", "private", "secret_like"}:
             return "Error: sensitivity must be one of: public, private, secret_like."
 
+        # Sensitive content must NOT enter the auto-injected Markdown notebook:
+        # workspace Markdown (MEMORY.md / daily notes) is injected into context
+        # every turn with NO sensitivity filter (see ContextBuilder), so writing
+        # it there would leak the content into every chat. Route private/
+        # secret_like SOLELY to the structured durable store, whose retrieval is
+        # sensitivity-filtered. ``target`` is ignored for sensitive writes
+        # because the Markdown targets are exactly the leak surface. (Piece A4)
+        if sensitivity in {"private", "secret_like"}:
+            try:
+                await self.api.memory_store(
+                    section or "memory_write",
+                    content,
+                    metadata={"sensitivity": sensitivity, "kind": "fact"},
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "tool.memory_write_sensitive_persist_failed", error=str(exc)
+                )
+                return "Error: failed to store sensitive memory."
+            return (
+                f"Memory stored (sensitivity={sensitivity}): protected from "
+                "cross-chat recall."
+            )
+
         written: list[str] = []
         if target in {"daily", "both"}:
             path = daily_memory_path()
@@ -785,23 +811,6 @@ class BuiltinCommandsPlugin(Plugin):
                 append_long_term_memory(existing, content, section=section),
             )
             written.append(MEMORY_FILE)
-
-        # Piece A4: an explicit private/secret tag must also land on the
-        # structured durable store (the soft-scope retrieval source), because
-        # the Markdown notebook above is not queried by retrieval. Tagged
-        # private/secret_here is then protected from cross-scope recall.
-        # ``memory_store`` records sensitivity_source='explicit'.
-        if sensitivity in {"private", "secret_like"}:
-            try:
-                await self.api.memory_store(
-                    section or "memory_write",
-                    content,
-                    metadata={"sensitivity": sensitivity, "kind": "fact"},
-                )
-            except Exception as exc:
-                _logger.warning(
-                    "tool.memory_write_sensitive_persist_failed", error=str(exc)
-                )
 
         return "Memory written: " + ", ".join(written)
 

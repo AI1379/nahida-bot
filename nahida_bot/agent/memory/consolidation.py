@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+from nahida_bot.agent.memory.models import Sensitivity, SensitivitySource
+
 import structlog
 
 from nahida_bot.agent.memory.markdown import (
@@ -85,7 +87,9 @@ _PRIVACY_MARKER_RE = re.compile(
 )
 
 
-def classify_sensitivity(content: str, *, title: str = "") -> tuple[str, str]:
+def classify_sensitivity(
+    content: str, *, title: str = ""
+) -> tuple[Sensitivity, SensitivitySource]:
     """Conservative sensitivity classification for a consolidated memory.
 
     Returns ``(sensitivity, sensitivity_source)``.

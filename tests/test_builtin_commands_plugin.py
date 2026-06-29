@@ -599,6 +599,33 @@ async def test_memory_write_rejects_secret_like_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_write_private_skips_markdown_and_persists_structured() -> None:
+    """A private/secret_like write must not leak via Markdown (review #1).
+
+    Workspace Markdown is auto-injected every turn with no sensitivity filter,
+    so sensitive writes route SOLELY to the structured durable store.
+    """
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_memory_write(
+        "this stays between us",
+        target="both",
+        section="Private",
+        sensitivity="private",
+    )
+
+    # No Markdown written -> cannot leak via per-turn auto-injection.
+    assert api.files == {}
+    # Routed to the structured store with the explicit sensitivity tag.
+    assert api.stored_memories
+    key, content, metadata = api.stored_memories[-1]
+    assert content == "this stays between us"
+    assert metadata is not None and metadata.get("sensitivity") == "private"
+    assert "protected" in result.lower() or "sensitivity" in result.lower()
+
+
+@pytest.mark.asyncio
 async def test_reset_status_model_and_help_commands() -> None:
     async def _help_handler(**kwargs: object) -> str:
         return "ok"

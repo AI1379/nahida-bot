@@ -14,6 +14,8 @@ from nahida_bot.agent.memory.models import (
     MemoryItem,
     MemoryRecord,
     SessionSummary,
+    normalize_sensitivity,
+    normalize_sensitivity_source,
 )
 from nahida_bot.agent.memory.scope import SCOPE_ID_GLOBAL, SCOPE_TYPE_GLOBAL
 from nahida_bot.agent.memory.store import MemoryStore
@@ -87,8 +89,10 @@ def _row_to_item(row: dict[str, Any]) -> MemoryItem:
         status=str(row.get("status", "active")),
         confidence=float(row.get("confidence", 1.0)),
         importance=float(row.get("importance", 0.5)),
-        sensitivity=str(row.get("sensitivity", "public")),
-        sensitivity_source=str(row.get("sensitivity_source", "default")),
+        sensitivity=normalize_sensitivity(row.get("sensitivity", "public")),
+        sensitivity_source=normalize_sensitivity_source(
+            row.get("sensitivity_source", "default")
+        ),
         source=str(row.get("source", "plugin")),
         evidence=evidence if isinstance(evidence, dict) else {},
         metadata=metadata if isinstance(metadata, dict) else {},
@@ -318,6 +322,10 @@ class SQLiteMemoryStore(MemoryStore):
     ) -> str:
         """Store a durable structured memory item and update the FTS index."""
         memory_id = item_id or f"mem_{uuid4().hex}"
+        # Normalize at the write boundary so the DB only ever holds canonical
+        # lowercase values — the soft-scope SQL filter matches
+        # ``sensitivity='public'`` exactly, so a stray casing/typo here would
+        # either leak or silently under-recall.
         await self._repo.append_memory_item(
             item_id=memory_id,
             scope_type=scope_type,
@@ -328,8 +336,8 @@ class SQLiteMemoryStore(MemoryStore):
             status="active",
             confidence=confidence,
             importance=importance,
-            sensitivity=sensitivity,
-            sensitivity_source=sensitivity_source,
+            sensitivity=normalize_sensitivity(sensitivity),
+            sensitivity_source=normalize_sensitivity_source(sensitivity_source),
             source=source,
             evidence=evidence,
             metadata=metadata,
