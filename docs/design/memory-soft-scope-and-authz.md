@@ -1,11 +1,13 @@
 # 记忆软 scope（薄敏感 tag）与动作授权闸（Phase A）
 
-> 记录时间：2026-06-29
-> 状态：**已决策，进入实施**。本文是 [memory-architecture-exploration.md](memory-architecture-exploration.md)
+> 记录时间：2026-06-29 · 更新：2026-06-29（实施完成）
+> 状态：**已实施（v2 分支，`memory.retrieval.soft_scope` 默认关）**。本文是 [memory-architecture-exploration.md](memory-architecture-exploration.md)
 > §8.3（薄敏感 tag）与 [person-identity-system.md](person-identity-system.md) §2.5/§8.4（Phase A
-> 授权闸）的落地设计。两份探索文档的"推迟"状态对本设计覆盖的两块**解除**；图引擎、独立库拆分、
+> 授权闸）的落地设计；两块均已落地并通过两轮代码评审。图引擎、独立库拆分、
 > 意图触发 scope 扩张等大改动**继续推迟**。
-> 关联 issue：#22（tracking）、#24（critical，记忆失真）、#7（身份系统 Phase A）。
+>
+> **已落地（v2）**：Phase A 授权闸 `e54f9a1`；A0 `sensitivity_source` 列 `a1aea06`；A1 回填脚本 + A3 dreaming 自动打标 `cdd5a64`；A2 软 scope 召回过滤 + A4 显式打标 `2fcea96`；评审修复 `96860d7`、`6909773`。启用 A2 前必须先跑 `scripts/migrate_memory_sensitivity.py`（A1 回填），否则存量 legacy `private` 不会软化。A2.1（当事人到场放松 `private`）仍 deferred。
+> 关联 issue：#22（tracking）、#7（身份系统 Phase A）。注：#24（记忆失真）是独立轨道，不属本设计。
 
 ## 1. 背景与决策记录（2026-06-29）
 
