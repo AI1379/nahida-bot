@@ -372,6 +372,27 @@ class SQLiteMemoryStore(MemoryStore):
         """Archive a durable memory item."""
         return await self._repo.archive_memory_item(item_id)
 
+    async def search_items_public_all_scopes(
+        self,
+        query: str = "",
+        *,
+        limit: int = 10,
+    ) -> list[MemoryItem]:
+        """Soft-scope cross-scope recall (Piece A2): public items, all scopes.
+
+        Admits only ``sensitivity='public'`` items regardless of origin scope,
+        enforced at the SQL layer by the repository. The retrieval adapter
+        dedupes these against the in-scope cascade by ``item_id``.
+        """
+        fts_query = build_fts_query(query)
+        if fts_query:
+            rows = await self._repo.search_memory_items_public_all_scopes(
+                fts_query, limit=limit
+            )
+        else:
+            rows = await self._repo.list_memory_items_public_all_scopes(limit=limit)
+        return [_row_to_item(row) for row in rows]
+
     async def append_candidate(
         self,
         *,

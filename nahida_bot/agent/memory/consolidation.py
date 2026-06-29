@@ -88,14 +88,23 @@ _PRIVACY_MARKER_RE = re.compile(
 def classify_sensitivity(content: str, *, title: str = "") -> tuple[str, str]:
     """Conservative sensitivity classification for a consolidated memory.
 
-    Returns ``(sensitivity, sensitivity_source)``: restricted items get
-    ``sensitivity_source='dream'``; the soft ``public`` baseline gets
-    ``'default'``.
+    Returns ``(sensitivity, sensitivity_source)``.
+
+    Precedence (highest first): ``secret_like`` (strictest, never crosses
+    scopes) → explicit-private (user asked to keep it between us) →
+    dream-private (inferred from PII) → the soft ``public`` baseline.
+
+    The explicit "keep this between us" markers carry ``sensitivity_source=
+    'explicit'`` so they outrank the dreaming pass's inferred ``'dream'``
+    classification (Piece A4: explicit > dream). PII and secret signals stay
+    ``'dream'`` — they are content-based inferences, not user intent.
     """
     text = f"{title}\n{content}"
     if _SECRET_SIGNAL_RE.search(text):
         return "secret_like", "dream"
-    if _PII_RE.search(text) or _PRIVACY_MARKER_RE.search(text):
+    if _PRIVACY_MARKER_RE.search(text):
+        return "private", "explicit"
+    if _PII_RE.search(text):
         return "private", "dream"
     return "public", "default"
 

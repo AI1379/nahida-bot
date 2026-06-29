@@ -198,10 +198,12 @@ class MemoryStoreRetrievalAdapter:
         memory_store: Any,
         embedding_provider: Any | None = None,
         vector_index: Any | None = None,
+        soft_scope: bool = False,
     ) -> None:
         self._memory_store = memory_store
         self._embedding_provider = embedding_provider
         self._vector_index = vector_index
+        self._soft_scope = soft_scope
 
     async def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
         """Search memory, cascading across the request's scopes in priority order.
@@ -230,7 +232,12 @@ class MemoryStoreRetrievalAdapter:
             hybrid_enabled=request.hybrid_enabled,
         )
         return await self._cascade(
-            self._effective_scopes(request), query, limit, mode, request.min_score
+            self._effective_scopes(request),
+            query,
+            limit,
+            mode,
+            request.min_score,
+            soft_scope=self._soft_scope,
         )
 
     @staticmethod
@@ -255,6 +262,8 @@ class MemoryStoreRetrievalAdapter:
         limit: int,
         mode: RetrievalMode,
         min_score: float,
+        *,
+        soft_scope: bool = False,
     ) -> list[RetrievalResult]:
         """Search each scope in order, filling the budget, deduped by id.
 
@@ -262,6 +271,12 @@ class MemoryStoreRetrievalAdapter:
         scope can't starve later ones by over-fetching. Per-scope
         ``min_score`` filtering means a below-threshold hit does not steal a
         slot that a stronger match in a later scope could fill.
+
+        When ``soft_scope`` is on and budget remains after the in-scope
+        cascade, a supplementary global pass admits ONLY ``sensitivity=
+        'public'`` items from outside the cascade (Piece A2). Restricted
+        items never leave the store — the public filter is enforced in SQL —
+        so this round can only *add* cross-scope public recall, never leak.
         """
         results: list[RetrievalResult] = []
         seen: set[str] = set()
@@ -281,7 +296,42 @@ class MemoryStoreRetrievalAdapter:
                 remaining -= 1
                 if remaining <= 0:
                     break
+
+        if soft_scope and remaining > 0:
+            public_items = _above_threshold(
+                await self._search_public_all_scopes(query, remaining),
+                min_score,
+            )
+            for item in public_items:
+                if item.result_id in seen:
+                    continue
+                seen.add(item.result_id)
+                results.append(item)
+                remaining -= 1
+                if remaining <= 0:
+                    break
         return results
+
+    async def _search_public_all_scopes(
+        self,
+        query: str,
+        limit: int,
+    ) -> list[RetrievalResult]:
+        """Soft-scope global pass: public items across all scopes, deduped later.
+
+        The store enforces ``sensitivity='public'`` at the SQL layer, so this
+        only ever returns soft/cross-scope items. Results are reported as
+        FTS-mode regardless of the primary cascade mode, because the soft
+        round is FTS-sourced even when the in-scope cascade ran vector/hybrid.
+        """
+        search_public = getattr(
+            self._memory_store, "search_items_public_all_scopes", None
+        )
+        if not callable(search_public):
+            return []
+        search_public = cast(Any, search_public)
+        items = await search_public(query, limit=limit)
+        return [_memory_item_to_retrieval(item, mode="fts") for item in list(items)]
 
     async def _search_scope(
         self,

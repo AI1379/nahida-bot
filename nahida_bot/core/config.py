@@ -177,6 +177,13 @@ class MemoryRetrievalConfig(BaseModel):
     max_injected_items: int = Field(default=5, ge=0)
     max_injected_chars: int = Field(default=4000, ge=0)
     vector_backend: Literal["json", "sqlite-vec", "none"] = "json"
+    # Soft-scope recall (Piece A2). When on, the memory cascade fills any
+    # remaining budget with a global pass that admits ONLY ``sensitivity=
+    # 'public'`` items from outside the current scope cascade — restricted
+    # items never enter the result set (SQL-level ``sensitivity='public'``).
+    # Default off: zero behavior change until backfill (A1) has softened
+    # legacy ``private`` items to ``public``.
+    soft_scope: bool = False
 
 
 class MemoryEmbeddingConfig(BaseModel):

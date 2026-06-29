@@ -14,6 +14,8 @@ import pytest
 
 from nahida_bot.agent.memory.consolidation import classify_sensitivity
 from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+from nahida_bot.agent.retrieval.adapters import MemoryStoreRetrievalAdapter
+from nahida_bot.agent.retrieval.models import RetrievalRequest, RetrievalScope
 from nahida_bot.db.engine import DatabaseEngine
 
 
@@ -85,6 +87,20 @@ def test_classify_pii_is_private() -> None:
 def test_classify_privacy_marker_is_private() -> None:
     sensitivity, source = classify_sensitivity("这事别告诉群里其他人", title="私下说的")
     assert sensitivity == "private"
+    assert source == "explicit"
+
+
+def test_classify_explicit_privacy_beats_pii_dream() -> None:
+    """An explicit privacy marker outranks inferred PII (Piece A4: explicit > dream)."""
+    sensitivity, source = classify_sensitivity("别告诉别人,我的手机号是 13800138000")
+    assert sensitivity == "private"
+    assert source == "explicit"
+
+
+def test_classify_secret_beats_explicit_privacy() -> None:
+    """Secret signals (strictest) outrank explicit privacy markers."""
+    sensitivity, source = classify_sensitivity("私下说,api_key 是 sk-abc123")
+    assert sensitivity == "secret_like"
     assert source == "dream"
 
 
@@ -94,3 +110,107 @@ def test_classify_normal_content_is_public() -> None:
     )
     assert sensitivity == "public"
     assert source == "default"
+
+
+# --- A2: soft-scope retrieval filter ----------------------------------------
+
+
+async def _seed_other_chat(store: SQLiteMemoryStore) -> dict[str, str]:
+    """Seed another chat (chatB) with public/private/secret pineapple items."""
+    await store.append_item(
+        content="public alpha fact about pineapples ripening",
+        title="alpha public",
+        scope_type="chat",
+        scope_id="chatB",
+        kind="fact",
+        sensitivity="public",
+    )
+    await store.append_item(
+        content="private beta detail about pineapples origin",
+        title="beta private",
+        scope_type="chat",
+        scope_id="chatB",
+        kind="fact",
+        sensitivity="private",
+    )
+    await store.append_item(
+        content="secret gamma token about pineapples vault",
+        title="gamma secret",
+        scope_type="chat",
+        scope_id="chatB",
+        kind="fact",
+        sensitivity="secret_like",
+    )
+    return {
+        "public": "alpha public",
+        "private": "beta private",
+        "secret": "gamma secret",
+    }
+
+
+def _chat_a_request(query: str = "pineapples") -> RetrievalRequest:
+    """A retrieval request scoped to chatA -> global (chatB is out of cascade)."""
+    return RetrievalRequest(
+        query=query,
+        source_type="memory",
+        scopes=(
+            RetrievalScope("chat", "chatA"),
+            RetrievalScope("global", "__global__"),
+        ),
+        limit=10,
+    )
+
+
+@pytest.mark.asyncio
+async def test_soft_scope_off_excludes_cross_scope_items(
+    store: SQLiteMemoryStore,
+) -> None:
+    """With soft_scope off, chatB items are never recalled from chatA."""
+    titles = await _seed_other_chat(store)
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store, soft_scope=False)
+    results = await adapter.retrieve(_chat_a_request())
+    assert results == []
+    assert titles["public"] not in {r.title for r in results}
+
+
+@pytest.mark.asyncio
+async def test_soft_scope_on_recalls_cross_scope_public(
+    store: SQLiteMemoryStore,
+) -> None:
+    """With soft_scope on, chatB's PUBLIC item is recalled from chatA."""
+    titles = await _seed_other_chat(store)
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store, soft_scope=True)
+    results = await adapter.retrieve(_chat_a_request())
+    result_titles = {r.title for r in results}
+    assert titles["public"] in result_titles
+
+
+@pytest.mark.asyncio
+async def test_soft_scope_on_excludes_cross_scope_restricted(
+    store: SQLiteMemoryStore,
+) -> None:
+    """Soft-scope never leaks private/secret_like across scopes (zero leak)."""
+    titles = await _seed_other_chat(store)
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store, soft_scope=True)
+    results = await adapter.retrieve(_chat_a_request())
+    result_titles = {r.title for r in results}
+    assert titles["private"] not in result_titles
+    assert titles["secret"] not in result_titles
+
+
+@pytest.mark.asyncio
+async def test_soft_scope_dedups_in_scope_items(store: SQLiteMemoryStore) -> None:
+    """An in-scope public item is not duplicated by the soft global pass."""
+    await _seed_other_chat(store)
+    await store.append_item(
+        content="in-scope public fact about pineapples season",
+        title="alpha in-scope",
+        scope_type="chat",
+        scope_id="chatA",
+        kind="fact",
+        sensitivity="public",
+    )
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store, soft_scope=True)
+    results = await adapter.retrieve(_chat_a_request())
+    in_scope_hits = [r for r in results if r.title == "alpha in-scope"]
+    assert len(in_scope_hits) == 1

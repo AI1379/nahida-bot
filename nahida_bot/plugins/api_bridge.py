@@ -895,6 +895,7 @@ class RealBotAPI:
             scope_id_value = scope_id_value or base_scope_id
         append_item = getattr(self._memory, "append_item", None)
         if callable(append_item):
+            sensitivity_value, sensitivity_source = _resolve_sensitivity(metadata)
             await cast(Any, append_item)(
                 title=key,
                 content=content,
@@ -904,7 +905,8 @@ class RealBotAPI:
                 source=str(metadata.pop("source", "plugin")),
                 confidence=float(metadata.pop("confidence", 1.0)),
                 importance=float(metadata.pop("importance", 0.5)),
-                sensitivity=str(metadata.pop("sensitivity", "private")),
+                sensitivity=sensitivity_value,
+                sensitivity_source=sensitivity_source,
                 evidence=metadata.pop("evidence", None),
                 metadata=metadata,
             )
@@ -1654,3 +1656,25 @@ def _address_from_inbound_message(message: InboundMessage) -> ChatAddress:
         is_group=message.is_group,
         chat_type=chat_type,
     )
+
+
+_VALID_SENSITIVITY = frozenset({"public", "private", "secret_like"})
+
+
+def _resolve_sensitivity(metadata: dict[str, Any]) -> tuple[str, str]:
+    """Pop and validate ``sensitivity`` from plugin write metadata.
+
+    Returns ``(sensitivity, sensitivity_source)``. An explicit value yields
+    ``sensitivity_source='explicit'`` (Piece A4: explicit > dream); the
+    absence of a value yields the soft ``public`` baseline with ``'default'``
+    provenance — matching the consolidation default so plugin writes and
+    dreaming agree on the soft baseline. An invalid value falls back to
+    ``public``/``'default'`` rather than rejecting the write.
+    """
+    raw = metadata.pop("sensitivity", None)
+    if raw is None:
+        return "public", "default"
+    value = str(raw).strip()
+    if value not in _VALID_SENSITIVITY:
+        return "public", "default"
+    return value, "explicit"

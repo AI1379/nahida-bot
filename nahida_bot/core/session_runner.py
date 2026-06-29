@@ -1363,6 +1363,7 @@ class SessionRunner:
                 memory_store=self._memory,
                 embedding_provider=self._memory_embedding_provider,
                 vector_index=self._memory_vector_index,
+                soft_scope=bool(cfg.soft_scope) if cfg is not None else False,
             )
             service = RetrievalService({"memory": adapter})
             results = await service.retrieve(

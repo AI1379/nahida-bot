@@ -275,6 +275,17 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "string",
                         "description": "Section title for long_term writes. Default Notes.",
                     },
+                    "sensitivity": {
+                        "type": "string",
+                        "enum": ["public", "private", "secret_like"],
+                        "description": (
+                            "Sensitivity tag (Piece A4). Default public — soft, recallable "
+                            "across chats. Use 'private' when the user asks to keep it "
+                            "between you ('别告诉别人'/'私下') or 'secret_like' for secrets "
+                            "(passwords/keys); these are also stored as protected durable "
+                            "memory so they won't surface in other chats."
+                        ),
+                    },
                 },
                 "required": ["content"],
                 "additionalProperties": False,
@@ -747,13 +758,18 @@ class BuiltinCommandsPlugin(Plugin):
         content: str,
         target: str = "daily",
         section: str = "Notes",
+        sensitivity: str = "public",
     ) -> str:
-        _logger.debug("tool.memory_write", target=target, section=section)
+        _logger.debug(
+            "tool.memory_write", target=target, section=section, sensitivity=sensitivity
+        )
         error = validate_memory_content(content)
         if error is not None:
             return error
         if target not in {"daily", "long_term", "both"}:
             return "Error: target must be one of: daily, long_term, both."
+        if sensitivity not in {"public", "private", "secret_like"}:
+            return "Error: sensitivity must be one of: public, private, secret_like."
 
         written: list[str] = []
         if target in {"daily", "both"}:
@@ -769,6 +785,23 @@ class BuiltinCommandsPlugin(Plugin):
                 append_long_term_memory(existing, content, section=section),
             )
             written.append(MEMORY_FILE)
+
+        # Piece A4: an explicit private/secret tag must also land on the
+        # structured durable store (the soft-scope retrieval source), because
+        # the Markdown notebook above is not queried by retrieval. Tagged
+        # private/secret_here is then protected from cross-scope recall.
+        # ``memory_store`` records sensitivity_source='explicit'.
+        if sensitivity in {"private", "secret_like"}:
+            try:
+                await self.api.memory_store(
+                    section or "memory_write",
+                    content,
+                    metadata={"sensitivity": sensitivity, "kind": "fact"},
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "tool.memory_write_sensitive_persist_failed", error=str(exc)
+                )
 
         return "Memory written: " + ", ".join(written)
 

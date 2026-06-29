@@ -85,6 +85,7 @@ class _Memory:
         confidence: float = 1.0,
         importance: float = 0.5,
         sensitivity: str = "private",
+        sensitivity_source: str = "default",
         evidence: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
@@ -99,6 +100,7 @@ class _Memory:
             confidence=confidence,
             importance=importance,
             sensitivity=sensitivity,
+            sensitivity_source=sensitivity_source,
             evidence=evidence or {},
             metadata=metadata or {},
         )
@@ -321,6 +323,38 @@ async def test_workspace_and_memory_methods_delegate_to_runtime(
     assert stored[0].content == "v"
     assert stored[0].metadata["kind"] == "preference"
     assert await api.clear_session("s1") == 3
+
+
+@pytest.mark.asyncio
+async def test_memory_store_defaults_to_soft_public(tmp_path: Path) -> None:
+    """Plugin writes default to the soft public baseline (Piece A4)."""
+    api, _, _, _ = _api(tmp_path)
+    await api.memory_store("note", "a soft recallable fact")
+    item = cast(Any, api)._memory.items[-1]
+    assert item.sensitivity == "public"
+    assert item.sensitivity_source == "default"
+
+
+@pytest.mark.asyncio
+async def test_memory_store_explicit_sensitivity_is_explicit(tmp_path: Path) -> None:
+    """An explicit sensitivity is recorded with source='explicit' (Piece A4)."""
+    api, _, _, _ = _api(tmp_path)
+    await api.memory_store(
+        "secret note", "keep this between us", metadata={"sensitivity": "private"}
+    )
+    item = cast(Any, api)._memory.items[-1]
+    assert item.sensitivity == "private"
+    assert item.sensitivity_source == "explicit"
+
+
+@pytest.mark.asyncio
+async def test_memory_store_invalid_sensitivity_falls_back(tmp_path: Path) -> None:
+    """An invalid sensitivity value falls back to public/default, not rejected."""
+    api, _, _, _ = _api(tmp_path)
+    await api.memory_store("n", "v", metadata={"sensitivity": "top_secret"})
+    item = cast(Any, api)._memory.items[-1]
+    assert item.sensitivity == "public"
+    assert item.sensitivity_source == "default"
 
 
 def test_tool_and_command_registration(tmp_path: Path) -> None:

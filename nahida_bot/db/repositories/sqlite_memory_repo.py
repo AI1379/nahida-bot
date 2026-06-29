@@ -457,6 +457,57 @@ class SQLiteMemoryRepository:
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 
+    async def search_memory_items_public_all_scopes(
+        self,
+        fts_query: str,
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """FTS5 BM25 search across ALL scopes, public items only (soft-scope).
+
+        The soft-scope cascade (Piece A2) calls this to admit cross-scope
+        recall while guaranteeing restricted items (``private`` /
+        ``secret_like``) never enter the result set — the filter is enforced
+        here at the SQL layer, not in Python.
+        """
+        rows = await self._engine.fetch_all(
+            "SELECT mi.item_id, mi.scope_type, mi.scope_id, mi.kind, mi.title, "
+            "mi.content, mi.status, mi.confidence, mi.importance, mi.sensitivity, "
+            "mi.sensitivity_source, mi.source, mi.evidence_json, mi.metadata_json, mi.created_at, "
+            "mi.updated_at, bm25(memory_item_fts) AS score "
+            "FROM memory_item_fts "
+            "JOIN memory_items mi ON mi.item_id = memory_item_fts.item_id "
+            "WHERE memory_item_fts MATCH ? "
+            "AND mi.status = 'active' "
+            "AND mi.sensitivity = 'public' "
+            "ORDER BY score ASC, mi.importance DESC, mi.updated_at DESC "
+            "LIMIT ?",
+            (fts_query, limit),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
+    async def list_memory_items_public_all_scopes(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List recent active public items across all scopes (soft-scope).
+
+        The empty-query fallback for the soft-scope cascade — mirrors
+        ``list_memory_items`` but drops the scope filter and restricts to
+        ``sensitivity = 'public'``.
+        """
+        rows = await self._engine.fetch_all(
+            "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
+            "confidence, importance, sensitivity, sensitivity_source, source, evidence_json, "
+            "metadata_json, created_at, updated_at, 0.0 AS score "
+            "FROM memory_items "
+            "WHERE status = 'active' AND sensitivity = 'public' "
+            "ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
     async def list_memory_items_all_scopes(
         self,
         *,
