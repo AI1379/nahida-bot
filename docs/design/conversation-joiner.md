@@ -1,8 +1,8 @@
 # Conversation Joiner 主动入话题设计
 
 > 记录时间：2026-06-08
-> 最近更新：2026-06-09
-> 状态：Phase 0-4 的 in-memory MVP 已完成；持久化、管理界面和正式 `group_observe_mode` 仍在后续阶段
+> 最近更新：2026-06-29
+> 状态：Phase 0-4 的 in-memory MVP 已完成；持久化、管理界面和正式 `group_observe_mode` 仍在后续阶段。第 16 节：互动事件（戳一戳）接入设计。
 > 来源：GitHub Issue #4 的“随机发言”表述不准确；真实目标是让 Bot 判断是否自然加入群聊话题。
 > 相关文档：
 >
@@ -694,3 +694,128 @@ permissions:
 5. 状态机当前仍是 in-memory MVP；重启会清空 engagement 状态、batch 和冷却窗口，后续需要持久化关键状态。
 6. batch 注入如果只拼字符串，会丢失 sender/timestamp/message_id，影响主 Agent 判断和审计。
 7. `engaged` 状态可能让 Bot 显得过度参与，必须有 TTL、idle exit、低价值退出和小时上限。
+
+## 16. 互动事件接入（戳一戳等）
+
+> 记录时间：2026-06-29
+> 来源：GitHub Issue #15（戳一戳事件）。#15 的 M1（通道接收 → 解析 → 类型化 `PokeEvent` → EventBus 派发）已完成；本节设计「订阅方如何消费」，即接入 conversation joiner 的响应策略。
+> 相关：[`nahida_bot_sdk/events.py`](../../nahida-bot-sdk/nahida_bot_sdk/events.py) 的 `PokeEvent` / `PokePayload`；`MessageReactionEvent`（本节暂不接入）。
+
+### 16.1 背景
+
+`PokeEvent` 已经作为普通事件接入 EventBus（issue #15 M1）：milky 通道把 `friend_nudge` / `group_nudge` 归一成 `PokeEvent` 派发，通道层只负责「送事件」，不耦合响应策略。剩下的问题是 conversation joiner **作为订阅方** 怎么消费它。
+
+### 16.2 核心判断：戳一戳是弱信号
+
+戳一戳是**比 mention / 关键词都弱得多**的群成员互动信号，不是「直接召唤」。它成本低、频率相对较高，更多表达成员之间的轻互动，而非对 Bot 的强请求。
+
+这一点决定了所有后续设计：
+
+- **不享受强信号待遇**：不立即 flush、不打破冷却、不强制回复。
+- **走和普通消息一样的状态机流程**：合成后进 batch、进上下文、由便宜 gate 判断，复用既有的冷却 / 频率上限 / 并发保护。
+- 弱信号程度的判断**交给 gate 模型**，不写死成规则。
+
+### 16.3 目标与非目标
+
+#### 目标
+
+1. 把戳一戳作为「带标记的普通消息」接入状态机，复用全部既有门控与状态转换，不新增 FSM 状态。
+2. 戳一戳作为独立的、可配置的输入类别（自己的 sample 系数），满足「哪些事件进入 / 以多大权重进入可由配置注入」。
+3. 通道层保持 dumb：只负责派发 `PokeEvent`，响应策略全部留在 joiner 内部，与 issue #15 的分层一致。
+4. 弱信号判断下沉到 secretary / continue_gate，通过渲染 `extra_tags` 让模型看到 `poke` 标记后自行权衡。
+
+#### 非目标
+
+1. 不为戳一戳新增 FSM 状态（`observing/joining/engaged/cooling` 四态描述的是 Bot 的对话姿态，戳一戳是一种可落在任意态的输入）。
+2. 不在 `engaged` 立即 flush、不在 `cooling` 打破冷却（那是强信号才有的待遇）。
+3. 不在本期接入 `MessageReactionEvent`：当前它捕获所有群内反应，无法廉价过滤「对 Bot 自己消息的反应」，需先补 sent-`message_seq` 对账机制。
+4. 不在本期支持 friend 场景戳一戳：状态机与 `request_agent_response` 都是 group-only。
+5. 不为戳一戳单设互动专用频率桶：既有 `max_triggers_per_hour` / `cooldown_seconds` / batch 窗口已天然限流，除非实测证明戳一戳挤占了正常 join 预算，否则不分桶。
+
+### 16.4 归一：`PokeEvent` → 带标记的 `InboundMessage`
+
+`request_agent_response` 强制要求真实的 `InboundMessage` + typed group 地址（非 group 直接抛 `ValueError`）。因此接入点是：在 joiner 内部把 `PokeEvent` 合成一个 `InboundMessage`，字段映射如下（**全部复用既有字段，不新增**）：
+
+| `InboundMessage` 字段 | 取值 | 作用 |
+|---|---|---|
+| `text` | 固定格式，如 `"[{poker}] 戳了戳你"` | 让 prefilter 的 `min_text_chars` 自然通过；进 `_contexts` 作为上下文 |
+| `raw_event` | `{"poke": True, "scene": "group", **原始 payload}` | 机器可读 envelope |
+| `message_context.extra_tags` | `("poke",)` | **专门给 LLM 看的结构化标记**（该字段 docstring 原话即 "structured LLM-visible context data"）|
+| `sender_context` | poker 的 display_name / platform_user_id，`is_self=is_bot=False` | 避免 prefilter 的 `bot_or_self` 误杀 |
+| `mentions_bot` | **`False`** | ⚠️ 关键：绝不能设 True，否则 engaged 态会触发 `flush_on_mention` 立即 flush，变回强信号处理 |
+| `message_id` | 合成 `poke:{user_id}:{ts}` | 给 batch anchor / reply 使用 |
+
+合成完成后，直接调用 joiner 内部既有的消息处理路径（不必真的发布一个 `MessageObserved` 事件），即可让戳一戳从 prefilter 起完全走普通消息流程。
+
+### 16.5 门控：第三种概率（调低）
+
+戳一戳是独立可配置类别，对应第三个 sample 系数，与 `sample_rate`（无关键词）/ `keyword_sample_rate`（有关键词）并列：
+
+```text
+sample_rate = poke_sample_rate        if poke
+            = keyword_sample_rate     if keyword_hit
+            = sample_rate             otherwise
+```
+
+因为「弱信号 + 高频」，`poke_sample_rate` **默认应低于 keyword，甚至低于 ambient**，否则戳一戳会主导主动发言预算。
+
+「偶尔无视」由两层叠加实现（对应既定回复策略）：
+
+1. **sample gate**（`poke_sample_rate` 低）：廉价层先砍掉大部分戳一戳。
+2. **secretary**：prompt 渲染 `extra_tags` 后，模型看到 `poke` 标记自然倾向判「不值得加入」。弱信号程度由模型判断，不写死规则。
+
+### 16.6 每态语义
+
+| 状态 | 戳一戳行为 | 与普通消息的差异 |
+|---|---|---|
+| `observing` | prefilter → `poke_sample_rate` → secretary（看 `poke` tag）→ join | 仅 sample 系数不同 |
+| `joining` | 忽略（等自己回复） | 无 |
+| `engaged` | **进 batch，不立即 flush** | 无（靠 `mentions_bot=False` 保证不被 `flush_on_mention` 截获）|
+| `cooling` | **进 batch，等冷却结束** | 无，**不打破冷却** |
+
+唯一需要小心维护的「例外」是 `mentions_bot=False` —— 而这本质上正是「不要给它特殊待遇」，与「全同普通消息」方向一致。
+
+### 16.7 配置注入
+
+新增 `poke` 子配置挂在 `prefilter` 下（与现有 `sample_rate` / `keyword_sample_rate` 同层），并支持 per-group 覆盖（既有 `GroupJoinerConfig` 已支持）：
+
+```yaml
+conversation_joiner:
+  prefilter:
+    sample_rate: 0.15
+    keyword_sample_rate: 1.0
+    poke_sample_rate: 0.1          # 弱信号，默认低
+    poke_text_template: "[{poker}] 戳了戳你"
+    enable_poke: true              # 哪些事件进入：总开关
+  engagement:
+    enabled: true
+  groups:
+    "<group-key>":
+      prefilter:
+        poke_sample_rate: 0.0      # 某群完全忽略戳一戳
+```
+
+`enable_poke` + per-group 的 `poke_sample_rate` 共同实现「具体哪些事件进入、以多大权重进入可由配置注入」。未来接入 `MessageReactionEvent` 时，新增 `reaction_sample_rate` / `enable_reaction` 即可，模式一致。
+
+### 16.8 归一落点：策略留 joiner，通道保持 dumb
+
+`PokeEvent` → 带标记 `InboundMessage` 的合成**放在 conversation joiner 内部**（订阅 `PokeEvent`，合成后喂进自己的处理路径），而非放在 milky 通道。
+
+理由即 issue #15 的哲学：通道只负责送 `PokeEvent`，响应策略由订阅方决定。「戳一戳 = 弱信号、进 batch、低概率」这套**策略**若固化进通道层，`PokeEvent` 抽象就形同虚设，且未来换状态机策略就得改通道。所以通道继续 dumb，只发 `PokeEvent`；策略全部留在 joiner。
+
+### 16.9 实施 checklist（Phase 7）
+
+1. `JoinerPrefilterConfig` 增加 `poke_sample_rate` / `poke_text_template` / `enable_poke`。
+2. joiner `on_load` 中订阅 `PokeEvent`，新增 `_on_poke` handler。
+3. 新增 `PokeEvent` → 带标记 `InboundMessage` 的合成函数（注意 `mentions_bot=False`、`extra_tags=("poke",)`、合成 `message_id`）。
+4. 合成消息接入既有 `_handle_observed` / `_handle_with_state_machine` 路径；在 sample 选择处加 `poke` 分支。
+5. `_build_secretary_prompt` / `_build_continue_gate_prompt` 渲染 `extra_tags`（当前未渲染），让模型看到 `poke` 标记。
+6. 单测：戳一戳合成字段正确性、`observing` 第三概率门、`engaged` 进 batch 不 flush、`cooling` 不打破冷却、`enable_poke=false` 丢弃。
+
+### 16.10 风险
+
+1. `poke_sample_rate` 设高了会主导主动发言预算，必须默认低并有 per-group 覆盖。
+2. 若遗漏 `mentions_bot=False`，戳一戳在 engaged 态会被 `flush_on_mention` 当成 mention 立即 flush，退化为强信号——属回归风险，必须有测试覆盖。
+3. 合成消息进入 `_contexts` 会占据上下文配额（`max_context_messages` / `max_context_chars`），高频戳一戳可能挤占真实对话上下文，需观察。
+4. secretary / continue_gate 的 prompt 必须真的渲染 `extra_tags`，否则模型看不到 `poke` 标记，弱信号判断失效。
+5. 合成 `message_id` 需保证稳定且不与真实消息碰撞，否则 batch anchor / reply 锚定可能错乱。

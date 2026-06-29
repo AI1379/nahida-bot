@@ -8,7 +8,13 @@ from typing import Any, cast
 
 import pytest
 
-from nahida_bot.core.events import MessageObserved, MessagePayload, MessageSent
+from nahida_bot.core.events import (
+    MessageObserved,
+    MessagePayload,
+    MessageSent,
+    PokeEvent,
+    PokePayload,
+)
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import ChatContext, InboundMessage, SenderContext
 from nahida_bot.plugins.conversation_joiner.config import effective_group_config
@@ -1755,3 +1761,191 @@ async def test_engaged_flush_respects_hourly_budget() -> None:
     assert batch is not None
     assert batch.messages == []
     assert sm.get_state("test:group:g1").state == "engaged"
+
+
+# ---------------------------------------------------------------------------
+# Poke (interaction event) integration — see docs/design/conversation-joiner.md §16
+# ---------------------------------------------------------------------------
+
+
+def _poke_prefilter(**overrides: Any) -> dict[str, Any]:
+    base = {
+        "sample_rate": 0.0,
+        "keyword_sample_rate": 1.0,
+        "enable_poke": True,
+        "poke_sample_rate": 1.0,
+        "poke_text_template": "[{poker}] 戳了戳你",
+    }
+    base.update(overrides)
+    return base
+
+
+def _poke_event(
+    *,
+    group_id: str = "g1",
+    user_id: str = "u-poker",
+    channel: str = "milky",
+) -> PokeEvent:
+    address = ChatAddress(channel=channel, target_type="group", target_id=group_id)
+    payload = PokePayload(
+        session_id=f"{channel}:group:{group_id}",
+        chat_address=address,
+        scene="group",
+        group_id=group_id,
+        user_id=user_id,
+        target_user_id="bot-self",
+        display_action="戳了戳",
+        display_suffix="",
+        raw={"display_action_img_url": ""},
+    )
+    return PokeEvent(payload=payload, source="milky")
+
+
+def test_synthesize_poke_message_fields() -> None:
+    """Synthesized poke message carries the poke marker and never mentions_bot."""
+    from nahida_bot.plugins.conversation_joiner.plugin import _synthesize_poke_message
+
+    msg = _synthesize_poke_message(_poke_event().payload, "[{poker}] 戳了戳你")
+
+    assert msg.mentions_bot is False
+    assert msg.is_group is True
+    assert msg.message_context is not None
+    assert "poke" in msg.message_context.extra_tags
+    assert msg.text == "[u-poker] 戳了戳你"
+    assert msg.raw_event.get("poke") is True
+    assert msg.raw_event.get("scene") == "group"
+    assert msg.message_id.startswith("poke:u-poker:")
+    assert msg.sender_context is not None
+    assert msg.sender_context.is_self is False
+    assert msg.sender_context.is_bot is False
+
+
+@pytest.mark.asyncio
+async def test_poke_sample_rate_zero_skips_secretary() -> None:
+    api = _JoinerAPI(['{"should_join": true, "confidence": 0.9, "reason": "poke"}'])
+    plugin = await _load_plugin(
+        api, {"prefilter": _poke_prefilter(poke_sample_rate=0.0)}
+    )
+    handler = api.registered_event_handlers[PokeEvent][0]
+
+    await handler(_poke_event())
+    await _drain_plugin_tasks(plugin)
+
+    assert api.llm_calls == []
+    assert api.agent_response_requests == []
+
+
+@pytest.mark.asyncio
+async def test_poke_passes_tag_to_secretary_and_requests_agent() -> None:
+    api = _JoinerAPI(
+        ['{"should_join": true, "confidence": 0.9, "reason": "poke reply"}']
+    )
+    plugin = await _load_plugin(
+        api, {"prefilter": _poke_prefilter(poke_sample_rate=1.0)}
+    )
+    handler = api.registered_event_handlers[PokeEvent][0]
+
+    await handler(_poke_event())
+    await _drain_plugin_tasks(plugin)
+
+    assert len(api.llm_calls) == 1
+    prompt = api.llm_calls[0]["messages"][1]["content"]
+    assert "<poke>" in prompt
+    assert len(api.agent_response_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_poke_in_engaged_goes_to_batch_without_flush() -> None:
+    """A poke in engaged state is batched like any message; mentions_bot=False
+    means flush_on_mention does NOT immediately trigger an agent request."""
+    api = _JoinerAPI(['{"should_join": false, "confidence": 0.1, "reason": "no"}'])
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={
+            "batching": {"max_messages": 20, "max_chars": 10000, "window_seconds": 60},
+            "response_cooldown_seconds": 45,
+        },
+        extra_config={"prefilter": _poke_prefilter()},
+    )
+    sm = cast(Any, plugin)._sm
+    import time as _time
+
+    sm.transition_to_engaged("milky:group:g1", _time.monotonic())
+
+    handler = api.registered_event_handlers[PokeEvent][0]
+    await handler(_poke_event())
+    await _drain_plugin_tasks(plugin)
+
+    batch = sm.get_batch("milky:group:g1")
+    assert batch is not None
+    assert len(batch.messages) == 1
+    assert "poke" in batch.messages[0].message_context.extra_tags
+    assert sm.get_state("milky:group:g1").state == "engaged"
+    assert api.agent_response_requests == []
+
+
+@pytest.mark.asyncio
+async def test_poke_in_cooling_does_not_break_cooldown() -> None:
+    """A poke must not break the response cooldown (it is a weak signal)."""
+    api = _JoinerAPI(['{"should_join": false, "confidence": 0.1, "reason": "no"}'])
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={"response_cooldown_seconds": 45},
+        extra_config={"prefilter": _poke_prefilter()},
+    )
+    sm = cast(Any, plugin)._sm
+    import time as _time
+
+    now = _time.monotonic()
+    chat_key = "milky:group:g1"
+    sm.transition_to_engaged(chat_key, now)
+    sm.transition_to_cooling(chat_key, now)
+
+    handler = api.registered_event_handlers[PokeEvent][0]
+    await handler(_poke_event())
+    await _drain_plugin_tasks(plugin)
+
+    assert sm.get_state(chat_key).state == "cooling"
+    assert api.agent_response_requests == []
+
+
+@pytest.mark.asyncio
+async def test_friend_scene_poke_is_ignored() -> None:
+    """Friend-scene pokes are out of scope (state machine is group-only)."""
+    api = _JoinerAPI(['{"should_join": true, "confidence": 0.9, "reason": "x"}'])
+    plugin = await _load_plugin(api, {"prefilter": _poke_prefilter()})
+    handler = api.registered_event_handlers[PokeEvent][0]
+
+    payload = _poke_event().payload
+    friend_payload = PokePayload(
+        session_id=payload.session_id,
+        chat_address=ChatAddress(
+            channel="milky", target_type="private", target_id="u-poker"
+        ),
+        scene="friend",
+        group_id="",
+        user_id="u-poker",
+        target_user_id="bot-self",
+        display_action="戳了戳",
+        display_suffix="",
+        raw={},
+    )
+    await handler(PokeEvent(payload=friend_payload, source="milky"))
+    await _drain_plugin_tasks(plugin)
+
+    assert api.llm_calls == []
+    assert api.agent_response_requests == []
+
+
+@pytest.mark.asyncio
+async def test_enable_poke_false_drops_poke_event() -> None:
+    """With enable_poke off, the handler short-circuits before any work."""
+    api = _JoinerAPI(['{"should_join": true, "confidence": 0.9, "reason": "x"}'])
+    plugin = await _load_plugin(api, {"prefilter": _poke_prefilter(enable_poke=False)})
+
+    # Not subscribed, so invoke the handler directly.
+    await cast(Any, plugin)._on_poke(_poke_event())
+    await _drain_plugin_tasks(plugin)
+
+    assert api.llm_calls == []
+    assert api.agent_response_requests == []

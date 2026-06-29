@@ -20,6 +20,13 @@ class JoinerPrefilterConfig(BaseModel):
     sample_rate: float = Field(default=0.15, ge=0.0, le=1.0)
     keyword_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
 
+    # ── Interaction events (poke) ──────────────────────────────────
+    # Poke is a weak group-interaction signal (weaker than @/keyword),
+    # so its own (low) sample tier sits beside sample_rate / keyword_sample_rate.
+    enable_poke: bool = False
+    poke_sample_rate: float = Field(default=0.1, ge=0.0, le=1.0)
+    poke_text_template: str = "[{poker}] 戳了戳你"
+
 
 class PersonaContextConfig(BaseModel):
     """Workspace persona files injected into the secretary prompt."""

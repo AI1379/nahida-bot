@@ -13,8 +13,20 @@ from dataclasses import dataclass
 from typing import Any
 
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.core.events import MessageObserved, MessageSent
-from nahida_bot.plugins.base import InboundMessage, Plugin
+from nahida_bot.core.events import (
+    MessageObserved,
+    MessagePayload,
+    MessageSent,
+    PokeEvent,
+    PokePayload,
+)
+from nahida_bot.plugins.base import (
+    ChatContext,
+    InboundMessage,
+    MessageContext,
+    Plugin,
+    SenderContext,
+)
 from nahida_bot.plugins.conversation_joiner.config import (
     EffectiveJoinerConfig,
     EngagementConfig,
@@ -78,6 +90,8 @@ class ConversationJoinerPlugin(Plugin):
 
     async def on_load(self) -> None:
         self.api.subscribe(MessageObserved, self._on_message_observed)
+        if self._config.prefilter.enable_poke:
+            self.api.subscribe(PokeEvent, self._on_poke)
         if self._has_any_engagement_enabled():
             self._sm = EngagementStateMachine(self.api.logger)
             self.api.subscribe(MessageSent, self._on_message_sent)
@@ -133,6 +147,39 @@ class ConversationJoinerPlugin(Plugin):
         self._tasks.add(task)
         task.add_done_callback(self._on_task_done)
 
+    async def _on_poke(self, event: PokeEvent) -> None:
+        """Receive a PokeEvent, synthesize a tagged InboundMessage, and route it
+        through the same handling path as an observed message.
+
+        Poke is a weak group-interaction signal: it is treated as an ordinary
+        ambient message carrying a ``poke`` marker (in ``extra_tags`` and
+        ``raw_event``), so it flows through the existing gate, batching and
+        cooldown unchanged — no immediate flush, no cooldown break.
+        """
+        payload = event.payload
+        # Friend-scene pokes are out of scope: the state machine and
+        # request_agent_response are group-only.
+        if payload.scene != "group":
+            return
+        address = payload.chat_address
+        if address.target_type != "group" or not address.is_typed:
+            return
+        cfg = effective_group_config(self._config, address.chat_key)
+        if not cfg.enabled or not cfg.prefilter.enable_poke:
+            return
+
+        message = _synthesize_poke_message(payload, cfg.prefilter.poke_text_template)
+        synthetic_event = MessageObserved(
+            payload=MessagePayload(
+                message=message,
+                session_id=payload.session_id or address.chat_key,
+            ),
+            source="poke",
+        )
+        task = asyncio.create_task(self._handle_observed(synthetic_event, address, cfg))
+        self._tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+
     def _on_task_done(self, task: asyncio.Task[None]) -> None:
         self._tasks.discard(task)
         if task.cancelled():
@@ -164,6 +211,7 @@ class ConversationJoinerPlugin(Plugin):
 
             text = message.text.strip()
             keyword_hit = _has_keyword_hint(text, cfg.prefilter.keyword_hints)
+            poke_hit = _is_poke_message(message)
 
             # --- Engagement state machine path ---
             sm = self._sm
@@ -178,6 +226,7 @@ class ConversationJoinerPlugin(Plugin):
                     now,
                     message,
                     keyword_hit,
+                    poke_hit,
                 )
                 return
 
@@ -186,6 +235,7 @@ class ConversationJoinerPlugin(Plugin):
                 message,
                 cfg,
                 keyword_hit=keyword_hit,
+                poke_hit=poke_hit,
             )
             if skip_reason:
                 self.api.logger.debug(
@@ -211,10 +261,10 @@ class ConversationJoinerPlugin(Plugin):
                 return
             if not self._has_hourly_budget(chat_key, cfg, now):
                 return
-            sample_rate = (
-                cfg.prefilter.keyword_sample_rate
-                if keyword_hit
-                else cfg.prefilter.sample_rate
+            sample_rate = _select_sample_rate(
+                cfg,
+                keyword_hit=keyword_hit,
+                poke_hit=poke_hit,
             )
             sample_passed, sample_roll = _sample_gate_passes(
                 sample_rate,
@@ -228,6 +278,7 @@ class ConversationJoinerPlugin(Plugin):
                     sample_rate=sample_rate,
                     sample_roll=round(sample_roll, 6),
                     keyword_hit=keyword_hit,
+                    poke_hit=poke_hit,
                 )
                 return
 
@@ -288,6 +339,7 @@ class ConversationJoinerPlugin(Plugin):
         now: float,
         message: InboundMessage,
         keyword_hit: bool,
+        poke_hit: bool,
     ) -> None:
         """Handle an observed message through the engagement state machine."""
         engagement_cfg = cfg.engagement
@@ -322,6 +374,7 @@ class ConversationJoinerPlugin(Plugin):
                 message,
                 cfg,
                 keyword_hit=keyword_hit,
+                poke_hit=poke_hit,
             )
             if skip_reason:
                 self.api.logger.debug(
@@ -342,6 +395,7 @@ class ConversationJoinerPlugin(Plugin):
                 now,
                 message,
                 keyword_hit,
+                poke_hit,
             )
 
         elif current_state == "joining":
@@ -726,7 +780,8 @@ class ConversationJoinerPlugin(Plugin):
                 )
             text = msg.text.strip() if msg.text else ""
             msg_id = msg.message_id or "(no-message-id)"
-            lines.append(f"- [{msg_id}] {sender}: {text}")
+            tags = _format_extra_tags(msg)
+            lines.append(f"- [{msg_id}] {sender}:{tags} {text}")
         batch_text = "\n".join(lines)
         return (
             f"Chat: {chat_key}\n"
@@ -749,6 +804,7 @@ class ConversationJoinerPlugin(Plugin):
         now: float,
         message: InboundMessage,
         keyword_hit: bool,
+        poke_hit: bool,
     ) -> None:
         """Run the join gate pipeline when in the observing state."""
         if self._is_active_run(session_id):
@@ -759,10 +815,10 @@ class ConversationJoinerPlugin(Plugin):
             return
         if not self._has_hourly_budget(chat_key, cfg, now):
             return
-        sample_rate = (
-            cfg.prefilter.keyword_sample_rate
-            if keyword_hit
-            else cfg.prefilter.sample_rate
+        sample_rate = _select_sample_rate(
+            cfg,
+            keyword_hit=keyword_hit,
+            poke_hit=poke_hit,
         )
         sample_passed, sample_roll = _sample_gate_passes(
             sample_rate,
@@ -776,6 +832,7 @@ class ConversationJoinerPlugin(Plugin):
                 sample_rate=sample_rate,
                 sample_roll=round(sample_roll, 6),
                 keyword_hit=keyword_hit,
+                poke_hit=poke_hit,
             )
             return
 
@@ -1075,6 +1132,7 @@ class ConversationJoinerPlugin(Plugin):
         cfg: EffectiveJoinerConfig,
         *,
         keyword_hit: bool,
+        poke_hit: bool = False,
     ) -> str:
         sender = message.sender_context
         if sender is not None and (sender.is_self or sender.is_bot):
@@ -1086,7 +1144,13 @@ class ConversationJoinerPlugin(Plugin):
             return "mention"
         if cfg.prefilter.ignore_commands and _is_command(message):
             return "command"
-        if len(text) < cfg.prefilter.min_text_chars and not keyword_hit:
+        # Keyword and poke messages bypass the min-length floor: their signal is
+        # carried by the classification, not by text length.
+        if (
+            len(text) < cfg.prefilter.min_text_chars
+            and not keyword_hit
+            and not poke_hit
+        ):
             return "too_short"
         return ""
 
@@ -1166,7 +1230,8 @@ class ConversationJoinerPlugin(Plugin):
             "Bot persona context for judging whether joining fits the main "
             f"agent, not for drafting the reply:\n{persona_context or '(none)'}\n\n"
             f"Recent context:\n{context or '(none)'}\n\n"
-            f"Current message from {current_sender}:\n{message.text.strip()}\n\n"
+            f"Current message from {current_sender}:{_format_extra_tags(message)}\n"
+            f"{message.text.strip()}\n\n"
             "Decide whether the main bot should naturally join now."
         )
 
@@ -1355,6 +1420,56 @@ def _address_from_message(message: InboundMessage) -> ChatAddress | None:
     return address
 
 
+def _synthesize_poke_message(
+    payload: PokePayload,
+    text_template: str,
+) -> InboundMessage:
+    """Build a tagged InboundMessage from a group PokeEvent.
+
+    The poke becomes an ordinary ambient message carrying a ``poke`` marker (in
+    ``extra_tags`` and ``raw_event``) so it flows through the existing gate and
+    batching unchanged. ``mentions_bot`` is deliberately ``False`` so the
+    engaged-state ``flush_on_mention`` path does not treat it as a strong signal.
+    """
+    channel = payload.chat_address.channel or "milky"
+    group_id = payload.group_id or payload.chat_address.target_id
+    poker = payload.user_id
+    now = time.monotonic()
+    text = text_template.format(poker=poker)
+    raw: dict[str, Any] = {"poke": True, "scene": payload.scene}
+    raw.update(payload.raw)
+    return InboundMessage(
+        message_id=f"poke:{poker}:{now}",
+        platform=channel,
+        chat_id=group_id,
+        user_id=poker,
+        text=text,
+        raw_event=raw,
+        is_group=True,
+        timestamp=now,
+        chat_context=ChatContext(
+            platform=channel,
+            chat_type="group",
+            platform_chat_id=group_id,
+        ),
+        sender_context=SenderContext(
+            display_name="",
+            platform_user_id=poker,
+            is_self=False,
+            is_bot=False,
+        ),
+        message_context=MessageContext(
+            timestamp=now,
+            channel=channel,
+            chat_type="group",
+            chat_id=group_id,
+            sender_id=poker,
+            extra_tags=("poke",),
+        ),
+        mentions_bot=False,
+    )
+
+
 def _is_command(message: InboundMessage) -> bool:
     prefix = message.command_prefix or "/"
     return bool(prefix and message.text.lstrip().startswith(prefix))
@@ -1363,6 +1478,42 @@ def _is_command(message: InboundMessage) -> bool:
 def _has_keyword_hint(text: str, hints: list[str]) -> bool:
     lowered = text.lower()
     return any(hint.lower() in lowered for hint in hints if hint)
+
+
+def _is_poke_message(message: InboundMessage) -> bool:
+    """Return True for synthesized poke messages (tagged via ``extra_tags``)."""
+    ctx = message.message_context
+    return ctx is not None and "poke" in ctx.extra_tags
+
+
+def _format_extra_tags(message: InboundMessage) -> str:
+    """Render a message's ``extra_tags`` as a trailing marker, e.g. ``<poke>``.
+
+    Empty for ordinary messages so prompts are unchanged when no tags are set.
+    """
+    ctx = message.message_context
+    if ctx is None or not ctx.extra_tags:
+        return ""
+    return " " + " ".join(f"<{tag}>" for tag in ctx.extra_tags)
+
+
+def _select_sample_rate(
+    cfg: EffectiveJoinerConfig,
+    *,
+    keyword_hit: bool,
+    poke_hit: bool,
+) -> float:
+    """Pick the pre-secretary sample rate by input class.
+
+    Three tiers: poke (weak signal, lowest) < ambient < keyword. Poke is only
+    eligible when ``enable_poke`` is on; otherwise it falls back to ambient so a
+    stray tagged message is never silently gated to zero.
+    """
+    if poke_hit and cfg.prefilter.enable_poke:
+        return cfg.prefilter.poke_sample_rate
+    if keyword_hit:
+        return cfg.prefilter.keyword_sample_rate
+    return cfg.prefilter.sample_rate
 
 
 def _sample_gate_passes(

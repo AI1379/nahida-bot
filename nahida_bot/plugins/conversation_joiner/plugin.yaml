@@ -16,6 +16,7 @@ capabilities:
   subscribes_to:
     - MessageObserved
     - MessageSent
+    - PokeEvent
   emits:
     - AgentResponseRequested
 config:
@@ -41,6 +42,9 @@ config:
     keyword_hints: []
     sample_rate: 0.15
     keyword_sample_rate: 1.0
+    enable_poke: false
+    poke_sample_rate: 0.1
+    poke_text_template: "[{poker}] 戳了戳你"
   engagement:
     enabled: false
     join_state_ttl_seconds: 600
