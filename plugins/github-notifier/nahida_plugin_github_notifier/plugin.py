@@ -231,7 +231,7 @@ class GitHubNotifierPlugin(Plugin):
         payload_repo = _nested_str(payload, "repository", "full_name")
         self.api.logger.info(
             "github_notifier.webhook_received",
-            event=event_name,
+            github_event=event_name,
             action=action,
             delivery_id=delivery_id,
             payload_repo=payload_repo,
@@ -242,7 +242,7 @@ class GitHubNotifierPlugin(Plugin):
                 self.api.logger.info(
                     "github_notifier.webhook_ignored",
                     reason="duplicate_delivery",
-                    event=event_name,
+                    github_event=event_name,
                     delivery_id=delivery_id,
                 )
                 return WebhookResponse(status_code=204)
@@ -259,7 +259,7 @@ class GitHubNotifierPlugin(Plugin):
             self.api.logger.debug(
                 "github_notifier.webhook_ignored",
                 reason="unsupported_event",
-                event=event_name,
+                github_event=event_name,
                 delivery_id=delivery_id,
             )
             return WebhookResponse(status_code=204)
@@ -268,7 +268,7 @@ class GitHubNotifierPlugin(Plugin):
             self.api.logger.debug(
                 "github_notifier.webhook_ignored",
                 reason="unsupported_action",
-                event=event_name,
+                github_event=event_name,
                 action=action,
                 delivery_id=delivery_id,
             )
@@ -278,7 +278,7 @@ class GitHubNotifierPlugin(Plugin):
             self.api.logger.info(
                 "github_notifier.webhook_ignored",
                 reason="repo_mismatch",
-                event=event_name,
+                github_event=event_name,
                 action=action,
                 delivery_id=delivery_id,
                 payload_repo=payload_repo,
@@ -288,7 +288,7 @@ class GitHubNotifierPlugin(Plugin):
 
         self.api.logger.info(
             "github_notifier.webhook_accepted",
-            event=event_name,
+            github_event=event_name,
             action=action,
             delivery_id=delivery_id,
             repo=self._config.repo,
@@ -316,7 +316,7 @@ class GitHubNotifierPlugin(Plugin):
             self.api.logger.warning(
                 "github_notifier.webhook_item_ignored",
                 reason="unsupported_or_invalid_item",
-                event=event_name,
+                github_event=event_name,
                 action=action,
                 source=source,
             )
