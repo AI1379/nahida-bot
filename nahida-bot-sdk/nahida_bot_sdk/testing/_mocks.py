@@ -2,16 +2,33 @@
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine
-from unittest.mock import MagicMock
 from uuid import uuid4
+
+import structlog
 
 from nahida_bot_sdk.api import ManagedTempFile
 from nahida_bot_sdk.chat_address import ChatAddress
 from nahida_bot_sdk.messaging import InboundMessage, OutboundMessage
 from nahida_bot_sdk.plugin import bind_decorated_registrations
+
+# A real structlog bound logger, same class family as production
+# (``make_filtering_bound_logger``), silenced to CRITICAL. Replacing the old
+# MagicMock here means reserved kwargs collide the same way they do in
+# production: ``logger.info("x", event="y")`` raises TypeError at test time
+# instead of 500ing in a prod webhook handler. Levels below CRITICAL are no-ops,
+# so the mock produces no output.
+_silent_stdlib_logger = logging.getLogger("nahida_bot_sdk.testing")
+_silent_stdlib_logger.addHandler(logging.NullHandler())
+_silent_stdlib_logger.propagate = False
+_SILENT_LOG = structlog.wrap_logger(
+    _silent_stdlib_logger,
+    processors=[],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
+)
 
 
 async def load_plugin_for_test(plugin: Any) -> None:
@@ -265,7 +282,7 @@ class MockBotAPI:
 
     @property
     def logger(self) -> Any:
-        return MagicMock()
+        return _SILENT_LOG
 
     # ── Task Management ──────────────────────────────
 
@@ -883,7 +900,7 @@ class ConsoleMockBotAPI:
 
     @property
     def logger(self) -> Any:
-        return MagicMock()
+        return _SILENT_LOG
 
     # ── Task Management ──────────────────────────────
 
