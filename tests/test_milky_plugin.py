@@ -10,8 +10,13 @@ import pytest
 
 from nahida_bot.channels.milky.client import MilkyAPIError, MilkyNetworkError
 from nahida_bot.channels.milky.plugin import MilkyPlugin
-from nahida_bot.channels.milky.segments import OutgoingTextSegment
-from nahida_bot.core.events import MessageObserved, MessageReceived
+from nahida_bot.channels.milky.segments import OutgoingTextSegment, OutgoingVideoSegment
+from nahida_bot.core.events import (
+    MessageObserved,
+    MessageReactionEvent,
+    MessageReceived,
+    PokeEvent,
+)
 from nahida_bot.plugins.base import Attachment, OutboundMessage
 from nahida_bot.plugins.manifest import PluginManifest
 
@@ -446,6 +451,236 @@ async def test_send_message_falls_back_when_rich_segments_unsupported() -> None:
     sent_segments = client.group_messages[0][1]
     assert len(sent_segments) == 1
     assert getattr(sent_segments[0], "text") == "History\n- Alice: hello"
+
+
+async def test_group_nudge_targeting_bot_publishes_poke_event() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "group_nudge",
+            "self_id": 999,
+            "data": {
+                "group_id": 20001,
+                "sender_id": 10001,
+                "receiver_id": 999,
+                "display_action": "戳了戳",
+                "display_suffix": "",
+            },
+        }
+    )
+
+    assert len(api.published_events) == 1
+    event = api.published_events[0]
+    assert isinstance(event, PokeEvent)
+    assert event.payload.scene == "group"
+    assert event.payload.group_id == "20001"
+    assert event.payload.user_id == "10001"
+    assert event.payload.target_user_id == "999"
+    assert event.payload.display_action == "戳了戳"
+    assert event.payload.session_id == "milky:group:20001"
+    assert event.source == "milky"
+
+
+async def test_group_nudge_not_targeting_bot_is_dropped() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "group_nudge",
+            "self_id": 999,
+            "data": {
+                "group_id": 20001,
+                "sender_id": 10001,
+                "receiver_id": 88888,
+            },
+        }
+    )
+
+    assert api.published_events == []
+
+
+async def test_friend_nudge_self_receive_publishes_poke_event() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "friend_nudge",
+            "self_id": 999,
+            "data": {
+                "user_id": 10001,
+                "is_self_send": False,
+                "is_self_receive": True,
+                "display_action": "拍一拍",
+            },
+        }
+    )
+
+    assert len(api.published_events) == 1
+    event = api.published_events[0]
+    assert isinstance(event, PokeEvent)
+    assert event.payload.scene == "friend"
+    assert event.payload.group_id == ""
+    assert event.payload.user_id == "10001"
+    assert event.payload.target_user_id == "999"
+    assert event.payload.session_id == "milky:private:10001"
+
+
+async def test_friend_nudge_self_send_is_dropped() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "friend_nudge",
+            "self_id": 999,
+            "data": {
+                "user_id": 10001,
+                "is_self_send": True,
+                "is_self_receive": False,
+            },
+        }
+    )
+
+    assert api.published_events == []
+
+
+async def test_group_reaction_publishes_reaction_event() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "group_message_reaction",
+            "self_id": 999,
+            "data": {
+                "group_id": 20001,
+                "user_id": 10001,
+                "message_seq": 555,
+                "face_id": "76",
+                "reaction_type": "face",
+                "is_add": True,
+            },
+        }
+    )
+
+    assert len(api.published_events) == 1
+    event = api.published_events[0]
+    assert isinstance(event, MessageReactionEvent)
+    assert event.payload.group_id == "20001"
+    assert event.payload.user_id == "10001"
+    assert event.payload.message_seq == "555"
+    assert event.payload.face_id == "76"
+    assert event.payload.reaction_type == "face"
+    assert event.payload.is_add is True
+    assert event.payload.session_id == "milky:group:20001"
+
+
+async def test_group_reaction_filtered_by_allowed_groups() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(allowed_groups=["99999"]))
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(
+        {
+            "event_type": "group_message_reaction",
+            "self_id": 999,
+            "data": {
+                "group_id": 20001,
+                "user_id": 10001,
+                "message_seq": 555,
+                "face_id": "76",
+                "is_add": True,
+            },
+        }
+    )
+
+    assert api.published_events == []
+
+
+async def test_video_native_send_succeeds() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    result = await plugin.send_message(
+        "group:20001",
+        OutboundMessage(
+            text="",
+            attachments=[Attachment(type="video", path="file:///tmp/a.mp4")],
+        ),
+    )
+
+    assert result == "22"
+    assert len(client.group_messages) == 1
+    segments = client.group_messages[0][1]
+    assert isinstance(segments[0], OutgoingVideoSegment)
+    assert client.group_files == []
+
+
+async def test_video_native_fail_falls_back_to_file_upload_with_text() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    client.fail_next_group_message = True
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    result = await plugin.send_message(
+        "group:20001",
+        OutboundMessage(
+            text="see this",
+            attachments=[Attachment(type="video", path="file:///tmp/a.mp4")],
+        ),
+    )
+
+    assert len(client.group_files) == 1
+    peer_id, upload = client.group_files[0]
+    assert peer_id == 20001
+    assert upload.file_uri == "file:///tmp/a.mp4"
+    assert upload.file_name == "a.mp4"
+    assert len(client.group_messages) == 1
+    text_seg = client.group_messages[0][1][0]
+    assert getattr(text_seg, "text") == "see this"
+    assert result == "22"
+
+
+async def test_video_only_native_fail_falls_back_to_file_upload() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    client.fail_next_group_message = True
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    result = await plugin.send_message(
+        "group:20001",
+        OutboundMessage(
+            text="",
+            attachments=[Attachment(type="video", path="file:///tmp/a.mp4")],
+        ),
+    )
+
+    assert len(client.group_files) == 1
+    assert client.group_files[0][1].file_name == "a.mp4"
+    assert client.group_messages == []
+    assert result == "group-file"
 
 
 async def test_send_message_invalid_target_returns_empty_id() -> None:

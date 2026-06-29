@@ -10,6 +10,7 @@ from nahida_bot.channels.milky.segment_converter import (
     MilkyOutboundConverter,
     message_seq_from_send_result,
     resolve_target,
+    video_segment_to_file_upload,
 )
 from nahida_bot.channels.milky.segments import (
     OutgoingFileUpload,
@@ -168,3 +169,21 @@ def test_resolve_target_rejects_invalid_target() -> None:
         assert "not-a-number" in str(exc)
     else:
         raise AssertionError("resolve_target should reject invalid peer IDs")
+
+
+@pytest.mark.parametrize(
+    "uri, expected_name",
+    [
+        ("file:///tmp/a.mp4", "a.mp4"),
+        ("https://host/path/clip.mp4?token=x", "clip.mp4"),
+        ("file:///tmp/noext", "video.mp4"),
+        ("file:///tmp/../hidden", "video.mp4"),
+    ],
+)
+def test_video_segment_to_file_upload_derives_filename(
+    uri: str, expected_name: str
+) -> None:
+    upload = video_segment_to_file_upload(OutgoingVideoSegment(uri=uri))
+
+    assert upload.file_uri == uri
+    assert upload.file_name == expected_name

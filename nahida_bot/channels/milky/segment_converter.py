@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import unquote, urlparse
 
 from nahida_bot.channels.milky.config import MilkyPluginConfig
 from nahida_bot.channels.milky.segments import (
@@ -154,6 +156,51 @@ def has_rich_segments(segments: list[OutgoingSegment]) -> bool:
         not isinstance(segment, (OutgoingTextSegment, OutgoingReplySegment))
         for segment in segments
     )
+
+
+def split_video_segments(
+    segments: list[OutgoingSegment],
+) -> tuple[list[OutgoingVideoSegment], list[OutgoingSegment]]:
+    """Partition segments into video segments and everything else."""
+    videos: list[OutgoingVideoSegment] = []
+    others: list[OutgoingSegment] = []
+    for segment in segments:
+        if isinstance(segment, OutgoingVideoSegment):
+            videos.append(segment)
+        else:
+            others.append(segment)
+    return videos, others
+
+
+def video_segment_to_file_upload(segment: OutgoingVideoSegment) -> OutgoingFileUpload:
+    """Convert a video segment into a file upload.
+
+    Used as the fallback when a native video message segment cannot be sent —
+    Milky's ``upload_*_file`` API reliably delivers videos as files even when
+    the inline video segment path fails.
+    """
+    return OutgoingFileUpload(
+        file_uri=segment.uri,
+        file_name=_filename_from_video_uri(segment.uri),
+    )
+
+
+_FILENAME_INVALID_CHARS = re.compile(r'[\x00-\x1f<>:"|?*]')
+
+
+def _filename_from_video_uri(uri: str) -> str:
+    """Derive a safe file name from a video URI, defaulting to ``video.mp4``."""
+    parsed = urlparse(uri)
+    if parsed.scheme in {"http", "https", "file"}:
+        candidate = unquote(parsed.path).rsplit("/", 1)[-1]
+    else:
+        # base64:// or bare paths — best-effort trailing segment, else default.
+        candidate = uri.replace("\\", "/").rsplit("/", 1)[-1]
+    candidate = candidate.split("?", 1)[0].split("#", 1)[0].strip()
+    candidate = _FILENAME_INVALID_CHARS.sub("_", candidate)
+    if not candidate or candidate in {".", ".."} or "." not in candidate:
+        return "video.mp4"
+    return candidate
 
 
 def _attachment_uri(attachment: Attachment) -> str:

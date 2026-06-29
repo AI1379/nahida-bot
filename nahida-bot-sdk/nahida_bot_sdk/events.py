@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
 from nahida_bot_sdk.chat_address import ChatAddress
@@ -151,6 +151,59 @@ class MessageSending(Event[MessagePayload]):
 @dataclass(slots=True, frozen=True)
 class MessageSent(Event[MessagePayload]):
     """Raised after a message has been successfully sent."""
+
+
+# ── Interaction Events ────────────────────────────────────────
+
+
+@dataclass(slots=True, frozen=True)
+class PokePayload:
+    """Payload for inbound poke (戳一戳) events.
+
+    Emitted for Milky ``friend_nudge`` / ``group_nudge`` events that target the
+    bot. No agent response is wired by default — subscribers opt in.
+    """
+
+    session_id: str
+    chat_address: ChatAddress
+    scene: Literal["friend", "group"]
+    group_id: str  # "" for the friend scene
+    user_id: str  # the poker (sender)
+    target_user_id: str  # the receiver; for friend self-receive this is the bot
+    display_action: str
+    display_suffix: str
+    raw: dict[str, Any]  # preserves display_action_img_url and other fields
+
+
+@dataclass(slots=True, frozen=True)
+class PokeEvent(Event[PokePayload]):
+    """Raised when the bot is poked (group) or receives a friend nudge."""
+
+
+@dataclass(slots=True, frozen=True)
+class MessageReactionPayload:
+    """Payload for inbound group emoji-reply (表情回复) events.
+
+    Emitted for Milky ``group_message_reaction`` events. Note: there is no
+    cheap filter for "reactions on the bot's own messages" — that would require
+    tracking every sent message_seq — so all reactions in allowed groups are
+    captured and a future subscriber correlates via ``message_seq``.
+    """
+
+    session_id: str
+    chat_address: ChatAddress
+    group_id: str
+    user_id: str  # the reactor
+    message_seq: str
+    face_id: str
+    reaction_type: str  # "face" | "emoji" (Milky >=1.2); "" when absent
+    is_add: bool
+    raw: dict[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
+class MessageReactionEvent(Event[MessageReactionPayload]):
+    """Raised when a group message receives an emoji reaction."""
 
 
 # ── Agent Run Events ──────────────────────────────────────────

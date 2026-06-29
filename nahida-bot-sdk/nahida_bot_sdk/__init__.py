@@ -84,6 +84,8 @@ from nahida_bot_sdk.events import (  # noqa: F401
     Event,
     MessageObserved,
     MessagePayload,
+    MessageReactionEvent,
+    MessageReactionPayload,
     MessageReceived,
     MessageSending,
     MessageSent,
@@ -94,6 +96,8 @@ from nahida_bot_sdk.events import (  # noqa: F401
     PluginLoaded,
     PluginPayload,
     PluginUnloaded,
+    PokeEvent,
+    PokePayload,
 )
 
 # Commands
@@ -182,6 +186,8 @@ __all__ = [
     "Event",
     "MessageObserved",
     "MessagePayload",
+    "MessageReactionEvent",
+    "MessageReactionPayload",
     "MessageReceived",
     "MessageSending",
     "MessageSent",
@@ -192,6 +198,8 @@ __all__ = [
     "PluginLoaded",
     "PluginPayload",
     "PluginUnloaded",
+    "PokeEvent",
+    "PokePayload",
     # Commands
     "CommandHandlerResult",
     "CommandInfo",

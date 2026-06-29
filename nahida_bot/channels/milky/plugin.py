@@ -30,10 +30,20 @@ from nahida_bot.channels.milky.segment_converter import (
     has_rich_segments,
     message_seq_from_send_result,
     resolve_target,
+    split_video_segments,
+    video_segment_to_file_upload,
 )
 from nahida_bot.channels.milky.segments import OutgoingTextSegment
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
+from nahida_bot.core.events import (
+    MessageObserved,
+    MessagePayload,
+    MessageReactionEvent,
+    MessageReactionPayload,
+    MessageReceived,
+    PokeEvent,
+    PokePayload,
+)
 from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.message_context import (
     chat_context_from_values,
@@ -147,6 +157,12 @@ class MilkyPlugin(Plugin):
         event_type = str(event.get("event_type") or "")
         if event_type in {"friend_file_upload", "group_file_upload"}:
             await self._handle_file_upload_event(event_type, event)
+            return
+        if event_type in {"friend_nudge", "group_nudge"}:
+            await self._handle_nudge_event(event_type, event)
+            return
+        if event_type == "group_message_reaction":
+            await self._handle_reaction_event(event)
             return
 
         if event_type != "message_receive":
@@ -372,6 +388,168 @@ class MilkyPlugin(Plugin):
             **_inbound_log_fields(inbound),
         )
 
+    async def _handle_nudge_event(self, event_type: str, event: dict[str, Any]) -> None:
+        """Publish a PokeEvent for a friend/group nudge targeting the bot.
+
+        Only nudges that target the bot are captured: group nudges where
+        ``receiver_id == self_id`` and friend nudges where ``is_self_receive``
+        is true. No agent response is triggered; subscribers opt in.
+        """
+        data = as_mapping(event.get("data"))
+        self_id = self._self_id or coerce_int(event.get("self_id")) or 0
+
+        group_id = ""
+        is_group = event_type == "group_nudge"
+        if is_group:
+            group_id = coerce_str(data.get("group_id"))
+            sender_id = coerce_str(data.get("sender_id"))
+            receiver_id = coerce_str(data.get("receiver_id"))
+            if not group_id or not receiver_id:
+                logger.debug(
+                    "milky.nudge_event_invalid",
+                    event_type=event_type,
+                    channel=self.channel_id,
+                )
+                return
+            if str(receiver_id) != str(self_id):
+                logger.debug(
+                    "milky.nudge_not_targeted",
+                    channel=self.channel_id,
+                    group_id=group_id,
+                    receiver_id=receiver_id,
+                    self_id=self_id,
+                )
+                return
+            if (
+                self._config.allowed_groups
+                and group_id not in self._config.allowed_groups
+            ):
+                logger.debug(
+                    "milky.nudge_not_allowed",
+                    channel=self.channel_id,
+                    group_id=group_id,
+                )
+                return
+            chat_address = ChatAddress(
+                channel="milky", target_type="group", target_id=group_id
+            )
+            user_id = sender_id
+            target_user_id = receiver_id
+        else:
+            user_id = coerce_str(data.get("user_id"))
+            if not user_id:
+                logger.debug(
+                    "milky.nudge_event_invalid",
+                    event_type=event_type,
+                    channel=self.channel_id,
+                )
+                return
+            if not bool(data.get("is_self_receive")):
+                # ``is_self_send`` true means the bot poked someone — outbound.
+                logger.debug(
+                    "milky.friend_nudge_not_self_receive",
+                    channel=self.channel_id,
+                    user_id=user_id,
+                )
+                return
+            if (
+                self._config.allowed_friends
+                and user_id not in self._config.allowed_friends
+            ):
+                logger.debug(
+                    "milky.nudge_not_allowed",
+                    channel=self.channel_id,
+                    user_id=user_id,
+                )
+                return
+            chat_address = ChatAddress(
+                channel="milky", target_type="private", target_id=user_id
+            )
+            target_user_id = str(self_id) if self_id else user_id
+
+        session_id = MessageRouter.make_session_id(chat_address)
+        payload = PokePayload(
+            session_id=session_id,
+            chat_address=chat_address,
+            scene="group" if is_group else "friend",
+            group_id=group_id,
+            user_id=user_id,
+            target_user_id=target_user_id,
+            display_action=coerce_str(data.get("display_action")),
+            display_suffix=coerce_str(data.get("display_suffix")),
+            raw=dict(data),
+        )
+        logger.debug(
+            "milky.nudge_publish_start",
+            channel=self.channel_id,
+            scene=payload.scene,
+            session_id=session_id,
+            user_id=user_id,
+        )
+        await self.api.publish_event(PokeEvent(payload=payload, source="milky"))
+        logger.debug(
+            "milky.nudge_publish_done",
+            channel=self.channel_id,
+            session_id=session_id,
+        )
+
+    async def _handle_reaction_event(self, event: dict[str, Any]) -> None:
+        """Publish a MessageReactionEvent for a group emoji-reply.
+
+        NOTE: there is no cheap filter for reactions on the bot's OWN messages
+        (that would require tracking every sent message_seq). All reactions in
+        allowed groups are captured; a future subscriber correlates via
+        ``message_seq`` against its own sent-message log.
+        """
+        data = as_mapping(event.get("data"))
+        group_id = coerce_str(data.get("group_id"))
+        user_id = coerce_str(data.get("user_id"))
+        message_seq = coerce_str(data.get("message_seq"))
+        if not group_id or not user_id or not message_seq:
+            logger.debug(
+                "milky.reaction_event_invalid",
+                channel=self.channel_id,
+            )
+            return
+        if self._config.allowed_groups and group_id not in self._config.allowed_groups:
+            logger.debug(
+                "milky.reaction_not_allowed",
+                channel=self.channel_id,
+                group_id=group_id,
+            )
+            return
+        chat_address = ChatAddress(
+            channel="milky", target_type="group", target_id=group_id
+        )
+        session_id = MessageRouter.make_session_id(chat_address)
+        payload = MessageReactionPayload(
+            session_id=session_id,
+            chat_address=chat_address,
+            group_id=group_id,
+            user_id=user_id,
+            message_seq=message_seq,
+            face_id=coerce_str(data.get("face_id")),
+            reaction_type=coerce_str(data.get("reaction_type")),
+            is_add=bool(data.get("is_add")),
+            raw=dict(data),
+        )
+        logger.debug(
+            "milky.reaction_publish_start",
+            channel=self.channel_id,
+            group_id=group_id,
+            message_seq=message_seq,
+            user_id=user_id,
+        )
+        await self.api.publish_event(
+            MessageReactionEvent(payload=payload, source="milky")
+        )
+        logger.debug(
+            "milky.reaction_publish_done",
+            channel=self.channel_id,
+            group_id=group_id,
+            message_seq=message_seq,
+        )
+
     def _file_upload_to_inbound(
         self,
         event_type: str,
@@ -559,26 +737,62 @@ class MilkyPlugin(Plugin):
         last_id = ""
 
         if segments:
+            result: dict[str, Any] | None = None
             try:
                 result = await self._send_segments(client, scene, peer_id, segments)
             except MilkyClientError as exc:
-                if not has_rich_segments(segments):
-                    raise
-                logger.warning(
-                    "milky.rich_message_send_failed",
-                    target=target,
-                    message_scene=scene,
-                    peer_id=peer_id,
-                    error=str(exc),
-                    channel=self.channel_id,
-                )
-                fallback_text = fallback_text_for_segments(segments)
-                if not fallback_text:
-                    return ""
-                result = await self._send_segments(
-                    client, scene, peer_id, [OutgoingTextSegment(fallback_text)]
-                )
-            last_id = message_seq_from_send_result(result)
+                video_segments, non_video = split_video_segments(segments)
+                if not video_segments:
+                    # No video to rescue — keep the legacy text-placeholder
+                    # fallback for image/record/forward failures.
+                    if not has_rich_segments(segments):
+                        raise
+                    logger.warning(
+                        "milky.rich_message_send_failed",
+                        target=target,
+                        message_scene=scene,
+                        peer_id=peer_id,
+                        error=str(exc),
+                        channel=self.channel_id,
+                    )
+                    fallback_text = fallback_text_for_segments(segments)
+                    if not fallback_text:
+                        return ""
+                    result = await self._send_segments(
+                        client, scene, peer_id, [OutgoingTextSegment(fallback_text)]
+                    )
+                else:
+                    # Native video segment send failed — deliver the videos as
+                    # files (the verified-working path) and resend any
+                    # remaining text/image fallback as a separate message.
+                    logger.warning(
+                        "milky.video_send_failed_fallback_to_file",
+                        target=target,
+                        message_scene=scene,
+                        peer_id=peer_id,
+                        video_count=len(video_segments),
+                        error=str(exc),
+                        channel=self.channel_id,
+                    )
+                    for vseg in video_segments:
+                        upload = video_segment_to_file_upload(vseg)
+                        if scene == "group":
+                            vresult = await client.upload_group_file(peer_id, upload)
+                        else:
+                            vresult = await client.upload_private_file(peer_id, upload)
+                        last_id = message_seq_from_send_result(vresult) or last_id
+                    fallback_text = fallback_text_for_segments(non_video)
+                    if fallback_text:
+                        tres = await self._send_segments(
+                            client,
+                            scene,
+                            peer_id,
+                            [OutgoingTextSegment(fallback_text)],
+                        )
+                        last_id = message_seq_from_send_result(tres) or last_id
+                    # ``result`` stays None — ``last_id`` already updated above.
+            if result is not None:
+                last_id = message_seq_from_send_result(result) or last_id
 
         for upload in file_uploads:
             if scene == "group":

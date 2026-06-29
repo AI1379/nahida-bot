@@ -40,6 +40,8 @@ from nahida_bot_sdk.events import (  # noqa: F401
     Event,
     MessageObserved,
     MessagePayload,
+    MessageReactionEvent,
+    MessageReactionPayload,
     MessageReceived,
     MessageSending,
     MessageSent,
@@ -50,6 +52,8 @@ from nahida_bot_sdk.events import (  # noqa: F401
     PluginLoaded,
     PluginPayload,
     PluginUnloaded,
+    PokeEvent,
+    PokePayload,
 )
 
 if TYPE_CHECKING:
