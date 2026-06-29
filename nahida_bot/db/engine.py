@@ -126,7 +126,7 @@ _SCHEMA_MIGRATIONS = [
         status TEXT NOT NULL DEFAULT 'active',
         confidence REAL NOT NULL DEFAULT 1.0,
         importance REAL NOT NULL DEFAULT 0.5,
-        sensitivity TEXT NOT NULL DEFAULT 'private',
+        sensitivity TEXT NOT NULL DEFAULT 'public',
         source TEXT NOT NULL DEFAULT 'plugin',
         evidence_json TEXT,
         metadata_json TEXT,
@@ -529,6 +529,7 @@ class DatabaseEngine:
         # Phase-3b memory-tree columns are added here (idempotent) rather than
         # in migration 017 — see the comment on that migration entry.
         await self._ensure_memory_tree_columns()
+        await self._ensure_memory_sensitivity_source_column()
         await self._ensure_agent_runs_transcript_column()
 
     async def _ensure_memory_tree_columns(self) -> None:
@@ -556,6 +557,30 @@ class DatabaseEngine:
             await self.db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_items_tree "
                 "ON memory_items(parent_id, root_id)"
+            )
+            await self.db.commit()
+
+    async def _ensure_memory_sensitivity_source_column(self) -> None:
+        """Idempotently add ``sensitivity_source`` to ``memory_items``.
+
+        Tracks the provenance of ``sensitivity`` so the soft-scope backfill
+        script can tell the legacy system default (``private``, written by old
+        code that never classified sensitivity) apart from explicit/dream
+        restrictions. Mirrors :meth:`_ensure_memory_tree_columns`
+        (PRAGMA-guarded, additive).
+
+        Legacy rows get ``sensitivity_source='default'``; the backfill script
+        reinterprets those as the new soft default ``public``. This method does
+        NOT mutate ``sensitivity`` — existing data is untouched at boot.
+        """
+        rows = await self.fetch_all("PRAGMA table_info(memory_items)")
+        existing = {str(row["name"]) for row in rows}
+        if "sensitivity_source" in existing:
+            return
+        async with self.write_lock:
+            await self.db.execute(
+                "ALTER TABLE memory_items ADD COLUMN sensitivity_source "
+                "TEXT NOT NULL DEFAULT 'default'"
             )
             await self.db.commit()
 

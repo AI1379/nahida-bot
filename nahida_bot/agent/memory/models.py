@@ -41,7 +41,14 @@ class MemoryItem:
     status: str = "active"
     confidence: float = 1.0
     importance: float = 0.5
-    sensitivity: str = "private"
+    sensitivity: str = "public"
+    # Provenance of the sensitivity value: "default" (system default, soft /
+    # recallable), "dream" (consolidation classified it restricted), "explicit"
+    # (chat partner requested restriction). The soft-scope retrieval filter
+    # excludes restricted items (private/secret_like) from cross-scope recall;
+    # only dream/explicit items are truly restricted, so the backfill script
+    # reinterprets legacy "default private" rows as public.
+    sensitivity_source: str = "default"
     source: str = "plugin"
     evidence: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)

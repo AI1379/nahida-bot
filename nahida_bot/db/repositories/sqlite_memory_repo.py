@@ -355,6 +355,7 @@ class SQLiteMemoryRepository:
         confidence: float,
         importance: float,
         sensitivity: str,
+        sensitivity_source: str = "default",
         source: str,
         evidence: dict[str, Any] | None,
         metadata: dict[str, Any] | None,
@@ -374,10 +375,10 @@ class SQLiteMemoryRepository:
             await self._engine.execute(
                 "INSERT INTO memory_items "
                 "(item_id, scope_type, scope_id, kind, title, content, status, "
-                "confidence, importance, sensitivity, source, evidence_json, "
-                "metadata_json, created_at, updated_at, "
+                "confidence, importance, sensitivity, sensitivity_source, source, "
+                "evidence_json, metadata_json, created_at, updated_at, "
                 "parent_id, root_id, node_type, path, source_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item_id,
                     scope_type,
@@ -389,6 +390,7 @@ class SQLiteMemoryRepository:
                     confidence,
                     importance,
                     sensitivity,
+                    sensitivity_source,
                     source,
                     evidence_json,
                     metadata_json,
@@ -422,7 +424,7 @@ class SQLiteMemoryRepository:
         rows = await self._engine.fetch_all(
             "SELECT mi.item_id, mi.scope_type, mi.scope_id, mi.kind, mi.title, "
             "mi.content, mi.status, mi.confidence, mi.importance, mi.sensitivity, "
-            "mi.source, mi.evidence_json, mi.metadata_json, mi.created_at, "
+            "mi.sensitivity_source, mi.source, mi.evidence_json, mi.metadata_json, mi.created_at, "
             "mi.updated_at, bm25(memory_item_fts) AS score "
             "FROM memory_item_fts "
             "JOIN memory_items mi ON mi.item_id = memory_item_fts.item_id "
@@ -446,7 +448,7 @@ class SQLiteMemoryRepository:
         """List recent active durable memory items for a scope."""
         rows = await self._engine.fetch_all(
             "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
-            "confidence, importance, sensitivity, source, evidence_json, "
+            "confidence, importance, sensitivity, sensitivity_source, source, evidence_json, "
             "metadata_json, created_at, updated_at, 0.0 AS score "
             "FROM memory_items "
             "WHERE status = 'active' AND scope_type = ? AND scope_id = ? "
@@ -467,7 +469,7 @@ class SQLiteMemoryRepository:
         """
         rows = await self._engine.fetch_all(
             "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
-            "confidence, importance, sensitivity, source, evidence_json, "
+            "confidence, importance, sensitivity, sensitivity_source, source, evidence_json, "
             "metadata_json, created_at, updated_at, 0.0 AS score "
             "FROM memory_items "
             "WHERE status = 'active' "
@@ -498,7 +500,7 @@ class SQLiteMemoryRepository:
         placeholders = ",".join("?" for _ in item_ids)
         rows = await self._engine.fetch_all(
             "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
-            "confidence, importance, sensitivity, source, evidence_json, "
+            "confidence, importance, sensitivity, sensitivity_source, source, evidence_json, "
             "metadata_json, created_at, updated_at, 0.0 AS score "
             f"FROM memory_items WHERE status = 'active' AND item_id IN ({placeholders})",
             tuple(item_ids),
