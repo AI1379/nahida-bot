@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, AbstractSet, Any, cast
 
 import structlog
 
-from nahida_bot.agent.context import ContextMessage, ContextPart
+from nahida_bot.agent.context import (
+    ContextMessage,
+    ContextPart,
+    truncate_messages_to_window,
+)
 from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
@@ -1175,8 +1179,7 @@ class SessionRunner:
                 )
             )
 
-        if len(messages) > self._max_history_turns:
-            messages = messages[-self._max_history_turns :]
+        messages = truncate_messages_to_window(messages, self._max_history_turns)
 
         # Apply media context policy to history
         if self._multimodal_config is not None and any(

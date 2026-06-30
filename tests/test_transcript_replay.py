@@ -11,8 +11,10 @@ from typing import Any
 
 import pytest
 
-from nahida_bot.agent.context import ContextBuilder, ContextMessage
+from nahida_bot.agent.context import ContextMessage, tool_transcript_groups
+from nahida_bot.agent.context import truncate_messages_to_window
 from nahida_bot.agent.providers import OpenAICompatibleProvider
+from nahida_bot.agent.providers._tool_protocol import sanitize_tool_transcript
 from nahida_bot.agent.providers.anthropic import AnthropicProvider
 from nahida_bot.agent.providers.base import ModelCapabilities
 from nahida_bot.agent.runtime.models import AgentRunContext
@@ -355,7 +357,7 @@ async def test_projected_transcript_forms_atomic_group(store) -> None:
         "sess_1", capabilities=ModelCapabilities(tool_calling=True)
     )
 
-    groups = ContextBuilder()._tool_transcript_groups(out)
+    groups = tool_transcript_groups(out)
     # The assistant(tool_calls) + its 2 tool results must be a single group so
     # _sliding_window_with_suffix cannot split them across a budget boundary.
     group_sizes = [len(g) for g in groups]
@@ -399,3 +401,130 @@ def test_message_to_dict_round_trip() -> None:
     assert decoded.role == msg.role
     assert decoded.content == msg.content
     assert decoded.metadata == msg.metadata
+
+
+# ── shared tool-transcript sanitization + truncation ────────────────────
+#
+# Regression coverage for the minimax ``provider_bad_response`` 400: an orphan
+# tool_result (its tool_use dropped by a window cut) must never reach either
+# provider family's wire format.
+
+
+def test_sanitize_drops_orphan_tool_result() -> None:
+    messages = [_tool("exec", "orphan"), _assistant("hi")]
+    sanitized = sanitize_tool_transcript(messages, provider_name="test")
+    assert [m.role for m in sanitized] == ["assistant"]
+
+
+def test_sanitize_drops_incomplete_group() -> None:
+    # Assistant declared 3 calls but only 2 results follow → whole group drops.
+    messages = [
+        _assistant(
+            "go",
+            ("exec", "c1", {}),
+            ("exec", "c2", {}),
+            ("exec", "c3", {}),
+        ),
+        _tool("exec", "c1"),
+        _tool("exec", "c2"),
+    ]
+    sanitized = sanitize_tool_transcript(messages, provider_name="test")
+    assert sanitized == []
+
+
+def test_sanitize_keeps_complete_group() -> None:
+    messages = [
+        _assistant(
+            "go",
+            ("exec", "c1", {}),
+            ("exec", "c2", {}),
+            ("exec", "c3", {}),
+        ),
+        _tool("exec", "c1"),
+        _tool("exec", "c2"),
+        _tool("exec", "c3"),
+    ]
+    sanitized = sanitize_tool_transcript(messages, provider_name="test")
+    assert [m.role for m in sanitized] == ["assistant", "tool", "tool", "tool"]
+    # Order preserved: assistant then its results in declared order.
+    assert sanitized[0].metadata["tool_calls"][0]["id"] == "c1"
+
+
+def test_anthropic_serialize_never_emits_empty_tool_use_id() -> None:
+    # An orphan tool_result fed straight to the Anthropic serializer must be
+    # dropped, never emitted with an empty tool_use_id (that triggers 2013).
+    messages = [
+        _tool("exec", "orphan"),
+        _assistant("hi"),
+    ]
+    _, payload = AnthropicProvider(
+        base_url="https://x", api_key="x", model="claude-test"
+    )._serialize_messages_anthropic(messages)
+    tool_use_ids = {
+        b.get("tool_use_id")
+        for p in payload
+        for b in (p.get("content") if isinstance(p.get("content"), list) else [])
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    }
+    assert "" not in tool_use_ids
+    assert tool_use_ids == set()  # the orphan was dropped entirely
+
+
+@pytest.mark.asyncio
+async def test_truncated_window_then_serialize_has_no_orphan(store) -> None:
+    # Full-path regression: a multi-run history where a 6-parallel-call
+    # assistant turn sits at the window boundary. After pair-aware truncation
+    # + provider sanitization, neither provider sees an orphan tool id.
+    multi_call_turn = [
+        _assistant(
+            "spawning",
+            *(
+                ("agent_spawn", f"call_function_tc44cz7oj9vn_{n}", {})
+                for n in range(1, 7)
+            ),
+        )
+    ] + [_tool("agent_spawn", f"call_function_tc44cz7oj9vn_{n}") for n in range(1, 7)]
+    transcript = [_user("go"), *multi_call_turn, _assistant("done")]
+    await _seed(
+        store, "run_multi", started_at="2026-06-29T00:00:00Z", messages=transcript
+    )
+
+    replay = await TranscriptProjector(store).project(
+        "sess_1", capabilities=ModelCapabilities(tool_calling=True)
+    )
+    # Pad with filler so the window cut lands inside the multi-call turn.
+    padded = [_user(f"filler {i}") for i in range(210)] + replay
+    window = truncate_messages_to_window(padded, 200)
+
+    # Every tool result in the window is answerable by an assistant in it.
+    declared: set[str] = set()
+    for m in window:
+        if m.role == "assistant" and isinstance(m.metadata, dict):
+            raw = m.metadata.get("tool_calls")
+            if isinstance(raw, list):
+                for tc in raw:
+                    if isinstance(tc, dict) and isinstance(tc.get("id"), str):
+                        declared.add(tc["id"])
+    for m in window:
+        if m.role == "tool" and isinstance(m.metadata, dict):
+            assert m.metadata.get("tool_call_id") in declared
+
+    # And both provider wire formats stay orphan-free.
+    openai_payload = OpenAICompatibleProvider(
+        base_url="https://x", api_key="x", model="m"
+    ).serialize_messages(window)
+    openai_call_ids = {
+        p.get("tool_call_id") for p in openai_payload if p.get("role") == "tool"
+    }
+    assert "" not in openai_call_ids
+
+    _, anthropic_payload = AnthropicProvider(
+        base_url="https://x", api_key="x", model="claude-test"
+    )._serialize_messages_anthropic(window)
+    anthropic_tool_use_ids = {
+        b.get("tool_use_id")
+        for p in anthropic_payload
+        for b in (p.get("content") if isinstance(p.get("content"), list) else [])
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    }
+    assert "" not in anthropic_tool_use_ids

@@ -77,6 +77,167 @@ class ContextMessage:
     parts: list[ContextPart] = field(default_factory=list)
 
 
+# ── tool-transcript protocol helpers (module level) ────────────────────
+#
+# These classify assistant ``tool_use`` messages and their paired ``tool``
+# results so that any caller that truncates or serializes a message list can
+# keep each call/result pair atomic. They are shared by:
+#   - ``ContextBuilder`` token-budget trimming (keeps pairs atomic)
+#   - ``truncate_messages_to_window`` (turn-count windowing, see below)
+#   - ``providers._tool_protocol.sanitize_tool_transcript`` (wire-format safety)
+#
+# Keeping them at module level (instead of on ``ContextBuilder``) means the
+# truncation/sanitization paths do not need to construct a builder to use them.
+
+
+def has_assistant_tool_calls(message: ContextMessage) -> bool:
+    """True if ``message`` is an assistant turn that emitted ≥1 tool call."""
+    if message.role != "assistant" or message.metadata is None:
+        return False
+    raw_tool_calls = message.metadata.get("tool_calls")
+    return isinstance(raw_tool_calls, list) and bool(raw_tool_calls)
+
+
+def assistant_tool_call_ids(message: ContextMessage) -> set[str]:
+    """Return the set of non-empty ``id`` values declared by an assistant turn.
+
+    Empty for non-assistant messages or messages without ``tool_calls``. Safe to
+    call on any message (the sanitizer feeds it every message in a list).
+    """
+    if not has_assistant_tool_calls(message):
+        return set()
+    metadata = message.metadata
+    assert metadata is not None  # guaranteed by has_assistant_tool_calls
+    raw_tool_calls = metadata.get("tool_calls")
+    assert isinstance(raw_tool_calls, list)  # guaranteed non-empty by helper
+    ids: set[str] = set()
+    for call in raw_tool_calls:
+        if isinstance(call, dict):
+            call_id = call.get("id")
+            if isinstance(call_id, str) and call_id:
+                ids.add(call_id)
+    return ids
+
+
+def tool_message_call_id(message: ContextMessage) -> str:
+    """Return the ``tool_call_id`` a tool-result message answers, else ``""``."""
+    if message.metadata is None:
+        return ""
+    raw_id = message.metadata.get("tool_call_id")
+    return raw_id if isinstance(raw_id, str) and raw_id else ""
+
+
+def tool_transcript_groups(
+    messages: list[ContextMessage],
+) -> list[list[ContextMessage]]:
+    """Group messages into atomic units that must never be split.
+
+    Each assistant turn that emits tool calls is grouped with the maximal
+    contiguous run of ``role == "tool"`` messages that immediately follows it.
+    Every other message forms its own single-element group.
+
+    Invariant: a group is either a single non-tool-call message or
+    ``[assistant-with-calls, tool, tool, …]``. An orphan ``tool`` message
+    (no preceding assistant-with-calls) becomes its own singleton group, which
+    is what lets ``truncate_messages_to_window`` detect and drop it.
+    """
+    groups: list[list[ContextMessage]] = []
+    index = 0
+    total = len(messages)
+    while index < total:
+        message = messages[index]
+        if not has_assistant_tool_calls(message):
+            groups.append([message])
+            index += 1
+            continue
+
+        group = [message]
+        index += 1
+        while index < total and messages[index].role == "tool":
+            group.append(messages[index])
+            index += 1
+        groups.append(group)
+
+    return groups
+
+
+def truncate_messages_to_window(
+    messages: list[ContextMessage],
+    max_messages: int,
+) -> list[ContextMessage]:
+    """Window ``messages`` to at most ``max_messages`` without splitting pairs.
+
+    Replacement for the blind ``messages[-max_messages:]`` slice. Messages are
+    grouped via :func:`tool_transcript_groups` and a newest-first window of
+    *complete* groups is kept so that no ``tool_result`` survives without its
+    originating assistant ``tool_use`` in the window.
+
+    Rules:
+    - The newest group is always retained (it is the active turn); even if a
+      single group alone exceeds ``max_messages`` it is kept whole rather than
+      split — token limits are enforced downstream by ``ContextBuilder``.
+    - Older groups are added newest-first while the running total stays within
+      ``max_messages``; the first group that would overflow is dropped along
+      with everything older.
+    - As a belt-and-suspenders final step, any residual ``tool`` message whose
+      ``tool_call_id`` is not declared by an assistant in the window is dropped
+      (defends against malformed input).
+
+    For histories with no tool calls this degenerates exactly to
+    ``messages[-max_messages:]``.
+
+    Note: this deliberately does NOT call ``transcript.repair_pairs`` — that
+    function assumes single-run structure and would synthesize spurious
+    interrupted results for calls whose results legitimately sit just outside
+    the window. Post-truncation cleanup is the job of
+    ``providers._tool_protocol.sanitize_tool_transcript`` (drop-only).
+    """
+    if max_messages <= 0 or not messages:
+        return []
+
+    groups = tool_transcript_groups(messages)
+
+    kept_reversed: list[list[ContextMessage]] = []
+    running = 0
+    for group in reversed(groups):
+        group_size = len(group)
+        # The newest group (first iteration) is always kept, even if it alone
+        # exceeds max_messages — dropping the active turn would be worse than a
+        # small overrun (token budget is enforced downstream).
+        if running == 0:
+            kept_reversed.append(group)
+            running = group_size
+            continue
+        if running + group_size <= max_messages:
+            kept_reversed.append(group)
+            running += group_size
+        # else: this group would overflow — drop it and stop (older groups are
+        # even larger-cumulatively, so they're dropped too by not continuing).
+
+    kept = [message for group in reversed(kept_reversed) for message in group]
+
+    # Belt-and-suspenders: drop any orphan tool result whose call was not kept.
+    declared: set[str] = set()
+    for message in kept:
+        if has_assistant_tool_calls(message):
+            declared |= assistant_tool_call_ids(message)
+    cleaned: list[ContextMessage] = []
+    dropped_orphans = 0
+    for message in kept:
+        if message.role == "tool" and tool_message_call_id(message) not in declared:
+            dropped_orphans += 1
+            continue
+        cleaned.append(message)
+    if dropped_orphans:
+        logger.warning(
+            "context.truncated_window_dropped_orphan_tool_results",
+            dropped_orphan_tool_result_count=dropped_orphans,
+            window_size=len(cleaned),
+            max_messages=max_messages,
+        )
+    return cleaned
+
+
 @dataclass(slots=True, frozen=True)
 class SkillInfo:
     """Lightweight metadata for a workspace skill (frontmatter only, no body)."""
@@ -728,14 +889,14 @@ class ContextBuilder:
                 index
                 for index, message in enumerate(messages)
                 if message.role == "assistant"
-                and self._has_assistant_tool_calls(message)
+                and has_assistant_tool_calls(message)
                 and message.content
             ],
             [
                 index
                 for index, message in enumerate(messages)
                 if message.role == "assistant"
-                and not self._has_assistant_tool_calls(message)
+                and not has_assistant_tool_calls(message)
                 and message.content
             ],
             [
@@ -780,7 +941,7 @@ class ContextBuilder:
         token_limit: int | None = None,
     ) -> tuple[list[ContextMessage], list[ContextMessage]]:
         """Apply newest-first retention with a required suffix already reserved."""
-        message_groups = self._tool_transcript_groups(dynamic_messages)
+        message_groups = tool_transcript_groups(dynamic_messages)
         kept_groups_reversed: list[list[ContextMessage]] = []
         dropped_groups_reversed: list[list[ContextMessage]] = []
         limit = self.budget.usable_tokens if token_limit is None else token_limit
@@ -801,34 +962,6 @@ class ContextBuilder:
             message for group in reversed(dropped_groups_reversed) for message in group
         ]
         return kept, dropped
-
-    def _tool_transcript_groups(
-        self,
-        messages: list[ContextMessage],
-    ) -> list[list[ContextMessage]]:
-        groups: list[list[ContextMessage]] = []
-        index = 0
-        while index < len(messages):
-            message = messages[index]
-            if not self._has_assistant_tool_calls(message):
-                groups.append([message])
-                index += 1
-                continue
-
-            group = [message]
-            index += 1
-            while index < len(messages) and messages[index].role == "tool":
-                group.append(messages[index])
-                index += 1
-            groups.append(group)
-
-        return groups
-
-    def _has_assistant_tool_calls(self, message: ContextMessage) -> bool:
-        if message.role != "assistant" or message.metadata is None:
-            return False
-        raw_tool_calls = message.metadata.get("tool_calls")
-        return isinstance(raw_tool_calls, list) and bool(raw_tool_calls)
 
     def _build_summary_message(
         self, dropped_messages: list[ContextMessage]
@@ -901,7 +1034,7 @@ class ContextBuilder:
         """Try to include summary by dropping oldest retained dynamic messages."""
         suffix = list(suffix_messages or [])
         limit = self.budget.usable_tokens if token_limit is None else token_limit
-        candidate_groups = self._tool_transcript_groups(windowed_dynamic)
+        candidate_groups = tool_transcript_groups(windowed_dynamic)
         while True:
             candidate_dynamic = [
                 message for group in candidate_groups for message in group
@@ -922,7 +1055,7 @@ class ContextBuilder:
 
     def _is_tool_transcript_group(self, group: list[ContextMessage]) -> bool:
         return any(message.role == "tool" for message in group) or any(
-            self._has_assistant_tool_calls(message) for message in group
+            has_assistant_tool_calls(message) for message in group
         )
 
     def _estimate_tokens(self, messages: list[ContextMessage]) -> int:

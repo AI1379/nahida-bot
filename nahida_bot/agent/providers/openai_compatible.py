@@ -10,6 +10,7 @@ import structlog
 
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.storage.embedding import EmbeddingResult
+from nahida_bot.agent.providers._tool_protocol import sanitize_tool_transcript
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ProviderResponse,
@@ -527,110 +528,8 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
         Injects ``reasoning_content`` into assistant messages when present
         so that the reasoning chain can be replayed in multi-turn contexts.
         """
-        return [
-            self._serialize_message(msg)
-            for msg in self._sanitize_tool_transcript(messages)
-        ]
-
-    def _sanitize_tool_transcript(
-        self,
-        messages: list[ContextMessage],
-    ) -> list[ContextMessage]:
-        """Drop broken tool-call fragments before sending chat-completion history.
-
-        OpenAI-compatible APIs require an assistant message with ``tool_calls`` to
-        be followed immediately by tool messages for every emitted
-        ``tool_call_id``. Context budgeting can otherwise leave only one side of
-        the pair in the prompt, which causes a 400 before the model can recover.
-        """
-        sanitized: list[ContextMessage] = []
-        dropped_orphan_tools = 0
-        dropped_incomplete_groups = 0
-        index = 0
-
-        while index < len(messages):
-            message = messages[index]
-            required_tool_call_ids = self._assistant_tool_call_ids(message)
-            if not required_tool_call_ids:
-                if message.role == "tool":
-                    dropped_orphan_tools += 1
-                else:
-                    sanitized.append(message)
-                index += 1
-                continue
-
-            tool_group: list[ContextMessage] = []
-            seen_ids: set[str] = set()
-            next_index = index + 1
-            while next_index < len(messages) and messages[next_index].role == "tool":
-                tool_message = messages[next_index]
-                tool_call_id = self._tool_message_call_id(tool_message)
-                if tool_call_id in required_tool_call_ids:
-                    tool_group.append(tool_message)
-                    seen_ids.add(tool_call_id)
-                else:
-                    dropped_orphan_tools += 1
-                next_index += 1
-
-            if required_tool_call_ids.issubset(seen_ids):
-                sanitized.append(message)
-                sanitized.extend(tool_group)
-            else:
-                dropped_incomplete_groups += 1
-                dropped_orphan_tools += len(tool_group)
-                logger.warning(
-                    "provider.openai_compatible.dropped_incomplete_tool_transcript",
-                    provider_name=self.name,
-                    assistant_source=message.source,
-                    required_tool_call_ids=sorted(required_tool_call_ids),
-                    seen_tool_call_ids=sorted(seen_ids),
-                    missing_tool_call_ids=sorted(required_tool_call_ids - seen_ids),
-                )
-
-            index = next_index
-
-        if dropped_orphan_tools:
-            logger.warning(
-                "provider.openai_compatible.dropped_orphan_tool_messages",
-                provider_name=self.name,
-                dropped_tool_message_count=dropped_orphan_tools,
-            )
-
-        if dropped_orphan_tools or dropped_incomplete_groups:
-            logger.debug(
-                "provider.openai_compatible.sanitized_tool_transcript",
-                provider_name=self.name,
-                original_message_count=len(messages),
-                sanitized_message_count=len(sanitized),
-                dropped_orphan_tool_count=dropped_orphan_tools,
-                dropped_incomplete_group_count=dropped_incomplete_groups,
-                original_roles=[message.role for message in messages],
-                sanitized_roles=[message.role for message in sanitized],
-            )
-
-        return sanitized
-
-    def _assistant_tool_call_ids(self, message: ContextMessage) -> set[str]:
-        if message.role != "assistant" or message.metadata is None:
-            return set()
-        raw_tool_calls = message.metadata.get("tool_calls")
-        if not isinstance(raw_tool_calls, list):
-            return set()
-
-        ids: set[str] = set()
-        for item in raw_tool_calls:
-            if not isinstance(item, dict):
-                continue
-            call_id = item.get("id")
-            if isinstance(call_id, str) and call_id:
-                ids.add(call_id)
-        return ids
-
-    def _tool_message_call_id(self, message: ContextMessage) -> str:
-        if message.role != "tool" or message.metadata is None:
-            return ""
-        call_id = message.metadata.get("tool_call_id")
-        return call_id if isinstance(call_id, str) else ""
+        sanitized = sanitize_tool_transcript(messages, provider_name=self.name)
+        return [self._serialize_message(msg) for msg in sanitized]
 
     def _serialized_protocol_summary(
         self,

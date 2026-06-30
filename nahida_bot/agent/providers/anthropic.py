@@ -15,6 +15,7 @@ import httpx
 import structlog
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
+from nahida_bot.agent.providers._tool_protocol import sanitize_tool_transcript
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ProviderResponse,
@@ -126,7 +127,14 @@ class AnthropicProvider(ChatProvider):
         system_prompt: str | None = None
         result: list[dict[str, object]] = []
 
-        for msg in messages:
+        # Drop orphan tool_result / incomplete assistant tool-call groups before
+        # serialization: Anthropic-compatible APIs (incl. Minimax) reject a
+        # tool_result whose tool_use_id has no matching tool_use block with an
+        # HTTP 400 (Minimax error 2013). History truncation can otherwise leave
+        # one side of a call/result pair in the prompt.
+        sanitized = sanitize_tool_transcript(messages, provider_name=self.name)
+
+        for msg in sanitized:
             if msg.role == "system":
                 # Anthropic: system messages are not part of the messages
                 # array — they are a separate top-level parameter.
@@ -140,7 +148,9 @@ class AnthropicProvider(ChatProvider):
             if msg.role == "assistant":
                 result.append(self._serialize_assistant_message(msg))
             elif msg.role == "tool":
-                result.append(self._serialize_tool_result_message(msg))
+                tool_result = self._serialize_tool_result_message(msg)
+                if tool_result is not None:
+                    result.append(tool_result)
             else:
                 # user messages
                 result.append(self._serialize_user_message(msg))
@@ -264,13 +274,29 @@ class AnthropicProvider(ChatProvider):
 
         return {"role": "assistant", "content": blocks}
 
-    def _serialize_tool_result_message(self, msg: ContextMessage) -> dict[str, object]:
-        """Convert a tool-result ContextMessage to Anthropic ``user/tool_result`` format."""
+    def _serialize_tool_result_message(
+        self, msg: ContextMessage
+    ) -> dict[str, object] | None:
+        """Convert a tool-result ContextMessage to Anthropic ``user/tool_result`` format.
+
+        Returns ``None`` if the message has no ``tool_call_id`` — emitting an
+        empty ``tool_use_id`` is exactly what triggers Anthropic/Minimax error
+        2013 (``tool result's tool id(...) not found``). ``sanitize_tool_transcript``
+        upstream should make this unreachable, so we log loudly and skip rather
+        than ever send an empty id.
+        """
         tool_call_id = ""
         if msg.metadata is not None:
             raw_id = msg.metadata.get("tool_call_id")
             if isinstance(raw_id, str):
                 tool_call_id = raw_id
+
+        if not tool_call_id:
+            logger.error(
+                "anthropic.empty_tool_use_id_after_sanitize",
+                source=msg.source,
+            )
+            return None
 
         return {
             "role": "user",

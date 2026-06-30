@@ -12,6 +12,8 @@ from nahida_bot.agent.context import (
     ContextMessage,
     ContextPart,
     build_context_budget,
+    tool_transcript_groups,
+    truncate_messages_to_window,
 )
 from nahida_bot.agent.providers import ChatProvider, ModelCapabilities, ProviderResponse
 from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
@@ -647,3 +649,170 @@ class TestContextMessageParts:
         assert builder._estimate_tokens([with_parts]) > builder._estimate_tokens(
             [without_parts]
         )
+
+
+# ── pair-aware window truncation (regression for minimax 400 / orphan tool_result) ─
+
+
+def _msg(role: str, content: str, source: str = "test") -> ContextMessage:
+    return ContextMessage(role=role, source=source, content=content)  # type: ignore[arg-type]
+
+
+def _asst_with_calls(
+    *calls: tuple[str, str], content: str = "calling"
+) -> ContextMessage:
+    return ContextMessage(
+        role="assistant",
+        source="provider_response",
+        content=content,
+        metadata={
+            "tool_calls": [
+                {"id": cid, "name": name, "arguments": {}} for name, cid in calls
+            ]
+        },
+    )
+
+
+def _tool_result(call_id: str, content: str = "ok") -> ContextMessage:
+    return ContextMessage(
+        role="tool",
+        source=f"tool_result:{call_id}",
+        content=content,
+        metadata={"tool_call_id": call_id, "tool_name": "t"},
+    )
+
+
+def _window_tool_call_ids(messages: list[ContextMessage]) -> set[str]:
+    """Every tool_call_id declared by an assistant in the window."""
+    declared: set[str] = set()
+    for m in messages:
+        if m.role == "assistant" and isinstance(m.metadata, dict):
+            raw = m.metadata.get("tool_calls")
+            if not isinstance(raw, list):
+                continue
+            for tc in raw:
+                if isinstance(tc, dict) and isinstance(tc.get("id"), str):
+                    declared.add(tc["id"])  # type: ignore[index]
+    return declared
+
+
+class TestTruncateMessagesToWindow:
+    def test_no_tools_matches_plain_slice(self) -> None:
+        messages = [
+            _msg("user", f"u{i}") if i % 2 == 0 else _msg("assistant", f"a{i}")
+            for i in range(10)
+        ]
+        result = truncate_messages_to_window(messages, 4)
+        assert result == messages[-4:]
+
+    def test_max_zero_or_empty_returns_empty(self) -> None:
+        assert truncate_messages_to_window([_msg("user", "x")], 0) == []
+        assert truncate_messages_to_window([], 5) == []
+
+    def test_preserves_parallel_tool_call_atomicity(self) -> None:
+        # Mirror the production bug: a long history where a single assistant
+        # turn made 6 parallel calls, and a blind [-200:] cut would land between
+        # the assistant and its results, orphaning _4/_5/_6.
+        messages: list[ContextMessage] = [_msg("user", f"u{i}") for i in range(195)]
+        # The multi-call assistant turn sits just inside the boundary.
+        messages.append(_asst_with_calls(*(("t", f"call_{n}") for n in range(6))))
+        for n in range(6):
+            messages.append(_tool_result(f"call_{n}"))
+        messages.append(_msg("assistant", "done"))  # 195 + 1 + 6 + 1 = 203
+
+        result = truncate_messages_to_window(messages, 200)
+
+        # Invariant: every tool result in the window must be answerable by an
+        # assistant tool_use that is ALSO in the window.
+        declared = _window_tool_call_ids(result)
+        for m in result:
+            if m.role == "tool" and isinstance(m.metadata, dict):
+                cid = m.metadata.get("tool_call_id")
+                assert cid in declared, f"orphan tool_result {cid} in window"
+
+        # The 6-call turn is atomic: either the assistant AND all its results
+        # are present, or none of them are.
+        asst_present = any(
+            m.role == "assistant"
+            and isinstance(m.metadata, dict)
+            and {"call_0", "call_5"} <= _window_tool_call_ids([m])
+            for m in result
+        )
+        result_call_ids = {
+            m.metadata.get("tool_call_id")
+            for m in result
+            if m.role == "tool" and isinstance(m.metadata, dict)
+        }
+        if asst_present:
+            assert {"call_0", "call_1", "call_2", "call_3", "call_4", "call_5"} <= set(
+                result_call_ids
+            )
+        else:
+            assert not ({"call_0"} & set(result_call_ids))
+
+    def test_single_group_larger_than_max_dropped_not_split(self) -> None:
+        # Group of size 4 (assistant + 3 results) with a newer tail message.
+        # max=3 → the oversized group can't fit alongside the tail, so it must
+        # be dropped whole, never split (no orphan result kept without its call).
+        messages = [
+            _asst_with_calls(("t", "c1"), ("t", "c2"), ("t", "c3")),
+            _tool_result("c1"),
+            _tool_result("c2"),
+            _tool_result("c3"),
+            _msg("user", "newest"),  # newest — always kept
+        ]
+        result = truncate_messages_to_window(messages, 3)
+        declared = _window_tool_call_ids(result)
+        result_call_ids = {
+            m.metadata.get("tool_call_id")
+            for m in result
+            if m.role == "tool" and isinstance(m.metadata, dict)
+        }
+        # No tool result without its assistant in the window.
+        assert result_call_ids <= declared
+
+    def test_newest_oversized_group_kept_whole(self) -> None:
+        # When the oversized group IS the newest, it is kept intact even though
+        # it exceeds max_messages (the active turn is never dropped).
+        messages = [
+            _msg("user", "old"),
+            _asst_with_calls(("t", "c1"), ("t", "c2"), ("t", "c3")),
+            _tool_result("c1"),
+            _tool_result("c2"),
+            _tool_result("c3"),
+        ]
+        result = truncate_messages_to_window(messages, 3)
+        roles = [m.role for m in result]
+        # The whole 4-message group is retained (newest), the old user dropped.
+        assert roles == ["assistant", "tool", "tool", "tool"]
+
+    def test_drops_malformed_orphan_tool_result(self) -> None:
+        # Even without truncation (len < max), an orphan tool result whose call
+        # is absent must be dropped by the belt-and-suspenders sweep.
+        messages = [
+            _msg("user", "hi"),
+            _tool_result("orphan"),
+            _msg("assistant", "bye"),
+        ]
+        result = truncate_messages_to_window(messages, 10)
+        assert [m.role for m in result] == ["user", "assistant"]
+        assert all(m.role != "tool" for m in result)
+
+
+class TestToolTranscriptGroupsModuleLevel:
+    def test_groups_assistant_with_following_tools(self) -> None:
+        messages = [
+            _msg("user", "go"),
+            _asst_with_calls(("t", "c1"), ("t", "c2")),
+            _tool_result("c1"),
+            _tool_result("c2"),
+            _msg("assistant", "done"),
+        ]
+        groups = tool_transcript_groups(messages)
+        sizes = [len(g) for g in groups]
+        assert sizes == [1, 3, 1]  # user | assistant+2tools | assistant
+
+    def test_orphan_tool_is_own_singleton_group(self) -> None:
+        messages = [_tool_result("orphan"), _msg("assistant", "hi")]
+        groups = tool_transcript_groups(messages)
+        assert [len(g) for g in groups] == [1, 1]
