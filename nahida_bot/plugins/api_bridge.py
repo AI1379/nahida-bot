@@ -8,11 +8,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
 import structlog
 
 from nahida_bot.agent.context import MessageRole
-from nahida_bot.agent.memory.models import (
-    Sensitivity,
-    SensitivitySource,
-    normalize_sensitivity,
-)
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import (
     ChannelService,
@@ -39,7 +34,7 @@ from nahida_bot_sdk.plugin import bind_decorated_registrations
 if TYPE_CHECKING:
     from nahida_bot.agent.context import ContextMessage
     from nahida_bot.agent.providers.base import ChatProvider, ProviderResponse
-    from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
     from nahida_bot.core.temp_files import ManagedTempFileService
     from nahida_bot.core.events import EventBus
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
@@ -129,7 +124,7 @@ class RealBotAPI:
     """Concrete BotAPI implementation injected into each plugin instance.
 
     Every method first runs through PermissionChecker, then delegates
-    to the real bot subsystem (EventBus, WorkspaceManager, MemoryStore).
+    to the real bot subsystem (EventBus, WorkspaceManager, SQLiteMemoryStore).
     """
 
     def __init__(
@@ -138,7 +133,7 @@ class RealBotAPI:
         manifest: PluginManifest,
         event_bus: EventBus,
         workspace_manager: WorkspaceManager | None,
-        memory_store: MemoryStore | None,
+        memory_store: SQLiteMemoryStore | None,
         permission_checker: PermissionChecker,
         tool_registry: Any,  # ToolRegistry — use Any to avoid circular import
         handler_registry: Any,  # HandlerRegistry
@@ -167,6 +162,11 @@ class RealBotAPI:
         # the SessionRunner flag so plugin memory_search / /memory search stay
         # consistent with auto-injection. Default off = no behavior change.
         self._memory_soft_scope = memory_soft_scope
+        # Lazily-built unified MemoryService over ``_memory``. All consumer
+        # memory reads/writes (memory_search / memory_store / search_chat_history
+        # / the /memory command) delegate here so the agent SDK and the gateway
+        # REST API share one read-cascade + write + projection implementation.
+        self._memory_service_cache: Any = None
         self._message_delivery_store = message_delivery_store
         self._plugin_data_repo = plugin_data_repo
         self._permissions = permission_checker
@@ -741,102 +741,54 @@ class RealBotAPI:
 
     # ── Memory ─────────────────────────────────────────
 
+    def _memory_service(self) -> Any | None:
+        """Lazily build the unified :class:`MemoryService` over ``self._memory``.
+
+        Returns ``None`` when no memory store is wired. The service owns the
+        identity-aware read cascade, the soft-scope public recall, the write
+        policy, and the Markdown projection, so this bridge (and the future REST
+        route) stay thin adapters over the same implementation.
+        """
+        if self._memory is None:
+            return None
+        if self._memory_service_cache is None:
+            from nahida_bot.agent.memory.service import MemoryService
+
+            self._memory_service_cache = MemoryService(
+                self._memory,
+                soft_scope=self._memory_soft_scope,
+            )
+        return self._memory_service_cache
+
     async def memory_search(self, query: str, *, limit: int = 5) -> list[MemoryRef]:
         self._permissions.check_memory_read()
-        if self._memory is None:
+        service = self._memory_service()
+        if service is None:
             return []
-        search_items = getattr(self._memory, "search_items", None)
-        if callable(search_items):
-            from nahida_bot.core.context import current_session
-            from nahida_bot.identity.policy import (
-                memory_read_request_from_context,
-                resolve_memory_read_scopes,
-            )
+        from nahida_bot.core.context import current_session
 
-            session_ctx = current_session.get()
-            session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
-            # Identity-aware read cascade (issue #7, Phase 2). Same policy as
-            # SessionRunner._load_relevant_memory; collapses to the V1
-            # chat -> global cascade (or global-only) when identity is off or
-            # the sender is unlinked, so behavior is unchanged by default.
-            read_request = memory_read_request_from_context(session_ctx, session_id)
-            scopes = resolve_memory_read_scopes(read_request)
-            items: list[Any] = []
-            seen: set[str] = set()
-            remaining = limit
-            for scope_type, scope_id in scopes:
-                if remaining <= 0:
-                    break
-                scoped = list(
-                    await cast(Any, search_items)(
-                        query,
-                        scope_type=scope_type,
-                        scope_id=scope_id,
-                        limit=remaining,
-                    )
-                )
-                for item in scoped:
-                    item_id = getattr(item, "item_id", "")
-                    if item_id in seen:
-                        continue
-                    seen.add(item_id)
-                    items.append(item)
-                    remaining -= 1
-                    if remaining <= 0:
-                        break
-            # Soft-scope cross-scope recall (Piece A2). When enabled, fill any
-            # remaining budget with a global pass that admits ONLY public items
-            # from outside the cascade — same semantics as the retrieval
-            # adapter, so /memory search and plugin memory_search stay
-            # consistent with auto-injection. The store enforces
-            # sensitivity='public' at the SQL layer; restricted items never
-            # surface here.
-            if self._memory_soft_scope and remaining > 0:
-                search_public = getattr(
-                    self._memory, "search_items_public_all_scopes", None
-                )
-                if callable(search_public):
-                    # Over-fetch by len(seen): the public pool includes in-scope
-                    # public items already returned, so fetching only
-                    # ``remaining`` can starve cross-scope recall (all top hits
-                    # may dedupe against ``seen``). See adapter._cascade.
-                    public_items = list(
-                        await cast(Any, search_public)(
-                            query, limit=remaining + len(seen)
-                        )
-                    )
-                    for item in public_items:
-                        item_id = getattr(item, "item_id", "")
-                        if not item_id or item_id in seen:
-                            continue
-                        seen.add(item_id)
-                        items.append(item)
-                        remaining -= 1
-                        if remaining <= 0:
-                            break
-            return [
-                MemoryRef(
-                    key=item.item_id,
-                    content=item.content,
-                    score=item.score,
-                    metadata={
-                        "scope_type": item.scope_type,
-                        "scope_id": item.scope_id,
-                        "kind": item.kind,
-                        "title": item.title,
-                        "source": item.source,
-                    },
-                )
-                for item in items
-            ]
-        results = await self._memory.search("__global__", query, limit=limit)
+        session_ctx = current_session.get()
+        session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
+        items = await service.search_items_cascade(
+            query,
+            ctx=session_ctx,
+            session_id=session_id,
+            limit=limit,
+        )
         return [
             MemoryRef(
-                key=str(r.turn_id),
-                content=r.turn.content,
-                metadata={"session_id": r.session_id},
+                key=item.item_id,
+                content=item.content,
+                score=item.score,
+                metadata={
+                    "scope_type": item.scope_type,
+                    "scope_id": item.scope_id,
+                    "kind": item.kind,
+                    "title": item.title,
+                    "source": item.source,
+                },
             )
-            for r in results
+            for item in items
         ]
 
     async def search_chat_history(
@@ -849,19 +801,17 @@ class RealBotAPI:
     ) -> list[dict[str, Any]]:
         """Search raw conversation turns across ALL sessions (soft-gated).
 
-        Wraps ``SQLiteMemoryStore.search_turns`` — global cross-session LIKE
-        search over every role (user / assistant / system). Intentionally has
-        NO permission check and NO scope restriction: the gating is a soft
-        prompt in the tool description (memory is soft context; the worst case
-        is saying the wrong thing, per person-identity-system.md §2.5). Returns
-        raw rows; the caller (tool handler) sanitizes before showing the model.
+        Wraps the memory service's cross-session LIKE search over every role
+        (user / assistant / system). Intentionally has NO permission check and
+        NO scope restriction: the gating is a soft prompt in the tool
+        description (memory is soft context; the worst case is saying the wrong
+        thing, per person-identity-system.md §2.5). Returns raw rows; the caller
+        (tool handler) sanitizes before showing the model.
         """
-        if self._memory is None:
+        service = self._memory_service()
+        if service is None:
             return []
-        search_turns = getattr(self._memory, "search_turns", None)
-        if not callable(search_turns):
-            return []
-        records = await cast(Any, search_turns)(
+        records = await service.search_turns(
             query,
             chat_address=chat_address,
             role=role,
@@ -919,57 +869,21 @@ class RealBotAPI:
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
     ) -> None:
         self._permissions.check_memory_write()
-        if self._memory is None:
+        service = self._memory_service()
+        if service is None:
             return
-        metadata = dict(metadata or {})
-        scope_type_value = metadata.pop("scope_type", None)
-        scope_id_value = metadata.pop("scope_id", None)
-        if scope_type_value is None or scope_id_value is None:
-            from nahida_bot.agent.memory.scope import resolve_scope_from_session
-            from nahida_bot.core.context import current_session
+        from nahida_bot.core.context import current_session
 
-            session_ctx = current_session.get()
-            session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
-            base_scope_type, base_scope_id = resolve_scope_from_session(session_id)
-            scope_type_value = scope_type_value or base_scope_type
-            scope_id_value = scope_id_value or base_scope_id
-        append_item = getattr(self._memory, "append_item", None)
-        if callable(append_item):
-            sensitivity_value, sensitivity_source = _resolve_sensitivity(metadata)
-            await cast(Any, append_item)(
-                title=key,
-                content=content,
-                scope_type=str(scope_type_value),
-                scope_id=str(scope_id_value),
-                kind=str(metadata.pop("kind", "fact")),
-                source=str(metadata.pop("source", "plugin")),
-                confidence=float(metadata.pop("confidence", 1.0)),
-                importance=float(metadata.pop("importance", 0.5)),
-                sensitivity=sensitivity_value,
-                sensitivity_source=sensitivity_source,
-                evidence=metadata.pop("evidence", None),
-                metadata=metadata,
-            )
-            self._logger.debug("memory_store_called", key=key, backend="items")
-            return
-
-        append_turn = getattr(self._memory, "append_turn", None)
-        ensure_session = getattr(self._memory, "ensure_session", None)
-        if callable(append_turn):
-            if callable(ensure_session):
-                await cast(Any, ensure_session)("__global__")
-            from nahida_bot.agent.memory.models import ConversationTurn
-
-            await cast(Any, append_turn)(
-                "__global__",
-                ConversationTurn(
-                    role="system",
-                    content=content,
-                    source="plugin_memory",
-                    metadata={"key": key, **metadata},
-                ),
-            )
-        self._logger.debug("memory_store_called", key=key, backend="turns")
+        session_ctx = current_session.get()
+        session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
+        await service.store_item(
+            key,
+            content,
+            ctx=session_ctx,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        self._logger.debug("memory_store_called", key=key, backend="items")
 
     # ── Plugin Data Store ─────────────────────────────
 
@@ -1601,7 +1515,7 @@ class RealBotAPI:
         self,
         *,
         workspace_manager: WorkspaceManager | None = None,
-        memory_store: MemoryStore | None = None,
+        memory_store: SQLiteMemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         provider_manager: Any | None = None,
         model_router: Any | None = None,
@@ -1617,6 +1531,10 @@ class RealBotAPI:
         """Update runtime services after early plugin loading."""
         self._workspace = workspace_manager
         self._memory = memory_store
+        # The lazily-built MemoryService wraps ``_memory``; a store swap (e.g.
+        # the manager injecting the real store after early plugin load) would
+        # leave a stale wrapper, so drop the cache on any reassignment.
+        self._memory_service_cache = None
         self._message_delivery_store = message_delivery_store
         self._provider_manager = provider_manager
         self._model_router = model_router
@@ -1696,23 +1614,3 @@ def _address_from_inbound_message(message: InboundMessage) -> ChatAddress:
         is_group=message.is_group,
         chat_type=chat_type,
     )
-
-
-def _resolve_sensitivity(
-    metadata: dict[str, Any],
-) -> tuple[Sensitivity, SensitivitySource]:
-    """Pop and validate ``sensitivity`` from plugin write metadata.
-
-    Only an explicit RESTRICTION (``private``/``secret_like``) earns
-    ``sensitivity_source='explicit'`` (Piece A4: explicit > dream). The soft
-    ``public`` baseline — whether omitted, explicitly passed, or a fallback
-    for an unrecognized value — gets ``'default'`` provenance, matching the
-    consolidation default so plugin writes and dreaming agree. The shared
-    normalizer handles casing/typos so they can't defeat the SQL filter; an
-    unrecognized value is a no-op (public/default) rather than a rejected write.
-    """
-    raw = metadata.pop("sensitivity", None)
-    canonical = normalize_sensitivity(raw)
-    if canonical in {"private", "secret_like"}:
-        return canonical, "explicit"
-    return "public", "default"

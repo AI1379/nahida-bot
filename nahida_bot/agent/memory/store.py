@@ -1,16 +1,37 @@
-"""Memory store abstract contract."""
+"""Memory store abstract contract.
+
+There are two contracts here:
+
+- :class:`MemoryStore` — the turn/session persistence contract (the original
+  ABC). Turn-only backends and test fakes implement just this.
+- :class:`StructuredMemoryStore` — a :class:`typing.Protocol` describing the
+  durable-items / embedding / hierarchy API (:meth:`search_items`,
+  :meth:`append_item`, ...). ``SQLiteMemoryStore`` structurally satisfies it.
+
+The structured protocol exists so high-level consumers (``MemoryService``,
+future REST routes) can be typed against a real contract instead of
+``getattr``-probing an ``Any`` store — the items API was never on the turn ABC,
+which is why every consumer previously duck-typed around it. A turn-only backend
+simply is not a ``StructuredMemoryStore`` and is never handed to the service.
+"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from nahida_bot.agent.memory.models import (
     ConversationTurn,
+    MemoryCandidate,
+    MemoryItem,
     MemoryRecord,
     SessionSummary,
+)
+from nahida_bot.agent.memory.scope import (
+    SCOPE_ID_GLOBAL,
+    SCOPE_TYPE_GLOBAL,
 )
 
 
@@ -79,3 +100,103 @@ class MemoryStore(ABC):
     async def load_active_sessions(self) -> dict[str, str]:
         """Load all persisted session overrides as {chat_key: session_id}."""
         raise NotImplementedError
+
+
+@runtime_checkable
+class StructuredMemoryStore(Protocol):
+    """Structured durable-items API that ``SQLiteMemoryStore`` satisfies.
+
+    This is the contract :class:`~nahida_bot.agent.memory.service.MemoryService`
+    is typed against. Declared as a structural :class:`typing.Protocol` so the
+    concrete store needs no inheritance change; ``@runtime_checkable`` allows a
+    capability ``isinstance`` probe at a service boundary if ever needed.
+    """
+
+    async def search_items(
+        self,
+        query: str = "",
+        *,
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+        limit: int = 10,
+    ) -> list[MemoryItem]:
+        """FTS5 BM25 search (or recent list when ``query`` is empty)."""
+        ...
+
+    async def append_item(
+        self,
+        *,
+        content: str,
+        title: str = "",
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+        kind: str = "fact",
+        source: str = "plugin",
+        confidence: float = 1.0,
+        importance: float = 0.5,
+        sensitivity: str = "public",
+        sensitivity_source: str = "default",
+        evidence: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        item_id: str | None = None,
+        parent_id: str = "",
+        root_id: str = "",
+        node_type: str = "leaf",
+        path: str = "",
+        source_id: str = "",
+    ) -> str:
+        """Store a durable structured memory item; return its id."""
+        ...
+
+    async def archive_item(self, item_id: str) -> bool:
+        """Archive (soft-delete) a durable memory item."""
+        ...
+
+    async def search_items_public_all_scopes(
+        self,
+        query: str = "",
+        *,
+        limit: int = 10,
+    ) -> list[MemoryItem]:
+        """Soft-scope cross-scope recall: public items across all scopes.
+
+        The store enforces ``sensitivity='public'`` at the SQL layer.
+        """
+        ...
+
+    async def list_public_items(
+        self,
+        *,
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+        limit: int = 40,
+    ) -> list[MemoryItem]:
+        """List active PUBLIC items for a scope (SQL-level sensitivity filter).
+
+        Used by the Markdown projection so restricted items are excluded before
+        the LIMIT and can't crowd public items out of the projection budget.
+        """
+        ...
+
+    async def search_turns(
+        self,
+        query: str = "",
+        *,
+        chat_address: str = "",
+        source: str = "",
+        role: str = "",
+        limit: int = 100,
+    ) -> list[MemoryRecord]:
+        """Cross-session raw-turn search for admin/debug views."""
+        ...
+
+    async def list_candidates(
+        self,
+        *,
+        status: str | None = None,
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+        limit: int = 20,
+    ) -> list[MemoryCandidate]:
+        """List consolidation candidates (audit ledger)."""
+        ...

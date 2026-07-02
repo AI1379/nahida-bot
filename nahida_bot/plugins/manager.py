@@ -24,7 +24,7 @@ from nahida_bot.plugins.registry import (
 )
 
 if TYPE_CHECKING:
-    from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
     from nahida_bot.core.events import EventBus
     from nahida_bot.core.temp_files import ManagedTempFileService
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
@@ -79,7 +79,7 @@ class PluginManager:
         self,
         event_bus: EventBus,
         workspace_manager: WorkspaceManager | None = None,
-        memory_store: MemoryStore | None = None,
+        memory_store: SQLiteMemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
         channel_registry: Any | None = None,
@@ -120,7 +120,7 @@ class PluginManager:
         self,
         *,
         workspace_manager: WorkspaceManager | None = None,
-        memory_store: MemoryStore | None = None,
+        memory_store: SQLiteMemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
         provider_manager: Any | None = None,

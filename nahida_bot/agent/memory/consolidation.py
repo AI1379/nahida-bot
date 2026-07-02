@@ -15,13 +15,9 @@ from nahida_bot.agent.memory.models import Sensitivity, SensitivitySource
 import structlog
 
 from nahida_bot.agent.memory.markdown import (
-    MEMORY_FILE,
-    MEMORY_SUMMARY_FILE,
-    build_memory_projection,
-    build_memory_summary,
-    replace_generated_memory_section,
     validate_memory_content,
 )
+from nahida_bot.agent.memory.service import project_workspace_memory
 from nahida_bot.agent.memory.scope import (
     SCOPE_ID_GLOBAL,
     SCOPE_TYPE_CHAT,
@@ -570,34 +566,19 @@ class MemoryConsolidator:
         scope_type: str = SCOPE_TYPE_GLOBAL,
         scope_id: str = SCOPE_ID_GLOBAL,
     ) -> None:
-        """Regenerate workspace memory projection files from structured memory."""
-        search_items = getattr(self._memory, "search_items", None)
-        if not callable(search_items):
-            return
-        try:
-            items = await cast(Any, search_items)(
-                "",
-                scope_type=scope_type,
-                scope_id=scope_id,
-                limit=self._projection_limit,
-            )
-        except Exception as exc:
-            logger.warning("memory_consolidation.project_search_failed", error=str(exc))
-            return
+        """Regenerate workspace memory projection files from structured memory.
 
-        root = Path(workspace_root)
-        root.mkdir(parents=True, exist_ok=True)
-        summary = build_memory_summary(items, max_items=self._projection_limit)
-        (root / MEMORY_SUMMARY_FILE).write_text(summary, encoding="utf-8")
-
-        memory_file = root / MEMORY_FILE
-        existing = (
-            memory_file.read_text(encoding="utf-8") if memory_file.exists() else ""
-        )
-        generated = build_memory_projection(items, max_items=self._projection_limit)
-        memory_file.write_text(
-            replace_generated_memory_section(existing, generated),
-            encoding="utf-8",
+        Delegates to the shared, sensitivity-filtered projection in
+        :mod:`nahida_bot.agent.memory.service` so the consolidator and the
+        :class:`MemoryService` / REST path project identically: only public
+        items reach the Markdown files (grep-fallback recall without leaks).
+        """
+        await project_workspace_memory(
+            cast(Any, self._memory),
+            workspace_root,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            limit=self._projection_limit,
         )
 
     async def _load_existing_items(

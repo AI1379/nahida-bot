@@ -34,7 +34,7 @@ from nahida_bot.plugins.commands import CommandMatcher
 
 if TYPE_CHECKING:
     from nahida_bot.agent.loop import AgentLoop
-    from nahida_bot.agent.memory.store import MemoryStore
+    from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
     from nahida_bot.agent.providers import ModelCapabilities
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.agent.providers.router import ModelRouter
@@ -99,7 +99,7 @@ class Application:
         self.plugin_manager: PluginManager | None = None
         self.message_router: MessageRouter | None = None
         self.agent_loop: AgentLoop | None = None
-        self.memory_store: MemoryStore | None = None
+        self.memory_store: SQLiteMemoryStore | None = None
         self.workspace_manager: WorkspaceManager | None = None
         self._db_engine: DatabaseEngine | None = None
         self.message_delivery_store: SQLiteMessageDeliveryStore | None = None

@@ -15,11 +15,14 @@ from nahida_bot.agent.memory import (
     MemoryConsolidator,
     MemoryItem,
     MemoryRecord,
+    MemoryService,
     RuleBasedMemoryExtractor,
     RoutedEmbeddingProvider,
     SQLiteMemoryStore,
+    StructuredMemoryStore,
     extract_keywords,
     parse_memory_dream,
+    project_workspace_memory,
 )
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.memory.consolidation import build_dream_system_prompt
@@ -698,6 +701,83 @@ async def test_memory_consolidator_auto_applies_and_projects_workspace(
     assert "中文回答" in summary
     assert "nahida-memory-generated:start" in memory_md
     assert "## Manual" in memory_md
+
+
+@pytest.mark.asyncio
+async def test_projection_filters_out_restricted_items(
+    memory_store: SQLiteMemoryStore,
+    tmp_path: Path,
+) -> None:
+    """The Markdown projection is sensitivity-filtered (Path B leak fix).
+
+    Only ``sensitivity='public'`` items reach the derived ``MEMORY.md`` /
+    ``memory_summary.md`` files so the agent's grep-fallback recall can never
+    surface private/secret_like items in another chat (the leak class fixed in
+    96860d7, now structurally impossible at the projection source).
+    """
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    await memory_store.append_item(
+        title="public fact",
+        content="a public recallable fact",
+        kind="fact",
+        sensitivity="public",
+    )
+    await memory_store.append_item(
+        title="secret",
+        content="a secret value never to leak",
+        kind="fact",
+        sensitivity="secret_like",
+        sensitivity_source="explicit",
+    )
+    await memory_store.append_item(
+        title="private note",
+        content="a private between-us note",
+        kind="fact",
+        sensitivity="private",
+        sensitivity_source="explicit",
+    )
+
+    await project_workspace_memory(memory_store, workspace_root)
+
+    summary = (workspace_root / MEMORY_SUMMARY_FILE).read_text(encoding="utf-8")
+    memory_md = (workspace_root / "MEMORY.md").read_text(encoding="utf-8")
+
+    assert "a public recallable fact" in summary
+    assert "a public recallable fact" in memory_md
+    # Restricted items must never enter the grep-fallback projection files.
+    assert "a secret value never to leak" not in summary
+    assert "a secret value never to leak" not in memory_md
+    assert "a private between-us note" not in summary
+    assert "a private between-us note" not in memory_md
+
+
+def test_sqlite_store_satisfies_structured_protocol(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    """SQLiteMemoryStore structurally satisfies StructuredMemoryStore."""
+    assert isinstance(memory_store, StructuredMemoryStore)
+
+
+@pytest.mark.asyncio
+async def test_memory_service_search_cascade_dedups_and_cascades(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    """MemoryService.search_items_cascade resolves scopes and dedups by id."""
+    await memory_store.append_item(
+        title="lang",
+        content="user prefers Chinese",
+        kind="preference",
+        scope_type="global",
+        scope_id="__global__",
+    )
+    service = MemoryService(memory_store, soft_scope=False)
+    # No session context -> global-only cascade per identity policy.
+    items = await service.search_items_cascade("Chinese", ctx=None, limit=5)
+    assert items and items[0].content == "user prefers Chinese"
+    # Repeated scope entries in the cascade do not duplicate results.
+    assert len({item.item_id for item in items}) == len(items)
 
 
 @pytest.mark.asyncio

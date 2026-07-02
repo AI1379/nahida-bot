@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Sequence
 from uuid import uuid4
 
 MEMORY_FILE = "MEMORY.md"
@@ -112,7 +113,7 @@ def append_long_term_memory(
     return f"{body}\n\n- [{memory_id}] {content.strip()}\n"
 
 
-def build_memory_summary(items: list[object], *, max_items: int = 20) -> str:
+def build_memory_summary(items: Sequence[object], *, max_items: int = 20) -> str:
     """Build a compact generated memory summary from durable memory items."""
     lines = [
         "# Memory Summary",
@@ -135,7 +136,7 @@ def build_memory_summary(items: list[object], *, max_items: int = 20) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_memory_projection(items: list[object], *, max_items: int = 30) -> str:
+def build_memory_projection(items: Sequence[object], *, max_items: int = 30) -> str:
     """Build the generated MEMORY.md section from durable memory items."""
     groups: dict[str, list[str]] = {
         "Preferences": [],

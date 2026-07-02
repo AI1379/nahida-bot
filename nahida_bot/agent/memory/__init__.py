@@ -16,7 +16,13 @@ from nahida_bot.agent.memory.consolidation import (
     parse_memory_dream,
 )
 from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore, extract_keywords
-from nahida_bot.agent.memory.store import MemoryStore
+from nahida_bot.agent.memory.service import (
+    DEFAULT_PROJECTION_LIMIT,
+    MemoryService,
+    project_workspace_memory,
+    resolve_write_sensitivity,
+)
+from nahida_bot.agent.memory.store import MemoryStore, StructuredMemoryStore
 from nahida_bot.agent.storage.embedding import (
     EmbeddingProvider,
     EmbeddingResult,
@@ -33,6 +39,7 @@ from nahida_bot.agent.storage.vector import (
 
 __all__ = [
     "ConversationTurn",
+    "DEFAULT_PROJECTION_LIMIT",
     "ExtractedMemory",
     "LlmMemoryDreamer",
     "MemoryCandidate",
@@ -41,8 +48,10 @@ __all__ = [
     "MemoryEmbedding",
     "MemoryItem",
     "MemoryRecord",
+    "MemoryService",
     "MemoryStore",
     "SQLiteMemoryStore",
+    "StructuredMemoryStore",
     "EmbeddingProvider",
     "EmbeddingResult",
     "HashEmbeddingProvider",
@@ -55,4 +64,6 @@ __all__ = [
     "VectorRecord",
     "extract_keywords",
     "parse_memory_dream",
+    "project_workspace_memory",
+    "resolve_write_sensitivity",
 ]

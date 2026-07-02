@@ -457,6 +457,34 @@ class SQLiteMemoryRepository:
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 
+    async def list_memory_items_public_scoped(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        limit: int = 40,
+    ) -> list[dict[str, Any]]:
+        """List recent active PUBLIC items for a scope (Markdown projection).
+
+        Mirrors :meth:`list_memory_items` but restricts to ``sensitivity =
+        'public'`` at the SQL layer so the derived workspace Markdown projection
+        (the agent's grep-fallback recall surface) can never starve on, or leak,
+        restricted items: the filter happens before the LIMIT, so a heap of
+        private/secret_like items at the top can't crowd public items out of the
+        projection budget.
+        """
+        rows = await self._engine.fetch_all(
+            "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
+            "confidence, importance, sensitivity, sensitivity_source, source, evidence_json, "
+            "metadata_json, created_at, updated_at, 0.0 AS score "
+            "FROM memory_items "
+            "WHERE status = 'active' AND sensitivity = 'public' "
+            "AND scope_type = ? AND scope_id = ? "
+            "ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            (scope_type, scope_id, limit),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
     async def search_memory_items_public_all_scopes(
         self,
         fts_query: str,

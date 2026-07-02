@@ -380,6 +380,27 @@ class SQLiteMemoryStore(MemoryStore):
         """Archive a durable memory item."""
         return await self._repo.archive_memory_item(item_id)
 
+    async def list_public_items(
+        self,
+        *,
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+        limit: int = 40,
+    ) -> list[MemoryItem]:
+        """List active PUBLIC items for a scope (SQL-level sensitivity filter).
+
+        The Markdown projection (the agent's grep-fallback recall surface) uses
+        this so restricted items are excluded before the LIMIT — a heap of
+        private/secret_like items can't starve public items out of the projection
+        budget, and the leak fixed in ``96860d7`` is structurally impossible.
+        """
+        rows = await self._repo.list_memory_items_public_scoped(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            limit=limit,
+        )
+        return [_row_to_item(row) for row in rows]
+
     async def search_items_public_all_scopes(
         self,
         query: str = "",
