@@ -34,6 +34,13 @@ import type {
   FileWriteRequest,
   FileWriteResponse,
   LogsResponse,
+  MemoryCandidateListResponse,
+  MemoryCreateRequest,
+  MemoryItemActionResponse,
+  MemoryItemListResponse,
+  MemoryProjectRequest,
+  MemoryProjectResponse,
+  MemoryTurnSearchResponse,
   MessageDeliveriesResponse,
   MessageDeliveryGroupsResponse,
   PluginAction,
@@ -160,6 +167,73 @@ export function useSessionSearch(
       if (params.value.role) p.set("role", params.value.role);
       p.set("limit", "200");
       return api.get(`/sessions/search?${p}`);
+    },
+    enabled,
+  });
+}
+
+export function useMemoryItems(
+  params: ReadableRef<{
+    q: string;
+    scope_type: string;
+    scope_id: string;
+    limit: number;
+  }>,
+) {
+  return useQuery<MemoryItemListResponse>({
+    queryKey: computed(() => ["memory", "items", params.value]),
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (params.value.q) p.set("q", params.value.q);
+      p.set("scope_type", params.value.scope_type || "global");
+      p.set("scope_id", params.value.scope_id || "__global__");
+      p.set("limit", String(params.value.limit || 100));
+      return api.get(`/memory/items?${p}`);
+    },
+  });
+}
+
+export function useMemoryCandidates(
+  params: ReadableRef<{
+    status: string;
+    scope_type: string;
+    scope_id: string;
+    limit: number;
+  }>,
+) {
+  return useQuery<MemoryCandidateListResponse>({
+    queryKey: computed(() => ["memory", "candidates", params.value]),
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (params.value.status) p.set("status", params.value.status);
+      p.set("scope_type", params.value.scope_type || "global");
+      p.set("scope_id", params.value.scope_id || "__global__");
+      p.set("limit", String(params.value.limit || 50));
+      return api.get(`/memory/candidates?${p}`);
+    },
+  });
+}
+
+export function useMemoryTurns(
+  params: ReadableRef<{
+    q: string;
+    chat_address: string;
+    source: string;
+    role: string;
+    limit: number;
+  }>,
+  enabled: ReadableRef<boolean>,
+) {
+  return useQuery<MemoryTurnSearchResponse>({
+    queryKey: computed(() => ["memory", "turns", params.value]),
+    queryFn: () => {
+      const p = new URLSearchParams();
+      if (params.value.q) p.set("q", params.value.q);
+      if (params.value.chat_address) p.set("chat_address", params.value.chat_address);
+      if (params.value.source) p.set("source", params.value.source);
+      if (params.value.role) p.set("role", params.value.role);
+      p.set("limit", String(params.value.limit || 100));
+      return api.get(`/memory/turns?${p}`);
     },
     enabled,
   });
@@ -341,6 +415,53 @@ export function usePluginAction() {
     },
     onError(err) {
       toast.add(`Plugin action failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useMemoryCreate() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<MemoryItemActionResponse, Error, MemoryCreateRequest>({
+    mutationFn: (body) => api.post<MemoryItemActionResponse>("/memory/items", body),
+    onSuccess(data) {
+      qc.invalidateQueries({ queryKey: ["memory"] });
+      toast.add(`Memory item ${data.item_id} created.`, "success");
+    },
+    onError(err) {
+      toast.add(`Create failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useMemoryArchive() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<MemoryItemActionResponse, Error, string>({
+    mutationFn: (itemId) =>
+      api.del<MemoryItemActionResponse>(`/memory/items/${encodeURIComponent(itemId)}`),
+    onSuccess(data) {
+      qc.invalidateQueries({ queryKey: ["memory"] });
+      toast.add(`Memory item ${data.item_id} archived.`, "success");
+    },
+    onError(err) {
+      toast.add(`Archive failed: ${toApiError(err).detail}`, "error");
+    },
+  });
+}
+
+export function useMemoryProject() {
+  const toast = useToastStore();
+
+  return useMutation<MemoryProjectResponse, Error, MemoryProjectRequest>({
+    mutationFn: (body) => api.post<MemoryProjectResponse>("/memory/project", body),
+    onSuccess(data) {
+      toast.add(`Memory projected to workspace "${data.workspace_id}".`, "success");
+    },
+    onError(err) {
+      toast.add(`Projection failed: ${toApiError(err).detail}`, "error");
     },
   });
 }

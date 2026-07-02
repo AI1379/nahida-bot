@@ -64,6 +64,12 @@ async def get_bootstrap(
                 "scope": "operator.read",
             },
             {
+                "id": "memory",
+                "route": "/memory",
+                "label": "Memory",
+                "scope": "operator.admin",
+            },
+            {
                 "id": "files",
                 "route": "/files",
                 "label": "Files",

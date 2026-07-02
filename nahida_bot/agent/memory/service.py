@@ -293,18 +293,19 @@ class MemoryService:
     async def list_items(
         self,
         *,
+        query: str = "",
         scope_type: str = SCOPE_TYPE_GLOBAL,
         scope_id: str = SCOPE_ID_GLOBAL,
         limit: int = 50,
     ) -> list[MemoryItem]:
-        """List durable items in a scope (most recently updated first).
+        """List or search durable items in a scope.
 
         Unfiltered by sensitivity — this is the admin/webui surface, not the
         recall path; the webui is trusted to see restricted items in its own
         workspace.
         """
         return await self._store.search_items(
-            "",
+            query,
             scope_type=scope_type,
             scope_id=scope_id,
             limit=limit,

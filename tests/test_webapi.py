@@ -558,6 +558,144 @@ async def test_plugin_action_state_error_returns_409(
     assert "bad transition" in resp.json()["detail"]
 
 
+# -- Memory ---------------------------------------------------------------
+
+
+async def test_memory_items_route_creates_lists_and_archives(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+    from nahida_bot.db.engine import DatabaseEngine
+
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    store = SQLiteMemoryStore(engine)
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.memory_store = store
+
+    try:
+        create_resp = await client_no_auth.post(
+            "/api/memory/items",
+            json={
+                "title": "language preference",
+                "content": "User prefers Chinese for architecture discussion.",
+                "kind": "preference",
+                "scope_type": "global",
+                "scope_id": "__global__",
+                "sensitivity": "public",
+            },
+        )
+        assert create_resp.status_code == 201
+        item_id = create_resp.json()["item_id"]
+
+        list_resp = await client_no_auth.get("/api/memory/items?q=Chinese")
+        assert list_resp.status_code == 200
+        items = list_resp.json()["items"]
+        assert [item["item_id"] for item in items] == [item_id]
+        assert items[0]["source"] == "webui"
+        assert items[0]["sensitivity"] == "public"
+
+        archive_resp = await client_no_auth.delete(f"/api/memory/items/{item_id}")
+        assert archive_resp.status_code == 200
+        assert archive_resp.json() == {"item_id": item_id, "status": "archived"}
+
+        after_resp = await client_no_auth.get("/api/memory/items?q=Chinese")
+        assert after_resp.status_code == 200
+        assert after_resp.json()["items"] == []
+    finally:
+        await engine.close()
+
+
+async def test_memory_candidates_and_turns_routes(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.agent.memory.models import ConversationTurn
+    from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+    from nahida_bot.db.engine import DatabaseEngine
+
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    store = SQLiteMemoryStore(engine)
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.memory_store = store
+
+    try:
+        await store.ensure_session("telegram:private:123")
+        await store.append_turn(
+            "telegram:private:123",
+            ConversationTurn(
+                role="user",
+                content="Please remember that I prefer concise reports.",
+                source="user_input",
+                metadata={"chat_address": "telegram:private:123"},
+            ),
+        )
+        await store.append_candidate(
+            candidate_id="cand_1",
+            title="report preference",
+            content="User prefers concise reports.",
+            kind="preference",
+            status="pending",
+        )
+
+        candidates_resp = await client_no_auth.get("/api/memory/candidates")
+        assert candidates_resp.status_code == 200
+        candidates = candidates_resp.json()["candidates"]
+        assert candidates[0]["candidate_id"] == "cand_1"
+        assert candidates[0]["status"] == "pending"
+
+        turns_resp = await client_no_auth.get(
+            "/api/memory/turns?q=concise&chat_address=telegram:private:123"
+        )
+        assert turns_resp.status_code == 200
+        turns = turns_resp.json()["turns"]
+        assert len(turns) == 1
+        assert turns[0]["session_id"] == "telegram:private:123"
+        assert turns[0]["role"] == "user"
+    finally:
+        await engine.close()
+
+
+async def test_memory_project_route_filters_restricted_items(
+    client_no_auth: AsyncClient,
+    tmp_path,
+) -> None:
+    from nahida_bot.agent.memory.markdown import MEMORY_SUMMARY_FILE
+    from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+    from nahida_bot.db.engine import DatabaseEngine
+    from nahida_bot.workspace.manager import WorkspaceManager
+
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    store = SQLiteMemoryStore(engine)
+    workspace_manager = WorkspaceManager(tmp_path / "workspace-state")
+    workspace_manager.initialize()
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.memory_store = store
+    mock_app.workspace_manager = workspace_manager
+
+    try:
+        await store.append_item(title="public", content="Public memory for projection.")
+        await store.append_item(
+            title="secret",
+            content="Secret memory must not be projected.",
+            sensitivity="secret_like",
+            sensitivity_source="explicit",
+        )
+
+        resp = await client_no_auth.post("/api/memory/project", json={})
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "projected"
+        summary = (
+            workspace_manager.workspace_path("default") / MEMORY_SUMMARY_FILE
+        ).read_text(encoding="utf-8")
+        assert "Public memory for projection." in summary
+        assert "Secret memory must not be projected." not in summary
+    finally:
+        await engine.close()
+
+
 # -- Knowledge Base -------------------------------------------------------
 
 

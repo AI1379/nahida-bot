@@ -219,6 +219,122 @@ export interface SessionSearchResponse {
   results: SessionSearchResult[];
 }
 
+export type MemorySensitivity = "public" | "private" | "secret_like";
+export type MemorySensitivitySource = "default" | "dream" | "explicit";
+
+export interface MemoryItem {
+  item_id: string;
+  scope_type: string;
+  scope_id: string;
+  kind: string;
+  title: string;
+  content: string;
+  status: string;
+  confidence: number;
+  importance: number;
+  sensitivity: MemorySensitivity;
+  sensitivity_source: MemorySensitivitySource;
+  source: string;
+  evidence: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  score: number;
+  parent_id: string;
+  root_id: string;
+  node_type: string;
+  path: string;
+  source_id: string;
+}
+
+export interface MemoryItemListResponse {
+  items: MemoryItem[];
+  total: number;
+  query: string;
+  scope_type: string;
+  scope_id: string;
+  limit: number;
+}
+
+export interface MemoryCreateRequest {
+  title: string;
+  content: string;
+  kind: string;
+  scope_type: string;
+  scope_id: string;
+  sensitivity: MemorySensitivity;
+  confidence: number;
+  importance: number;
+  source: string;
+  evidence?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  project_workspace?: boolean;
+  workspace_id?: string | null;
+}
+
+export interface MemoryItemActionResponse {
+  item_id: string;
+  status: string;
+}
+
+export interface MemoryCandidate {
+  candidate_id: string;
+  scope_type: string;
+  scope_id: string;
+  kind: string;
+  title: string;
+  content: string;
+  status: string;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryCandidateListResponse {
+  candidates: MemoryCandidate[];
+  total: number;
+  status: string;
+  scope_type: string;
+  scope_id: string;
+  limit: number;
+}
+
+export interface MemoryTurn {
+  turn_id: number;
+  session_id: string;
+  role: string;
+  content: string;
+  source: string;
+  created_at: string;
+  metadata: Record<string, unknown>;
+  keywords: string[];
+}
+
+export interface MemoryTurnSearchResponse {
+  turns: MemoryTurn[];
+  total: number;
+  query: string;
+  chat_address: string;
+  source: string;
+  role: string;
+  limit: number;
+}
+
+export interface MemoryProjectRequest {
+  scope_type: string;
+  scope_id: string;
+  workspace_id?: string | null;
+}
+
+export interface MemoryProjectResponse {
+  status: string;
+  workspace_id: string;
+  scope_type: string;
+  scope_id: string;
+}
+
 export interface FileEntry {
   name: string;
   path: string;

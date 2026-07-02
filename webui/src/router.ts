@@ -62,6 +62,12 @@ const routes: RouteRecordRaw[] = [
         meta: { label: "Sessions", icon: "MessageSquare" },
       },
       {
+        path: "memory",
+        name: "memory",
+        component: () => import("@/features/memory/MemoryPage.vue"),
+        meta: { label: "Memory", icon: "Database" },
+      },
+      {
         path: "files",
         name: "files",
         component: () => import("@/features/files/FilesPage.vue"),
