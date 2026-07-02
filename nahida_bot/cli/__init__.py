@@ -43,6 +43,16 @@ def start(
     log_file_level: str | None = typer.Option(
         None, help="File log level; defaults to log_level"
     ),
+    log_file_max_bytes: int | None = typer.Option(
+        None,
+        "--log-file-max-bytes",
+        help="Rotate log file at this size in bytes; 0 disables rotation.",
+    ),
+    log_file_backup_count: int | None = typer.Option(
+        None,
+        "--log-file-backup-count",
+        help="Number of rotated backup files to keep.",
+    ),
 ) -> None:
     """Start the Nahida Bot application."""
     overrides: dict[str, Any] = {"debug": debug}
@@ -50,6 +60,10 @@ def start(
         overrides["log_file"] = log_file
     if log_file_level is not None:
         overrides["log_file_level"] = log_file_level
+    if log_file_max_bytes is not None:
+        overrides["log_file_max_bytes"] = log_file_max_bytes
+    if log_file_backup_count is not None:
+        overrides["log_file_backup_count"] = log_file_backup_count
     settings = load_settings(config_yaml=config_yaml, **overrides)
 
     console.print(f"[bold cyan]Config YAML Path: {config_yaml}[/bold cyan]")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, cast
 
@@ -185,6 +186,8 @@ def configure_logging(
     log_file: str | None = None,
     log_file_level: str | None = None,
     log_file_json: bool = True,
+    log_file_max_bytes: int = 0,
+    log_file_backup_count: int = 0,
     dependency_log_level: str = "WARNING",
     logger_levels: dict[str, str] | None = None,
 ) -> None:
@@ -270,7 +273,16 @@ def configure_logging(
     if log_file:
         log_path = Path(log_file).expanduser()
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        # RotatingFileHandler with maxBytes=0 performs no size-based rollover
+        # (its shouldRollover always returns 0), so it behaves like a plain
+        # FileHandler when rotation is disabled. Set both max_bytes and
+        # backup_count > 0 to rotate by file size.
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=max(log_file_max_bytes, 0),
+            backupCount=max(log_file_backup_count, 0),
+            encoding="utf-8",
+        )
         file_handler.setLevel(
             _minimum_level(file_level, dependency_level, overrides=logger_levels)
         )

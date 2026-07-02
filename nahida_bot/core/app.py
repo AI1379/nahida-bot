@@ -81,6 +81,8 @@ class Application:
             log_file=self.settings.log_file,
             log_file_level=self.settings.log_file_level,
             log_file_json=self.settings.log_file_json,
+            log_file_max_bytes=self.settings.log_file_max_bytes,
+            log_file_backup_count=self.settings.log_file_backup_count,
             dependency_log_level=self.settings.dependency_log_level,
             logger_levels=self.settings.logger_levels,
         )

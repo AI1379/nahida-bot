@@ -12,6 +12,11 @@ log_level: "INFO"        # DEBUG / INFO / WARNING / ERROR（控制台级别）
 log_file: "./data/logs/nahida.log"
 log_file_level: "DEBUG"
 log_file_json: true
+# 按文件大小滚动日志：单文件达到 log_file_max_bytes 后轮转，最多保留
+# log_file_backup_count 个历史备份（nahida.log.1、nahida.log.2 …）。
+# max_bytes=0 表示不滚动（日志文件会无限增长）。默认 10 MiB × 5 份。
+log_file_max_bytes: 10485760          # 单个日志文件上限（字节），0 = 不滚动
+log_file_backup_count: 5             # 保留的滚动备份数
 dependency_log_level: "WARNING"       # 三方库默认日志级别；避免 DEBUG 时被 httpx/websockets 等刷屏
 # logger_levels:                      # 可选：按 logger 名覆盖（注意：会同时作用于控制台与文件）
 #   nahida_bot.agent: "DEBUG"

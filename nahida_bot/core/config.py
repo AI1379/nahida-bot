@@ -322,6 +322,8 @@ class Settings(BaseModel):
     log_file: str | None = None
     log_file_level: str | None = None
     log_file_json: bool = True
+    log_file_max_bytes: int = Field(default=10485760, ge=0)  # 10 MB; 0 = no rotation
+    log_file_backup_count: int = Field(default=5, ge=0)  # 0 = keep no backups
     dependency_log_level: str = "WARNING"
     logger_levels: dict[str, str] = Field(default_factory=dict)
 

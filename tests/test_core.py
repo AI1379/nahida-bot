@@ -67,6 +67,8 @@ class TestSettings:
         assert settings.log_file is None
         assert settings.log_file_level is None
         assert settings.log_file_json is True
+        assert settings.log_file_max_bytes == 10485760
+        assert settings.log_file_backup_count == 5
         assert settings.dependency_log_level == "WARNING"
         assert settings.logger_levels == {}
         assert settings.port == 6185
@@ -81,6 +83,8 @@ class TestSettings:
             log_file="./data/logs/nahida.log",
             log_file_level="DEBUG",
             log_file_json=True,
+            log_file_max_bytes=2048,
+            log_file_backup_count=3,
             dependency_log_level="ERROR",
             logger_levels={"nahida_bot.agent": "DEBUG", "httpx": "WARNING"},
             host="0.0.0.0",
@@ -93,6 +97,8 @@ class TestSettings:
         assert settings.log_file == "./data/logs/nahida.log"
         assert settings.log_file_level == "DEBUG"
         assert settings.log_file_json is True
+        assert settings.log_file_max_bytes == 2048
+        assert settings.log_file_backup_count == 3
         assert settings.dependency_log_level == "ERROR"
         assert settings.logger_levels == {
             "nahida_bot.agent": "DEBUG",
@@ -145,6 +151,55 @@ class TestLogging:
             assert "info.in_both" in console_output
             assert "debug.only_in_file" in file_output
             assert "info.in_both" in file_output
+        finally:
+            monkeypatch.setattr(logging_config, "_configured", False)
+            for handler in list(logging.getLogger().handlers):
+                if getattr(handler, logging_config._HANDLER_ATTR, False):
+                    logging.getLogger().removeHandler(handler)
+                    handler.close()
+
+    def test_file_handler_rotates_by_size(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """RotatingFileHandler rolls over once the file exceeds max_bytes."""
+        from logging.handlers import RotatingFileHandler
+
+        from nahida_bot.core import logging as logging_config
+
+        monkeypatch.setattr(logging_config, "_configured", False)
+        log_file = tmp_path / "nahida.log"
+
+        try:
+            logging_config.configure_logging(
+                debug=False,
+                log_level="INFO",
+                log_file=str(log_file),
+                log_file_level="DEBUG",
+                log_file_max_bytes=256,
+                log_file_backup_count=2,
+            )
+
+            # Confirm the handler is actually a rotating one, wired with the
+            # configured limits.
+            rotating = next(
+                h
+                for h in logging.getLogger().handlers
+                if isinstance(h, RotatingFileHandler)
+            )
+            assert rotating.maxBytes == 256
+            assert rotating.backupCount == 2
+
+            logger = structlog.get_logger("nahida_bot.tests.logging")
+            for i in range(200):
+                logger.info("rotation.filler", index=i, payload="x" * 32)
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+
+            # Rotation should have produced at least one numbered backup.
+            backup_files = list(tmp_path.glob("nahida.log.*"))
+            assert backup_files, "expected at least one rotated backup file"
         finally:
             monkeypatch.setattr(logging_config, "_configured", False)
             for handler in list(logging.getLogger().handlers):
