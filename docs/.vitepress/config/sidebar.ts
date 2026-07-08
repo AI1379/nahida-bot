@@ -119,6 +119,10 @@ export const sidebar: DefaultTheme.Sidebar = {
           link: "/design/tool-produced-image-media-design",
         },
         {
+          text: "GPT-SoVITS 语音输出",
+          link: "/design/gpt-sovits-voice",
+        },
+        {
           text: "AgentLoop 改造计划",
           link: "/design/agent-loop-repair-plan",
         },
