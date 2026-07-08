@@ -1,0 +1,98 @@
+id: tts
+name: "Text-to-Speech (speak)"
+version: "0.1.0"
+description: "Synthesize voice via the unified TTS layer (GPT-SoVITS adapter) and send it as a voice message"
+entrypoint: "nahida_bot.plugins.tts.plugin:TtsPlugin"
+load_phase: "post-agent"
+permissions:
+  filesystem:
+    read:
+      - workspace
+    write:
+      - workspace
+  network:
+    outbound:
+      - "*"
+capabilities:
+  tools:
+    - name: speak
+      description: Synthesize speech from text and send it to the current chat as a voice message
+config:
+  enabled: false
+  default_backend: "default"
+  backends: {}
+  voices: {}
+  default_voice: ""
+  output_dir: "generated/audio"
+  auto_send: true
+  command_names:
+    - speak
+    - 说话
+  attachment_type: "voice"
+  max_text_length: 300
+  max_calls_per_24h: 0
+  max_concurrency: 1
+config_schema:
+  type: object
+  properties:
+    enabled:
+      type: boolean
+      default: false
+      description: Enable the speak command and tool.
+    default_backend:
+      type: string
+      default: "default"
+      description: Default backend key in `backends` to use for synthesis.
+    backends:
+      type: object
+      description: |
+        TTS backend instances keyed by name. Each must carry a `type`
+        discriminator selecting a registered provider adapter. For GPT-SoVITS
+        api_v2 use `type: gpt-sovits-v2` with base_url/media_type/etc.
+      additionalProperties: true
+    voices:
+      type: object
+      description: |
+        Voice definitions keyed by name. Provider-specific; GPT-SoVITS voices
+        carry ref_audio_path/prompt_text/prompt_lang (server-side paths). Each
+        may set `backend` to override default_backend.
+      additionalProperties: true
+    default_voice:
+      type: string
+      default: ""
+      description: Fallback voice name when none is resolved.
+    output_dir:
+      type: string
+      default: "generated/audio"
+      description: Workspace-relative directory for synthesized audio files.
+    auto_send:
+      type: boolean
+      default: true
+      description: Send synthesized voice to the current chat by default.
+    command_names:
+      type: array
+      items:
+        type: string
+      default: ["speak", "说话"]
+      description: Slash command name followed by aliases.
+    attachment_type:
+      type: string
+      default: "voice"
+      enum: ["voice", "audio"]
+      description: Outbound Attachment.type for the voice message.
+    max_text_length:
+      type: integer
+      default: 300
+      minimum: 1
+      description: Max characters per synthesis; longer text is truncated.
+    max_calls_per_24h:
+      type: integer
+      default: 0
+      minimum: 0
+      description: Max synthesis calls in a rolling 24h window; 0 disables the limit.
+    max_concurrency:
+      type: integer
+      default: 1
+      minimum: 1
+      maximum: 16
+      description: Max concurrent synthesis calls (GPT-SoVITS single instance is usually 1).

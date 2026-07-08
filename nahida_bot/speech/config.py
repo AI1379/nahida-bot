@@ -25,13 +25,14 @@ class TtsConfig(BaseModel):
     voices: dict[str, dict[str, Any]] = Field(default_factory=dict)
     default_voice: str = ""
 
-    # Bot-side behaviour (provider-agnostic).
+    # Bot-side behaviour (provider-agnostic; enforced by the speak plugin).
     output_dir: str = "generated/audio"
     auto_send: bool = True
     command_names: list[str] = Field(default_factory=lambda: ["speak", "说话"])
     attachment_type: str = "voice"  # voice | audio
     max_text_length: int = Field(default=300, ge=1)
     max_calls_per_24h: int = Field(default=0, ge=0)
+    max_concurrency: int = Field(default=1, ge=1, le=16)
 
     def backend_raw(self, name: str = "") -> tuple[str, dict[str, Any]]:
         """Return ``(backend_name, raw)`` for the selected backend.
