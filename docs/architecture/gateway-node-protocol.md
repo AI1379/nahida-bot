@@ -647,6 +647,61 @@ V1 不开放以下高风险能力（显式声明、显式授权、可审计后�
 
 Node WebSocket endpoint 是独立长连接通道，不经过 `WebHostService`（webhook 扩展点）。两者并存：webhook 走 `/webhooks/{path}`，node 走 `/api/nodes/ws`。
 
+### 15.4 Python Worker Node 的能力来源（设计方向，暂不实现）
+
+当前 `nahida_bot/node/` 是 SDK + 测试对端，没有定义「一个 Python node 进程启动时能力从哪来」。长期方向是**复用现有插件系统**：同一个插件，装在 gateway 端就是 gateway 的工具（通过 `api.register_tool`），装在 node 端就由 node 把它的能力暴露成 capability 给 gateway 远程调用。位置决定角色，不搞第二套插件系统。
+
+核心机制：
+
+```text
+node 进程                              gateway 进程
+┌─────────────────────┐               ┌──────────────────────────┐
+│ 插件 on_load        │               │ AgentLoop                │
+│  api.register_tool( │               │  调用 web_search         │
+│    "web_search",h)  │               │      ↓                   │
+│       ↓             │               │ ToolRegistry 查找        │
+│ NodeBotAPI          │               │  发现 web_search 在 node │
+│  → capability       │──register────►│  → NodeToolBridge        │
+│    "tool.web_search"│               │      ↓                   │
+│  + 本地 handler h   │◄──invoke──────│ NodeInvoker.invoke       │
+│      ↓ 执行 h       │──response────►│      ↓                   │
+│  返回结果           │               │ 结果回到 Agent           │
+└─────────────────────┘               └──────────────────────────┘
+```
+
+需要的新组件：
+
+1. **`NodeBotAPI`**（实现 `BotAPI` 协议）：node 端的 BotAPI 实现，按方法类别分流。
+2. **`NodeToolBridge`**（gateway 侧）：监听 node register，把 `tool.*` capability 自动注册成 `ToolEntry`（handler 走 `NodeInvoker.invoke`）；node 断线时自动注销。
+
+`BotAPI` 的 ~40 个方法在 node 端分三类处理：
+
+| 类别 | 方法 | node 端策略 |
+|------|------|------------|
+| 工具/命令注册 | `register_tool` / `register_command` | 转 capability（`tool.{name}`），本地保留 handler |
+| 事件订阅 | `subscribe` / `on_event` | 告诉 gateway 订阅，事件经 WebSocket 转发 |
+| workspace/memory/llm | `workspace_read` / `memory_search` / `llm_chat` | RPC 回 gateway（需新增 node→gateway 方法） |
+| session/message_router | `request_agent_response` / `start_new_session` | 不支持（依赖 `EventBus.context.app` 反向引用） |
+| channel/provider | `register_channel` / `register_provider_type` | 不支持（必须在 gateway） |
+| plugin_data | `plugin_data_get/set` | 本地 SQLite（node 自带轻量存储） |
+| logger/tasks | `logger` / `spawn_task` | 本地实现，无依赖 |
+
+已知约束（来自插件系统依赖边界审计）：
+
+- `plugin_data_*` 在 repo 为 None 时**硬抛 RuntimeError**（而 memory/workspace 静默降级）。node 必须自带本地 plugin_data store，否则 kb、mcp 等插件 on_load 就会崩。
+- `EventBus.context.app` 反向引用是 node 端的天生障碍——`start_new_session` / `get_active_session_id` / `get_session_run_status` / `request_agent_response` 四个方法无法在 node 直接工作。
+- 不是所有插件都能跑在 node：channel/provider 插件必须在 gateway；依赖 `message_router` 的插件不适合。需要 manifest 加 `node_compatible` 或 `requires` 声明。
+
+分阶段方案：
+
+| 阶段 | 范围 | 验收 |
+|------|------|------|
+| A | `NodeBotAPI` 基础版：`register_tool`→capability、`logger`/`spawn_task` 本地、其余不支持 | 纯计算/外部 API 插件（web_fetch、image_generate）能在 node 跑，gateway 自动桥接成 Agent tool |
+| B | node→gateway RPC：`workspace_read`/`memory_search`/`llm_chat` 远程调用 | 依赖宿主服务的插件也能在 node 跑 |
+| C | manifest `node_compatible`/`requires` 声明 + `nahida-bot node` CLI | operator 能指定插件目录启动 node |
+
+当前状态：**暂不实现**，优先推进 #9（Desktop，走 Rust node）。阶段 A 是后续 Python worker（GPU 推理节点等）的基础。
+
 ## 16. 待决问题
 
 - 首版是否需要支持一个 Gateway 同时连接多个 Desktop Node（多设备）。当前倾向支持，但授权策略首版简化为「owner 全权」。
@@ -657,6 +712,7 @@ Node WebSocket endpoint 是独立长连接通道，不经过 `WebHostService`（
 - Node 离线后 Gateway 保留最近状态多久供 REST 查询。
 - capability.invoke 是否支持流式/分片结果（例如长 TTS 音频分段）。首版不支持，走 SpeechArtifact 引用。
 - 是否需要 node-to-node 中转（Gateway 路由两个 node 通信）。首版不支持。
+- Python worker node 的能力来源：复用插件系统 + NodeBotAPI 方案（见 §15.4），暂不实现，待 #9 Desktop 落地后再推进。
 
 ## 17. 实施里程碑
 
@@ -670,5 +726,6 @@ Node WebSocket endpoint 是独立长连接通道，不经过 `WebHostService`（
 | M4 Python Node Client | `nahida_bot/node/` | Python node ↔ Gateway 全链路集成测试通过 |
 | M5 Desktop Rust Node | `desktop/src-tauri/gateway_node/` | Desktop 作为 node 连接，Rust parse 同一批 fixtures |
 | M6 Capability 桥接 | DisplayPlan 投递、capability 真实执行 | Gateway 能通过 capability 控制 Desktop 表现 |
+| M7 Python Worker Node | `NodeBotAPI` + `NodeToolBridge` + `nahida-bot node` CLI（见 §15.4） | 插件装在 node 端，Agent 无感知远程调用 |
 
-里程碑 M1-M4 属于本轮 gateway+node 架构推进范围；M5-M6 属于 Desktop 接入，依赖协议稳定。
+里程碑 M1-M4 属于本轮 gateway+node 架构推进范围；M5-M6 属于 Desktop 接入，依赖协议稳定；M7 是 Python worker node 的长期方向，暂不实现。
