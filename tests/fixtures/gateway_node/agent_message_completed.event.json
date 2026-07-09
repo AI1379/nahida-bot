@@ -1,0 +1,28 @@
+{
+  "_comment": "Agent completed a reply; carries display_plan for Desktop Live2D/TTS. Gateway -> Node event.",
+  "version": "1.0",
+  "kind": "event",
+  "event": "agent.message.completed",
+  "payload": {
+    "session_id": "milky:private:10001",
+    "source": "agent",
+    "text": "今天的计划已经整理好了。",
+    "display_plan": {
+      "version": "1.0",
+      "text": "今天的计划已经整理好了。",
+      "segments": [
+        {
+          "text": "今天的计划已经整理好了。",
+          "emotion": "happy",
+          "motion": "nod",
+          "pause_after_ms": 250,
+          "voice": {
+            "style": "bright",
+            "speed": 1.0,
+            "pitch": 0
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "_comment": "Node submits user input from Desktop bubble input box to a session. Method node.input.submit.",
+  "version": "1.0",
+  "kind": "request",
+  "id": "req_input_001",
+  "method": "node.input.submit",
+  "payload": {
+    "session_id": "milky:private:10001",
+    "text": "帮我看看今天的日程"
+  }
+}

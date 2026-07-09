@@ -1,0 +1,15 @@
+{
+  "_comment": "Capability invoke timed out waiting for node response.",
+  "version": "1.0",
+  "kind": "response",
+  "id": "req_invoke_101",
+  "ok": false,
+  "error": {
+    "code": "capability_timeout",
+    "message": "Node did not respond within timeout",
+    "retryable": true,
+    "details": {
+      "timeout_ms": 10000
+    }
+  }
+}

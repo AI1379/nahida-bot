@@ -22,6 +22,7 @@ from nahida_bot.gateway.services.webui_auth import WebUIAuthService
 
 if TYPE_CHECKING:
     from nahida_bot.core.app import Application
+    from nahida_bot.gateway.services.node_event_bridge import NodeEventBridge
 
 logger = structlog.get_logger(__name__)
 
@@ -70,7 +71,42 @@ class WebAPIApp:
         self._auth_token = auth_token
         self._server: uvicorn.Server | None = None
         self._serve_task: asyncio.Task[None] | None = None
+        self._node_event_bridge: NodeEventBridge | None = None
+        self._init_node_services(application)
         self._fastapi = self._build_fastapi(cors_origins or ["*"])
+
+    def _init_node_services(self, application: Application) -> None:
+        """Initialize Gateway-Node protocol services.
+
+        Services live on the ``WebAPIApp`` instance so they outlive individual
+        WebSocket connections and can be shared with REST routes. The protocol
+        layer is enabled by default; set ``webapi.nodes.enabled: false`` to
+        disable the WebSocket endpoint entirely.
+        """
+        from nahida_bot.gateway.services.node_auth import NodeAuthService
+        from nahida_bot.gateway.services.node_invoker import NodeInvoker
+        from nahida_bot.gateway.services.node_registry import NodeRegistry
+
+        cfg = application.settings.webapi.nodes
+        self.node_registry = (
+            NodeRegistry(
+                heartbeat_interval_ms=cfg.heartbeat_interval_ms,
+                heartbeat_timeout_ms=cfg.heartbeat_timeout_ms,
+            )
+            if cfg.enabled
+            else None
+        )
+        self.node_auth = (
+            NodeAuthService(
+                pairing_ttl_seconds=cfg.pairing_ttl_seconds,
+                default_ttl_seconds=cfg.node_token_ttl_seconds,
+            )
+            if cfg.enabled
+            else None
+        )
+        self.node_invoker = (
+            NodeInvoker(self.node_registry) if cfg.enabled else None  # type: ignore[arg-type]
+        )
 
     @property
     def fastapi_app(self) -> FastAPI:
@@ -86,6 +122,9 @@ class WebAPIApp:
         app.state.application = self._application
         app.state.auth_token = self._auth_token
         app.state.webui_auth = WebUIAuthService(self._application.settings.webui.auth)
+        app.state.node_registry = self.node_registry
+        app.state.node_auth = self.node_auth
+        app.state.node_invoker = self.node_invoker
 
         app.add_middleware(
             CORSMiddleware,
@@ -122,6 +161,13 @@ class WebAPIApp:
         app.include_router(health_router)
         app.include_router(bootstrap_router)
         app.include_router(auth_router)
+
+        # Node WebSocket endpoint is unauthenticated at the HTTP layer; the
+        # WebSocket handshake performs its own token verification.
+        if self.node_registry is not None:
+            from nahida_bot.gateway.node_protocol.routes import router as node_ws_router
+
+            app.include_router(node_ws_router)
 
         @app.api_route(
             "/webhooks/{path:path}",
@@ -164,6 +210,11 @@ class WebAPIApp:
         app.include_router(plugins_router, dependencies=[Depends(require_token)])
         app.include_router(skills_router, dependencies=[Depends(require_token)])
         app.include_router(kb_router, dependencies=[Depends(require_token)])
+
+        if self.node_registry is not None:
+            from nahida_bot.gateway.routes.nodes import router as nodes_router
+
+            app.include_router(nodes_router, dependencies=[Depends(require_token)])
 
         # Mount WebUI static assets if build output exists
         self._mount_webui(app)
@@ -255,9 +306,23 @@ class WebAPIApp:
         self._fastapi.state.event_broadcaster = broadcaster
         await broadcaster.start()
 
+        # Initialize node event bridge (forwards core events to online nodes).
+        if self.node_registry is not None:
+            from nahida_bot.gateway.services.node_event_bridge import NodeEventBridge
+
+            self._node_event_bridge = NodeEventBridge(
+                self._application, self.node_registry
+            )
+            await self._node_event_bridge.start()
+
         logger.info("webapi.started", host=self._host, port=self._port)
 
     async def stop(self) -> None:
+        # Stop node event bridge
+        if self._node_event_bridge is not None:
+            await self._node_event_bridge.stop()
+            self._node_event_bridge = None
+
         # Stop SSE broadcaster
         broadcaster = getattr(self._fastapi.state, "event_broadcaster", None)
         if broadcaster is not None:

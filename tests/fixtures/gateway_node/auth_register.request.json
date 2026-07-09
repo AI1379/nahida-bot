@@ -1,0 +1,39 @@
+{
+  "_comment": "Node registers itself with capabilities after WebSocket auth. Method node.register.",
+  "version": "1.0",
+  "kind": "request",
+  "id": "req_register_001",
+  "method": "node.register",
+  "payload": {
+    "node_id": "desktop-local",
+    "display_name": "Nahida Desktop",
+    "node_type": "desktop",
+    "capabilities": [
+      {
+        "name": "desktop.live2d.set_expression",
+        "version": "1.0",
+        "direction": "gateway_to_node",
+        "risk": "low",
+        "description": "Set Live2D expression by expression id"
+      },
+      {
+        "name": "desktop.live2d.play_motion",
+        "version": "1.0",
+        "direction": "gateway_to_node",
+        "risk": "low",
+        "description": "Play Live2D motion by group and motion id"
+      },
+      {
+        "name": "desktop.notification.show",
+        "version": "1.0",
+        "direction": "gateway_to_node",
+        "risk": "low",
+        "description": "Show a native desktop notification"
+      }
+    ],
+    "metadata": {
+      "platform": "windows",
+      "app_version": "0.1.0"
+    }
+  }
+}

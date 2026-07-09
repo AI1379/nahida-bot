@@ -1,0 +1,10 @@
+{
+  "_comment": "Capability invoke success response from node.",
+  "version": "1.0",
+  "kind": "response",
+  "id": "req_invoke_099",
+  "ok": true,
+  "payload": {
+    "applied": true
+  }
+}

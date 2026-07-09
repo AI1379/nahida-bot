@@ -132,6 +132,18 @@ class SchedulerConfigModel(BaseModel):
     memory_dreaming_model: str = ""
 
 
+class NodeProtocolConfigModel(BaseModel):
+    """Gateway-Node protocol configuration (WebSocket node layer)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = True
+    heartbeat_interval_ms: int = Field(default=15000, ge=1000)
+    heartbeat_timeout_ms: int = Field(default=45000, ge=2000)
+    pairing_ttl_seconds: int = Field(default=600, ge=10)
+    node_token_ttl_seconds: int = Field(default=0, ge=0, description="0 = no expiry")
+
+
 class WebAPIConfigModel(BaseModel):
     """WebAPI service configuration."""
 
@@ -142,6 +154,7 @@ class WebAPIConfigModel(BaseModel):
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
     host: str = ""
     port: int = 0
+    nodes: NodeProtocolConfigModel = NodeProtocolConfigModel()
 
 
 class WebUIAuthConfigModel(BaseModel):

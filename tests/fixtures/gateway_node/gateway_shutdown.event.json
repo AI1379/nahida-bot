@@ -1,0 +1,10 @@
+{
+  "_comment": "Gateway is shutting down; node should back off and reconnect after retry_after_ms.",
+  "version": "1.0",
+  "kind": "event",
+  "event": "gateway.shutdown",
+  "payload": {
+    "reason": "graceful_restart",
+    "retry_after_ms": 5000
+  }
+}

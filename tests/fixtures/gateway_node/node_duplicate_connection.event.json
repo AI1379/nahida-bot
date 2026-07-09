@@ -1,0 +1,10 @@
+{
+  "_comment": "A new connection with the same node_id superseded this one; current connection will be closed.",
+  "version": "1.0",
+  "kind": "event",
+  "event": "node.duplicate_connection",
+  "payload": {
+    "node_id": "desktop-local",
+    "new_session_id": "node_session_01JZ0000CD"
+  }
+}

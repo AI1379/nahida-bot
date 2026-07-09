@@ -1,0 +1,14 @@
+{
+  "_comment": "Gateway invokes a Live2D capability on the node. Method capability.invoke.",
+  "version": "1.0",
+  "kind": "request",
+  "id": "req_invoke_099",
+  "method": "capability.invoke",
+  "payload": {
+    "invoke_id": "inv_01JZ0000ZZ",
+    "capability": "desktop.live2d.set_expression",
+    "arguments": {
+      "expression": "happy"
+    }
+  }
+}

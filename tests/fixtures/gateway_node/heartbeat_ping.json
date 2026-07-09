@@ -1,0 +1,9 @@
+{
+  "_comment": "Heartbeat ping; can be sent by either side. type=ping.",
+  "version": "1.0",
+  "kind": "heartbeat",
+  "payload": {
+    "type": "ping",
+    "ts": 1752100000000
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "_comment": "Node reports local state summary (window/model/tts/render mode). Node -> Gateway event.",
+  "version": "1.0",
+  "kind": "event",
+  "event": "node.state.updated",
+  "payload": {
+    "state": {
+      "window": {
+        "mode": "emerged",
+        "interaction": "interactive",
+        "render_mode": "speaking"
+      },
+      "model": {
+        "model_id": "nahida-default",
+        "name": "Nahida Default"
+      },
+      "tts": {
+        "playing": true,
+        "artifact_id": "speech_abc123"
+      },
+      "connection": "online"
+    }
+  }
+}

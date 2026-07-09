@@ -1,0 +1,136 @@
+"""Tests for NodeRegistry: registration, duplicate displace, lookup, offline."""
+
+from __future__ import annotations
+
+
+from nahida_bot.gateway.node_protocol.schemas import NodeCapability
+from nahida_bot.gateway.node_protocol.sessions import (
+    NodeSession,
+    NodeSessionState,
+)
+from nahida_bot.gateway.services.node_registry import NodeRegistry
+
+
+def _caps(*names: str) -> list[NodeCapability]:
+    return [NodeCapability(name=n) for n in names]
+
+
+def test_register_session_makes_node_online() -> None:
+    registry = NodeRegistry()
+    session = NodeSession(session_id="temp", node_id="desktop-1")
+
+    registry.register_session(
+        session,
+        node_id="desktop-1",
+        display_name="Desktop",
+        node_type="desktop",
+        capabilities=_caps("desktop.live2d.set_expression"),
+        metadata={},
+    )
+
+    assert session.state == NodeSessionState.ONLINE
+    assert session.node_id == "desktop-1"
+    online = registry.get_online_session("desktop-1")
+    assert online is session
+    assert online.get_capability("desktop.live2d.set_expression") is not None
+
+
+def test_find_capability_owner_returns_online_session() -> None:
+    registry = NodeRegistry()
+    s1 = NodeSession(session_id="t", node_id="n1")
+    s2 = NodeSession(session_id="t", node_id="n2")
+    registry.register_session(
+        s1,
+        node_id="n1",
+        display_name="a",
+        node_type="desktop",
+        capabilities=_caps("desktop.audio.play"),
+        metadata={},
+    )
+    registry.register_session(
+        s2,
+        node_id="n2",
+        display_name="b",
+        node_type="desktop",
+        capabilities=_caps("desktop.notification.show"),
+        metadata={},
+    )
+
+    assert registry.find_capability_owner("desktop.audio.play") is s1
+    assert registry.find_capability_owner("desktop.notification.show") is s2
+    assert registry.find_capability_owner("missing.cap") is None
+
+
+def test_duplicate_node_id_displaces_old_session() -> None:
+    registry = NodeRegistry()
+    old = NodeSession(session_id="t", node_id="desktop-1")
+    registry.register_session(
+        old,
+        node_id="desktop-1",
+        display_name="old",
+        node_type="desktop",
+        capabilities=_caps("desktop.live2d.set_expression"),
+        metadata={},
+    )
+
+    new = NodeSession(session_id="t", node_id="desktop-1")
+    registry.register_session(
+        new,
+        node_id="desktop-1",
+        display_name="new",
+        node_type="desktop",
+        capabilities=_caps("desktop.live2d.set_expression"),
+        metadata={},
+    )
+
+    assert old.state == NodeSessionState.OFFLINE
+    assert new.state == NodeSessionState.ONLINE
+    assert registry.get_online_session("desktop-1") is new
+
+
+def test_mark_offline_clears_node_index() -> None:
+    registry = NodeRegistry()
+    session = NodeSession(session_id="t", node_id="desktop-1")
+    registry.register_session(
+        session,
+        node_id="desktop-1",
+        display_name="d",
+        node_type="desktop",
+        capabilities=[],
+        metadata={},
+    )
+    assert registry.get_online_session("desktop-1") is session
+
+    registry.mark_offline(session)
+
+    assert session.state == NodeSessionState.OFFLINE
+    assert registry.get_online_session("desktop-1") is None
+    assert registry.get_session(session.session_id) is None
+
+
+def test_list_online_nodes_returns_summaries() -> None:
+    registry = NodeRegistry()
+    s = NodeSession(session_id="t", node_id="desktop-1")
+    registry.register_session(
+        s,
+        node_id="desktop-1",
+        display_name="Desktop",
+        node_type="desktop",
+        capabilities=_caps("desktop.live2d.set_expression"),
+        metadata={"platform": "windows"},
+    )
+
+    summaries = registry.list_online_nodes()
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert summary["node_id"] == "desktop-1"
+    assert summary["state"] == "online"
+    assert summary["online"] is True
+    assert isinstance(summary["capabilities"], list)
+
+
+def test_state_summary_update_and_get() -> None:
+    registry = NodeRegistry()
+    registry.update_state_summary("desktop-1", {"window": {"mode": "emerged"}})
+    assert registry.get_state_summary("desktop-1") == {"window": {"mode": "emerged"}}
+    assert registry.get_state_summary("unknown") is None

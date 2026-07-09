@@ -1,0 +1,12 @@
+{
+  "_comment": "Capability invoke denied: caller not authorized or capability not registered.",
+  "version": "1.0",
+  "kind": "response",
+  "id": "req_invoke_100",
+  "ok": false,
+  "error": {
+    "code": "capability_denied",
+    "message": "Caller is not authorized to invoke desktop.live2d.set_expression",
+    "retryable": false
+  }
+}

@@ -123,6 +123,10 @@ export const sidebar: DefaultTheme.Sidebar = {
           link: "/design/gpt-sovits-voice",
         },
         {
+          text: "Live2D 动作智能层",
+          link: "/design/live2d-motion-intelligence",
+        },
+        {
           text: "AgentLoop 改造计划",
           link: "/design/agent-loop-repair-plan",
         },

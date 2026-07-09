@@ -55,6 +55,7 @@ Nahida Bot 的核心目标：
 | [security-observability.md](security-observability.md) | 安全基线与可观测性要求 |
 | [priorities-and-strategy.md](priorities-and-strategy.md) | 模块优先级与开发策略 |
 | [event-system.md](event-system.md) | 类型安全事件系统设计 |
+| [gateway-node-protocol.md](gateway-node-protocol.md) | Gateway-Node WebSocket 协议设计（envelope、生命周期、capability、鉴权） |
 
 ## 与 ROADMAP 的关系
 

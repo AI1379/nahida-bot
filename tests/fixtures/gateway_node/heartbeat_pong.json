@@ -1,0 +1,10 @@
+{
+  "_comment": "Heartbeat pong; should reference the most recent ping ts.",
+  "version": "1.0",
+  "kind": "heartbeat",
+  "payload": {
+    "type": "pong",
+    "ts": 1752100000120,
+    "echo_ts": 1752100000000
+  }
+}

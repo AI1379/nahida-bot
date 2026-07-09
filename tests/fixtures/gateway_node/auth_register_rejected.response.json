@@ -1,0 +1,13 @@
+{
+  "_comment": "Gateway rejects registration, e.g. node_type invalid or node_id policy violation.",
+  "version": "1.0",
+  "kind": "response",
+  "id": "req_register_002",
+  "ok": false,
+  "error": {
+    "code": "register_rejected",
+    "message": "node_type 'unknown' is not allowed",
+    "retryable": false,
+    "details": { "field": "node_type" }
+  }
+}

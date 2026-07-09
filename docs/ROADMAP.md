@@ -1054,21 +1054,34 @@ MVP 验收：
 
 目标：实现 Python 版远程节点控制能力。
 
+> 当前进度：**协议核心已完成（里程碑 M1-M4）**。Wire protocol、Python Protocol SDK（服务端）、Gateway 集成（WS endpoint + REST + pairing + 事件桥）和 Python Node Client SDK 均已落地，Python node ↔ Gateway 全链路集成测试通过。后续重点是 Desktop Rust node 接入（M5）和 capability 真实执行桥接（M6）。
+>
+> 详细协议规范见 [architecture/gateway-node-protocol.md](architecture/gateway-node-protocol.md)。
+
 任务清单：
 
-- [ ] 完成 Gateway 服务（FastAPI 控制 API + 节点连接端点）。
-- [ ] 固定 WebSocket 协议（消息类型、版本字段、错误码、兼容策略）。
-- [ ] 实现节点配对、令牌签名、会话续期。
-- [ ] 实现心跳、超时判定、断线重连、节点状态机。
-- [ ] 打通命令下发、结果回传、超时取消、输出截断。
-- [ ] 增加命令白名单、执行审计、敏感字段脱敏。
+- [x] 固定 WebSocket 协议（envelope、消息类型、版本字段、错误码、兼容策略）。
+- [x] 新增 `tests/fixtures/gateway_node/*.json` 跨语言报文样例（14 个 fixture 作为 Python/Rust 契约基线）。
+- [x] 实现 Python Protocol SDK（`nahida_bot/gateway/node_protocol/`：schemas/dispatcher/sessions/errors/auth）。
+- [x] 实现 Gateway 服务（`node_registry`/`node_auth`/`node_invoker` + FastAPI 控制 API `/api/nodes/*` + WebSocket endpoint `/api/nodes/ws`）。
+- [x] 实现节点配对（pairing token 一次性换取 node token）、令牌签名（sha256 digest 存储）、会话续期。
+- [x] 实现心跳（ping/pong）、超时判定、断线重连、节点状态机。
+- [x] 打通命令下发（`capability.invoke`）、结果回传、超时取消、输出截断（argument audit 摘要）。
+- [x] 实现执行审计（`InvokeAuditEntry`：caller/node/capability/arguments 摘要/结果/耗时）。
+- [x] 实现核心事件桥（`NodeEventBridge`：将 agent.message.*/plugin.error 等事件转发给在线 node）。
+- [x] 实现 Python Node Client SDK（`nahida_bot/node/`：client + capability registry，含重连/心跳/注册）。
+- [x] 验证 Python node ↔ Gateway 全链路集成测试（连接/鉴权/注册/capability 调用/事件）。
+- [ ] 增加 capability 授权策略（首版 owner 全权，后续按 user/session/plugin 细化）。
 - [ ] 验证多节点长期连接稳定性与协议回归测试。
+- [ ] Desktop Rust node 接入（`desktop/src-tauri/gateway_node/`，parse 同一批 fixtures 对齐）。
+- [ ] capability 真实执行桥接（DisplayPlan 投递、Live2D/audio/notification 真实调用）。
 
 前置依赖：Phase 4。
 
 风险控制：协议一旦对外开放，默认只做向后兼容变更。
 
 参考来源：OpenClaw（Gateway-Node 模式）、FastAPI WebSocket 实践。
+
 
 #### Phase 5.x — Host Extension Points（长期规划）
 

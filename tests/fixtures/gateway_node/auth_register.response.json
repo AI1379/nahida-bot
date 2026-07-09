@@ -1,0 +1,14 @@
+{
+  "_comment": "Gateway accepts node registration, assigns session id and heartbeat params.",
+  "version": "1.0",
+  "kind": "response",
+  "id": "req_register_001",
+  "ok": true,
+  "payload": {
+    "accepted": true,
+    "session_id": "node_session_01JZ0000AB",
+    "heartbeat_interval_ms": 15000,
+    "heartbeat_timeout_ms": 45000,
+    "server_time": "2026-07-09T12:00:00Z"
+  }
+}
