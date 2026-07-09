@@ -99,6 +99,22 @@ _GROUP_CONTEXT_HISTORY_OVERFETCH_FACTOR = 4
 _GROUP_CONTEXT_HISTORY_OVERFETCH_MIN = 50
 
 
+def _trigger_datetime(context: MessageContext) -> datetime:
+    """Resolve the current trigger timestamp as an aware UTC datetime.
+
+    Falls back to ``now`` when the inbound context carries no usable timestamp
+    (e.g. synthesized test events), so the dialogue-continuity gate always has
+    a concrete reference point to measure gaps against.
+    """
+    timestamp = context.timestamp
+    if timestamp and timestamp > 0:
+        try:
+            return datetime.fromtimestamp(timestamp, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            pass
+    return datetime.now(UTC)
+
+
 @dataclass(slots=True)
 class ActiveRun:
     """Tracks one in-flight agent run for a session."""
@@ -176,6 +192,7 @@ class SessionRunner:
         group_context_max_messages: int = 20,
         group_context_ttl_seconds: int = 900,
         group_context_max_chars: int = 4000,
+        group_context_continuity_gap_seconds: int = 1800,
         media_resolver: MediaResolver | None = None,
         channel_registry: ChannelRegistry | None = None,
         supplement_registry: Any | None = None,
@@ -206,6 +223,7 @@ class SessionRunner:
         self._group_context_max_messages = group_context_max_messages
         self._group_context_ttl_seconds = group_context_ttl_seconds
         self._group_context_max_chars = group_context_max_chars
+        self._group_continuity_gap_seconds = group_context_continuity_gap_seconds
         self._media_resolver = media_resolver
         self._channel_registry = channel_registry
         self._supplement_registry = supplement_registry
@@ -514,6 +532,7 @@ class SessionRunner:
                 session_id,
                 recent_records,
                 capabilities=capabilities,
+                message_context=message_context,
             )
             observed_context = await self._load_observed_group_context(
                 session_id,
@@ -1098,7 +1117,20 @@ class SessionRunner:
         records: list[MemoryRecord],
         *,
         capabilities: ModelCapabilities | None = None,
+        message_context: MessageContext | None = None,
     ) -> list[ContextMessage]:
+        # Group dialogue continuity gate (issue #37): bound group-chat history
+        # to the current conversation segment. A gap larger than the
+        # configured threshold between consecutive dialogue turns (or between
+        # the last dialogue turn and the current trigger) starts a new segment,
+        # so stale dialogue from a different conversation is dropped while the
+        # fresh observed-context window is retained. Private chats and any
+        # context without a group message_context keep the legacy count-only
+        # behavior.
+        dialogue_cutoff = self._group_dialogue_cutoff(
+            records,
+            message_context=message_context,
+        )
         # Phase 5: when transcript replay is wired, rebuild history from the
         # canonical run transcripts (paired tool_use/tool_result) instead of
         # the stripped plain-text turns — the #24 fix. Falls back to the text
@@ -1108,7 +1140,11 @@ class SessionRunner:
         replay_wired = projector is not None
         if projector is not None:
             try:
-                replay = await projector.project(session_id, capabilities=capabilities)
+                replay = await projector.project(
+                    session_id,
+                    capabilities=capabilities,
+                    since=dialogue_cutoff,
+                )
             except Exception:
                 logger.warning(
                     "session_runner.transcript_replay_failed",
@@ -1146,6 +1182,8 @@ class SessionRunner:
         for r in records:
             metadata = r.turn.metadata
             if isinstance(metadata, dict) and metadata.get("observed_only") is True:
+                continue
+            if dialogue_cutoff is not None and r.turn.created_at < dialogue_cutoff:
                 continue
             parts = (
                 await self._reconstruct_parts_for_history(metadata)
@@ -1210,6 +1248,59 @@ class SessionRunner:
         )
 
         return messages
+
+    def _group_dialogue_cutoff(
+        self,
+        records: list[MemoryRecord],
+        *,
+        message_context: MessageContext | None,
+    ) -> datetime | None:
+        """Return the earliest ``created_at`` to keep for group dialogue history.
+
+        Group history is bounded to the *current conversation segment*: a gap
+        larger than ``continuity_gap_seconds`` between consecutive dialogue
+        turns — or between the last dialogue turn and the current trigger —
+        starts a new segment, and only the segment containing the trigger is
+        retained. Returns ``None`` when the gate is disabled, the chat is not a
+        group, or there is no prior dialogue to gate (legacy count-only
+        behavior is preserved in all those cases).
+        """
+        gap = self._group_continuity_gap_seconds
+        if gap <= 0 or message_context is None or message_context.chat_type != "group":
+            return None
+
+        trigger_at = _trigger_datetime(message_context)
+        dialogue_times: list[datetime] = []
+        for record in records:
+            metadata = record.turn.metadata
+            if isinstance(metadata, dict) and metadata.get("observed_only") is True:
+                continue
+            dialogue_times.append(record.turn.created_at)
+        if not dialogue_times:
+            return None
+
+        # A long silence since the bot's last dialogue turn means the current
+        # trigger opens a fresh conversation: drop all prior dialogue and rely
+        # on the observed-context window for situational awareness.
+        if (trigger_at - dialogue_times[-1]).total_seconds() > gap:
+            logger.debug(
+                "session_runner.group_dialogue_new_conversation",
+                session_id=getattr(message_context, "chat_id", "") or "",
+                gap_seconds=gap,
+                silent_seconds=(trigger_at - dialogue_times[-1]).total_seconds(),
+                dropped_dialogue_turns=len(dialogue_times),
+            )
+            return trigger_at
+
+        # Walk backward from the most recent dialogue turn and cut at the first
+        # inter-turn gap that exceeds the threshold; everything before that
+        # boundary belongs to an earlier conversation segment.
+        cutoff = dialogue_times[0]
+        for i in range(len(dialogue_times) - 1, 0, -1):
+            if (dialogue_times[i] - dialogue_times[i - 1]).total_seconds() > gap:
+                cutoff = dialogue_times[i]
+                break
+        return cutoff
 
     def _history_query_limit(self, *, include_observed_surplus: bool = False) -> int:
         """Return how many raw turns to fetch before filtering observed-only rows."""

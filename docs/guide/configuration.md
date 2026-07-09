@@ -379,6 +379,7 @@ multimodal:
 | `max_messages` | `int` | `20` | 注入的最大观察消息数 |
 | `ttl_seconds` | `int` | `900` | 观察消息过期时间（秒），超出的不注入 |
 | `max_chars` | `int` | `4000` | 观察上下文总字符预算 |
+| `continuity_gap_seconds` | `int` | `1800` | 对话连续性判定（秒）：当前触发与上一次对话 turn 的时间间隔超过此值时，视为新对话并丢弃旧 history，仅保留 observed 窗口。0 关闭（保留旧的纯按条数截断行为）。仅群聊生效 |
 
 ---
 
@@ -595,6 +596,7 @@ router:
     enabled: true
     max_messages: 20
     ttl_seconds: 900
+    continuity_gap_seconds: 1800
 
 webapi:
   enabled: true

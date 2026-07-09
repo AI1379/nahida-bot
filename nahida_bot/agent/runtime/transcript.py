@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
@@ -92,6 +93,31 @@ def message_from_dict(data: dict[str, Any]) -> ContextMessage:
         has_redacted_thinking=bool(data.get("has_redacted_thinking", False)),
         parts=parts,
     )
+
+
+def _run_started_before(run: dict[str, Any], cutoff: datetime) -> bool:
+    """True when a transcript run started before the ``cutoff`` datetime.
+
+    Used by the group dialogue-continuity gate to drop runs that belong to an
+    older conversation segment. Returns ``False`` (keep the run) when the
+    ``started_at`` field is missing or unparseable so we never silently drop
+    replayable history on a data format issue.
+    """
+    raw = run.get("started_at")
+    if not isinstance(raw, str) or not raw:
+        return False
+    started = _parse_run_iso(raw)
+    return started is not None and started < cutoff
+
+
+def _parse_run_iso(value: str) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def transcript_to_payload(
@@ -331,11 +357,16 @@ class TranscriptProjector:
         *,
         capabilities: "ModelCapabilities | None",
         limit: int = 20,
+        since: datetime | None = None,
     ) -> list[ContextMessage]:
         """Return replayed history for ``session_id``, oldest-first.
 
         Empty list ⇒ no transcripts available; the caller should fall back to
         the legacy plain-text history path.
+
+        When ``since`` is provided, runs whose ``started_at`` falls before that
+        boundary are skipped — used by the group dialogue-continuity gate
+        (issue #37) so a stale conversation segment is not replayed.
         """
         runs = await self._store.list_recent_transcripts(session_id, limit=limit)
         if not runs:
@@ -343,6 +374,8 @@ class TranscriptProjector:
         tool_capable = bool(capabilities is not None and capabilities.tool_calling)
         out: list[ContextMessage] = []
         for run in runs:
+            if since is not None and _run_started_before(run, since):
+                continue
             run_id = str(run.get("run_id") or "")
             messages = self._parse_run(run)
             if not messages:

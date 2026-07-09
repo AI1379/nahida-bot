@@ -264,6 +264,7 @@ class GroupContextConfig(BaseModel):
     max_messages: int = 20       # 注入的最大观察消息数
     ttl_seconds: int = 900       # 观察消息过期时间
     max_chars: int = 4000        # 观察上下文总字符预算
+    continuity_gap_seconds: int = 1800  # 群聊对话连续性判定（秒）
 ```
 
 ---

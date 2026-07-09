@@ -249,6 +249,13 @@ class GroupContextConfig(BaseModel):
     max_messages: int = Field(default=20, ge=0)
     ttl_seconds: int = Field(default=900, ge=0)
     max_chars: int = Field(default=4000, ge=0)
+    # Dialogue continuity gate for group chats (issue #37). When the gap
+    # between the current trigger and the bot's previous dialogue turn
+    # exceeds this threshold, the old dialogue is treated as a stale,
+    # separate conversation and dropped from history (only the observed
+    # context window is retained). 0 disables the gate. Group-only;
+    # private chats always keep full history.
+    continuity_gap_seconds: int = Field(default=1800, ge=0)
 
 
 class IdentityAccountSeed(BaseModel):

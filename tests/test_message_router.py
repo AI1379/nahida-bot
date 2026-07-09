@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -34,7 +34,12 @@ from nahida_bot.core.events import (
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.core.temp_files import ManagedTempFileService
-from nahida_bot.plugins.base import InboundMessage, OutboundMessage, Plugin
+from nahida_bot.plugins.base import (
+    InboundMessage,
+    MessageContext,
+    OutboundMessage,
+    Plugin,
+)
 from nahida_bot.plugins.commands import (
     CommandEntry,
     CommandMatcher,
@@ -1566,6 +1571,184 @@ class TestMessageRouterMemory:
         # Agent should have been called with the restored session's (empty) history
         assert len(agent.calls) == 1
         assert agent.calls[0]["history_messages"] == []
+
+
+class TestGroupDialogueContinuity:
+    """Issue #37: group dialogue history is bounded to the current conversation
+    segment via a time-gap continuity gate, so stale dialogue from a different
+    conversation is dropped while the fresh observed window is retained."""
+
+    @staticmethod
+    def _record(
+        role: str,
+        content: str,
+        created_at: datetime,
+        *,
+        observed: bool = False,
+    ) -> MemoryRecord:
+        metadata = {"observed_only": True} if observed else None
+        return MemoryRecord(
+            turn_id=0,
+            session_id="test:group:c1",
+            turn=ConversationTurn(
+                role=role,
+                content=content,
+                metadata=metadata,
+                created_at=created_at,
+            ),
+        )
+
+    def _cutoff(
+        self,
+        records: list[MemoryRecord],
+        *,
+        timestamp: float,
+        chat_type: str = "group",
+        gap: int = 1800,
+    ) -> datetime | None:
+        runner = SessionRunner(group_context_continuity_gap_seconds=gap)
+        ctx = MessageContext(
+            chat_type=chat_type, chat_id="c1", channel="test", timestamp=timestamp
+        )
+        return runner._group_dialogue_cutoff(records, message_context=ctx)
+
+    def test_disabled_gap_returns_none(self) -> None:
+        now = datetime.now(UTC)
+        records = [self._record("user", "hi", now - timedelta(hours=2))]
+        assert self._cutoff(records, timestamp=now.timestamp(), gap=0) is None
+
+    def test_private_chat_returns_none(self) -> None:
+        now = datetime.now(UTC)
+        records = [self._record("user", "hi", now - timedelta(hours=2))]
+        assert (
+            self._cutoff(records, timestamp=now.timestamp(), chat_type="private")
+            is None
+        )
+
+    def test_no_prior_dialogue_returns_none(self) -> None:
+        now = datetime.now(UTC)
+        records = [
+            self._record(
+                "user", "ambient chatter", now - timedelta(seconds=60), observed=True
+            )
+        ]
+        assert self._cutoff(records, timestamp=now.timestamp()) is None
+
+    def test_stale_dialogue_all_dropped_when_gap_exceeds_threshold(self) -> None:
+        now = datetime.now(UTC)
+        stale = now - timedelta(hours=2)
+        records = [
+            self._record("user", "stale question", stale),
+            self._record("assistant", "stale answer", stale + timedelta(seconds=5)),
+        ]
+        cutoff = self._cutoff(records, timestamp=now.timestamp())
+        assert cutoff is not None
+        # New conversation → every prior dialogue turn falls below the cutoff.
+        assert all(record.turn.created_at < cutoff for record in records)
+
+    def test_recent_dialogue_kept_within_gap(self) -> None:
+        now = datetime.now(UTC)
+        recent = now - timedelta(minutes=5)
+        records = [
+            self._record("user", "recent question", recent),
+            self._record("assistant", "recent answer", recent + timedelta(seconds=5)),
+        ]
+        cutoff = self._cutoff(records, timestamp=now.timestamp())
+        assert cutoff is not None
+        assert all(record.turn.created_at >= cutoff for record in records)
+
+    def test_internal_segment_boundary_drops_older_segment(self) -> None:
+        now = datetime.now(UTC)
+        old_segment = now - timedelta(hours=3)
+        current_segment = now - timedelta(minutes=5)  # >30min gap before it
+        records = [
+            self._record("user", "old segment q", old_segment),
+            self._record(
+                "assistant", "old segment a", old_segment + timedelta(seconds=5)
+            ),
+            self._record("user", "current segment q", current_segment),
+            self._record(
+                "assistant", "current segment a", current_segment + timedelta(seconds=5)
+            ),
+        ]
+        cutoff = self._cutoff(records, timestamp=now.timestamp())
+        assert cutoff is not None
+        kept = [r.turn.content for r in records if r.turn.created_at >= cutoff]
+        assert "current segment q" in kept
+        assert "current segment a" in kept
+        assert "old segment q" not in kept
+        assert "old segment a" not in kept
+
+    async def test_stale_group_dialogue_dropped_on_trigger(self) -> None:
+        memory = _MockMemoryStore()
+        stale_at = datetime.now(UTC) - timedelta(hours=2)
+        memory.sessions["test:group:c1"] = [
+            ConversationTurn(
+                role="user",
+                content="stale question from hours ago",
+                source="user_input",
+                created_at=stale_at,
+            ),
+            ConversationTurn(
+                role="assistant",
+                content="stale answer from hours ago",
+                source="agent",
+                created_at=stale_at + timedelta(seconds=5),
+            ),
+        ]
+        agent = _MockAgentLoop(response="fresh reply")
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+
+        await router.start()
+        # Recent observed chatter inside the observed-context TTL window.
+        await event_bus.publish(
+            MessageObserved(
+                payload=MessagePayload(
+                    message=InboundMessage(
+                        message_id="o1",
+                        platform="test",
+                        chat_id="c1",
+                        user_id="u2",
+                        text="someone chatting recently",
+                        raw_event={},
+                        is_group=True,
+                    ),
+                    session_id="test:group:c1",
+                ),
+                source="test",
+            )
+        )
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=InboundMessage(
+                        message_id="t1",
+                        platform="test",
+                        chat_id="c1",
+                        user_id="u1",
+                        text="@bot now please",
+                        raw_event={},
+                        is_group=True,
+                        mentions_bot=True,
+                        timestamp=datetime.now(UTC).timestamp(),
+                    ),
+                    session_id="test:group:c1",
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        assert len(agent.calls) == 1
+        history = agent.calls[0]["history_messages"]
+        contents = [message.content or "" for message in history]
+        # Stale dialogue from a different conversation is dropped from history.
+        assert not any("stale question" in c for c in contents)
+        assert not any("stale answer" in c for c in contents)
+        # Fresh observed chatter is still injected as group context.
+        observed = [m for m in history if m.source == "group_observed_context"]
+        assert len(observed) == 1
+        assert "someone chatting recently" in observed[0].content
 
 
 class TestMessageRouterSentinel:

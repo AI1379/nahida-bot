@@ -7,6 +7,7 @@ repair, the projector) and the migration 020 ``transcript_json`` column.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -222,6 +223,71 @@ async def test_projected_output_serializes_for_openai_and_anthropic(store) -> No
     }
     assert "tool_use" in block_types
     assert "tool_result" in block_types
+
+
+# ── since filter (group dialogue-continuity gate, issue #37) ───────────
+
+
+@pytest.mark.asyncio
+async def test_project_since_drops_runs_started_before_cutoff(store) -> None:
+    # Two runs in the same session: an old one and a recent one.
+    await _seed(
+        store,
+        "run_old",
+        started_at="2026-06-25T00:00:00Z",
+        messages=[_user("old question"), _assistant("old answer")],
+    )
+    await _seed(
+        store,
+        "run_recent",
+        started_at="2026-06-25T01:30:00Z",
+        messages=[_user("recent question"), _assistant("recent answer")],
+    )
+
+    projector = TranscriptProjector(store)
+    cutoff = datetime.fromisoformat("2026-06-25T01:00:00+00:00")
+
+    filtered = await projector.project(
+        "sess_1",
+        capabilities=ModelCapabilities(tool_calling=False),
+        since=cutoff,
+    )
+    contents = [m.content for m in filtered]
+    assert "recent answer" in contents
+    assert "old answer" not in contents
+
+    # Without `since`, both runs are replayed (legacy behavior preserved).
+    all_out = await projector.project(
+        "sess_1", capabilities=ModelCapabilities(tool_calling=False)
+    )
+    assert "old answer" in [m.content for m in all_out]
+
+
+@pytest.mark.asyncio
+async def test_project_since_keeps_run_when_started_at_unparseable(store) -> None:
+    # A run whose started_at cannot be parsed must be kept (fail-safe),
+    # never silently dropped by the since filter.
+    await _seed(
+        store,
+        "run_weird",
+        started_at="2026-06-25T00:00:00Z",
+        messages=[_user("keep me"), _assistant("ok")],
+    )
+    # Corrupt the started_at directly so _run_started_before hits the
+    # unparseable branch.
+    await store._engine.db.execute(
+        "UPDATE agent_runs SET started_at = ? WHERE run_id = ?",
+        ("not-a-date", "run_weird"),
+    )
+    await store._engine.db.commit()
+
+    cutoff = datetime.fromisoformat("2030-01-01T00:00:00+00:00")
+    out = await TranscriptProjector(store).project(
+        "sess_1",
+        capabilities=ModelCapabilities(tool_calling=False),
+        since=cutoff,
+    )
+    assert "ok" in [m.content for m in out]
 
 
 # ── pairing repair ─────────────────────────────────────────────────────
