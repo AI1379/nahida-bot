@@ -25,6 +25,8 @@ export type DesktopEvent =
       type: "connection.changed";
       connected: boolean;
       reason?: string;
+      gatewayUrl?: string;
+      nodeId?: string;
     })
   | (DesktopEventBase & {
       type: "message.started";
@@ -38,6 +40,11 @@ export type DesktopEvent =
   | (DesktopEventBase & {
       type: "notification.error";
       message: string;
+    })
+  | (DesktopEventBase & {
+      type: "capability.invoked";
+      capability: string;
+      arguments: Record<string, unknown>;
     })
   | (DesktopEventBase & {
       type: "user.message.submitted";

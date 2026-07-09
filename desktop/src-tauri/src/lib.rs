@@ -1,3 +1,5 @@
+mod gateway_node;
+
 use tauri::{Manager, WindowEvent};
 
 #[tauri::command]
@@ -105,7 +107,15 @@ fn polish_pet_window(window: tauri::WebviewWindow) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![runtime_mode, polish_pet_window])
+        .manage(gateway_node::GatewayNodeManager::default())
+        .invoke_handler(tauri::generate_handler![
+            runtime_mode,
+            polish_pet_window,
+            gateway_node::gateway_node_connect,
+            gateway_node::gateway_node_disconnect,
+            gateway_node::gateway_node_status,
+            gateway_node::gateway_node_submit_input,
+        ])
         .setup(|app| {
             if let Some(pet) = app.get_webview_window("pet") {
                 suppress_nc_paint(&pet);

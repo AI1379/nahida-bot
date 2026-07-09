@@ -19,7 +19,7 @@ import {
 import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
 import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
 import {
-  MockDesktopEventSource,
+  createDefaultDesktopEventSource,
   type DesktopEventSource,
 } from "@/runtime/desktopEventSource";
 import type { useDesktopStore } from "@/stores/desktop";
@@ -39,7 +39,7 @@ function clearTimer(timer: ReturnType<typeof setTimeout> | null) {
 
 export function useDesktopRuntimeController(
   store: DesktopStore,
-  eventSource: DesktopEventSource = new MockDesktopEventSource(),
+  eventSource: DesktopEventSource = createDefaultDesktopEventSource(),
 ): DesktopRuntimeActions {
   const runtimeSnapshot = computed<DesktopRuntimeSnapshot>(() => ({
     connected: store.connected,
@@ -108,7 +108,7 @@ export function useDesktopRuntimeController(
       sessionId: store.sessionId,
       text: trimmed,
     });
-    eventSource.submitUserMessage(trimmed);
+    eventSource.submitUserMessage(trimmed, store.sessionId);
   }
 
   function submitMockLlmResult(rawOutput: string) {

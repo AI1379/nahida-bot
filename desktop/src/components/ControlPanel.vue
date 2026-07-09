@@ -31,7 +31,7 @@ function submitMockLlmResult() {
 <template>
   <section class="panel controls" aria-label="Controls">
     <header class="panel__header">
-      <h2>Mock Backend</h2>
+      <h2>Gateway Node</h2>
       <span>{{ connected ? "connected" : "offline" }}</span>
     </header>
 
@@ -58,7 +58,7 @@ function submitMockLlmResult() {
         rows="4"
       ></textarea>
       <button type="submit" :disabled="!connected || !text.trim()">
-        Send Mock Message
+        Send Message
       </button>
     </form>
 

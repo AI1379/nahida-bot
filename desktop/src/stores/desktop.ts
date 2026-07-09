@@ -461,6 +461,9 @@ export const useDesktopStore = defineStore("desktop", {
       switch (event.type) {
         case "connection.changed":
           this.connected = event.connected;
+          if (event.gatewayUrl) {
+            this.gatewayUrl = event.gatewayUrl;
+          }
           if (event.connected) {
             if (this.pendingAfterEmerge.action.type === "error") {
               this.pendingAfterEmerge = {
@@ -477,7 +480,12 @@ export const useDesktopStore = defineStore("desktop", {
               lastEventAt: event.at,
             });
             this.transcript.unshift(
-              systemTranscriptEntry("Mock backend connected.", event.at),
+              systemTranscriptEntry(
+                event.source === "gateway"
+                  ? `Gateway node connected: ${event.nodeId ?? "desktop"}`
+                  : "Mock backend connected.",
+                event.at,
+              ),
             );
           } else {
             this.clearPendingAfterEmerge();
@@ -567,7 +575,52 @@ export const useDesktopStore = defineStore("desktop", {
             lastEventAt: event.at,
           });
           break;
+        case "capability.invoked":
+          this.applyCapabilityInvoke(event.capability, event.arguments);
+          break;
+      }
+    },
+    applyCapabilityInvoke(
+      capability: string,
+      args: Record<string, unknown>,
+    ) {
+      if (capability === "desktop.live2d.set_expression") {
+        const expression =
+          readStringArg(args.expression) ??
+          readStringArg(args.expressionId) ??
+          readStringArg(args.expression_id);
+        if (expression) {
+          this.previewExpressionKeyword(expression);
+        }
+        return;
+      }
+
+      if (capability === "desktop.live2d.play_motion") {
+        const motion =
+          readStringArg(args.motion) ??
+          readStringArg(args.motionId) ??
+          readStringArg(args.motion_id);
+        if (isDisplayMotion(motion)) {
+          this.previewMotion(motion);
+        }
+        return;
+      }
+
+      if (capability === "desktop.notification.show") {
+        const message =
+          readStringArg(args.message) ??
+          readStringArg(args.body) ??
+          readStringArg(args.title);
+        if (message) {
+          this.transcript.unshift(
+            systemTranscriptEntry(message, new Date().toISOString()),
+          );
+        }
       }
     },
   },
 });
+
+function readStringArg(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
