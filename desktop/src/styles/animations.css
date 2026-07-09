@@ -1,0 +1,58 @@
+@keyframes breathe {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-10px) scale(1.015);
+  }
+}
+
+@keyframes talk {
+  0%,
+  100% {
+    height: 12px;
+  }
+  50% {
+    height: 30px;
+  }
+}
+
+@keyframes wave {
+  0%,
+  100% {
+    transform: scaleX(-1) rotate(-28deg);
+  }
+  50% {
+    transform: scaleX(-1) rotate(-4deg);
+  }
+}
+
+@keyframes point {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(2deg);
+  }
+}
+
+@media (max-width: 920px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .stage {
+    min-height: 520px;
+  }
+
+  .live2d-debug {
+    left: 16px;
+    width: auto;
+  }
+
+  .side-rail {
+    grid-template-rows: auto auto auto auto auto;
+  }
+}

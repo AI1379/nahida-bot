@@ -2,7 +2,12 @@
 import { computed, ref } from "vue";
 
 import Live2DStage from "@/components/Live2DStage.vue";
+import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
+
+const props = defineProps<{
+  runtime: DesktopRuntimeActions;
+}>();
 
 const store = useDesktopStore();
 const replyText = ref("");
@@ -14,7 +19,7 @@ const activeSegment = computed(
 function submitReply() {
   const trimmed = replyText.value.trim();
   if (!trimmed) return;
-  store.submitUserMessage(trimmed);
+  props.runtime.submitUserMessage(trimmed);
   replyText.value = "";
 }
 </script>

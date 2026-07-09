@@ -8,14 +8,33 @@ import {
   baseMotionNames,
   baseMotionProfiles,
   commonLive2DParameterIds,
-  type BaseMotionProfile,
   type CommonLive2DParameterRole,
 } from "@/domain/live2dBaseMotion";
 import type {
-  Live2DExpressionOption,
   Live2DModelManifest,
   Live2DMotionOption,
 } from "@/domain/live2d";
+
+import {
+  createLive2DDebugSnapshot,
+  readLive2DIdList,
+  type CubismCoreModelDebugApi,
+  type DebugOverride,
+  type Live2DDebugSnapshot,
+  type ModelSettingsDebugApi,
+} from "./live2dDebug";
+import {
+  lipSyncParameterIdsForManifest,
+  lipSyncValueForSpeakingPulse,
+  scaleLipSyncParameterValue,
+} from "./live2dLipSync";
+import { clamp } from "./live2dMath";
+import {
+  createRuntimeParameterOverride,
+  groupProceduralTargets,
+  runtimeParameterValueAt,
+  type RuntimeParameterOverride,
+} from "./live2dProceduralMotion";
 
 declare global {
   interface Window {
@@ -38,120 +57,17 @@ export interface Live2DRenderer {
 
 type Live2DModelInstance = Awaited<ReturnType<typeof Live2DModel.from>>;
 
-export interface Live2DParameterDebugInfo {
-  index: number;
-  id: string;
-  value: number;
-  minimum: number;
-  maximum: number;
-  defaultValue: number;
-  overridden: boolean;
-  runtimeOverridden: boolean;
-}
-
-export interface Live2DKeyParameterDebugInfo
-  extends Live2DParameterDebugInfo {
-  roles: CommonLive2DParameterRole[];
-  lipSync: boolean;
-}
-
-export interface Live2DPartDebugInfo {
-  index: number;
-  id: string;
-  opacity: number;
-  overridden: boolean;
-}
-
-export interface Live2DDrawableDebugInfo {
-  index: number;
-  id: string;
-  opacity: number;
-  visible: boolean;
-  renderOrder: number;
-  textureIndex: number;
-  vertexCount: number;
-  bounds: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    area: number;
-  } | null;
-}
-
-export interface Live2DExpressionDebugInfo extends Live2DExpressionOption {}
-
-export interface Live2DMotionDebugInfo extends Live2DMotionOption {}
-
-export interface Live2DDebugSnapshot {
-  modelName: string;
-  expressions: Live2DExpressionDebugInfo[];
-  nativeMotions: Live2DMotionDebugInfo[];
-  baseMotions: Live2DMotionDebugInfo[];
-  motions: Live2DMotionDebugInfo[];
-  keyParameters: Live2DKeyParameterDebugInfo[];
-  parameters: Live2DParameterDebugInfo[];
-  parts: Live2DPartDebugInfo[];
-  drawables: Live2DDrawableDebugInfo[];
-}
-
-interface CubismCoreModelDebugApi {
-  getModel?: () => unknown;
-  getParameterCount?: () => number;
-  getParameterMinimumValue?: (index: number) => number;
-  getParameterMaximumValue?: (index: number) => number;
-  getParameterDefaultValue?: (index: number) => number;
-  getParameterValueByIndex?: (index: number) => number;
-  setParameterValueByIndex?: (
-    index: number,
-    value: number,
-    weight?: number,
-  ) => void;
-  getPartCount?: () => number;
-  getPartOpacityByIndex?: (index: number) => number;
-  setPartOpacityByIndex?: (index: number, opacity: number) => void;
-  getDrawableCount?: () => number;
-  getDrawableId?: (index: number) => string;
-  getDrawableOpacity?: (index: number) => number;
-  getDrawableDynamicFlagIsVisible?: (index: number) => boolean;
-  getDrawableRenderOrders?: () => ArrayLike<number>;
-  getDrawableTextureIndices?: (index: number) => number;
-  getDrawableVertexCount?: (index: number) => number;
-  getDrawableVertexPositions?: (index: number) => ArrayLike<number>;
-  getDrawableVertices?: (index: number) => ArrayLike<number>;
-  _parameterIds?: unknown;
-  _partIds?: unknown;
-}
-
-interface ModelSettingsDebugApi {
-  expressions?: unknown[];
-  motions?: Record<string, unknown[]>;
-  json?: {
-    FileReferences?: {
-      Expressions?: unknown[];
-      Motions?: Record<string, unknown[]>;
-    };
-  };
-}
-
-interface DebugOverride {
-  value: number;
-  original: number;
-}
+export type {
+  Live2DDebugSnapshot,
+  Live2DDrawableDebugInfo,
+  Live2DExpressionDebugInfo,
+  Live2DKeyParameterDebugInfo,
+  Live2DMotionDebugInfo,
+  Live2DParameterDebugInfo,
+  Live2DPartDebugInfo,
+} from "./live2dDebug";
 
 type CommonParameterRole = CommonLive2DParameterRole;
-
-interface RuntimeParameterKeyframe {
-  atMs: number;
-  value: number;
-}
-
-interface RuntimeParameterOverride {
-  original: number;
-  keyframes: RuntimeParameterKeyframe[];
-  startedAt: number;
-  durationMs: number;
-}
 
 export class WebLive2DRenderer implements Live2DRenderer {
   private app: PIXI.Application | null = null;
@@ -266,7 +182,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
   }
 
   setLipSync(value: number): void {
-    this.applyLipSyncValue(this.clamp(value, 0, 1));
+    this.applyLipSyncValue(clamp(value, 0, 1));
   }
 
   setFpsMode(mode: RenderMode): void {
@@ -298,65 +214,16 @@ export class WebLive2DRenderer implements Live2DRenderer {
     const coreModel = this.getCoreModel();
     if (!coreModel || !this.manifest) return null;
 
-    const settings = this.getModelSettings();
-    const parameterIds = this.readIdList(coreModel._parameterIds);
-    const partIds = this.readIdList(coreModel._partIds);
-    const renderOrders = coreModel.getDrawableRenderOrders?.();
-
-    const parameters = Array.from(
-      { length: coreModel.getParameterCount?.() ?? 0 },
-      (_, index) => ({
-        index,
-        id: this.idAt(parameterIds, index, `Parameter #${index}`),
-        value: coreModel.getParameterValueByIndex?.(index) ?? 0,
-        minimum: coreModel.getParameterMinimumValue?.(index) ?? 0,
-        maximum: coreModel.getParameterMaximumValue?.(index) ?? 1,
-        defaultValue: coreModel.getParameterDefaultValue?.(index) ?? 0,
-        overridden: this.parameterOverrides.has(index),
-        runtimeOverridden: this.runtimeParameterOverrides.has(index),
-      }),
-    );
-
-    const parts = Array.from(
-      { length: coreModel.getPartCount?.() ?? 0 },
-      (_, index) => ({
-        index,
-        id: this.idAt(partIds, index, `Part #${index}`),
-        opacity: coreModel.getPartOpacityByIndex?.(index) ?? 1,
-        overridden: this.partOpacityOverrides.has(index),
-      }),
-    );
-
-    const drawables = Array.from(
-      { length: coreModel.getDrawableCount?.() ?? 0 },
-      (_, index) => ({
-        index,
-        id: coreModel.getDrawableId?.(index) ?? `Drawable #${index}`,
-        opacity: coreModel.getDrawableOpacity?.(index) ?? 1,
-        visible: coreModel.getDrawableDynamicFlagIsVisible?.(index) ?? true,
-        renderOrder: renderOrders?.[index] ?? index,
-        textureIndex: coreModel.getDrawableTextureIndices?.(index) ?? 0,
-        vertexCount: coreModel.getDrawableVertexCount?.(index) ?? 0,
-        bounds: this.getDrawableBounds(coreModel, index),
-      }),
-    ).sort(
-      (left, right) => (right.bounds?.area ?? 0) - (left.bounds?.area ?? 0),
-    );
-
-    const nativeMotions = this.getNativeMotionDebugInfo(settings);
-    const baseMotions = this.getBaseMotionDebugInfo();
-
-    return {
-      modelName: this.manifest.name,
-      expressions: this.getExpressionDebugInfo(settings),
-      nativeMotions,
-      baseMotions,
-      motions: [...nativeMotions, ...baseMotions],
-      keyParameters: this.getKeyParameterDebugInfo(parameters),
-      parameters,
-      parts,
-      drawables,
-    };
+    return createLive2DDebugSnapshot({
+      coreModel,
+      settings: this.getModelSettings(),
+      manifest: this.manifest,
+      isParameterOverridden: (index) => this.parameterOverrides.has(index),
+      isRuntimeParameterOverridden: (index) =>
+        this.runtimeParameterOverrides.has(index),
+      isPartOpacityOverridden: (index) =>
+        this.partOpacityOverrides.has(index),
+    });
   }
 
   async setDebugExpression(name: string): Promise<void> {
@@ -398,7 +265,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
     const coreModel = this.getCoreModel();
     if (!coreModel?.setPartOpacityByIndex) return;
 
-    const value = this.clamp(opacity, 0, 1);
+    const value = clamp(opacity, 0, 1);
     if (!this.partOpacityOverrides.has(index)) {
       this.partOpacityOverrides.set(index, {
         value,
@@ -422,7 +289,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
 
     const minimum = coreModel.getParameterMinimumValue?.(index) ?? value;
     const maximum = coreModel.getParameterMaximumValue?.(index) ?? value;
-    const clamped = this.clamp(value, minimum, maximum);
+    const clamped = clamp(value, minimum, maximum);
 
     if (!this.parameterOverrides.has(index)) {
       this.parameterOverrides.set(index, {
@@ -525,7 +392,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
       }
       coreModel.setParameterValueByIndex?.(
         index,
-        this.valueAtRuntimeKeyframe(override, elapsed),
+        runtimeParameterValueAt(override, elapsed),
         1,
       );
     }
@@ -536,16 +403,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
     }
 
     if (this.renderMode === "speaking") {
-      const pulse =
-        (Math.sin(
-          now / live2dRuntimeDefaults.lipSync.pulsePeriodMs,
-        ) +
-          1) /
-        2;
-      this.applyLipSyncValue(
-        live2dRuntimeDefaults.lipSync.minimumOpen +
-          pulse * live2dRuntimeDefaults.lipSync.openRange,
-      );
+      this.applyLipSyncValue(lipSyncValueForSpeakingPulse(now));
     }
   };
 
@@ -605,7 +463,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.applyTickerFps();
 
     let applied = false;
-    const targetsByRole = this.groupProceduralTargets(profile);
+    const targetsByRole = groupProceduralTargets(profile);
     for (const [role, targets] of targetsByRole) {
       for (const index of this.parameterIndicesForRole(role)) {
         const current =
@@ -614,21 +472,17 @@ export class WebLive2DRenderer implements Live2DRenderer {
           0;
         const minimum = coreModel.getParameterMinimumValue?.(index) ?? current;
         const maximum = coreModel.getParameterMaximumValue?.(index) ?? current;
-        const keyframes = [
-          { atMs: 0, value: current },
-          ...targets.map((target) => ({
-            atMs: target.atMs,
-            value: this.clamp(target.value, minimum, maximum),
-          })),
-          { atMs: profile.durationMs, value: current },
-        ].sort((left, right) => left.atMs - right.atMs);
-
-        this.runtimeParameterOverrides.set(index, {
-          original: current,
-          keyframes,
-          startedAt: now,
-          durationMs: profile.durationMs,
-        });
+        this.runtimeParameterOverrides.set(
+          index,
+          createRuntimeParameterOverride({
+            profile,
+            current,
+            minimum,
+            maximum,
+            targets,
+            startedAt: now,
+          }),
+        );
         applied = true;
       }
     }
@@ -636,73 +490,21 @@ export class WebLive2DRenderer implements Live2DRenderer {
     return applied;
   }
 
-  private getBaseMotionDebugInfo(): Live2DMotionDebugInfo[] {
-    return baseMotionNames.map((motion, index) => ({
-      source: "procedural",
-      group: "Base",
-      index,
-      name: motion,
-      file: "common Live2D parameters",
-      motion,
-    }));
-  }
-
-  private groupProceduralTargets(
-    profile: BaseMotionProfile,
-  ): Map<CommonParameterRole, RuntimeParameterKeyframe[]> {
-    const grouped = new Map<CommonParameterRole, RuntimeParameterKeyframe[]>();
-    for (const keyframe of profile.keyframes) {
-      for (const target of keyframe.targets) {
-        const values = grouped.get(target.role) ?? [];
-        values.push({
-          atMs: keyframe.atMs,
-          value: target.value,
-        });
-        grouped.set(target.role, values);
-      }
-    }
-    return grouped;
-  }
-
-  private valueAtRuntimeKeyframe(
-    override: RuntimeParameterOverride,
-    elapsedMs: number,
-  ): number {
-    const keyframes = override.keyframes;
-    if (keyframes.length === 0) return override.original;
-
-    let previous = keyframes[0];
-    let next = keyframes[keyframes.length - 1];
-    for (let index = 1; index < keyframes.length; index += 1) {
-      next = keyframes[index];
-      if (elapsedMs <= next.atMs) break;
-      previous = next;
-    }
-
-    const duration = Math.max(next.atMs - previous.atMs, 1);
-    const progress = this.smoothstep((elapsedMs - previous.atMs) / duration);
-    return this.lerp(previous.value, next.value, progress);
-  }
-
   private applyLipSyncValue(value: number): void {
     const coreModel = this.getCoreModel();
     if (!coreModel || !this.manifest?.lipSync.enabled) return;
 
-    const parameterIds = this.manifest.lipSync.parameterIds.length
-      ? this.manifest.lipSync.parameterIds
-      : commonLive2DParameterIds.mouthOpen;
+    const parameterIds = lipSyncParameterIdsForManifest(this.manifest);
 
     for (const id of parameterIds) {
       const index = this.parameterIndexById(id);
       if (index === null || this.parameterOverrides.has(index)) continue;
       const minimum = coreModel.getParameterMinimumValue?.(index) ?? 0;
       const maximum = coreModel.getParameterMaximumValue?.(index) ?? 1;
-      const nextValue = /form/i.test(id)
-        ? value * live2dRuntimeDefaults.lipSync.mouthFormScale
-        : value;
+      const nextValue = scaleLipSyncParameterValue(id, value);
       coreModel.setParameterValueByIndex?.(
         index,
-        this.clamp(nextValue, minimum, maximum),
+        clamp(nextValue, minimum, maximum),
         1,
       );
     }
@@ -718,190 +520,10 @@ export class WebLive2DRenderer implements Live2DRenderer {
   private parameterIndexById(id: string): number | null {
     const coreModel = this.getCoreModel();
     if (!coreModel) return null;
-    const ids = this.readIdList(coreModel._parameterIds);
+    const ids = readLive2DIdList(coreModel._parameterIds);
     const index = ids.findIndex(
       (candidate) => candidate.toLowerCase() === id.toLowerCase(),
     );
     return index >= 0 ? index : null;
-  }
-
-  private getExpressionDebugInfo(
-    settings: ModelSettingsDebugApi | null,
-  ): Live2DExpressionDebugInfo[] {
-    const definitions =
-      settings?.expressions ?? settings?.json?.FileReferences?.Expressions ?? [];
-
-    return definitions.map((definition, index) => {
-      const file = this.stringField(definition, ["File", "file"]) ?? "";
-      const name =
-        this.stringField(definition, ["Name", "name", "Id", "id"]) ??
-        file ??
-        `Expression #${index}`;
-
-      return {
-        index,
-        name,
-        file,
-      };
-    });
-  }
-
-  private getNativeMotionDebugInfo(
-    settings: ModelSettingsDebugApi | null,
-  ): Live2DMotionDebugInfo[] {
-    const groups =
-      settings?.motions ?? settings?.json?.FileReferences?.Motions ?? {};
-
-    return Object.entries(groups).flatMap(([group, definitions]) =>
-      (definitions ?? []).map((definition, index) => ({
-        source: "model" as const,
-        group,
-        index,
-        name: `${group} #${index}`,
-        file: this.stringField(definition, ["File", "file"]) ?? "",
-      })),
-    );
-  }
-
-  private getKeyParameterDebugInfo(
-    parameters: Live2DParameterDebugInfo[],
-  ): Live2DKeyParameterDebugInfo[] {
-    const lipSyncParameterIds = new Set(
-      (this.manifest?.lipSync.parameterIds.length
-        ? this.manifest.lipSync.parameterIds
-        : commonLive2DParameterIds.mouthOpen
-      ).map((id) => id.toLowerCase()),
-    );
-
-    return parameters.flatMap((parameter) => {
-      const roles = this.parameterRolesForId(parameter.id);
-      const lipSync =
-        Boolean(this.manifest?.lipSync.enabled) &&
-        lipSyncParameterIds.has(parameter.id.toLowerCase());
-      if (!roles.length && !lipSync) return [];
-      return [
-        {
-          ...parameter,
-          roles,
-          lipSync,
-        },
-      ];
-    });
-  }
-
-  private parameterRolesForId(id: string): CommonParameterRole[] {
-    const normalized = id.toLowerCase();
-    return Object.entries(commonLive2DParameterIds).flatMap(([role, ids]) =>
-      ids.some((candidate) => candidate.toLowerCase() === normalized)
-        ? [role as CommonParameterRole]
-        : [],
-    );
-  }
-
-  private getDrawableBounds(
-    coreModel: CubismCoreModelDebugApi,
-    index: number,
-  ): Live2DDrawableDebugInfo["bounds"] {
-    const vertices =
-      coreModel.getDrawableVertexPositions?.(index) ??
-      coreModel.getDrawableVertices?.(index);
-    if (!vertices || vertices.length < 2) return null;
-
-    let minX = Number.POSITIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-
-    for (let cursor = 0; cursor < vertices.length - 1; cursor += 2) {
-      const x = vertices[cursor];
-      const y = vertices[cursor + 1];
-      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-    }
-
-    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return null;
-
-    const width = maxX - minX;
-    const height = maxY - minY;
-    return {
-      x: minX,
-      y: minY,
-      width,
-      height,
-      area: Math.max(width, 0) * Math.max(height, 0),
-    };
-  }
-
-  private readIdList(value: unknown): string[] {
-    if (!value) return [];
-    if (Array.isArray(value)) {
-      return value.map((item, index) => this.idToString(item, `#${index}`));
-    }
-    if (typeof value === "object" && "length" in value) {
-      return Array.from(value as ArrayLike<unknown>, (item, index) =>
-        this.idToString(item, `#${index}`),
-      );
-    }
-    return [];
-  }
-
-  private idAt(ids: string[], index: number, fallback: string): string {
-    return ids[index] && ids[index] !== `#${index}` ? ids[index] : fallback;
-  }
-
-  private idToString(value: unknown, fallback: string): string {
-    if (typeof value === "string") return value;
-    if (!value || typeof value !== "object") return fallback;
-
-    const candidate = value as {
-      getString?: () => string;
-      toString?: () => string;
-      _id?: unknown;
-      id?: unknown;
-      s?: unknown;
-    };
-    if (typeof candidate.getString === "function") {
-      return candidate.getString();
-    }
-    for (const key of ["_id", "id", "s"] as const) {
-      const raw = candidate[key];
-      if (typeof raw === "string") return raw;
-      if (raw && typeof raw === "object" && "s" in raw) {
-        const nested = (raw as { s?: unknown }).s;
-        if (typeof nested === "string") return nested;
-      }
-    }
-
-    const stringified = candidate.toString?.();
-    return stringified && stringified !== "[object Object]"
-      ? stringified
-      : fallback;
-  }
-
-  private stringField(value: unknown, keys: string[]): string | null {
-    if (!value || typeof value !== "object") return null;
-    const record = value as Record<string, unknown>;
-    for (const key of keys) {
-      const field = record[key];
-      if (typeof field === "string" && field.length > 0) return field;
-    }
-    return null;
-  }
-
-  private clamp(value: number, minimum: number, maximum: number): number {
-    if (!Number.isFinite(value)) return minimum;
-    return Math.min(Math.max(value, minimum), maximum);
-  }
-
-  private lerp(start: number, end: number, progress: number): number {
-    return start + (end - start) * this.clamp(progress, 0, 1);
-  }
-
-  private smoothstep(progress: number): number {
-    const clamped = this.clamp(progress, 0, 1);
-    return clamped * clamped * (3 - 2 * clamped);
   }
 }

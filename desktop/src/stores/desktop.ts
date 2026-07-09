@@ -3,7 +3,6 @@ import { defineStore } from "pinia";
 import type {
   DisplayEmotion,
   DisplayMotion,
-  DisplayPlan,
 } from "@/domain/displayPlan";
 import {
   isDisplayEmotion,
@@ -11,24 +10,16 @@ import {
 } from "@/domain/displayPlan";
 import {
   configuredModelFromManifest,
-  createDefaultLocalDesktopConfig,
   modelMappingConfigFromManifest,
 } from "@/domain/config";
-import type {
-  LocalDesktopConfig,
-  ModelMappingConfig,
-} from "@/domain/config";
+import type { LocalDesktopConfig } from "@/domain/config";
 import {
   sanitizeExpressionKeyword,
   sanitizeExpressionName,
 } from "@/domain/displayPlanPolicy";
-import {
-  createInitialPetRuntimeState,
-} from "@/domain/runtime";
 import type {
   DesktopEvent,
   PetRuntimeState,
-  PresentationPlan,
 } from "@/domain/runtime";
 import {
   petRuntimeNeedsEmerge,
@@ -36,152 +27,40 @@ import {
   type PetRuntimeSignal,
 } from "@/domain/petRuntimeMachine";
 import type { DesktopRuntimeSnapshot } from "@/domain/desktopWindowProtocol";
-import {
-  availableModelManifests,
-  defaultModelManifest,
-} from "@/config/live2dModelManifests";
-import { mockDesktopDefaults } from "@/config/mockDefaults";
+import { defaultModelManifest } from "@/config/live2dModelManifests";
 import type {
-  Live2DExpressionMap,
   Live2DExpressionOption,
   Live2DModelManifest,
   Live2DMotionOption,
   Live2DMotionTarget,
 } from "@/domain/live2d";
-import { mockGatewayEventAdapter } from "@/services/gatewayEventAdapter";
-import { mockBackend } from "@/services/mockBackend";
 import {
-  readPersistedExpressionMaps,
-  readPersistedMotionMaps,
   writePersistedExpressionMap,
   writePersistedMotionMap,
 } from "@/services/modelMappingStorage";
 import {
-  readPersistedTtsSettings,
   sanitizeTtsSettings,
   writePersistedTtsSettings,
 } from "@/services/ttsSettingsStorage";
-import type {
-  MotionMap,
-  PersistedExpressionMaps,
-  PersistedMotionMaps,
-} from "@/services/modelMappingStorage";
+import type { MotionMap } from "@/services/modelMappingStorage";
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
+import {
+  nextCustomExpressionKeyword,
+  type ExpressionKeywordMap,
+  withModelConfig,
+} from "./desktop/modelConfig";
+import { createDesktopState } from "./desktop/state";
+import {
+  assistantTranscriptEntry,
+  systemTranscriptEntry,
+  userTranscriptEntry,
+} from "./desktop/transcript";
+import { createEmptyPendingAfterEmerge } from "./desktop/types";
 
-export interface TranscriptEntry {
-  id: string;
-  role: "system" | "user" | "assistant";
-  text: string;
-  at: string;
-  displayPlan?: DisplayPlan;
-}
-
-type ExpressionKeywordMap = Live2DExpressionMap;
-
-type PendingAfterEmergeAction =
-  | { type: "none" }
-  | { type: "presentation" }
-  | { type: "error" }
-  | { type: "motion"; motion: DisplayMotion };
-
-interface PendingAfterEmerge {
-  enterChat: boolean;
-  action: PendingAfterEmergeAction;
-}
-
-function createEmptyPendingAfterEmerge(): PendingAfterEmerge {
-  return {
-    enterChat: false,
-    action: { type: "none" },
-  };
-}
-
-function withPersistedModelMappings(
-  config: LocalDesktopConfig,
-  persistedExpressions: PersistedExpressionMaps,
-  persistedMotions: PersistedMotionMaps,
-): LocalDesktopConfig {
-  return {
-    ...config,
-    modelConfigs: Object.fromEntries(
-      Object.entries(config.modelConfigs).map(([modelId, modelConfig]) => [
-        modelId,
-        {
-          ...modelConfig,
-          expressionMap: {
-            ...modelConfig.expressionMap,
-            ...(persistedExpressions[modelId] ?? {}),
-          },
-          motionMap: {
-            ...modelConfig.motionMap,
-            ...(persistedMotions[modelId] ?? {}),
-          },
-        },
-      ]),
-    ),
-  };
-}
-
-function withModelConfig(
-  config: LocalDesktopConfig,
-  modelConfig: ModelMappingConfig,
-): LocalDesktopConfig {
-  return {
-    ...config,
-    modelConfigs: {
-      ...config.modelConfigs,
-      [modelConfig.modelId]: modelConfig,
-    },
-  };
-}
-
-function nextCustomExpressionKeyword(map: ExpressionKeywordMap): string {
-  const base = "custom";
-  if (!Object.prototype.hasOwnProperty.call(map, base)) return base;
-  for (let index = 2; index < 100; index += 1) {
-    const candidate = `${base}-${index}`;
-    if (!Object.prototype.hasOwnProperty.call(map, candidate)) return candidate;
-  }
-  return `${base}-${Date.now()}`;
-}
+export type { TranscriptEntry } from "./desktop/types";
 
 export const useDesktopStore = defineStore("desktop", {
-  state: () => {
-    const persistedExpressions = readPersistedExpressionMaps();
-    const persistedMotions = readPersistedMotionMaps();
-    const models = availableModelManifests;
-    const selectedModel =
-      models.find((model) => model.id === defaultModelManifest.id) ??
-      models[0] ??
-      defaultModelManifest;
-    const petRuntime = createInitialPetRuntimeState();
-    const localConfig = withPersistedModelMappings(
-      createDefaultLocalDesktopConfig(selectedModel, models),
-      persistedExpressions,
-      persistedMotions,
-    );
-    localConfig.ttsSettings = readPersistedTtsSettings();
-
-    return {
-      connected: false,
-      gatewayUrl: mockDesktopDefaults.gatewayUrl,
-      sessionId: mockDesktopDefaults.sessionId,
-      activePlan: null as DisplayPlan | null,
-      activePresentation: null as PresentationPlan | null,
-      petRuntime,
-      localConfig,
-      localConfigVersion: 0,
-      appliedLocalConfigVersion: -1,
-      models,
-      expressionOptions: [] as Live2DExpressionOption[],
-      motionOptions: [] as Live2DMotionOption[],
-      expressionMapVersion: 0,
-      motionMapVersion: 0,
-      transcript: [] as TranscriptEntry[],
-      pendingAfterEmerge: createEmptyPendingAfterEmerge(),
-      unsubscribe: null as (() => void) | null,
-    };
-  },
+  state: createDesktopState,
   getters: {
     currentEmotion: (state) => state.petRuntime.emotion,
     currentExpressionKey: (state) => state.petRuntime.expressionKey,
@@ -362,41 +241,6 @@ export const useDesktopStore = defineStore("desktop", {
       this.expressionMapVersion = snapshot.expressionMapVersion;
       this.motionMapVersion = snapshot.motionMapVersion;
       this.syncPetRuntime(snapshot.petRuntime);
-    },
-    startMockBackend() {
-      if (this.unsubscribe) return;
-      this.unsubscribe = mockBackend.subscribe((event) => {
-        const desktopEvent = mockGatewayEventAdapter.toDesktopEvent(event);
-        if (desktopEvent) {
-          this.applyDesktopEvent(desktopEvent);
-        }
-      });
-      mockBackend.connect();
-    },
-    stopMockBackend() {
-      mockBackend.disconnect();
-      this.unsubscribe?.();
-      this.unsubscribe = null;
-      this.activePlan = null;
-      this.activePresentation = null;
-      this.clearPendingAfterEmerge();
-    },
-    submitUserMessage(text: string) {
-      const trimmed = text.trim();
-      if (!trimmed) return;
-      this.applyDesktopEvent({
-        type: "user.message.submitted",
-        source: "local",
-        at: new Date().toISOString(),
-        sessionId: this.sessionId,
-        text: trimmed,
-      });
-      mockBackend.submitUserMessage(trimmed);
-    },
-    submitMockLlmResult(rawOutput: string) {
-      const trimmed = rawOutput.trim();
-      if (!trimmed) return;
-      mockBackend.submitMockLlmResult(trimmed);
     },
     updateTtsSettings(settings: LocalDesktopConfig["ttsSettings"]) {
       const ttsSettings = sanitizeTtsSettings(settings);
@@ -632,12 +476,9 @@ export const useDesktopStore = defineStore("desktop", {
               speaking: false,
               lastEventAt: event.at,
             });
-            this.transcript.unshift({
-              id: crypto.randomUUID(),
-              role: "system",
-              text: "Mock backend connected.",
-              at: event.at,
-            });
+            this.transcript.unshift(
+              systemTranscriptEntry("Mock backend connected.", event.at),
+            );
           } else {
             this.clearPendingAfterEmerge();
             if (this.petRuntime.status === "emerging") {
@@ -679,13 +520,13 @@ export const useDesktopStore = defineStore("desktop", {
           this.sessionId = event.sessionId;
           this.activePresentation = presentation;
           this.activePlan = presentation.displayPlan;
-          this.transcript.unshift({
-            id: crypto.randomUUID(),
-            role: "assistant",
-            text: presentation.displayPlan.text,
-            at: event.at,
-            displayPlan: presentation.displayPlan,
-          });
+          this.transcript.unshift(
+            assistantTranscriptEntry(
+              presentation.displayPlan.text,
+              event.at,
+              presentation.displayPlan,
+            ),
+          );
           // Let the emerge slide play before speech starts; speaking
           // immediately would cancel the transition and jump the window.
           if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
@@ -715,22 +556,12 @@ export const useDesktopStore = defineStore("desktop", {
               lastEventAt: event.at,
             });
           }
-          this.transcript.unshift({
-            id: crypto.randomUUID(),
-            role: "system",
-            text: event.message,
-            at: event.at,
-          });
+          this.transcript.unshift(systemTranscriptEntry(event.message, event.at));
           break;
         }
         case "user.message.submitted":
           this.sessionId = event.sessionId;
-          this.transcript.unshift({
-            id: crypto.randomUUID(),
-            role: "user",
-            text: event.text,
-            at: event.at,
-          });
+          this.transcript.unshift(userTranscriptEntry(event.text, event.at));
           this.enterPetChat();
           this.syncPetRuntime({
             lastEventAt: event.at,

@@ -1,0 +1,310 @@
+.pet-runtime {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: grid;
+}
+
+.pet-runtime .stage {
+  min-height: calc(100vh - 128px);
+}
+
+.pet-runtime__composer {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 7;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: min(560px, calc(100% - 36px));
+  border: 1px solid rgb(255 255 255 / 78%);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgb(255 255 255 / 86%);
+  box-shadow: 0 14px 34px rgb(22 32 26 / 14%);
+  transform: translateX(-50%);
+}
+
+.pet-runtime__composer input {
+  min-height: 38px;
+}
+
+.pet-window {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.pet-window .stage {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pet-window .stage__subtitle {
+  bottom: 86px;
+  width: calc(100% - 24px);
+  border-color: rgb(167 195 174 / 72%);
+  background: rgb(250 253 249 / 92%);
+  box-shadow: 0 10px 24px rgb(22 32 26 / 18%);
+}
+
+.pet-window__composer {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  border: 1px solid rgb(167 195 174 / 78%);
+  border-radius: 10px;
+  padding: 8px;
+  background: rgb(250 253 249 / 94%);
+  box-shadow: 0 12px 30px rgb(22 32 26 / 20%);
+}
+
+.pet-window__composer input,
+.pet-window__composer button {
+  min-height: 38px;
+}
+
+.pet-window[data-status="hidden"] .stage__subtitle,
+.pet-window[data-status="retreating"] .stage__subtitle {
+  display: none;
+}
+
+.stage {
+  position: relative;
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 76%), rgb(255 255 255 / 12%)),
+    radial-gradient(circle at 50% 34%, #d9f1df 0, transparent 30%),
+    linear-gradient(135deg, #eef4ea 0%, #e9f1f5 48%, #f5eee5 100%);
+  box-shadow: var(--shadow);
+}
+
+.stage__status,
+.stage__caption,
+.stage__subtitle {
+  position: absolute;
+  z-index: 3;
+}
+
+.stage__status,
+.stage__caption {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.stage__status {
+  top: 16px;
+  left: 16px;
+  flex-wrap: wrap;
+}
+
+.stage__status span,
+.stage__caption span,
+.stage__caption strong {
+  border: 1px solid rgb(255 255 255 / 70%);
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: rgb(255 255 255 / 76%);
+  color: #2b3b30;
+}
+
+.stage__caption {
+  right: 16px;
+  bottom: 16px;
+}
+
+.stage__subtitle {
+  left: 50%;
+  bottom: 62px;
+  width: min(620px, calc(100% - 32px));
+  margin: 0;
+  border: 1px solid rgb(255 255 255 / 78%);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgb(255 255 255 / 82%);
+  color: #203129;
+  line-height: 1.5;
+  text-align: center;
+  transform: translateX(-50%);
+  box-shadow: 0 10px 26px rgb(22 32 26 / 10%);
+}
+
+.stage__debug-toggle {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 5;
+}
+
+.avatar {
+  position: absolute;
+  left: 50%;
+  bottom: 76px;
+  width: min(58vw, 460px);
+  aspect-ratio: 0.78;
+  transform: translateX(-50%);
+}
+
+.live2d-host {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.live2d-host[data-state="fallback"],
+.live2d-host[data-state="loading"] {
+  pointer-events: none;
+}
+
+.live2d-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.stage__error {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 62px;
+  z-index: 4;
+  display: grid;
+  gap: 4px;
+  max-width: 540px;
+  border: 1px solid rgb(180 132 90 / 45%);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgb(255 250 242 / 82%);
+  color: #5f3d24;
+}
+
+.stage__error span {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.avatar__halo {
+  position: absolute;
+  inset: 8% 2% 20%;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 52%);
+  filter: blur(4px);
+}
+
+.avatar__body {
+  position: absolute;
+  inset: 8% 14% 10%;
+  border: 1px solid rgb(78 118 83 / 30%);
+  border-radius: 44% 44% 38% 38%;
+  background:
+    linear-gradient(160deg, #fafdf5 0 28%, #cce8d1 29% 58%, #78b988 59%),
+    linear-gradient(90deg, #f9f2c8, #ffffff);
+  box-shadow: 0 24px 50px rgb(31 70 45 / 22%);
+  animation: breathe 4s ease-in-out infinite;
+}
+
+.avatar__leaf {
+  position: absolute;
+  top: 4%;
+  width: 34%;
+  height: 22%;
+  border-radius: 80% 10% 80% 10%;
+  background: linear-gradient(135deg, #79b86f, #f7df77);
+}
+
+.avatar__leaf--left {
+  left: 10%;
+  transform: rotate(-28deg);
+}
+
+.avatar__leaf--right {
+  right: 10%;
+  transform: scaleX(-1) rotate(-28deg);
+}
+
+.avatar__face {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  display: grid;
+  grid-template-columns: repeat(2, 44px);
+  grid-template-rows: 36px 34px;
+  justify-content: center;
+  gap: 10px 40px;
+  transform: translateX(-50%);
+}
+
+.avatar__eye {
+  display: block;
+  border-radius: 999px;
+  background: #284936;
+  box-shadow: inset 8px 7px 0 rgb(255 255 255 / 55%);
+}
+
+.avatar__mouth {
+  grid-column: 1 / span 2;
+  justify-self: center;
+  width: 54px;
+  height: 12px;
+  border-radius: 0 0 999px 999px;
+  background: #8f4a4e;
+  transition:
+    width 160ms ease,
+    height 160ms ease;
+}
+
+.avatar__mouth[data-speaking="true"] {
+  width: 46px;
+  height: 28px;
+  animation: talk 260ms ease-in-out infinite;
+}
+
+.avatar__shadow {
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  bottom: 1%;
+  height: 36px;
+  border-radius: 50%;
+  background: rgb(54 74 57 / 20%);
+  filter: blur(6px);
+}
+
+.avatar[data-emotion="thinking"] .avatar__body {
+  background:
+    linear-gradient(160deg, #fafdf5 0 28%, #cce8d1 29% 58%, #6aa6b1 59%),
+    linear-gradient(90deg, #f9f2c8, #ffffff);
+}
+
+.avatar[data-emotion="worried"] .avatar__body,
+.avatar[data-emotion="error"] .avatar__body {
+  background:
+    linear-gradient(160deg, #fff8f7 0 28%, #f1c9c9 29% 58%, #9a6872 59%),
+    linear-gradient(90deg, #f9f2c8, #ffffff);
+}
+
+.avatar[data-motion="wave"] .avatar__leaf--right {
+  animation: wave 900ms ease-in-out infinite;
+}
+
+.avatar[data-motion="point"] .avatar__body {
+  transform-origin: bottom center;
+  animation: point 1200ms ease-in-out infinite;
+}

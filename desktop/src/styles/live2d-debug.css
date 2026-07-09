@@ -1,0 +1,207 @@
+.live2d-debug {
+  position: absolute;
+  top: 60px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 6;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  width: min(520px, calc(100% - 32px));
+  border: 1px solid rgb(93 112 99 / 42%);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgb(250 252 249 / 94%);
+  box-shadow: 0 18px 40px rgb(22 32 26 / 18%);
+  backdrop-filter: blur(8px);
+}
+
+.live2d-debug__header,
+.live2d-debug__toolbar,
+.live2d-debug__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.live2d-debug__header {
+  justify-content: space-between;
+}
+
+.live2d-debug__header div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.live2d-debug__header span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.live2d-debug__toolbar button {
+  flex: 1;
+}
+
+.live2d-debug__toolbar button.is-active {
+  border-color: var(--green);
+  color: #153a27;
+  background: #e5f5ea;
+}
+
+.live2d-debug__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.live2d-debug__empty {
+  padding: 14px;
+  color: var(--text-muted);
+}
+
+.live2d-debug__body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.debug-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  list-style: none;
+}
+
+.debug-playback {
+  display: grid;
+  gap: 12px;
+  padding: 10px;
+}
+
+.debug-parameters {
+  display: grid;
+  gap: 12px;
+  padding: 10px;
+}
+
+.debug-parameters .debug-list {
+  padding: 0;
+}
+
+.debug-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.debug-section__header span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.debug-button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.debug-button-grid button {
+  min-height: 46px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 2px;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.debug-button-grid button strong,
+.debug-button-grid button span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-button-grid button span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.debug-list li {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px;
+  background: rgb(255 255 255 / 78%);
+}
+
+.debug-list li.is-overridden {
+  border-color: #83b98f;
+  background: #edf8f0;
+}
+
+.debug-list__meta,
+.debug-list__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.debug-list__meta {
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.debug-list__meta strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #1e2f25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-list__controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.debug-list__controls button {
+  min-height: 30px;
+  padding-inline: 9px;
+}
+
+.debug-list__value {
+  min-width: 54px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.debug-list--drawables dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.debug-list--drawables dl div {
+  display: grid;
+  gap: 2px;
+}
+
+.debug-list--drawables dt {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.debug-list--drawables dd {
+  margin: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

@@ -8,7 +8,12 @@ import Live2DStage from "@/components/Live2DStage.vue";
 import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
+import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
+
+const props = defineProps<{
+  runtime: DesktopRuntimeActions;
+}>();
 
 const store = useDesktopStore();
 
@@ -37,10 +42,10 @@ const activeSegment = computed(
       <ControlPanel
         :connected="store.connected"
         :gateway-url="store.gatewayUrl"
-        @connect="store.startMockBackend"
-        @disconnect="store.stopMockBackend"
-        @submit="store.submitUserMessage"
-        @submit-mock-llm-result="store.submitMockLlmResult"
+        @connect="props.runtime.connectMockBackend"
+        @disconnect="props.runtime.disconnectMockBackend"
+        @submit="props.runtime.submitUserMessage"
+        @submit-mock-llm-result="props.runtime.submitMockLlmResult"
       />
       <DisplayPlanPanel
         :plan="store.activePlan"
