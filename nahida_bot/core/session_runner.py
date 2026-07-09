@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -48,6 +49,7 @@ from nahida_bot.core.message_context import (
     render_message_with_context,
     strip_envelope_prefix,
 )
+from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     ReasoningRuntimeSettings,
@@ -2546,27 +2548,51 @@ class SessionRunner:
         seen: set[str] = set()
 
         for message in assistant_messages:
-            content = strip_envelope_prefix(str(getattr(message, "content", "") or ""))
+            content = _visible_text(str(getattr(message, "content", "") or ""))
             if not content or content in seen:
                 continue
             visible.append((content, message))
             seen.add(content)
 
-        final_response = strip_envelope_prefix(str(result.final_response or ""))
+        final_response = _visible_text(str(result.final_response or ""))
         fallback_metadata_source = (
             assistant_messages[-1] if assistant_messages else None
         )
         if final_response and final_response not in seen:
             visible.append((final_response, fallback_metadata_source))
+            seen.add(final_response)
 
-        if not visible:
+        # Tool-delivered utterances (design §11): content the bot sent to the
+        # user via a tool (e.g. the `speak` voice tool's delivered_text). These
+        # must be remembered even when the final assistant text is NO_REPLY
+        # (voice-only). Chronologically produced before the final reply, so they
+        # precede it here. Generic — any tool returning a non-empty
+        # ``delivered_text`` field is projected, not just `speak`.
+        delivered = [
+            (text, meta)
+            for text, meta in _extract_delivered_utterances(result.tool_messages)
+            if text not in seen
+        ]
+
+        if not visible and not delivered:
             return []
 
         assistant_context_metadata = message_context_to_metadata(
             assistant_context() if include_message_context else None
         )
-        last_index = len(visible) - 1
         turns: list[ConversationTurn] = []
+
+        for content, meta in delivered:
+            turns.append(
+                ConversationTurn(
+                    role="assistant",
+                    content=content,
+                    source="tool_utterance",
+                    metadata=meta,
+                )
+            )
+
+        last_index = len(visible) - 1
         for index, (content, source_message) in enumerate(visible):
             turns.append(
                 ConversationTurn(
@@ -2912,6 +2938,19 @@ def _safe_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _visible_text(raw: str) -> str:
+    """Strip envelope prefix and any reply sentinel, returning the visible text.
+
+    Used when projecting assistant turns into memory so a voice-only reply
+    (``NO_REPLY``) doesn't get recorded as a literal turn, and a trailing
+    sentinel (``"summary\\nNO_REPLY"``) keeps only the real text — matching what
+    the router actually sends. Returns ``""`` for a pure sentinel.
+    """
+    text = strip_envelope_prefix(raw)
+    result = detect_sentinel(text)
+    return result.text if result.action is not None else text
+
+
 def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
     """Build a model spec from legacy provider/model split fields."""
     provider_id = provider_id.strip()
@@ -2943,3 +2982,74 @@ def _message_context_log_fields(message_context: Any | None) -> dict[str, object
         ),
         "has_message_context": True,
     }
+
+
+def _extract_delivered_utterances(
+    tool_messages: list[ContextMessage],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Project tool-delivered utterances from tool results (design §11).
+
+    Each tool result message wraps the tool's return value as ``output`` inside
+    a JSON envelope ``{status, output, error, logs}``. When that return value is
+    itself JSON carrying a non-empty ``delivered_text`` field, the bot delivered
+    that text to the user (e.g. the ``speak`` voice tool) and it must be
+    remembered. Returns ``(content, metadata)`` pairs ready to become assistant
+    turns. Generic — not hardcoded to ``speak``.
+    """
+    utterances: list[tuple[str, dict[str, Any]]] = []
+    for message in tool_messages:
+        if getattr(message, "role", None) != "tool":
+            continue
+        text = _extract_delivered_text(getattr(message, "content", "") or "")
+        if not text:
+            continue
+        metadata = getattr(message, "metadata", None) or {}
+        tool_name = metadata.get("tool_name") if isinstance(metadata, dict) else ""
+        if not isinstance(tool_name, str):
+            tool_name = ""
+        utterances.append(
+            (
+                text,
+                {
+                    "tool": tool_name,
+                    "tool_call_id": (
+                        metadata.get("tool_call_id")
+                        if isinstance(metadata, dict)
+                        and isinstance(metadata.get("tool_call_id"), str)
+                        else ""
+                    ),
+                    "spoken": True,
+                    "tool_utterance": True,
+                },
+            )
+        )
+    return utterances
+
+
+def _extract_delivered_text(content: str) -> str:
+    """Return the ``delivered_text`` from a tool result message, or ``""``.
+
+    Robust to: non-JSON envelope, non-JSON ``output``, non-dict payloads,
+    missing/empty ``delivered_text``. Never raises.
+    """
+    try:
+        envelope = json.loads(content)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(envelope, dict):
+        return ""
+    output = envelope.get("output")
+    if not isinstance(output, str) or not output:
+        return ""
+    try:
+        payload = json.loads(output)
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    delivered = payload.get("delivered_text")
+    if isinstance(delivered, str):
+        delivered = delivered.strip()
+        if delivered:
+            return delivered
+    return ""
