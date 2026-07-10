@@ -851,6 +851,88 @@ async def test_memory_service_updates_and_archives_only_visible_items(
 
 
 @pytest.mark.asyncio
+async def test_memory_service_update_promotes_and_demotes_scope(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    session_id = "milky:private:10001"
+    service = MemoryService(memory_store)
+
+    chat_id = await service.store_item(
+        "public chat fact",
+        "This is a public fact scoped to the current chat.",
+        session_id=session_id,
+        metadata={"kind": "fact", "audience": "current"},
+    )
+    by_id = await memory_store.get_items_by_ids([chat_id])
+    assert by_id[0].scope_type == "chat"
+
+    promoted_id = await service.update_item_for_context(
+        chat_id,
+        "This fact now applies bot-wide.",
+        ctx=None,
+        session_id=session_id,
+        metadata={"kind": "fact", "audience": "global"},
+    )
+    assert promoted_id is not None
+    assert await memory_store.get_items_by_ids([chat_id]) == []
+    promoted = await memory_store.get_items_by_ids([promoted_id])
+    assert promoted[0].scope_type == "global"
+    assert promoted[0].scope_id == "__global__"
+    assert promoted[0].metadata["replaces_item_id"] == chat_id
+    assert promoted[0].metadata["audience"] == "global"
+
+    demoted_id = await service.update_item_for_context(
+        promoted_id,
+        "This fact belongs only to the current chat now.",
+        ctx=None,
+        session_id=session_id,
+        metadata={"kind": "fact", "audience": "current"},
+    )
+    assert demoted_id is not None
+    demoted = await memory_store.get_items_by_ids([demoted_id])
+    assert demoted[0].scope_type == "chat"
+    assert demoted[0].scope_id == session_id
+    assert demoted[0].metadata["replaces_item_id"] == promoted_id
+    assert demoted[0].metadata["audience"] == "current"
+
+
+@pytest.mark.asyncio
+async def test_memory_service_update_reassigns_to_target_scope(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    """Target scope override can reassign a memory to a specific person/account."""
+    session_id = "milky:private:10001"
+    service = MemoryService(memory_store)
+
+    global_id = await service.store_item(
+        "stale global decision",
+        "This was accidentally written to global.",
+        session_id=session_id,
+        metadata={"kind": "decision", "audience": "global"},
+    )
+    by_id = await memory_store.get_items_by_ids([global_id])
+    assert by_id[0].scope_type == "global"
+
+    reassigned_id = await service.update_item_for_context(
+        global_id,
+        "This decision belongs to person owner.",
+        ctx=None,
+        session_id=session_id,
+        metadata={
+            "kind": "decision",
+            "target_scope_type": "person",
+            "target_scope_id": "owner",
+        },
+    )
+    assert reassigned_id is not None
+    assert await memory_store.get_items_by_ids([global_id]) == []
+    reassigned = await memory_store.get_items_by_ids([reassigned_id])
+    assert reassigned[0].scope_type == "person"
+    assert reassigned[0].scope_id == "owner"
+    assert reassigned[0].metadata["replaces_item_id"] == global_id
+
+
+@pytest.mark.asyncio
 async def test_memory_service_requires_explicit_public_global_audience(
     memory_store: SQLiteMemoryStore,
 ) -> None:

@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import json
 import mimetypes
+import os
 import re
 import socket
 from pathlib import Path
@@ -313,34 +314,74 @@ class BuiltinCommandsPlugin(Plugin):
             },
             self._tool_memory_write,
         )
+        can_reassign = bool(os.environ.get("NAHIDA_MEMORY_REASSIGN"))
+        update_description = (
+            "Replace a visible structured memory item when its content or scope is "
+            "outdated or incorrect. This creates a replacement with provenance and "
+            "archives the old item. Changing audience to 'global' requires the "
+            "sensitivity to be 'public'. Do not use merely to rephrase correct memory."
+        )
+        update_properties: dict[str, Any] = {
+            "item_id": {"type": "string"},
+            "content": {"type": "string"},
+            "title": {"type": "string"},
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "fact",
+                    "preference",
+                    "task",
+                    "decision",
+                    "procedure",
+                    "warning",
+                    "summary",
+                ],
+            },
+            "audience": {
+                "type": "string",
+                "enum": ["current", "global"],
+                "description": (
+                    "Visibility intent. Default — keep existing audience. "
+                    "Use 'global' only to promote a public item to bot-wide "
+                    "visibility. Use 'current' to demote a global item back "
+                    "to the current chat scope."
+                ),
+            },
+            "sensitivity": {
+                "type": "string",
+                "enum": ["public", "private", "secret_like"],
+            },
+        }
+        if can_reassign:
+            update_description = (
+                "Replace a visible structured memory item when its content or scope is "
+                "outdated or incorrect. This creates a replacement with provenance and "
+                "archives the old item. Changing audience to 'global' requires the "
+                "sensitivity to be 'public'. You may also reassign an item to any "
+                "person, account, or chat scope via target_scope_type+target_scope_id. "
+                "Do not use merely to rephrase correct memory."
+            )
+            update_properties["target_scope_type"] = {
+                "type": "string",
+                "enum": ["chat", "person", "account"],
+                "description": (
+                    "Reassign to a specific scope type. Use with target_scope_id. "
+                    "Overrides audience when both are given."
+                ),
+            }
+            update_properties["target_scope_id"] = {
+                "type": "string",
+                "description": (
+                    "Target scope id (e.g. person id, chat key). "
+                    "Required when target_scope_type is set."
+                ),
+            }
         self.api.register_tool(
             "memory_update",
-            "Replace a visible structured memory item when its content is outdated or "
-            "incorrect. This creates a replacement with provenance and archives the old "
-            "item. Do not use it merely to rephrase an already-correct memory.",
+            update_description,
             {
                 "type": "object",
-                "properties": {
-                    "item_id": {"type": "string"},
-                    "content": {"type": "string"},
-                    "title": {"type": "string"},
-                    "kind": {
-                        "type": "string",
-                        "enum": [
-                            "fact",
-                            "preference",
-                            "task",
-                            "decision",
-                            "procedure",
-                            "warning",
-                            "summary",
-                        ],
-                    },
-                    "sensitivity": {
-                        "type": "string",
-                        "enum": ["public", "private", "secret_like"],
-                    },
-                },
+                "properties": update_properties,
                 "required": ["item_id", "content"],
                 "additionalProperties": False,
             },
@@ -886,6 +927,9 @@ class BuiltinCommandsPlugin(Plugin):
         content: str,
         title: str = "",
         kind: str = "",
+        audience: str = "",
+        target_scope_type: str = "",
+        target_scope_id: str = "",
         sensitivity: str = "",
     ) -> str:
         error = validate_memory_content(content)
@@ -901,6 +945,23 @@ class BuiltinCommandsPlugin(Plugin):
             "summary",
         }:
             return "Error: invalid memory kind."
+        if audience and audience not in {"current", "global"}:
+            return "Error: audience must be current or global."
+        if target_scope_type and target_scope_type not in {
+            "chat",
+            "person",
+            "account",
+        }:
+            return "Error: target_scope_type must be chat, person, or account."
+        if (target_scope_type or target_scope_id) and not os.environ.get(
+            "NAHIDA_MEMORY_REASSIGN"
+        ):
+            return (
+                "Error: reassigning memory to an arbitrary scope requires "
+                "NAHIDA_MEMORY_REASSIGN=1."
+            )
+        if target_scope_type and not target_scope_id:
+            return "Error: target_scope_id is required when target_scope_type is set."
         if sensitivity and sensitivity not in {
             "public",
             "private",
@@ -910,6 +971,11 @@ class BuiltinCommandsPlugin(Plugin):
         metadata: dict[str, Any] = {"update_reason": "bot_memory_tool"}
         if kind:
             metadata["kind"] = kind
+        if audience:
+            metadata["audience"] = audience
+        if target_scope_type:
+            metadata["target_scope_type"] = target_scope_type
+            metadata["target_scope_id"] = target_scope_id
         if sensitivity:
             metadata["sensitivity"] = sensitivity
         try:
@@ -2374,14 +2440,22 @@ class BuiltinCommandsPlugin(Plugin):
         lines = ["Memory results:"]
         for idx, item in enumerate(results, start=1):
             title = ""
+            scope_type = ""
+            audience = ""
+            sensitivity = ""
             metadata = getattr(item, "metadata", None)
             if isinstance(metadata, dict):
                 title_value = metadata.get("title")
                 if isinstance(title_value, str) and title_value:
                     title = f"{title_value}: "
+                scope_type = str(metadata.get("scope_type", "") or "")
+                audience = str(metadata.get("audience", "") or "")
+                sensitivity = str(metadata.get("sensitivity", "") or "")
             key = getattr(item, "key", "")
             content = getattr(item, "content", "")
-            lines.append(f"{idx}. [{key}] {title}{str(content)[:500]}")
+            scope_parts = [p for p in (scope_type, audience, sensitivity) if p]
+            scope_label = f" ({', '.join(scope_parts)})" if scope_parts else ""
+            lines.append(f"{idx}. [{key}]{scope_label} {title}{str(content)[:500]}")
         return "\n".join(lines)
 
     async def _cmd_agents(

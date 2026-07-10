@@ -668,6 +668,44 @@ async def test_memory_update_and_archive_tools_use_item_ids() -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_update_blocks_reassign_without_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NAHIDA_MEMORY_REASSIGN", raising=False)
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_memory_update(
+        "mem_1",
+        "reassign content",
+        target_scope_type="person",
+        target_scope_id="owner",
+    )
+    assert "NAHIDA_MEMORY_REASSIGN" in result
+
+
+@pytest.mark.asyncio
+async def test_memory_update_allows_reassign_with_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NAHIDA_MEMORY_REASSIGN", "1")
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_memory_update(
+        "mem_1",
+        "reassign content",
+        target_scope_type="person",
+        target_scope_id="owner",
+    )
+    assert "mem_updated_1" in result
+    _item_id, _content, _key, metadata = api.updated_memories[0]
+    assert metadata is not None
+    assert metadata["target_scope_type"] == "person"
+    assert metadata["target_scope_id"] == "owner"
+
+
+@pytest.mark.asyncio
 async def test_reset_status_model_and_help_commands() -> None:
     async def _help_handler(**kwargs: object) -> str:
         return "ok"

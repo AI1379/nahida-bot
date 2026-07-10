@@ -355,11 +355,16 @@ class MemoryService:
         key: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> str | None:
-        """Replace a visible item, preserving scope and provenance.
+        """Replace a visible item, preserving provenance.
 
         Durable memory is append-oriented: an update creates a replacement and
         archives the old item. This keeps a recoverable provenance chain and
         avoids mutating historical evidence in place.
+
+        When *metadata* contains ``audience``, scope is re-resolved: ``global``
+        promotes a public item to the shared global scope; ``current``
+        re-resolves to the current identity/chat. Without ``audience`` the
+        original scope is kept for backward-compatible in-place edits.
         """
         old = await self._accessible_item(item_id, ctx=ctx, session_id=session_id)
         if old is None or not content.strip():
@@ -374,20 +379,54 @@ class MemoryService:
         else:
             sensitivity = old.sensitivity
             sensitivity_source = old.sensitivity_source
-        if old.scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
+
+        target_scope_type = str(updates.pop("target_scope_type", "")).strip()
+        target_scope_id = str(updates.pop("target_scope_id", "")).strip()
+        if target_scope_type and target_scope_id:
+            if target_scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
+                return None
+            scope_type = target_scope_type
+            scope_id = target_scope_id
+        else:
+            audience = str(updates.pop("audience", "")).strip().casefold()
+            if audience == "global":
+                if sensitivity != "public":
+                    return None
+                scope_type = SCOPE_TYPE_GLOBAL
+                scope_id = SCOPE_ID_GLOBAL
+            elif audience:
+                from nahida_bot.identity.policy import (
+                    memory_write_request_from_context,
+                    resolve_memory_write_scope,
+                )
+
+                write_req = memory_write_request_from_context(ctx, session_id)
+                scope_type, scope_id = resolve_memory_write_scope(
+                    write_req,
+                    kind,
+                    global_scope=False,
+                )
+                if scope_type == SCOPE_TYPE_GLOBAL:
+                    return None
+            else:
+                scope_type = old.scope_type
+                scope_id = old.scope_id
+
+        if scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
             return None
 
         replacement_metadata = {
             **old.metadata,
             **updates,
+            "audience": ("global" if scope_type == SCOPE_TYPE_GLOBAL else "current"),
             "replaces_item_id": old.item_id,
             "updated_via": "memory_update",
         }
         replacement_id = await self._store.append_item(
             title=key.strip() or old.title,
             content=content.strip(),
-            scope_type=old.scope_type,
-            scope_id=old.scope_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
             kind=kind,
             source="memory_update",
             confidence=float(replacement_metadata.pop("confidence", old.confidence)),
