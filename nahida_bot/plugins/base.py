@@ -21,6 +21,7 @@ from nahida_bot_sdk.commands import (  # noqa: F401
 from nahida_bot_sdk.manifest import PluginManifest  # noqa: F401
 from nahida_bot_sdk.messaging import (  # noqa: F401
     Attachment,
+    AttentionFrame,
     ChatContext,
     InboundAttachment,
     InboundMessage,

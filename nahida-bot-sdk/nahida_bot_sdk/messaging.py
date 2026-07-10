@@ -85,6 +85,20 @@ class InboundMessage:
 
 
 @dataclass(slots=True, frozen=True)
+class AttentionFrame:
+    """Exact group-chat messages selected to ground one agent run."""
+
+    trigger_kind: str
+    anchor_message_id: str
+    messages: tuple[InboundMessage, ...] = ()
+    reason: str = ""
+    focus: str = ""
+    episode_id: str = ""
+    reply_to_message_id: str | None = None
+    max_chars: int = 0
+
+
+@dataclass(slots=True, frozen=True)
 class MediaDownloadResult:
     """Result of downloading a media file from a platform."""
 

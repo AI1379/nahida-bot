@@ -21,6 +21,7 @@ from nahida_bot.core.events import (
     PokePayload,
 )
 from nahida_bot.plugins.base import (
+    AttentionFrame,
     ChatContext,
     InboundMessage,
     MessageContext,
@@ -44,6 +45,7 @@ class _ContextEntry:
     text: str
     timestamp: float
     message_id: str
+    message: InboundMessage
 
 
 @dataclass(slots=True, frozen=True)
@@ -317,6 +319,12 @@ class ConversationJoinerPlugin(Plugin):
                 session_id=session_id,
                 reason=decision.reason,
                 instruction=instruction,
+                attention_frame=self._build_attention_frame(
+                    message,
+                    chat_key=chat_key,
+                    cfg=cfg,
+                    decision=decision,
+                ),
             )
             triggered_now = time.monotonic()
             self._last_triggered_at[chat_key] = triggered_now
@@ -533,6 +541,7 @@ class ConversationJoinerPlugin(Plugin):
 
         # Run continue_gate if enabled and enough messages.
         continue_cfg = engagement_cfg.continue_gate
+        decision: _SecretaryDecision | None = None
         if continue_cfg.enabled:
             if len(batch.messages) < continue_cfg.min_messages:
                 self._reschedule_flush(
@@ -624,6 +633,15 @@ class ConversationJoinerPlugin(Plugin):
                 instruction=instruction,
                 observed_messages=tuple(batch.messages),
                 reply_to_message_id=reply_to_message_id,
+                attention_frame=AttentionFrame(
+                    trigger_kind="engaged_continue",
+                    anchor_message_id=anchor.message_id,
+                    messages=tuple(batch.messages),
+                    reason=decision.reason if decision is not None else "",
+                    focus=decision.focus if decision is not None else "",
+                    reply_to_message_id=reply_to_message_id,
+                    max_chars=engagement_cfg.batching.max_chars,
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             self._clear_pending_request(chat_key)
@@ -894,6 +912,12 @@ class ConversationJoinerPlugin(Plugin):
                 session_id=session_id,
                 reason=decision.reason,
                 instruction=instruction,
+                attention_frame=self._build_attention_frame(
+                    message,
+                    chat_key=chat_key,
+                    cfg=cfg,
+                    decision=decision,
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             self._clear_pending_request(chat_key)
@@ -1177,10 +1201,30 @@ class ConversationJoinerPlugin(Plugin):
                 text=text,
                 timestamp=message.timestamp,
                 message_id=message.message_id,
+                message=message,
             )
         )
         while len(entries) > cfg.max_context_messages:
             entries.popleft()
+
+    def _build_attention_frame(
+        self,
+        anchor: InboundMessage,
+        *,
+        chat_key: str,
+        cfg: EffectiveJoinerConfig,
+        decision: _SecretaryDecision,
+    ) -> AttentionFrame:
+        selected = _select_context_entries(self._contexts.get(chat_key, ()), cfg)
+        return AttentionFrame(
+            trigger_kind="proactive_join",
+            anchor_message_id=anchor.message_id,
+            messages=tuple(entry.message for entry in selected),
+            reason=decision.reason,
+            focus=decision.focus,
+            reply_to_message_id=(decision.reply_anchor_message_id or None),
+            max_chars=cfg.max_context_chars,
+        )
 
     def _prefilter_skip_reason(
         self,
@@ -1588,21 +1632,38 @@ def _format_context(
     entries: Iterable[_ContextEntry],
     cfg: EffectiveJoinerConfig,
 ) -> str:
-    selected = list(entries)[-cfg.max_context_messages :]
+    selected = _select_context_entries(entries, cfg)
     lines: list[str] = []
     remaining = cfg.max_context_chars
-    for entry in reversed(selected):
+    for entry in selected:
         line = f"- {entry.sender}: {entry.text}"
         if len(line) > remaining:
-            if not lines:
-                lines.append(line[:remaining])
+            lines.append(line[:remaining])
             break
         lines.append(line)
         remaining -= len(line)
         if remaining <= 0:
             break
-    lines.reverse()
     return "\n".join(lines)
+
+
+def _select_context_entries(
+    entries: Iterable[_ContextEntry],
+    cfg: EffectiveJoinerConfig,
+) -> list[_ContextEntry]:
+    candidates = list(entries)[-cfg.max_context_messages :]
+    selected_reversed: list[_ContextEntry] = []
+    remaining = cfg.max_context_chars
+    for entry in reversed(candidates):
+        line_size = len(f"- {entry.sender}: {entry.text}")
+        if line_size > remaining and selected_reversed:
+            break
+        selected_reversed.append(entry)
+        remaining -= min(line_size, remaining)
+        if remaining <= 0:
+            break
+    selected_reversed.reverse()
+    return selected_reversed
 
 
 def _parse_decision(content: str) -> _SecretaryDecision | None:

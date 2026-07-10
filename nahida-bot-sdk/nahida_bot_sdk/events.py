@@ -8,6 +8,7 @@ from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
 from nahida_bot_sdk.chat_address import ChatAddress
+from nahida_bot_sdk.messaging import AttentionFrame
 
 PayloadT = TypeVar("PayloadT")
 EventT = TypeVar("EventT", bound="Event[Any]", contravariant=True)
@@ -140,6 +141,7 @@ class AgentResponseRequestPayload:
     synthetic: bool = False
     observed_messages: tuple[Any, ...] = ()
     reply_to_message_id: str | None = None
+    attention_frame: AttentionFrame | None = None
 
 
 @dataclass(slots=True, frozen=True)

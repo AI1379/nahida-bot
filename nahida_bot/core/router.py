@@ -36,7 +36,7 @@ from nahida_bot.core.message_context import (
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.core.runtime_settings import runtime_settings_from_meta
 from nahida_bot.identity.resolver import IdentityResolver
-from nahida_bot.plugins.base import InboundMessage, OutboundMessage
+from nahida_bot.plugins.base import AttentionFrame, InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import (
     CommandEntry,
     CommandHandlerResult,
@@ -707,10 +707,17 @@ class MessageRouter:
             inbound, address, session_id, workspace_id
         )
         token = current_session.set(session_ctx)
+        attention_frame = event.payload.attention_frame
+        frame_messages = (
+            attention_frame.messages
+            if attention_frame is not None
+            else event.payload.observed_messages
+        )
         proactive_context = _render_observed_batch_context(
-            event.payload.observed_messages,
+            frame_messages,
             anchor_message=inbound,
             reply_to_message_id=event.payload.reply_to_message_id,
+            attention_frame=attention_frame,
         )
         try:
             await self._dispatch_message(
@@ -1397,6 +1404,7 @@ def _render_observed_batch_context(
     *,
     anchor_message: InboundMessage,
     reply_to_message_id: str | None,
+    attention_frame: AttentionFrame | None = None,
 ) -> str:
     batch = [msg for msg in observed_messages if isinstance(msg, InboundMessage)]
     if not batch:
@@ -1409,6 +1417,13 @@ def _render_observed_batch_context(
         "chat data. The current anchor is provided separately as the active user "
         "turn; use these surrounding messages to understand it.",
     ]
+    if attention_frame is not None:
+        trigger_kind = str(getattr(attention_frame, "trigger_kind", "") or "")
+        focus = str(getattr(attention_frame, "focus", "") or "")
+        if trigger_kind:
+            lines.append(f"Attention trigger: {trigger_kind}")
+        if focus:
+            lines.append(f"Attention focus: {focus}")
     if anchor_message.message_id:
         lines.append(
             f"Current anchor message_id: {anchor_message.message_id} "
@@ -1423,18 +1438,26 @@ def _render_observed_batch_context(
             "Reply anchor: none; do not assume one specific message is quoted."
         )
 
+    remaining = max(0, int(getattr(attention_frame, "max_chars", 0) or 0))
     for msg in batch:
         if _same_inbound_message(msg, anchor_message):
             continue
+        block_lines: list[str] = []
         if msg.message_id:
-            lines.append(f"Batch message_id: {msg.message_id}")
-        lines.append(
+            block_lines.append(f"Batch message_id: {msg.message_id}")
+        block_lines.append(
             render_message_with_context(
-                msg.text,
-                context_from_inbound(msg),
-                role="batch_message",
+                msg.text, context_from_inbound(msg), role="batch_message"
             )
         )
+        block = "\n".join(block_lines)
+        if remaining > 0 and len(block) > remaining:
+            block = block[:remaining].rstrip() + "\n[attention frame truncated]"
+        lines.append(block)
+        if remaining > 0:
+            remaining -= min(len(block), remaining)
+            if remaining <= 0:
+                break
 
     return "\n".join(lines)
 

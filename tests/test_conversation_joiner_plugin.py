@@ -165,6 +165,12 @@ async def test_should_join_true_requests_agent_response() -> None:
     assert request["session_id"] == "test:group:g1"
     assert request["reason"] == "helpful"
     assert "deployment" in request["instruction"]
+    frame = request["attention_frame"]
+    assert frame is not None
+    assert frame.trigger_kind == "proactive_join"
+    assert frame.anchor_message_id == "m1"
+    assert [message.message_id for message in frame.messages] == ["m1"]
+    assert frame.focus == "deployment"
 
 
 @pytest.mark.asyncio

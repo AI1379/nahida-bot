@@ -11,6 +11,7 @@ import structlog
 from nahida_bot.agent.context import MessageRole
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import (
+    AttentionFrame,
     ChannelService,
     InboundMessage,
     MemoryRef,
@@ -317,6 +318,7 @@ class RealBotAPI:
         instruction: str = "",
         observed_messages: tuple[InboundMessage, ...] = (),
         reply_to_message_id: str | None = None,
+        attention_frame: AttentionFrame | None = None,
     ) -> None:
         """Ask the router to run the main agent for an observed group message."""
         self._permissions.check_event_emit("AgentResponseRequested")
@@ -341,6 +343,7 @@ class RealBotAPI:
             instruction=str(instruction or "").strip(),
             observed_messages=tuple(observed_messages or ()),
             reply_to_message_id=reply_to_message_id,
+            attention_frame=attention_frame,
         )
         result = await self._event_bus.publish(
             AgentResponseRequested(payload=payload, source=self._plugin_id)

@@ -12,7 +12,7 @@ import structlog
 
 from nahida_bot_sdk.api import ManagedTempFile
 from nahida_bot_sdk.chat_address import ChatAddress
-from nahida_bot_sdk.messaging import InboundMessage, OutboundMessage
+from nahida_bot_sdk.messaging import AttentionFrame, InboundMessage, OutboundMessage
 from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 # A real structlog bound logger, same class family as production
@@ -98,6 +98,7 @@ class MockBotAPI:
         instruction: str = "",
         observed_messages: tuple[InboundMessage, ...] = (),
         reply_to_message_id: str | None = None,
+        attention_frame: AttentionFrame | None = None,
     ) -> None:
         pass
 
@@ -472,6 +473,7 @@ class RecordingMockBotAPI(MockBotAPI):
         instruction: str = "",
         observed_messages: tuple[InboundMessage, ...] = (),
         reply_to_message_id: str | None = None,
+        attention_frame: AttentionFrame | None = None,
     ) -> None:
         self.agent_response_requests.append(
             {
@@ -481,6 +483,7 @@ class RecordingMockBotAPI(MockBotAPI):
                 "instruction": instruction,
                 "observed_messages": observed_messages,
                 "reply_to_message_id": reply_to_message_id,
+                "attention_frame": attention_frame,
             }
         )
 
@@ -625,6 +628,7 @@ class ConsoleMockBotAPI:
         instruction: str = "",
         observed_messages: tuple[InboundMessage, ...] = (),
         reply_to_message_id: str | None = None,
+        attention_frame: AttentionFrame | None = None,
     ) -> None:
         self.agent_response_requests.append(
             {
@@ -634,6 +638,7 @@ class ConsoleMockBotAPI:
                 "instruction": instruction,
                 "observed_messages": observed_messages,
                 "reply_to_message_id": reply_to_message_id,
+                "attention_frame": attention_frame,
             }
         )
 

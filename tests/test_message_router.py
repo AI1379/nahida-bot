@@ -36,6 +36,7 @@ from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.core.temp_files import ManagedTempFileService
 from nahida_bot.plugins.base import (
+    AttentionFrame,
     InboundMessage,
     MessageContext,
     OutboundMessage,
@@ -796,6 +797,15 @@ class TestMessageRouterAgentDispatch:
                     instruction="focus on the spam concern",
                     observed_messages=batch,
                     reply_to_message_id="m2",
+                    attention_frame=AttentionFrame(
+                        trigger_kind="engaged_continue",
+                        anchor_message_id="m2",
+                        messages=batch,
+                        reason="batch",
+                        focus="spam concern",
+                        reply_to_message_id="m2",
+                        max_chars=2000,
+                    ),
                 ),
                 source="conversation_joiner",
             )
@@ -822,6 +832,8 @@ class TestMessageRouterAgentDispatch:
         assert "Batch message_id: m2" not in frames[0].content
         assert "Batch message_id: m3" in frames[0].content
         assert "Current anchor message_id: m2" in frames[0].content
+        assert "Attention trigger: engaged_continue" in frames[0].content
+        assert "Attention focus: spam concern" in frames[0].content
         assert (
             '<message_context trust="untrusted" role="batch_message">'
             in frames[0].content

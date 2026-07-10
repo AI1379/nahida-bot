@@ -17,6 +17,7 @@ from nahida_bot_sdk.chat_address import (  # noqa: F401
 # Messaging
 from nahida_bot_sdk.messaging import (  # noqa: F401
     Attachment,
+    AttentionFrame,
     ChatContext,
     InboundAttachment,
     InboundMessage,
@@ -131,6 +132,7 @@ __all__ = [
     "normalize_target_type",
     # Messaging
     "Attachment",
+    "AttentionFrame",
     "ChatContext",
     "InboundAttachment",
     "InboundMessage",

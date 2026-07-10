@@ -17,6 +17,7 @@ from typing import (
 from nahida_bot_sdk.chat_address import ChatAddress
 from nahida_bot_sdk.messaging import (
     Attachment,
+    AttentionFrame,
     InboundMessage,
     MessageContext,
     OutboundMessage,
@@ -199,6 +200,7 @@ class BotAPI(Protocol):
         instruction: str = "",
         observed_messages: tuple[InboundMessage, ...] = (),
         reply_to_message_id: str | None = None,
+        attention_frame: AttentionFrame | None = None,
     ) -> None:
         """Ask the main router to run the agent for a group conversation."""
         ...
