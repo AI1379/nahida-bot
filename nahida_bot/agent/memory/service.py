@@ -16,7 +16,7 @@ the same scope/sensitivity boundary as retrieval.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import structlog
 
@@ -525,6 +525,75 @@ class MemoryService:
             source=source,
             role=role,
             limit=limit,
+        )
+
+    async def read_chat_turns(
+        self,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+        query: str = "",
+        since: Any | None = None,
+        until: Any | None = None,
+        before_turn_id: int | None = None,
+        limit: int = 50,
+    ) -> list[MemoryRecord]:
+        reader = cast(
+            Callable[..., Awaitable[list[MemoryRecord]]] | None,
+            getattr(self._store, "read_chat_turns", None),
+        )
+        if not callable(reader):
+            return []
+        return await reader(
+            chat_address=chat_address,
+            session_id=session_id,
+            query=query,
+            since=since,
+            until=until,
+            before_turn_id=before_turn_id,
+            limit=limit,
+        )
+
+    async def find_turn_by_message_id(
+        self,
+        message_id: str,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+    ) -> MemoryRecord | None:
+        finder = cast(
+            Callable[..., Awaitable[MemoryRecord | None]] | None,
+            getattr(self._store, "find_turn_by_message_id", None),
+        )
+        if not callable(finder):
+            return None
+        return await finder(
+            message_id,
+            chat_address=chat_address,
+            session_id=session_id,
+        )
+
+    async def read_turns_around(
+        self,
+        anchor_turn_id: int,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+        before: int = 5,
+        after: int = 5,
+    ) -> list[MemoryRecord]:
+        reader = cast(
+            Callable[..., Awaitable[list[MemoryRecord]]] | None,
+            getattr(self._store, "read_turns_around", None),
+        )
+        if not callable(reader):
+            return []
+        return await reader(
+            anchor_turn_id,
+            chat_address=chat_address,
+            session_id=session_id,
+            before=before,
+            after=after,
         )
 
     async def project_workspace_memory(

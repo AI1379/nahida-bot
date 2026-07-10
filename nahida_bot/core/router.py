@@ -940,6 +940,7 @@ class MessageRouter:
                 message_context=context_from_inbound(inbound),
                 source_tag=source_tag,
                 agent_instruction=agent_instruction,
+                trigger_kind=_trigger_kind(inbound, source_tag=source_tag),
                 ephemeral_context=proactive_context,
                 stop_event=stop_event,
             ):
@@ -1447,6 +1448,20 @@ def _same_inbound_message(left: InboundMessage, right: InboundMessage) -> bool:
             and left.chat_id == right.chat_id
         )
     return left is right
+
+
+def _trigger_kind(inbound: InboundMessage, *, source_tag: str) -> str:
+    """Classify why one inbound message started an agent run."""
+    if source_tag != "user_input":
+        return source_tag
+    if not inbound.is_group:
+        return "private"
+    if inbound.mentions_bot:
+        return "mention"
+    prefix = inbound.command_prefix or "/"
+    if prefix and inbound.text.lstrip().startswith(prefix):
+        return "command"
+    return "always"
 
 
 def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:

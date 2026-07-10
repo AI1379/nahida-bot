@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
 
 import structlog
@@ -840,6 +841,118 @@ class RealBotAPI:
                 }
             )
         return results
+
+    async def read_chat_history(
+        self,
+        *,
+        mode: str = "recent",
+        chat_address: str = "",
+        session_id: str = "",
+        query: str = "",
+        message_id: str = "",
+        since: datetime | None = None,
+        until: datetime | None = None,
+        before_turn_id: int | None = None,
+        before: int = 5,
+        after: int = 5,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Read a structured chronological chat slice for agent recall."""
+        self._permissions.check_memory_read()
+        service = self._memory_service()
+        if service is None:
+            return []
+
+        from nahida_bot.core.context import current_session
+
+        session_ctx = current_session.get()
+        if not chat_address and not session_id and session_ctx is not None:
+            address = getattr(session_ctx, "chat_address", None)
+            if address is not None and getattr(address, "is_typed", False):
+                chat_address = address.chat_key
+            else:
+                session_id = session_ctx.session_id
+
+        records: list[Any]
+        if mode == "around_message":
+            anchor = await service.find_turn_by_message_id(
+                message_id,
+                chat_address=chat_address,
+                session_id=session_id,
+            )
+            if anchor is None:
+                return []
+            records = await service.read_turns_around(
+                anchor.turn_id,
+                chat_address=chat_address,
+                session_id=session_id,
+                before=before,
+                after=after,
+            )
+        elif mode == "search":
+            hits = await service.read_chat_turns(
+                chat_address=chat_address,
+                session_id=session_id,
+                query=query,
+                before_turn_id=before_turn_id,
+                limit=limit,
+            )
+            if before <= 0 and after <= 0:
+                records = hits
+            else:
+                expanded: dict[int, Any] = {}
+                for hit in hits:
+                    neighbors = await service.read_turns_around(
+                        hit.turn_id,
+                        chat_address=chat_address,
+                        session_id=session_id,
+                        before=before,
+                        after=after,
+                    )
+                    expanded.update({record.turn_id: record for record in neighbors})
+                records = sorted(
+                    expanded.values(),
+                    key=lambda record: (record.turn.created_at, record.turn_id),
+                )
+        else:
+            records = await service.read_chat_turns(
+                chat_address=chat_address,
+                session_id=session_id,
+                since=since,
+                until=until,
+                before_turn_id=before_turn_id,
+                limit=limit,
+            )
+
+        return [self._chat_history_record(record) for record in records]
+
+    @staticmethod
+    def _chat_history_record(record: Any) -> dict[str, Any]:
+        turn = record.turn
+        metadata = turn.metadata if isinstance(turn.metadata, dict) else {}
+        context = metadata.get("message_context")
+        if not isinstance(context, dict):
+            context = {}
+        return {
+            "turn_id": record.turn_id,
+            "session_id": record.session_id,
+            "role": turn.role,
+            "source": turn.source,
+            "content": turn.content,
+            "created_at": turn.created_at.isoformat(),
+            "message_id": str(
+                metadata.get("message_id") or context.get("message_id") or ""
+            ),
+            "reply_to": str(
+                metadata.get("reply_to") or context.get("reply_to_message_id") or ""
+            ),
+            "sender_id": str(context.get("sender_id") or ""),
+            "sender_display_name": str(context.get("sender_display_name") or ""),
+            "chat_type": str(context.get("chat_type") or ""),
+            "chat_id": str(context.get("chat_id") or ""),
+            "observed_only": metadata.get("observed_only") is True,
+            "trigger_kind": str(metadata.get("trigger_kind") or ""),
+        }
 
     async def search_chats(
         self, name: str, *, platform: str = ""

@@ -221,6 +221,129 @@ class SQLiteMemoryRepository:
         )
         return [self._row_to_dict(row) for row in rows]
 
+    async def read_chat_turns(
+        self,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+        query: str = "",
+        since: datetime | None = None,
+        until: datetime | None = None,
+        before_turn_id: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Read a chronological chat/session slice with an optional cursor."""
+        conditions, params = self._turn_scope_conditions(
+            chat_address=chat_address,
+            session_id=session_id,
+        )
+        if query:
+            pattern = _like_pattern(query)
+            conditions.append(
+                "(content LIKE ? ESCAPE '\\' OR metadata_json LIKE ? ESCAPE '\\')"
+            )
+            params.extend([pattern, pattern])
+        if since is not None:
+            conditions.append("created_at >= ?")
+            params.append(since.isoformat())
+        if until is not None:
+            conditions.append("created_at <= ?")
+            params.append(until.isoformat())
+        if before_turn_id is not None:
+            conditions.append("id < ?")
+            params.append(before_turn_id)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        rows = await self._engine.fetch_all(
+            "SELECT id, session_id, role, content, source, metadata_json, created_at "
+            f"FROM memory_turns {where_clause} "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            tuple(params),
+        )
+        return [self._row_to_dict(row) for row in reversed(rows)]
+
+    async def find_turn_by_message_id(
+        self,
+        message_id: str,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Find the newest persisted turn carrying one platform message id."""
+        if not message_id:
+            return None
+        conditions, params = self._turn_scope_conditions(
+            chat_address=chat_address,
+            session_id=session_id,
+        )
+        conditions.append(
+            "(json_extract(metadata_json, '$.message_id') = ? OR "
+            "json_extract(metadata_json, '$.message_context.message_id') = ?)"
+        )
+        params.extend([message_id, message_id])
+        row = await self._engine.fetch_one(
+            "SELECT id, session_id, role, content, source, metadata_json, created_at "
+            f"FROM memory_turns WHERE {' AND '.join(conditions)} "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            tuple(params),
+        )
+        return self._row_to_dict(row) if row is not None else None
+
+    async def read_turns_around(
+        self,
+        anchor_turn_id: int,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+        before: int = 5,
+        after: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Read neighboring turns around an anchor, in chronological order."""
+        conditions, params = self._turn_scope_conditions(
+            chat_address=chat_address,
+            session_id=session_id,
+        )
+        scope_clause = f" AND {' AND '.join(conditions)}" if conditions else ""
+
+        before_rows = await self._engine.fetch_all(
+            "SELECT id, session_id, role, content, source, metadata_json, created_at "
+            f"FROM memory_turns WHERE id < ?{scope_clause} "
+            "ORDER BY id DESC LIMIT ?",
+            (anchor_turn_id, *params, before),
+        )
+        anchor = await self._engine.fetch_one(
+            "SELECT id, session_id, role, content, source, metadata_json, created_at "
+            f"FROM memory_turns WHERE id = ?{scope_clause} LIMIT 1",
+            (anchor_turn_id, *params),
+        )
+        after_rows = await self._engine.fetch_all(
+            "SELECT id, session_id, role, content, source, metadata_json, created_at "
+            f"FROM memory_turns WHERE id > ?{scope_clause} "
+            "ORDER BY id ASC LIMIT ?",
+            (anchor_turn_id, *params, after),
+        )
+        rows = [*reversed(before_rows)]
+        if anchor is not None:
+            rows.append(anchor)
+        rows.extend(after_rows)
+        return [self._row_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _turn_scope_conditions(
+        *,
+        chat_address: str,
+        session_id: str,
+    ) -> tuple[list[str], list[Any]]:
+        if session_id:
+            return ["session_id = ?"], [session_id]
+        if chat_address:
+            return ["(session_id = ? OR session_id LIKE ? ESCAPE '\\')"], [
+                chat_address,
+                _like_prefix(chat_address + ":"),
+            ]
+        return [], []
+
     async def delete_turns_before(self, cutoff: datetime) -> int:
         """Delete turns older than cutoff. Returns count of deleted rows."""
         cutoff_iso = cutoff.isoformat()

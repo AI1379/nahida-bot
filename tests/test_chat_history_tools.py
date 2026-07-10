@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,6 +24,30 @@ from nahida_bot.db.repositories.sqlite_chat_metadata_repo import (
     SQLiteChatMetadataRepository,
 )
 from nahida_bot.plugins.base import InboundMessage, SenderContext
+
+
+def _message_metadata(
+    message_id: str,
+    *,
+    sender: str,
+    reply_to: str = "",
+    observed: bool = True,
+) -> dict[str, object]:
+    return {
+        "message_id": message_id,
+        "reply_to": reply_to,
+        "observed_only": observed,
+        "trigger_kind": "observed" if observed else "mention",
+        "message_context": {
+            "channel": "milky",
+            "chat_type": "group",
+            "chat_id": "1",
+            "sender_id": sender,
+            "sender_display_name": sender.title(),
+            "message_id": message_id,
+            "reply_to_message_id": reply_to,
+        },
+    }
 
 
 @pytest.fixture
@@ -272,6 +297,85 @@ async def test_search_turns_chat_address_prefix(engine: DatabaseEngine) -> None:
     rows = await store.search_turns("dragons", chat_address="milky:group:1")
     assert len(rows) == 1
     assert rows[0].session_id == "milky:group:1"
+
+
+@pytest.mark.asyncio
+async def test_read_chat_turns_spans_derived_sessions_and_supports_cursor(
+    engine: DatabaseEngine,
+) -> None:
+    store = SQLiteMemoryStore(engine)
+    now = datetime.now(UTC)
+    inserted_after = now - timedelta(seconds=1)
+    for session_id, content, message_id, offset in (
+        ("milky:group:1", "first", "m1", 1),
+        ("milky:group:1:topic", "second", "m2", 2),
+        ("milky:group:2", "other chat", "x1", 3),
+        ("milky:group:1:topic", "third", "m3", 4),
+    ):
+        await store.ensure_session(session_id)
+        await store.append_turn(
+            session_id,
+            ConversationTurn(
+                role="user",
+                content=content,
+                metadata=_message_metadata(message_id, sender="alice"),
+                created_at=now + timedelta(seconds=offset),
+            ),
+        )
+
+    rows = await store.read_chat_turns(chat_address="milky:group:1", limit=10)
+    assert [row.turn.content for row in rows] == ["first", "second", "third"]
+
+    cursor_rows = await store.read_chat_turns(
+        chat_address="milky:group:1",
+        before_turn_id=rows[-1].turn_id,
+        limit=10,
+    )
+    assert [row.turn.content for row in cursor_rows] == ["first", "second"]
+
+    ranged = await store.read_chat_turns(
+        chat_address="milky:group:1",
+        since=inserted_after,
+        until=datetime.now(UTC) + timedelta(seconds=1),
+        limit=10,
+    )
+    assert [row.turn.content for row in ranged] == ["first", "second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_find_message_and_read_neighbors(engine: DatabaseEngine) -> None:
+    store = SQLiteMemoryStore(engine)
+    await store.ensure_session("milky:group:1")
+    for index in range(1, 6):
+        await store.append_turn(
+            "milky:group:1",
+            ConversationTurn(
+                role="user",
+                content=f"message {index}",
+                metadata=_message_metadata(
+                    f"m{index}",
+                    sender=f"u{index}",
+                    reply_to="m2" if index == 4 else "",
+                ),
+            ),
+        )
+
+    anchor = await store.find_turn_by_message_id("m3", chat_address="milky:group:1")
+    assert anchor is not None
+    assert anchor.turn.content == "message 3"
+
+    around = await store.read_turns_around(
+        anchor.turn_id,
+        chat_address="milky:group:1",
+        before=1,
+        after=2,
+    )
+    assert [row.turn.content for row in around] == [
+        "message 2",
+        "message 3",
+        "message 4",
+        "message 5",
+    ]
 
 
 # ── Sanitization ─────────────────────────────────────────────────

@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import socket
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 
@@ -60,6 +61,19 @@ _PLAN_PATH = ".agent/plan.json"
 # cross-session-messaging.md §4.3).
 _BASE64_DATA_URL_RE = re.compile(r"data:[^;\"]+;base64,[A-Za-z0-9+/=]+")
 _LONG_BASE64_RE = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
+
+
+def _parse_history_datetime(value: str) -> datetime | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{value!r} is not ISO-8601") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 class BuiltinCommandsPlugin(Plugin):
@@ -410,6 +424,73 @@ class BuiltinCommandsPlugin(Plugin):
 
     def _register_history_tools(self) -> None:
         self.api.register_tool(
+            "read_chat_history",
+            (
+                "Read a chronological slice of raw chat history when nearby automatic "
+                "context is not enough. Supports recent messages, time ranges, context "
+                "around one platform message_id, and text search with neighboring turns. "
+                "Omit chat_address/session_id to read the current chat. To continue a "
+                "discussion from another group/private chat, resolve the chat with "
+                "find_chat and pass its typed chat_address. Cross-chat results are private "
+                "recall: preserve provenance and do not reveal private messages to a "
+                "different audience without authorization. Use before_turn_id to page "
+                "backward through long history."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["recent", "time_range", "around_message", "search"],
+                        "description": "How to select the history slice.",
+                    },
+                    "chat_address": {
+                        "type": "string",
+                        "description": "Optional typed chat target, e.g. milky:group:20001.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional exact derived session id instead of a whole chat.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Required for search mode.",
+                    },
+                    "message_id": {
+                        "type": "string",
+                        "description": "Required for around_message mode.",
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Optional ISO-8601 inclusive start time.",
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Optional ISO-8601 inclusive end time.",
+                    },
+                    "before_turn_id": {
+                        "type": "integer",
+                        "description": "Pagination cursor: return turns older than this turn id.",
+                    },
+                    "before": {
+                        "type": "integer",
+                        "description": "Neighbor turns before an anchor/search hit; default 5.",
+                    },
+                    "after": {
+                        "type": "integer",
+                        "description": "Neighbor turns after an anchor/search hit; default 5.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum recent turns or search hits; default 50, max 100.",
+                    },
+                },
+                "required": ["mode"],
+                "additionalProperties": False,
+            },
+            self._tool_read_chat_history,
+        )
+        self.api.register_tool(
             "search_chat_history",
             (
                 "Search ALL past conversations across every chat — both what users said "
@@ -476,6 +557,94 @@ class BuiltinCommandsPlugin(Plugin):
             },
             self._tool_find_chat,
         )
+
+    async def _tool_read_chat_history(
+        self,
+        mode: str = "recent",
+        chat_address: str = "",
+        session_id: str = "",
+        query: str = "",
+        message_id: str = "",
+        since: str = "",
+        until: str = "",
+        before_turn_id: int | None = None,
+        before: int = 5,
+        after: int = 5,
+        limit: int = 50,
+    ) -> str:
+        mode = mode.strip().lower() or "recent"
+        if mode not in {"recent", "time_range", "around_message", "search"}:
+            return f"Unsupported history mode: {mode}"
+        if mode == "around_message" and not message_id.strip():
+            return "around_message mode requires message_id."
+        if mode == "search" and not query.strip():
+            return "search mode requires query."
+
+        try:
+            since_dt = _parse_history_datetime(since)
+            until_dt = _parse_history_datetime(until)
+        except ValueError as exc:
+            return f"Invalid history time: {exc}"
+        if mode == "time_range" and since_dt is None and until_dt is None:
+            return "time_range mode requires since and/or until."
+
+        capped_limit = max(min(int(limit or 50), 100), 1)
+        capped_before = max(min(int(before), 20), 0)
+        capped_after = max(min(int(after), 20), 0)
+        cursor = int(before_turn_id) if before_turn_id is not None else None
+        rows = await self.api.read_chat_history(
+            mode=mode,
+            chat_address=chat_address.strip(),
+            session_id=session_id.strip(),
+            query=query.strip(),
+            message_id=message_id.strip(),
+            since=since_dt,
+            until=until_dt,
+            before_turn_id=cursor,
+            before=capped_before,
+            after=capped_after,
+            limit=capped_limit,
+        )
+        if not rows:
+            return "No chat history found for that selection."
+
+        target = chat_address.strip() or session_id.strip() or "current chat"
+        lines = [
+            f"Chat history ({mode}, {target}), {len(rows)} turns, chronological:",
+            f"Older-page cursor: before_turn_id={rows[0].get('turn_id', '')}",
+        ]
+        total_chars = sum(len(line) for line in lines)
+        for row in rows:
+            sender = str(row.get("sender_display_name") or row.get("sender_id") or "")
+            role = str(row.get("role") or "turn")
+            if not sender:
+                sender = "bot" if role == "assistant" else role
+            flags: list[str] = []
+            if row.get("observed_only"):
+                flags.append("observed")
+            trigger_kind = str(row.get("trigger_kind") or "")
+            if trigger_kind:
+                flags.append(trigger_kind)
+            message_ref = str(row.get("message_id") or "")
+            reply_to = str(row.get("reply_to") or "")
+            header = (
+                f"\n[{row.get('turn_id')}] {row.get('created_at', '')} "
+                f"[{sender}] [{row.get('source') or role}]"
+            )
+            if flags:
+                header += f" ({', '.join(flags)})"
+            if message_ref:
+                header += f" message_id={message_ref}"
+            if reply_to:
+                header += f" reply_to={reply_to}"
+            content = self._sanitize_turn_for_model(str(row.get("content") or ""))
+            block = f"{header}\n{content}"
+            if total_chars + len(block) > 50_000:
+                lines.append("\n[remaining history omitted due to tool output limit]")
+                break
+            lines.append(block)
+            total_chars += len(block)
+        return "\n".join(lines)
 
     async def _tool_search_chat_history(
         self,

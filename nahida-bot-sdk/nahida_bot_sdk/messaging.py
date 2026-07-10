@@ -56,6 +56,10 @@ class MessageContext:
     sender_display_name: str = ""
     sender_role_tags: tuple[str, ...] = ()
     extra_tags: tuple[str, ...] = ()
+    message_id: str = ""
+    reply_to_message_id: str = ""
+    mentions_bot: bool = False
+    mentioned_user_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

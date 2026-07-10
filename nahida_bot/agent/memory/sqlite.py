@@ -257,6 +257,60 @@ class SQLiteMemoryStore(MemoryStore):
         )
         return [_row_to_record(row) for row in rows]
 
+    async def read_chat_turns(
+        self,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+        query: str = "",
+        since: datetime | None = None,
+        until: datetime | None = None,
+        before_turn_id: int | None = None,
+        limit: int = 50,
+    ) -> list[MemoryRecord]:
+        rows = await self._repo.read_chat_turns(
+            chat_address=chat_address,
+            session_id=session_id,
+            query=query,
+            since=since,
+            until=until,
+            before_turn_id=before_turn_id,
+            limit=limit,
+        )
+        return [_row_to_record(row) for row in rows]
+
+    async def find_turn_by_message_id(
+        self,
+        message_id: str,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+    ) -> MemoryRecord | None:
+        row = await self._repo.find_turn_by_message_id(
+            message_id,
+            chat_address=chat_address,
+            session_id=session_id,
+        )
+        return _row_to_record(row) if row is not None else None
+
+    async def read_turns_around(
+        self,
+        anchor_turn_id: int,
+        *,
+        chat_address: str = "",
+        session_id: str = "",
+        before: int = 5,
+        after: int = 5,
+    ) -> list[MemoryRecord]:
+        rows = await self._repo.read_turns_around(
+            anchor_turn_id,
+            chat_address=chat_address,
+            session_id=session_id,
+            before=before,
+            after=after,
+        )
+        return [_row_to_record(row) for row in rows]
+
     async def evict_before(self, cutoff: datetime) -> int:
         """Delete turns older than cutoff datetime."""
         return await self._repo.delete_turns_before(cutoff)

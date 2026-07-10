@@ -36,6 +36,12 @@ capabilities:
       description: Replace a visible structured memory item
     - name: memory_archive
       description: Archive a visible obsolete or incorrect memory item
+    - name: read_chat_history
+      description: Read chronological recent, time-range, around-message, or searched chat history
+    - name: search_chat_history
+      description: Search matching turns across chats and sessions
+    - name: find_chat
+      description: Resolve a known chat name to a typed chat address
     - name: exec
       description: Execute a shell command and return stdout/stderr
     - name: web_fetch

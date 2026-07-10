@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -120,7 +120,16 @@ PROACTIVE_JOIN_INSTRUCTION = (
 def context_from_inbound(inbound: InboundMessage) -> MessageContext:
     """Build a MessageContext from normalized inbound fields and channel facts."""
     if inbound.message_context is not None:
-        return inbound.message_context
+        context = inbound.message_context
+        return replace(
+            context,
+            message_id=context.message_id or inbound.message_id,
+            reply_to_message_id=(context.reply_to_message_id or inbound.reply_to),
+            mentions_bot=context.mentions_bot or inbound.mentions_bot,
+            mentioned_user_ids=(
+                context.mentioned_user_ids or inbound.mentioned_user_ids
+            ),
+        )
 
     sender = inbound.sender_context
     chat = inbound.chat_context
@@ -144,6 +153,10 @@ def context_from_inbound(inbound: InboundMessage) -> MessageContext:
         sender_display_name=sender.display_name if sender else "",
         sender_role_tags=sender.role_tags if sender else (),
         extra_tags=(),
+        message_id=inbound.message_id,
+        reply_to_message_id=inbound.reply_to,
+        mentions_bot=inbound.mentions_bot,
+        mentioned_user_ids=inbound.mentioned_user_ids,
     )
 
 
@@ -168,6 +181,7 @@ def message_context_to_metadata(
     data = asdict(context)
     data["sender_role_tags"] = list(context.sender_role_tags)
     data["extra_tags"] = list(context.extra_tags)
+    data["mentioned_user_ids"] = list(context.mentioned_user_ids)
     return data
 
 
@@ -190,6 +204,10 @@ def message_context_from_metadata(
         sender_display_name=str(raw.get("sender_display_name") or ""),
         sender_role_tags=_string_tuple(raw.get("sender_role_tags")),
         extra_tags=_string_tuple(raw.get("extra_tags")),
+        message_id=str(raw.get("message_id") or ""),
+        reply_to_message_id=str(raw.get("reply_to_message_id") or ""),
+        mentions_bot=bool(raw.get("mentions_bot", False)),
+        mentioned_user_ids=_string_tuple(raw.get("mentioned_user_ids")),
     )
 
 
@@ -225,6 +243,8 @@ def _render_context_block(
         ("timestamp", _format_timestamp(context.timestamp)),
         ("channel", _format_channel(context)),
         ("sender", _format_sender(context, role=role)),
+        ("message_id", _clean(context.message_id)),
+        ("reply_to_message_id", _clean(context.reply_to_message_id)),
     ]
     rendered = [(key, value) for key, value in facts if value]
     if not rendered:

@@ -384,6 +384,7 @@ class SessionRunner:
         tool_allowlist: AbstractSet[str] | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
+        trigger_kind: str = "",
         ephemeral_context: str = "",
         stop_event: asyncio.Event | None = None,
     ) -> AgentRunResult:
@@ -403,6 +404,7 @@ class SessionRunner:
             tool_allowlist=tool_allowlist,
             tool_filter=tool_filter,
             source_tag=source_tag,
+            trigger_kind=trigger_kind,
             ephemeral_context=ephemeral_context,
             stop_event=stop_event,
         ):
@@ -429,6 +431,7 @@ class SessionRunner:
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
         agent_instruction: str = "",
+        trigger_kind: str = "",
         ephemeral_context: str = "",
         stop_event: asyncio.Event | None = None,
     ) -> AsyncIterator[LoopEvent]:
@@ -757,6 +760,7 @@ class SessionRunner:
                 image_descriptions=persisted_image_descriptions,
                 message_context=message_context,
                 source_tag=source_tag,
+                trigger_kind=trigger_kind,
                 workspace_id=workspace_id,
                 workspace_root=workspace_root,
             )
@@ -2597,11 +2601,22 @@ class SessionRunner:
         attachments: list[InboundAttachment],
         image_descriptions: dict[str, str] | None = None,
         message_context: MessageContext | None,
+        source_tag: str,
+        trigger_kind: str = "",
     ) -> dict[str, Any] | None:
         metadata: dict[str, Any] | None = None
         message_context_metadata = message_context_to_metadata(message_context)
-        if message_context_metadata is not None:
+        if message_context_metadata is not None and message_context is not None:
             metadata = {"message_context": message_context_metadata}
+            metadata["message_id"] = message_context.message_id
+            metadata["reply_to"] = message_context.reply_to_message_id
+            metadata["mentions_bot"] = message_context.mentions_bot
+            metadata["mentioned_user_ids"] = list(message_context.mentioned_user_ids)
+        if message_context is not None or trigger_kind:
+            if metadata is None:
+                metadata = {}
+            metadata["triggered_agent"] = source_tag != "group_observation"
+            metadata["trigger_kind"] = trigger_kind or source_tag
         if attachments:
             persisted_attachments: list[dict[str, Any]] = []
             for att in attachments:
@@ -2640,7 +2655,7 @@ class SessionRunner:
             if metadata is None:
                 metadata = {}
             metadata["attachments"] = persisted_attachments
-        return metadata
+        return metadata or None
 
     @staticmethod
     def _image_descriptions_from_parts(parts: list[ContextPart]) -> dict[str, str]:
@@ -2783,7 +2798,9 @@ class SessionRunner:
         metadata = await self._build_user_turn_metadata(
             attachments=inbound.attachments,
             image_descriptions=None,
-            message_context=inbound.message_context or context_from_inbound(inbound),
+            message_context=context_from_inbound(inbound),
+            source_tag="group_observation",
+            trigger_kind="observed",
         )
         if metadata is None:
             metadata = {}
@@ -2821,6 +2838,7 @@ class SessionRunner:
         image_descriptions: dict[str, str] | None = None,
         message_context: MessageContext | None = None,
         source_tag: str,
+        trigger_kind: str = "",
         workspace_id: str | None = None,
         workspace_root: Any = None,
     ) -> None:
@@ -2847,6 +2865,8 @@ class SessionRunner:
             attachments=attachments,
             image_descriptions=image_descriptions,
             message_context=message_context,
+            source_tag=source_tag,
+            trigger_kind=trigger_kind,
         )
         user_turn = ConversationTurn(
             role="user", content=user_message, source=source_tag, metadata=metadata

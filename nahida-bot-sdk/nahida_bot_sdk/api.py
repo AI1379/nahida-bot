@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -504,6 +505,24 @@ class BotAPI(Protocol):
         Soft-gated (no permission check, no scope restriction) — memory is soft
         context; the gating lives in the calling tool's description.
         """
+        ...
+
+    async def read_chat_history(
+        self,
+        *,
+        mode: str = "recent",
+        chat_address: str = "",
+        session_id: str = "",
+        query: str = "",
+        message_id: str = "",
+        since: datetime | None = None,
+        until: datetime | None = None,
+        before_turn_id: int | None = None,
+        before: int = 5,
+        after: int = 5,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Read structured chronological chat history for explicit recall."""
         ...
 
     async def search_chats(

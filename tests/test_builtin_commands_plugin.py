@@ -69,6 +69,8 @@ class _FakeAPI:
         self.sent_messages: list[tuple[str, OutboundMessage, str]] = []
         self.recorded_events: list[tuple[str, str, str, dict[str, Any] | None]] = []
         self.recorded_deliveries: list[dict[str, Any]] = []
+        self.chat_history_rows: list[dict[str, Any]] = []
+        self.chat_history_calls: list[dict[str, Any]] = []
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -146,6 +148,10 @@ class _FakeAPI:
                 )
             ][:limit]
         return []
+
+    async def read_chat_history(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.chat_history_calls.append(kwargs)
+        return list(self.chat_history_rows)
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
@@ -257,6 +263,9 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "memory_write",
         "memory_update",
         "memory_archive",
+        "read_chat_history",
+        "search_chat_history",
+        "find_chat",
         "cron_create",
         "cron_update",
         "cron_list",
@@ -273,6 +282,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert message_params["required"] == ["target", "text"]
     assert api.tools["memory_read"]["parameters"]["required"] == []
     assert api.tools["memory_write"]["parameters"]["required"] == ["content"]
+    assert api.tools["read_chat_history"]["parameters"]["required"] == ["mode"]
     create_params = api.tools["cron_create"]["parameters"]
     update_params = api.tools["cron_update"]["parameters"]
     assert create_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
@@ -284,6 +294,56 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert "cron_expression" in create_params["properties"]
     assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
     assert "cron_expression" in update_params["properties"]
+
+
+@pytest.mark.asyncio
+async def test_read_chat_history_tool_formats_structured_provenance() -> None:
+    api = _FakeAPI()
+    api.chat_history_rows = [
+        {
+            "turn_id": 41,
+            "session_id": "milky:group:1",
+            "role": "user",
+            "source": "group_observation",
+            "content": "the deployment finished",
+            "created_at": "2026-07-10T10:00:00+00:00",
+            "message_id": "m41",
+            "reply_to": "m39",
+            "sender_id": "u1",
+            "sender_display_name": "Alice",
+            "observed_only": True,
+            "trigger_kind": "observed",
+        }
+    ]
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_read_chat_history(
+        mode="around_message",
+        chat_address="milky:group:1",
+        message_id="m41",
+        before=3,
+        after=4,
+    )
+
+    assert "chronological" in result
+    assert "[Alice]" in result
+    assert "message_id=m41" in result
+    assert "reply_to=m39" in result
+    assert "the deployment finished" in result
+    assert api.chat_history_calls[0]["mode"] == "around_message"
+    assert api.chat_history_calls[0]["before"] == 3
+    assert api.chat_history_calls[0]["after"] == 4
+
+
+@pytest.mark.asyncio
+async def test_read_chat_history_tool_validates_mode_inputs() -> None:
+    plugin = BuiltinCommandsPlugin(api=_FakeAPI(), manifest=_manifest())
+
+    assert "requires message_id" in await plugin._tool_read_chat_history(
+        mode="around_message"
+    )
+    assert "requires query" in await plugin._tool_read_chat_history(mode="search")
+    assert "requires since" in await plugin._tool_read_chat_history(mode="time_range")
 
 
 @pytest.mark.asyncio
