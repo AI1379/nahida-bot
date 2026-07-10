@@ -35,24 +35,26 @@ class NodeEventBridge:
         self._app = app
         self._registry = registry
         self._subscriptions: list[Any] = []
+        self._active_runs: set[str] = set()
+        self._runs_with_output: set[str] = set()
 
     async def start(self) -> None:
         bus = self._app.event_bus
         # Import lazily to avoid import cycles at module load.
         from nahida_bot.core.events import (
+            AgentRunCancelled,
             AgentRunFinished,
             AgentRunStarted,
-            MessageReceived,
             MessageSent,
             PluginErrorOccurred,
         )
 
         for event_type in (
-            MessageReceived,
-            MessageSent,
-            PluginErrorOccurred,
             AgentRunStarted,
             AgentRunFinished,
+            AgentRunCancelled,
+            MessageSent,
+            PluginErrorOccurred,
         ):
             self._subscriptions.append(
                 bus.subscribe(event_type, self._make_handler(event_type), priority=20)
@@ -63,6 +65,8 @@ class NodeEventBridge:
         for sub in self._subscriptions:
             sub.unsubscribe()
         self._subscriptions.clear()
+        self._active_runs.clear()
+        self._runs_with_output.clear()
         logger.info("node_event_bridge.stopped")
 
     def _make_handler(self, event_type: type):
@@ -95,41 +99,63 @@ class NodeEventBridge:
     def _translate(self, event_type: type, event: Event[Any]) -> dict[str, Any] | None:
         """Map a core event to a ``(event_name, payload)`` dict, or None."""
         from nahida_bot.core.events import (
+            AgentRunCancelled,
             AgentRunFinished,
             AgentRunStarted,
-            MessageReceived,
             MessageSent,
             PluginErrorOccurred,
         )
 
         payload = event.payload
-        if isinstance(event, (MessageReceived, MessageSent)):
+        if isinstance(event, MessageSent):
+            session_id = getattr(payload, "session_id", "")
+            if session_id in self._active_runs:
+                self._runs_with_output.add(session_id)
+            outbound = getattr(payload, "outbound", None)
+            text = getattr(outbound, "text", "") if outbound is not None else ""
+            extra = getattr(outbound, "extra", {}) if outbound is not None else {}
+            event_payload: dict[str, Any] = {
+                "session_id": getattr(payload, "session_id", ""),
+                "text": text,
+            }
+            display_plan = (
+                extra.get("display_plan") if isinstance(extra, dict) else None
+            )
+            if isinstance(display_plan, dict):
+                event_payload["display_plan"] = display_plan
             return {
-                "event": (
-                    "agent.message.started"
-                    if isinstance(event, MessageReceived)
-                    else "agent.message.completed"
-                ),
-                "payload": {"session_id": getattr(payload, "session_id", "")},
+                "event": "agent.message.completed",
+                "payload": event_payload,
             }
         if isinstance(event, PluginErrorOccurred):
             return {
                 "event": "plugin.error",
                 "payload": {
-                    "plugin_id": getattr(payload, "plugin_id", ""),
+                    "plugin_id": getattr(payload, "plugin_name", ""),
+                    "method": getattr(payload, "method", ""),
                     "error": getattr(payload, "error", ""),
                 },
             }
         if isinstance(event, AgentRunStarted):
+            session_id = getattr(payload, "session_id", "")
+            if session_id:
+                self._active_runs.add(session_id)
+            self._runs_with_output.discard(session_id)
             return {
                 "event": "agent.message.started",
-                "payload": {"session_id": getattr(payload, "session_id", "")},
+                "payload": {"session_id": session_id},
             }
-        if isinstance(event, AgentRunFinished):
+        if isinstance(event, (AgentRunFinished, AgentRunCancelled)):
+            session_id = getattr(payload, "session_id", "")
+            self._active_runs.discard(session_id)
+            if session_id in self._runs_with_output:
+                self._runs_with_output.discard(session_id)
+                return None
             return {
                 "event": "agent.message.completed",
                 "payload": {
-                    "session_id": getattr(payload, "session_id", ""),
+                    "session_id": session_id,
+                    "text": "",
                     "terminal": getattr(payload, "terminal", ""),
                     "error": getattr(payload, "error", ""),
                 },

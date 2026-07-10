@@ -111,6 +111,10 @@ class MessagePayload:
 
     message: Any  # InboundMessage — use Any to avoid circular import
     session_id: str
+    # OutboundMessage for MessageSending/MessageSent. Kept separate from
+    # ``message`` so existing subscribers that use the originating inbound
+    # message for chat correlation remain backwards-compatible.
+    outbound: Any | None = None
 
 
 @dataclass(slots=True, frozen=True)

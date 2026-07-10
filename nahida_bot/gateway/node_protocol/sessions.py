@@ -36,6 +36,9 @@ RequestCallable = Callable[["NodeEnvelope", float], Awaitable["NodeEnvelope"]]
 # Raw one-way send (events, displace notifications). Fire-and-forget.
 SendCallable = Callable[["NodeEnvelope"], Awaitable[None]]
 
+# Transport close callback used when a session is displaced or revoked.
+CloseCallable = Callable[[int, str], Awaitable[None]]
+
 
 @dataclass
 class NodeSession:
@@ -55,6 +58,7 @@ class NodeSession:
     # can be constructed in tests without a live socket.
     request: RequestCallable | None = None
     send: SendCallable | None = None
+    close: CloseCallable | None = None
 
     @property
     def capability_names(self) -> set[str]:
@@ -115,4 +119,10 @@ class NodeSession:
         }
 
 
-__all__ = ["NodeSession", "NodeSessionState", "RequestCallable", "SendCallable"]
+__all__ = [
+    "CloseCallable",
+    "NodeSession",
+    "NodeSessionState",
+    "RequestCallable",
+    "SendCallable",
+]

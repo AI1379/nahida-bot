@@ -381,7 +381,13 @@ async fn run_once(
                     continue;
                 };
                 last_seen = Instant::now();
+                let displaced = envelope.kind == EnvelopeKind::Event
+                    && envelope.event.as_deref() == Some("node.duplicate_connection");
                 handle_envelope(app, &mut write, &mut pending, envelope).await?;
+                if displaced {
+                    let _ = write.close().await;
+                    return Ok(RunExit::Stopped);
+                }
             }
             command = rx.recv() => {
                 match command {

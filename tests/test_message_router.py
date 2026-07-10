@@ -30,6 +30,7 @@ from nahida_bot.core.events import (
     MessageObserved,
     MessageReceived,
     MessagePayload,
+    MessageSent,
 )
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.session_runner import SessionRunner
@@ -634,6 +635,40 @@ class TestMessageRouterAgentDispatch:
         assert "channel: test/private:c1" in visible_user_message
         assert "sender: u1" in visible_user_message
         assert "text:\n  what is 2+2?" in visible_user_message
+
+    async def test_node_input_uses_requested_session_and_source_tag(self) -> None:
+        agent = _MockAgentLoop(response="node reply")
+        memory = _MockMemoryStore()
+        router, event_bus, channels, _ = _make_router(agent=agent, memory=memory)
+        router.set_active_session(
+            ChatAddress(channel="test", target_type="private", target_id="c1"),
+            "test:private:c1:active",
+        )
+        sent_events: list[MessageSent] = []
+
+        async def capture_sent(event: MessageSent, ctx: EventContext) -> None:
+            sent_events.append(event)
+
+        event_bus.subscribe(MessageSent, capture_sent)
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=_inbound("from desktop"),
+                    session_id="test:private:c1:desktop",
+                ),
+                source="node:desktop-1",
+            )
+        )
+        await router.stop()
+
+        assert agent.calls[0]["session_id"] == "test:private:c1:desktop"
+        assert memory.sessions["test:private:c1:desktop"][0].source == "node"
+        assert sent_events[0].payload.outbound is not None
+        assert sent_events[0].payload.outbound.text == "node reply"
+        channel = channels.get("test")
+        assert isinstance(channel, _StubChannel)
+        assert channel.sent[0][1].reply_to == ""
 
     async def test_agent_response_requested_dispatches_proactive_join(self) -> None:
         from nahida_bot.plugins.base import ChatContext

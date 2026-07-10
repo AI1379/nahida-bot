@@ -1071,7 +1071,11 @@ MVP 验收：
 - [x] 实现核心事件桥（`NodeEventBridge`：将 agent.message.*/plugin.error 等事件转发给在线 node）。
 - [x] 实现 Python Node Client SDK（`nahida_bot/node/`：client + capability registry，含重连/心跳/注册）。
 - [x] 验证 Python node ↔ Gateway 全链路集成测试（连接/鉴权/注册/capability 调用/事件）。
-- [ ] 增加 capability 授权策略（首版 owner 全权，后续按 user/session/plugin 细化）。
+- [ ] 增加 capability 授权策略（公开入口 fail-closed，按 actor/entrypoint/session/node/capability/risk 显式授权）。
+- [x] 完成 capability 调用入口与授权架构设计（统一 InvocationService、类型化 actor、REST/Agent Tool/Plugin 入口、approval 与持久审计）：见 [architecture/gateway-node-invocation-authorization.md](architecture/gateway-node-invocation-authorization.md)。
+- [ ] 实现统一 `NodeInvocationService`，将 `NodeInvoker` 收敛为 transport-only，并移除 permissive caller 默认值。
+- [ ] 实现持久化 capability policy/audit store 与 owner REST invoke 入口。
+- [ ] 实现受控 `NodeToolBridge`、Plugin/Scheduler adapter 和一次性 approval。
 - [ ] 验证多节点长期连接稳定性与协议回归测试。
 - [ ] Desktop Rust node 接入（`desktop/src-tauri/gateway_node/`，parse 同一批 fixtures 对齐）。
 - [ ] capability 真实执行桥接（DisplayPlan 投递、Live2D/audio/notification 真实调用）。

@@ -322,11 +322,18 @@ class NodeClient:
             await self._send(build_heartbeat("pong", echo_ts=payload.ts))
 
     async def _dispatch_event(self, envelope: NodeEnvelope) -> None:
+        displaced = envelope.event == "node.duplicate_connection"
+        if displaced:
+            # A duplicate connection means a newer instance owns this node id.
+            # Stop instead of reconnecting and repeatedly displacing each other.
+            self._stopping.set()
         for callback in list(self._on_event_callbacks):
             try:
                 await callback(envelope)
             except Exception:  # noqa: BLE001 - one bad callback must not break others
                 logger.exception("node_client.event_callback_failed")
+        if displaced and self._ws is not None:
+            await self._close_ws(self._ws)
 
     # -- Low-level send/parse ---------------------------------------------
 

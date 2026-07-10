@@ -84,6 +84,7 @@ class WebAPIApp:
         disable the WebSocket endpoint entirely.
         """
         from nahida_bot.gateway.services.node_auth import NodeAuthService
+        from nahida_bot.gateway.services.node_input_sink import ApplicationNodeInputSink
         from nahida_bot.gateway.services.node_invoker import NodeInvoker
         from nahida_bot.gateway.services.node_registry import NodeRegistry
 
@@ -105,7 +106,12 @@ class WebAPIApp:
             else None
         )
         self.node_invoker = (
-            NodeInvoker(self.node_registry) if cfg.enabled else None  # type: ignore[arg-type]
+            NodeInvoker(
+                self.node_registry,  # type: ignore[arg-type]
+                input_sink=ApplicationNodeInputSink(application),
+            )
+            if cfg.enabled
+            else None
         )
 
     @property

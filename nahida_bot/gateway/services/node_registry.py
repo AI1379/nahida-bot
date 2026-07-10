@@ -33,6 +33,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+DUPLICATE_CONNECTION_CLOSE_CODE = 4001
+TOKEN_REVOKED_CLOSE_CODE = 4003
+
 
 class NodeRegistry:
     """Tracks online node sessions and their capabilities."""
@@ -131,21 +134,23 @@ class NodeRegistry:
     def _displace(self, old: NodeSession, *, new_session_id: str) -> None:
         """Mark an old session offline and notify it of the duplicate."""
         old.mark_offline()
-        # Best-effort notification; the old connection's read loop will exit.
+        # Best-effort notification followed by a transport close. Closing is
+        # required: marking the registry entry offline alone leaves a live,
+        # heartbeating WebSocket behind.
         send = old.send
-        if send is not None:
-            event = build_event(
-                "node.duplicate_connection",
-                payload={
-                    "node_id": old.node_id,
-                    "new_session_id": new_session_id,
-                },
-            )
-            try:
-                loop = asyncio.get_event_loop()
-                loop.create_task(_safe_send(send, event))  # type: ignore[arg-type]
-            except RuntimeError:
-                pass
+        close = old.close
+        event = build_event(
+            "node.duplicate_connection",
+            payload={
+                "node_id": old.node_id,
+                "new_session_id": new_session_id,
+            },
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_notify_and_close(send, close, event))
+        except RuntimeError:
+            pass
         self._by_session.pop(old.session_id, None)
 
     # -- Lookup ------------------------------------------------------------
@@ -189,6 +194,20 @@ class NodeRegistry:
         self._by_session.pop(session.session_id, None)
         logger.info("node_registry.marked_offline", node_id=session.node_id)
 
+    async def disconnect_node(self, node_id: str, *, reason: str) -> bool:
+        """Remove and close the currently-online session for ``node_id``."""
+        session = self.get_online_session(node_id)
+        if session is None:
+            return False
+        self.mark_offline(session)
+        if session.close is not None:
+            await _safe_close(
+                session.close,
+                TOKEN_REVOKED_CLOSE_CODE,
+                reason,
+            )
+        return True
+
     def update_state_summary(self, node_id: str, summary: dict[str, object]) -> None:
         self._node_last_summary[node_id] = summary
 
@@ -196,9 +215,23 @@ class NodeRegistry:
         return self._node_last_summary.get(node_id)
 
 
-async def _safe_send(send: object, envelope: object) -> None:
+async def _notify_and_close(send: object, close: object, envelope: object) -> None:
+    if send is not None:
+        try:
+            await send(envelope)  # type: ignore[misc]
+        except Exception:  # noqa: BLE001
+            pass
+    if close is not None:
+        await _safe_close(
+            close,
+            DUPLICATE_CONNECTION_CLOSE_CODE,
+            "duplicate node connection",
+        )
+
+
+async def _safe_close(close: object, code: int, reason: str) -> None:
     try:
-        await send(envelope)  # type: ignore[misc]
+        await close(code, reason)  # type: ignore[misc]
     except Exception:  # noqa: BLE001
         pass
 

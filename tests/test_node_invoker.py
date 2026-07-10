@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from nahida_bot.gateway.node_protocol.errors import NodeInputUnavailable
 from nahida_bot.gateway.node_protocol.schemas import NodeEnvelope, build_response
 from nahida_bot.gateway.node_protocol.sessions import NodeSession
 from nahida_bot.gateway.services.node_invoker import (
@@ -165,12 +166,12 @@ async def test_submit_node_input_delegates_to_sink() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_node_input_without_sink_is_noop() -> None:
+async def test_submit_node_input_without_sink_is_rejected() -> None:
     registry = NodeRegistry()
     invoker = NodeInvoker(registry, input_sink=None)
 
-    # Should not raise.
-    await invoker.submit_node_input(node_id="desktop-1", session_id="s1", text="hi")
+    with pytest.raises(NodeInputUnavailable, match="not configured"):
+        await invoker.submit_node_input(node_id="desktop-1", session_id="s1", text="hi")
 
 
 @pytest.mark.asyncio

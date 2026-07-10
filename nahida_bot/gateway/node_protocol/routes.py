@@ -219,6 +219,7 @@ async def node_websocket(websocket: WebSocket) -> None:
     # Wire transport-backed callbacks so the invoker/registry can send without
     # knowing about the socket or dispatcher.
     session.send = lambda env: _send_envelope(websocket, env)  # type: ignore[assignment]
+    session.close = lambda code, reason: websocket.close(code=code, reason=reason)
     session.request = lambda env, timeout: _request_round_trip(  # type: ignore[assignment]
         websocket, dispatcher, env, timeout
     )

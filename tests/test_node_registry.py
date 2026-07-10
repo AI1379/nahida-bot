@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 
+import pytest
+
+from nahida_bot.gateway.node_protocol.schemas import NodeEnvelope
 from nahida_bot.gateway.node_protocol.schemas import NodeCapability
 from nahida_bot.gateway.node_protocol.sessions import (
     NodeSession,
@@ -134,3 +138,68 @@ def test_state_summary_update_and_get() -> None:
     registry.update_state_summary("desktop-1", {"window": {"mode": "emerged"}})
     assert registry.get_state_summary("desktop-1") == {"window": {"mode": "emerged"}}
     assert registry.get_state_summary("unknown") is None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_connection_notifies_then_closes_old_transport() -> None:
+    registry = NodeRegistry()
+    old = NodeSession(session_id="t", node_id="desktop-1")
+    sent: list[NodeEnvelope] = []
+    closed: list[tuple[int, str]] = []
+    close_finished = asyncio.Event()
+
+    async def send(envelope: NodeEnvelope) -> None:
+        sent.append(envelope)
+
+    async def close(code: int, reason: str) -> None:
+        closed.append((code, reason))
+        close_finished.set()
+
+    old.send = send
+    old.close = close
+    registry.register_session(
+        old,
+        node_id="desktop-1",
+        display_name="old",
+        node_type="desktop",
+        capabilities=[],
+        metadata={},
+    )
+
+    registry.register_session(
+        NodeSession(session_id="t", node_id="desktop-1"),
+        node_id="desktop-1",
+        display_name="new",
+        node_type="desktop",
+        capabilities=[],
+        metadata={},
+    )
+
+    await asyncio.wait_for(close_finished.wait(), timeout=1.0)
+    assert sent[0].event == "node.duplicate_connection"
+    assert closed == [(4001, "duplicate node connection")]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_node_removes_and_closes_online_session() -> None:
+    registry = NodeRegistry()
+    session = NodeSession(session_id="t", node_id="desktop-1")
+    closed: list[tuple[int, str]] = []
+
+    async def close(code: int, reason: str) -> None:
+        closed.append((code, reason))
+
+    session.close = close
+    registry.register_session(
+        session,
+        node_id="desktop-1",
+        display_name="Desktop",
+        node_type="desktop",
+        capabilities=[],
+        metadata={},
+    )
+
+    assert await registry.disconnect_node("desktop-1", reason="revoked") is True
+    assert registry.get_online_session("desktop-1") is None
+    assert closed == [(4003, "revoked")]
+    assert await registry.disconnect_node("desktop-1", reason="again") is False

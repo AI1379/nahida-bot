@@ -7,6 +7,7 @@
 > - [../ROADMAP.md](../ROADMAP.md) Phase 5 — 交付目标与勾选状态
 > - [event-system.md](event-system.md) — 核心事件总线
 > - [security-observability.md](security-observability.md) — 安全基线
+> - [gateway-node-invocation-authorization.md](gateway-node-invocation-authorization.md) — capability 调用入口、授权、审批与审计
 
 ## 1. 背景与目标
 
@@ -434,7 +435,7 @@ node token 与现有 bearer/webui 体系并行，由 `node_auth` service 独立�
 
 ### 8.3 授权策略
 
-Gateway 维护 capability 授权策略：哪些 user/session/plugin 可以调用哪些 node 的哪些 capability。Node 注册 capability 不等于默认信任。授权策略首版可以宽松（owner 全权），但 audit 必须完整。
+Gateway 维护 capability 授权策略：哪些 user/session/plugin 可以调用哪些 node 的哪些 capability。Node 注册 capability 不等于默认信任。调用入口、类型化 actor、策略模型、审批和持久审计见 [Gateway-Node 调用入口与授权设计](gateway-node-invocation-authorization.md)。公开入口启用后采用 fail-closed；owner 也需要显式 grant，高风险调用还需要 approval。
 
 ## 9. 错误码
 
@@ -454,6 +455,7 @@ Gateway 维护 capability 授权策略：哪些 user/session/plugin 可以调用
 | `capability_timeout` | 能力调用超时 | true |
 | `capability_cancelled` | 能力调用被取消 | false |
 | `method_not_found` | 未知 method | false |
+| `node_input_unavailable` | Node 输入入口或目标 channel 当前不可用 | true |
 | `rate_limited` | 频率超限 | true |
 | `internal_error` | Gateway 内部错误 | true |
 | `unknown_request_id` | response 引用了未知 request id | false |
@@ -663,7 +665,7 @@ node 进程                              gateway 进程
 │ NodeBotAPI          │               │  发现 web_search 在 node │
 │  → capability       │──register────►│  → NodeToolBridge        │
 │    "tool.web_search"│               │      ↓                   │
-│  + 本地 handler h   │◄──invoke──────│ NodeInvoker.invoke       │
+│  + 本地 handler h   │◄──invoke──────│ NodeInvocationService    │
 │      ↓ 执行 h       │──response────►│      ↓                   │
 │  返回结果           │               │ 结果回到 Agent           │
 └─────────────────────┘               └──────────────────────────┘
@@ -672,7 +674,7 @@ node 进程                              gateway 进程
 需要的新组件：
 
 1. **`NodeBotAPI`**（实现 `BotAPI` 协议）：node 端的 BotAPI 实现，按方法类别分流。
-2. **`NodeToolBridge`**（gateway 侧）：监听 node register，把 `tool.*` capability 自动注册成 `ToolEntry`（handler 走 `NodeInvoker.invoke`）；node 断线时自动注销。
+2. **`NodeToolBridge`**（gateway 侧）：监听 node register，把符合 token scope、schema 和 exposure policy 的 `tool.*` capability 注册成 `ToolEntry`（handler 统一走 `NodeInvocationService`）；node 断线时按 `node_session_id` 安全注销。详细约束见 [调用入口与授权设计](gateway-node-invocation-authorization.md#14-nodetoolbridge-生命周期)。
 
 `BotAPI` 的 ~40 个方法在 node 端分三类处理：
 
@@ -704,7 +706,7 @@ node 进程                              gateway 进程
 
 ## 16. 待决问题
 
-- 首版是否需要支持一个 Gateway 同时连接多个 Desktop Node（多设备）。当前倾向支持，但授权策略首版简化为「owner 全权」。
+- 一个 Gateway 同时连接多个 Desktop Node 时，未指定 node_id 的调用如何选择目标。当前收敛为：只有一个“在线且已授权”的候选时自动选择，否则返回 `ambiguous_target`；不使用 owner 全权或任意首节点策略。
 - `node.input.submit` 注入的消息是否计入会话历史，以及是否允许触发工具调用。
 - DisplayPlan 由主 LLM 输出、规则推导器生成，还是二次 planner 生成（见 desktop-app.md §18）。
 - pairing code 是 6 位短码（人工输入）还是扫码；首版建议短码，扫码后置。

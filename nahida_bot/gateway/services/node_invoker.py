@@ -28,6 +28,7 @@ from nahida_bot.gateway.node_protocol.errors import (
     CapabilityDenied,
     CapabilityNotFound,
     CapabilityTimeout,
+    NodeInputUnavailable,
 )
 from nahida_bot.gateway.node_protocol.schemas import (
     CapabilityInvokePayload,
@@ -206,10 +207,7 @@ class NodeInvoker:
         self, *, node_id: str, session_id: str, text: str
     ) -> None:
         if self._input_sink is None:
-            logger.warning(
-                "node_invoker.no_input_sink", node_id=node_id, session_id=session_id
-            )
-            return
+            raise NodeInputUnavailable("node input submission is not configured")
         await self._input_sink.submit(node_id=node_id, session_id=session_id, text=text)
 
     # -- Authorization / audit --------------------------------------------

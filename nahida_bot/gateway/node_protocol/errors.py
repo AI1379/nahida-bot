@@ -69,6 +69,11 @@ class MethodNotFound(NodeProtocolError):
     code = "method_not_found"
 
 
+class NodeInputUnavailable(NodeProtocolError):
+    code = "node_input_unavailable"
+    retryable = True
+
+
 class RateLimited(NodeProtocolError):
     code = "rate_limited"
     retryable = True

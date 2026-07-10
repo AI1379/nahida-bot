@@ -144,7 +144,11 @@ async def revoke_node(
 ) -> RevokeResponse:
     _registry, auth, _invoker = _get_services(request)
     count = auth.revoke_all_for_node(node_id)
-    return RevokeResponse(revoked=count > 0, token_id=node_id)
+    disconnected = await _registry.disconnect_node(
+        node_id,
+        reason="node token revoked",
+    )
+    return RevokeResponse(revoked=count > 0 or disconnected, token_id=node_id)
 
 
 __all__ = ["router"]

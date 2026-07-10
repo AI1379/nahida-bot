@@ -23,11 +23,20 @@ import websockets
 from fastapi import FastAPI
 
 from nahida_bot.gateway.node_protocol.routes import router as node_ws_router
+from nahida_bot.gateway.node_protocol.schemas import build_event
 from nahida_bot.gateway.services.node_auth import NodeAuthService
 from nahida_bot.gateway.services.node_invoker import NodeInvoker
 from nahida_bot.gateway.services.node_registry import NodeRegistry
 from nahida_bot.node.capabilities import CapabilityRegistry
 from nahida_bot.node.client import NodeClient
+
+
+class _RecordingInputSink:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def submit(self, *, node_id: str, session_id: str, text: str) -> None:
+        self.calls.append((node_id, session_id, text))
 
 
 @pytest.fixture
@@ -36,7 +45,11 @@ def gateway_app() -> FastAPI:
     app.include_router(node_ws_router)
     app.state.node_registry = NodeRegistry(heartbeat_interval_ms=60000)
     app.state.node_auth = NodeAuthService()
-    app.state.node_invoker = NodeInvoker(app.state.node_registry)
+    app.state.node_input_sink = _RecordingInputSink()
+    app.state.node_invoker = NodeInvoker(
+        app.state.node_registry,
+        input_sink=app.state.node_input_sink,
+    )
     return app
 
 
@@ -245,6 +258,94 @@ async def test_gateway_replies_to_node_heartbeat_ping(
 
 
 @pytest.mark.asyncio
+async def test_registered_node_input_reaches_configured_sink(
+    server_url: str, node_token: str, gateway_app: FastAPI
+) -> None:
+    async with websockets.connect(
+        f"{server_url}/api/nodes/ws?token={node_token}"
+    ) as ws:
+        await ws.send(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "kind": "request",
+                    "id": "req_reg_input",
+                    "method": "node.register",
+                    "payload": {"node_id": "test-node", "capabilities": []},
+                }
+            )
+        )
+        await ws.recv()
+        await ws.send(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "kind": "request",
+                    "id": "req_input_1",
+                    "method": "node.input.submit",
+                    "payload": {
+                        "session_id": "test:private:c1",
+                        "text": "hello from node",
+                    },
+                }
+            )
+        )
+
+        response = json.loads(await asyncio.wait_for(ws.recv(), timeout=3.0))
+        assert response["ok"] is True
+        assert response["payload"] == {"accepted": True}
+        assert gateway_app.state.node_input_sink.calls == [
+            ("test-node", "test:private:c1", "hello from node")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_registration_notifies_and_closes_old_socket(
+    server_url: str, node_token: str
+) -> None:
+    async with websockets.connect(
+        f"{server_url}/api/nodes/ws?token={node_token}"
+    ) as old_ws:
+        await old_ws.send(
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "kind": "request",
+                    "id": "req_reg_old",
+                    "method": "node.register",
+                    "payload": {"node_id": "test-node", "capabilities": []},
+                }
+            )
+        )
+        await old_ws.recv()
+
+        async with websockets.connect(
+            f"{server_url}/api/nodes/ws?token={node_token}"
+        ) as new_ws:
+            await new_ws.send(
+                json.dumps(
+                    {
+                        "version": "1.0",
+                        "kind": "request",
+                        "id": "req_reg_new",
+                        "method": "node.register",
+                        "payload": {
+                            "node_id": "test-node",
+                            "capabilities": [],
+                        },
+                    }
+                )
+            )
+            await new_ws.recv()
+
+            duplicate = json.loads(await asyncio.wait_for(old_ws.recv(), timeout=3.0))
+            assert duplicate["kind"] == "event"
+            assert duplicate["event"] == "node.duplicate_connection"
+            with pytest.raises(websockets.ConnectionClosed):
+                await asyncio.wait_for(old_ws.recv(), timeout=3.0)
+
+
+@pytest.mark.asyncio
 async def test_capability_invoke_full_round_trip(
     server_url: str, node_token: str, gateway_app: FastAPI
 ) -> None:
@@ -341,3 +442,26 @@ async def test_node_client_lifecycle(
             await asyncio.wait_for(client_task, timeout=3.0)
         except TimeoutError:
             client_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_node_client_stops_after_duplicate_connection_event() -> None:
+    class _Socket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    client = NodeClient(
+        url="ws://127.0.0.1/api/nodes/ws",
+        token="token",
+        node_id="test-node",
+    )
+    socket = _Socket()
+    client._ws = socket
+
+    await client._dispatch_event(build_event("node.duplicate_connection"))
+
+    assert client._stopping.is_set()
+    assert socket.closed is True

@@ -12,7 +12,7 @@ from uuid import uuid4
 import structlog
 
 from nahida_bot.core.channel_registry import ChannelRegistry
-from nahida_bot.core.chat_address import ChatAddress, classify_session_key
+from nahida_bot.core.chat_address import ChatAddress, SessionKey, classify_session_key
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
     AgentResponseRequested,
@@ -561,6 +561,25 @@ class MessageRouter:
         inbound: InboundMessage = event.payload.message
         address = _address_from_inbound(inbound)
         session_id = self.get_active_session_id(address)
+        source_tag = "user_input"
+        reply_to_override: str | None = None
+        if event.source.startswith("node:"):
+            requested_session_id = event.payload.session_id.strip()
+            try:
+                requested_session = SessionKey.parse(requested_session_id)
+            except ValueError as exc:
+                raise ValueError(f"invalid node session_id: {exc}") from exc
+            if not requested_session.address.is_typed:
+                raise ValueError("node session_id must use a typed chat address")
+            if requested_session.address != address:
+                raise ValueError(
+                    "node session_id does not match the input chat address"
+                )
+            session_id = requested_session_id
+            source_tag = "node"
+            # The synthetic node message id does not exist on the external
+            # channel and must never be used as a reply/quote target.
+            reply_to_override = ""
         logger.debug(
             "router.message_received",
             source=event.source,
@@ -577,7 +596,13 @@ class MessageRouter:
         )
         token = current_session.set(session_ctx)
         try:
-            await self._dispatch_message(inbound, session_id, workspace_id)
+            await self._dispatch_message(
+                inbound,
+                session_id,
+                workspace_id,
+                source_tag=source_tag,
+                reply_to_override=reply_to_override,
+            )
         finally:
             current_session.reset(token)
 
@@ -1188,7 +1213,11 @@ class MessageRouter:
         # Publish MessageSending event for observation/audit hooks.
         sending_result = await self._event_bus.publish(
             MessageSending(
-                payload=MessagePayload(message=inbound, session_id=session_id),
+                payload=MessagePayload(
+                    message=inbound,
+                    session_id=session_id,
+                    outbound=outbound,
+                ),
                 source="message_router",
             )
         )
@@ -1235,7 +1264,11 @@ class MessageRouter:
         # Publish MessageSent event
         sent_result = await self._event_bus.publish(
             MessageSent(
-                payload=MessagePayload(message=inbound, session_id=session_id),
+                payload=MessagePayload(
+                    message=inbound,
+                    session_id=session_id,
+                    outbound=outbound_message,
+                ),
                 source="message_router",
             )
         )

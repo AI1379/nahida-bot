@@ -56,6 +56,7 @@ Nahida Bot 的核心目标：
 | [priorities-and-strategy.md](priorities-and-strategy.md) | 模块优先级与开发策略 |
 | [event-system.md](event-system.md) | 类型安全事件系统设计 |
 | [gateway-node-protocol.md](gateway-node-protocol.md) | Gateway-Node WebSocket 协议设计（envelope、生命周期、capability、鉴权） |
+| [gateway-node-invocation-authorization.md](gateway-node-invocation-authorization.md) | Gateway-Node capability 的 REST/Agent/Plugin 调用入口、授权、审批与审计设计 |
 
 ## 与 ROADMAP 的关系
 
