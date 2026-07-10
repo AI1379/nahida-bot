@@ -10,6 +10,7 @@ import pytest
 
 from nahida_bot.core.events import (
     MessageObserved,
+    MessageReceived,
     MessagePayload,
     MessageSent,
     PokeEvent,
@@ -111,7 +112,7 @@ def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
             filesystem=FilesystemPermission(read=["workspace"]),
         ),
         capabilities=Capabilities(
-            subscribes_to=["MessageObserved", "MessageSent"],
+            subscribes_to=["MessageObserved", "MessageReceived", "MessageSent"],
             emits=["AgentResponseRequested"],
         ),
         config=base_config,
@@ -384,7 +385,7 @@ def _engagement_manifest(
             filesystem=FilesystemPermission(read=["workspace"]),
         ),
         capabilities=Capabilities(
-            subscribes_to=["MessageObserved", "MessageSent"],
+            subscribes_to=["MessageObserved", "MessageReceived", "MessageSent"],
             emits=["AgentResponseRequested"],
         ),
         config=config,
@@ -469,6 +470,11 @@ def _direct_mention_sent_event(
         payload=MessagePayload(message=inbound, session_id=session_id),
         source="message_router",
     )
+
+
+def _direct_mention_received_event() -> MessageReceived:
+    sent = _direct_mention_sent_event()
+    return MessageReceived(payload=sent.payload, source="test")
 
 
 async def _load_engaged_plugin(
@@ -961,6 +967,13 @@ async def test_direct_mention_reply_enters_engaged_state() -> None:
     sm = cast(Any, plugin)._sm
     assert sm.get_state("test:group:g1").state == "observing"
 
+    received_handler = api.registered_event_handlers[MessageReceived][0]
+    await received_handler(_direct_mention_received_event())
+    await _drain_plugin_tasks(plugin)
+    assert sm.get_state("test:group:g1").state == "observing"
+    assert api.agent_response_requests == []
+    assert api.llm_calls == []
+
     sent_handler = api.registered_event_handlers[MessageSent][0]
     await sent_handler(_direct_mention_sent_event())
 
@@ -971,6 +984,7 @@ async def test_direct_mention_reply_enters_engaged_state() -> None:
     assert sm.get_batch("test:group:g1") is not None
     contexts = cast(Any, plugin)._contexts["test:group:g1"]
     assert contexts[-1].message_id == "mention-1"
+    assert len(contexts) == 1
 
     # Streaming may emit multiple MessageSent events for one inbound trigger;
     # the same mention must not reset engagement repeatedly.

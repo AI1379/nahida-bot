@@ -16,6 +16,7 @@ from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import (
     MessageObserved,
     MessagePayload,
+    MessageReceived,
     MessageSent,
     PokeEvent,
     PokePayload,
@@ -93,6 +94,7 @@ class ConversationJoinerPlugin(Plugin):
 
     async def on_load(self) -> None:
         self.api.subscribe(MessageObserved, self._on_message_observed)
+        self.api.subscribe(MessageReceived, self._on_message_received)
         if self._config.prefilter.enable_poke:
             self.api.subscribe(PokeEvent, self._on_poke)
         if self._has_any_engagement_enabled():
@@ -149,6 +151,48 @@ class ConversationJoinerPlugin(Plugin):
         task = asyncio.create_task(self._handle_observed(event, address, cfg))
         self._tasks.add(task)
         task.add_done_callback(self._on_task_done)
+
+    async def _on_message_received(self, event: MessageReceived) -> None:
+        """Observe a group message that already has a reactive agent path.
+
+        Channels historically emit either MessageObserved or MessageReceived.
+        Subscribing to both makes attention orthogonal to response: direct
+        mentions and ``always``-mode messages update the same short-term
+        context without asking ConversationJoiner to trigger a duplicate run.
+        """
+        message: InboundMessage = event.payload.message
+        address = _address_from_message(message)
+        if address is None:
+            return
+        cfg = effective_group_config(self._config, address.chat_key)
+        if not cfg.enabled:
+            return
+        task = asyncio.create_task(
+            self._remember_triggered_observation(message, address, cfg)
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+
+    async def _remember_triggered_observation(
+        self,
+        message: InboundMessage,
+        address: ChatAddress,
+        cfg: EffectiveJoinerConfig,
+    ) -> None:
+        chat_key = address.chat_key
+        lock = self._locks.setdefault(chat_key, asyncio.Lock())
+        async with lock:
+            self._remember_context(chat_key, message, cfg)
+            sm = self._sm
+            if sm is None or not cfg.engagement.enabled:
+                return
+            now = time.monotonic()
+            sm.decay_engagement_score(chat_key, now, cfg.engagement)
+            sm.record_observation(
+                chat_key,
+                now,
+                max_age_seconds=cfg.engagement.exit_gate.activity_window_seconds,
+            )
 
     async def _on_poke(self, event: PokeEvent) -> None:
         """Receive a PokeEvent, synthesize a tagged InboundMessage, and route it
@@ -953,7 +997,7 @@ class ConversationJoinerPlugin(Plugin):
             payload.session_id,
         )
         if chat_key is None:
-            self._engage_after_direct_trigger(payload.message)
+            self._engage_after_direct_response(payload.message)
             return
 
         now = time.monotonic()
@@ -987,8 +1031,8 @@ class ConversationJoinerPlugin(Plugin):
 
         self._clear_pending_request(chat_key)
 
-    def _engage_after_direct_trigger(self, message: InboundMessage) -> None:
-        """Treat a visible reply to a direct group mention as participation.
+    def _engage_after_direct_response(self, message: InboundMessage) -> None:
+        """Treat a visible reactive group reply as participation.
 
         Mention-triggered messages are emitted as ``MessageReceived`` rather
         than ``MessageObserved``, so the joiner never sees them on its normal
@@ -998,7 +1042,13 @@ class ConversationJoinerPlugin(Plugin):
         back to random observing.
         """
         sm = self._sm
-        if sm is None or not message.is_group or not message.mentions_bot:
+        sender = message.sender_context
+        if (
+            sm is None
+            or not message.is_group
+            or _is_command(message)
+            or (sender is not None and (sender.is_self or sender.is_bot))
+        ):
             return
         address = _address_from_message(message)
         if address is None:
@@ -1195,6 +1245,12 @@ class ConversationJoinerPlugin(Plugin):
                 or message.user_id
             )
         entries = self._contexts.setdefault(chat_key, deque())
+        if (
+            entries
+            and message.message_id
+            and entries[-1].message_id == message.message_id
+        ):
+            return
         entries.append(
             _ContextEntry(
                 sender=sender,

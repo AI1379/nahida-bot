@@ -15,6 +15,7 @@ permissions:
 capabilities:
   subscribes_to:
     - MessageObserved
+    - MessageReceived
     - MessageSent
     - PokeEvent
   emits:
