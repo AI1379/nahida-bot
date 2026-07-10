@@ -499,8 +499,13 @@ Needs review:
 - FTS/BM25 长期记忆注入已接入 `SessionRunner`。
 - `memory_items` 是唯一可写长期记忆源；`memory_read` 同时查询结构化记忆和兼容 Markdown，
   `memory_write` 只写结构化记忆，workspace Markdown 是 sensitivity 过滤后的派生投影。
-- Bot 可通过 `memory_update` 以“追加替代项 + 归档旧项”方式修正记忆，并通过
-  `memory_archive` 归档当前上下文可见的过时/错误/重复项。
+- Bot 可通过 `memory_update` 以“追加替代项 + 归档旧项”方式修正记忆（含 audience 变更），
+  并通过 `memory_archive` 归档当前上下文可见的过时/错误/重复项。
+- `memory_read` 输出每项标注 `(scope_type, audience, sensitivity)`，Bot 可自行判断
+  scope 归属是否正确。
+- `memory_update` 支持 `audience` 参数提升/降级记忆于 global 和 current 之间；
+  在 `NAHIDA_MEMORY_REASSIGN=1` 时额外支持 `target_scope_type` + `target_scope_id`
+  直接归属到任意 person/account/chat scope。详见 §9.1。
 - 规则 consolidation 和 scheduler 后台 LLM dreaming 已可用。
 - 新增正式 `memory.retrieval` / `memory.embedding` 配置模型。
 - OpenAI-compatible / OpenAI Responses provider 支持 `/embeddings`。
@@ -557,6 +562,16 @@ scheduler:
   memory_dreaming_provider_id: ""  # legacy
   memory_dreaming_model: ""        # model spec；空则默认找 memory tag
 ```
+
+### 9.1 环境变量
+
+| 变量 | 作用 |
+|------|------|
+| `NAHIDA_MEMORY_REASSIGN` | 设为 `1` 时，`memory_update` 工具暴露 `target_scope_type` + `target_scope_id` 参数，允许 Bot 将记忆直接重新归属到任意 person/account/chat scope。未设置时这两个参数不出现在工具 schema 中，Bot 不可见。 |
+
+使用场景：管理员在 global scope 中发现混杂了不同用户的记忆，临时启动时加
+`NAHIDA_MEMORY_REASSIGN=1`，让 Bot 通过 `memory_read` 查看 scope 归属、
+`memory_update` 做精确迁移，完成后去掉变量恢复正常。
 
 ## 10. 分阶段计划
 
