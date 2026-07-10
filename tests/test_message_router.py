@@ -1700,6 +1700,19 @@ class TestGroupDialogueContinuity:
         )
         return runner._group_dialogue_cutoff(records, message_context=ctx)
 
+    def _topic_cutoff(
+        self,
+        records: list[MemoryRecord],
+        *,
+        timestamp: float,
+        gap: int = 300,
+    ) -> datetime | None:
+        runner = SessionRunner(group_context_topic_gap_seconds=gap)
+        ctx = MessageContext(
+            chat_type="group", chat_id="c1", channel="test", timestamp=timestamp
+        )
+        return runner._group_topic_cutoff(records, message_context=ctx)
+
     def test_disabled_gap_returns_none(self) -> None:
         now = datetime.now(UTC)
         records = [self._record("user", "hi", now - timedelta(hours=2))]
@@ -1766,6 +1779,88 @@ class TestGroupDialogueContinuity:
         assert "current segment a" in kept
         assert "old segment q" not in kept
         assert "old segment a" not in kept
+
+    def test_topic_gap_starts_fresh_automatic_context(self) -> None:
+        now = datetime.now(UTC)
+        records = [
+            self._record("user", "old ambient topic", now - timedelta(minutes=10))
+        ]
+
+        cutoff = self._topic_cutoff(records, timestamp=now.timestamp())
+
+        assert cutoff == now
+        assert records[0].turn.created_at < cutoff
+
+    def test_topic_gap_keeps_only_latest_ambient_segment(self) -> None:
+        now = datetime.now(UTC)
+        latest_segment = now - timedelta(minutes=2)
+        records = [
+            self._record("user", "old ambient topic", now - timedelta(minutes=12)),
+            self._record("user", "new topic starts", latest_segment),
+            self._record("user", "new topic continues", now - timedelta(minutes=1)),
+        ]
+
+        cutoff = self._topic_cutoff(records, timestamp=now.timestamp())
+
+        assert cutoff == latest_segment
+        kept = [r.turn.content for r in records if r.turn.created_at >= cutoff]
+        assert kept == ["new topic starts", "new topic continues"]
+
+    async def test_explicit_reply_restores_anchor_outside_topic_window(self) -> None:
+        memory = _MockMemoryStore()
+        old_at = datetime.now(UTC) - timedelta(minutes=10)
+        memory.sessions["test:group:c1"] = [
+            ConversationTurn(
+                role="user",
+                content="the exact old message being discussed",
+                source="group_observation",
+                created_at=old_at,
+                metadata={
+                    "observed_only": True,
+                    "message_id": "old-message",
+                    "message_context": {
+                        "timestamp": old_at.timestamp(),
+                        "channel": "test",
+                        "chat_type": "group",
+                        "chat_id": "c1",
+                        "sender_id": "u2",
+                        "sender_display_name": "Alice",
+                        "message_id": "old-message",
+                    },
+                },
+            )
+        ]
+        agent = _MockAgentLoop(response="reply")
+        router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
+
+        await router.start()
+        await event_bus.publish(
+            MessageReceived(
+                payload=MessagePayload(
+                    message=InboundMessage(
+                        message_id="current-message",
+                        platform="test",
+                        chat_id="c1",
+                        user_id="u1",
+                        text="what do you think about this?",
+                        raw_event={},
+                        is_group=True,
+                        reply_to="old-message",
+                        timestamp=datetime.now(UTC).timestamp(),
+                    ),
+                    session_id="test:group:c1",
+                ),
+                source="test",
+            )
+        )
+        await router.stop()
+
+        history = agent.calls[0]["history_messages"]
+        anchors = [m for m in history if m.source == "reply_anchor_context"]
+        assert len(anchors) == 1
+        assert "the exact old message being discussed" in anchors[0].content
+        assert anchors[0].metadata["message_id"] == "old-message"
+        assert [m for m in history if m.source == "group_observed_context"] == []
 
     async def test_stale_group_dialogue_dropped_on_trigger(self) -> None:
         memory = _MockMemoryStore()

@@ -648,6 +648,9 @@ class Application:
             ),
             group_context_ttl_seconds=self.settings.router.group_context.ttl_seconds,
             group_context_max_chars=self.settings.router.group_context.max_chars,
+            group_context_topic_gap_seconds=(
+                self.settings.router.group_context.topic_gap_seconds
+            ),
             group_context_continuity_gap_seconds=(
                 self.settings.router.group_context.continuity_gap_seconds
             ),

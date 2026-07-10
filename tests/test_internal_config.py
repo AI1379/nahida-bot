@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from nahida_bot.core.config import (
     AgentConfig,
     ContextConfig,
+    GroupContextConfig,
     MemoryConfig,
     MemoryConsolidationConfig,
     RouterConfigModel,
@@ -171,6 +172,15 @@ class TestRouterConfigModel:
             RouterConfigModel(max_history_turns=0)
         with pytest.raises(ValidationError):
             RouterConfigModel(command_timeout_seconds=-1)
+
+
+class TestGroupContextConfig:
+    def test_topic_gap_defaults_to_five_minutes(self) -> None:
+        assert GroupContextConfig().topic_gap_seconds == 300
+
+    def test_negative_topic_gap_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            GroupContextConfig(topic_gap_seconds=-1)
 
 
 class TestSettingsSubConfigs:

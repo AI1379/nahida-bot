@@ -382,6 +382,7 @@ agent_runtime:
 #     max_messages: 20                  # 最多注入最近多少条未触发群消息
 #     ttl_seconds: 900                  # 只注入最近 N 秒内的群上下文；0 表示不按时间过滤
 #     max_chars: 4000                   # 群上下文注入块最大字符数
+#     topic_gap_seconds: 300            # 群消息静默超过此值视为新话题；0 关闭
 #     continuity_gap_seconds: 1800      # 对话连续性判定（秒）：当前触发与上次对话 turn 间隔超过此值则视为新对话，丢弃旧 history；0 关闭
 
 # ── Model Tags / Specs ─────────────────────────────────

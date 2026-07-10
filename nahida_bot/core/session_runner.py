@@ -115,6 +115,34 @@ def _trigger_datetime(context: MessageContext) -> datetime:
     return datetime.now(UTC)
 
 
+def _latest_cutoff(*values: datetime | None) -> datetime | None:
+    concrete = [value for value in values if value is not None]
+    return max(concrete) if concrete else None
+
+
+def _metadata_message_id(metadata: dict[str, Any] | None) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    message_id = metadata.get("message_id")
+    if isinstance(message_id, str) and message_id:
+        return message_id
+    message_context = metadata.get("message_context")
+    if not isinstance(message_context, dict):
+        return ""
+    message_id = message_context.get("message_id")
+    return message_id if isinstance(message_id, str) else ""
+
+
+def _history_contains_message_id(
+    messages: list[ContextMessage], message_id: str
+) -> bool:
+    if not message_id:
+        return False
+    return any(
+        _metadata_message_id(message.metadata) == message_id for message in messages
+    )
+
+
 @dataclass(slots=True)
 class ActiveRun:
     """Tracks one in-flight agent run for a session."""
@@ -192,6 +220,7 @@ class SessionRunner:
         group_context_max_messages: int = 20,
         group_context_ttl_seconds: int = 900,
         group_context_max_chars: int = 4000,
+        group_context_topic_gap_seconds: int = 300,
         group_context_continuity_gap_seconds: int = 1800,
         media_resolver: MediaResolver | None = None,
         channel_registry: ChannelRegistry | None = None,
@@ -223,6 +252,7 @@ class SessionRunner:
         self._group_context_max_messages = group_context_max_messages
         self._group_context_ttl_seconds = group_context_ttl_seconds
         self._group_context_max_chars = group_context_max_chars
+        self._group_topic_gap_seconds = group_context_topic_gap_seconds
         self._group_continuity_gap_seconds = group_context_continuity_gap_seconds
         self._media_resolver = media_resolver
         self._channel_registry = channel_registry
@@ -540,6 +570,15 @@ class SessionRunner:
                 capabilities=capabilities,
                 message_context=message_context,
             )
+            reply_anchor = self._load_reply_anchor_context(
+                recent_records,
+                current_message_context=message_context,
+            )
+            if reply_anchor is not None and not _history_contains_message_id(
+                history,
+                message_context.reply_to_message_id if message_context else "",
+            ):
+                history.append(reply_anchor)
             explicit_ephemeral_context = ephemeral_context.strip()
             if explicit_ephemeral_context:
                 # ConversationJoiner selected this exact batch for the current
@@ -1165,6 +1204,11 @@ class SessionRunner:
             records,
             message_context=message_context,
         )
+        topic_cutoff = self._group_topic_cutoff(
+            records,
+            message_context=message_context,
+        )
+        history_cutoff = _latest_cutoff(dialogue_cutoff, topic_cutoff)
         # Phase 5: when transcript replay is wired, rebuild history from the
         # canonical run transcripts (paired tool_use/tool_result) instead of
         # the stripped plain-text turns — the #24 fix. Falls back to the text
@@ -1177,7 +1221,7 @@ class SessionRunner:
                 replay = await projector.project(
                     session_id,
                     capabilities=capabilities,
-                    since=dialogue_cutoff,
+                    since=history_cutoff,
                 )
             except Exception:
                 logger.warning(
@@ -1217,7 +1261,7 @@ class SessionRunner:
             metadata = r.turn.metadata
             if isinstance(metadata, dict) and metadata.get("observed_only") is True:
                 continue
-            if dialogue_cutoff is not None and r.turn.created_at < dialogue_cutoff:
+            if history_cutoff is not None and r.turn.created_at < history_cutoff:
                 continue
             parts = (
                 await self._reconstruct_parts_for_history(metadata)
@@ -1282,6 +1326,33 @@ class SessionRunner:
         )
 
         return messages
+
+    def _group_topic_cutoff(
+        self,
+        records: list[MemoryRecord],
+        *,
+        message_context: MessageContext | None,
+    ) -> datetime | None:
+        """Bound automatic group history to the current ambient topic window."""
+        gap = self._group_topic_gap_seconds
+        if gap <= 0 or message_context is None or message_context.chat_type != "group":
+            return None
+
+        trigger_at = _trigger_datetime(message_context)
+        message_times = [
+            record.turn.created_at for record in records if record.turn.role == "user"
+        ]
+        if not message_times:
+            return None
+        if (trigger_at - message_times[-1]).total_seconds() > gap:
+            return trigger_at
+
+        cutoff = message_times[0]
+        for index in range(len(message_times) - 1, 0, -1):
+            if (message_times[index] - message_times[index - 1]).total_seconds() > gap:
+                cutoff = message_times[index]
+                break
+        return cutoff
 
     def _group_dialogue_cutoff(
         self,
@@ -1378,6 +1449,10 @@ class SessionRunner:
             cutoff = datetime.now(UTC) - timedelta(
                 seconds=self._group_context_ttl_seconds
             )
+        topic_cutoff = self._group_topic_cutoff(
+            records,
+            message_context=current_message_context,
+        )
 
         selected: list[MemoryRecord] = []
         for record in reversed(records):
@@ -1388,6 +1463,8 @@ class SessionRunner:
             ):
                 continue
             if cutoff is not None and record.turn.created_at < cutoff:
+                continue
+            if topic_cutoff is not None and record.turn.created_at < topic_cutoff:
                 continue
             if self._is_current_observed_record(
                 record,
@@ -1453,6 +1530,35 @@ class SessionRunner:
         if observed_context.timestamp and current_message_context.timestamp:
             return observed_context.timestamp == current_message_context.timestamp
         return True
+
+    @staticmethod
+    def _load_reply_anchor_context(
+        records: list[MemoryRecord],
+        *,
+        current_message_context: MessageContext | None,
+    ) -> ContextMessage | None:
+        if current_message_context is None:
+            return None
+        reply_to = current_message_context.reply_to_message_id
+        if not reply_to:
+            return None
+        for record in reversed(records):
+            if _metadata_message_id(record.turn.metadata) != reply_to:
+                continue
+            visible = render_message_with_context(
+                record.turn.content,
+                message_context_from_metadata(record.turn.metadata),
+                role="reply_anchor",
+            )
+            return ContextMessage(
+                role="user",
+                source="reply_anchor_context",
+                content=(
+                    "Message explicitly referenced by the current reply:\n" + visible
+                ),
+                metadata={"ephemeral": True, "message_id": reply_to},
+            )
+        return None
 
     async def _load_relevant_memory(
         self, query: str, *, session_id: str = ""

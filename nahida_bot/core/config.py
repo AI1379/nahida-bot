@@ -262,6 +262,10 @@ class GroupContextConfig(BaseModel):
     max_messages: int = Field(default=20, ge=0)
     ttl_seconds: int = Field(default=900, ge=0)
     max_chars: int = Field(default=4000, ge=0)
+    # Short ambient-message gap used to delimit the current group topic.
+    # Unlike continuity_gap_seconds (bot dialogue), this scans group user
+    # messages including observed-only turns. 0 disables topic segmentation.
+    topic_gap_seconds: int = Field(default=300, ge=0)
     # Dialogue continuity gate for group chats (issue #37). When the gap
     # between the current trigger and the bot's previous dialogue turn
     # exceeds this threshold, the old dialogue is treated as a stale,
