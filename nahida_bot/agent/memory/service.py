@@ -294,15 +294,15 @@ class MemoryService:
         self,
         *,
         query: str = "",
-        scope_type: str = SCOPE_TYPE_GLOBAL,
-        scope_id: str = SCOPE_ID_GLOBAL,
+        scope_type: str | None = SCOPE_TYPE_GLOBAL,
+        scope_id: str | None = SCOPE_ID_GLOBAL,
         limit: int = 50,
     ) -> list[MemoryItem]:
-        """List or search durable items in a scope.
+        """List or search durable items with optional scope filters.
 
         Unfiltered by sensitivity — this is the admin/webui surface, not the
         recall path; the webui is trusted to see restricted items in its own
-        workspace.
+        workspace. ``None`` independently matches every scope type or id.
         """
         return await self._store.search_items(
             query,
@@ -315,8 +315,8 @@ class MemoryService:
         self,
         *,
         status: str | None = None,
-        scope_type: str = SCOPE_TYPE_GLOBAL,
-        scope_id: str = SCOPE_ID_GLOBAL,
+        scope_type: str | None = SCOPE_TYPE_GLOBAL,
+        scope_id: str | None = SCOPE_ID_GLOBAL,
         limit: int = 20,
     ) -> list[MemoryCandidate]:
         """List consolidation candidates (the dreaming audit ledger)."""

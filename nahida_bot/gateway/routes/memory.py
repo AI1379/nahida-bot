@@ -298,10 +298,12 @@ async def list_memory_items(
     app=Depends(get_application),
 ) -> MemoryItemListResponse:
     service = _memory_service(app)
+    scope_type_filter = scope_type.strip() or None
+    scope_id_filter = scope_id.strip() or None
     items = await service.list_items(
         query=q,
-        scope_type=scope_type,
-        scope_id=scope_id,
+        scope_type=scope_type_filter,
+        scope_id=scope_id_filter,
         limit=limit,
     )
     return MemoryItemListResponse(
@@ -393,10 +395,12 @@ async def list_memory_candidates(
 ) -> MemoryCandidateListResponse:
     service = _memory_service(app)
     status_filter = candidate_status.strip() or None
+    scope_type_filter = scope_type.strip() or None
+    scope_id_filter = scope_id.strip() or None
     candidates = await service.list_candidates(
         status=status_filter,
-        scope_type=scope_type,
-        scope_id=scope_id,
+        scope_type=scope_type_filter,
+        scope_id=scope_id_filter,
         limit=limit,
     )
     return MemoryCandidateListResponse(

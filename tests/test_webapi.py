@@ -606,6 +606,75 @@ async def test_memory_items_route_creates_lists_and_archives(
         await engine.close()
 
 
+async def test_memory_items_route_supports_independent_scope_wildcards(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+    from nahida_bot.db.engine import DatabaseEngine
+
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    store = SQLiteMemoryStore(engine)
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.memory_store = store
+
+    try:
+        global_id = await store.append_item(
+            title="global",
+            content="Shared architecture decision",
+            kind="decision",
+        )
+        chat_a_id = await store.append_item(
+            title="chat a",
+            content="Alice prefers concise Chinese reports",
+            kind="preference",
+            scope_type="chat",
+            scope_id="telegram:private:1",
+        )
+        chat_b_id = await store.append_item(
+            title="chat b",
+            content="Bob prefers detailed English reports",
+            kind="preference",
+            scope_type="chat",
+            scope_id="telegram:private:2",
+        )
+
+        all_resp = await client_no_auth.get(
+            "/api/memory/items", params={"scope_type": "", "scope_id": ""}
+        )
+        assert all_resp.status_code == 200
+        assert {item["item_id"] for item in all_resp.json()["items"]} == {
+            global_id,
+            chat_a_id,
+            chat_b_id,
+        }
+
+        chat_resp = await client_no_auth.get(
+            "/api/memory/items", params={"scope_type": "chat", "scope_id": ""}
+        )
+        assert {item["item_id"] for item in chat_resp.json()["items"]} == {
+            chat_a_id,
+            chat_b_id,
+        }
+
+        id_resp = await client_no_auth.get(
+            "/api/memory/items",
+            params={"scope_type": "", "scope_id": "telegram:private:1"},
+        )
+        assert [item["item_id"] for item in id_resp.json()["items"]] == [chat_a_id]
+
+        search_resp = await client_no_auth.get(
+            "/api/memory/items",
+            params={"q": "reports", "scope_type": "", "scope_id": ""},
+        )
+        assert {item["item_id"] for item in search_resp.json()["items"]} == {
+            chat_a_id,
+            chat_b_id,
+        }
+    finally:
+        await engine.close()
+
+
 async def test_memory_candidates_and_turns_routes(
     client_no_auth: AsyncClient,
 ) -> None:
@@ -637,12 +706,39 @@ async def test_memory_candidates_and_turns_routes(
             kind="preference",
             status="pending",
         )
+        await store.append_candidate(
+            candidate_id="cand_2",
+            title="chat report preference",
+            content="A chat-scoped candidate.",
+            kind="preference",
+            status="pending",
+            scope_type="chat",
+            scope_id="telegram:private:123",
+        )
 
         candidates_resp = await client_no_auth.get("/api/memory/candidates")
         assert candidates_resp.status_code == 200
         candidates = candidates_resp.json()["candidates"]
         assert candidates[0]["candidate_id"] == "cand_1"
         assert candidates[0]["status"] == "pending"
+
+        all_candidates_resp = await client_no_auth.get(
+            "/api/memory/candidates",
+            params={"scope_type": "", "scope_id": ""},
+        )
+        assert {
+            candidate["candidate_id"]
+            for candidate in all_candidates_resp.json()["candidates"]
+        } == {"cand_1", "cand_2"}
+
+        chat_candidates_resp = await client_no_auth.get(
+            "/api/memory/candidates",
+            params={"scope_type": "chat", "scope_id": ""},
+        )
+        assert [
+            candidate["candidate_id"]
+            for candidate in chat_candidates_resp.json()["candidates"]
+        ] == ["cand_2"]
 
         turns_resp = await client_no_auth.get(
             "/api/memory/turns?q=concise&chat_address=telegram:private:123"

@@ -116,11 +116,16 @@ class StructuredMemoryStore(Protocol):
         self,
         query: str = "",
         *,
-        scope_type: str = SCOPE_TYPE_GLOBAL,
-        scope_id: str = SCOPE_ID_GLOBAL,
+        scope_type: str | None = SCOPE_TYPE_GLOBAL,
+        scope_id: str | None = SCOPE_ID_GLOBAL,
         limit: int = 10,
     ) -> list[MemoryItem]:
-        """FTS5 BM25 search (or recent list when ``query`` is empty)."""
+        """FTS5 BM25 search (or recent list when ``query`` is empty).
+
+        ``None`` independently disables the corresponding scope filter. This
+        is reserved for trusted admin surfaces; recall callers always pass an
+        exact scope from the identity-aware cascade.
+        """
         ...
 
     async def append_item(
@@ -194,8 +199,8 @@ class StructuredMemoryStore(Protocol):
         self,
         *,
         status: str | None = None,
-        scope_type: str = SCOPE_TYPE_GLOBAL,
-        scope_id: str = SCOPE_ID_GLOBAL,
+        scope_type: str | None = SCOPE_TYPE_GLOBAL,
+        scope_id: str | None = SCOPE_ID_GLOBAL,
         limit: int = 20,
     ) -> list[MemoryCandidate]:
         """List consolidation candidates (audit ledger)."""

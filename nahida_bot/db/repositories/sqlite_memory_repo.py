@@ -416,11 +416,20 @@ class SQLiteMemoryRepository:
         self,
         fts_query: str,
         *,
-        scope_type: str,
-        scope_id: str,
+        scope_type: str | None,
+        scope_id: str | None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search durable memory items via FTS5 BM25 ranking."""
+        """Search durable items, optionally filtering scope type and/or id."""
+        filters = ["memory_item_fts MATCH ?", "mi.status = 'active'"]
+        params: list[Any] = [fts_query]
+        if scope_type is not None:
+            filters.append("mi.scope_type = ?")
+            params.append(scope_type)
+        if scope_id is not None:
+            filters.append("mi.scope_id = ?")
+            params.append(scope_id)
+        params.append(limit)
         rows = await self._engine.fetch_all(
             "SELECT mi.item_id, mi.scope_type, mi.scope_id, mi.kind, mi.title, "
             "mi.content, mi.status, mi.confidence, mi.importance, mi.sensitivity, "
@@ -428,32 +437,38 @@ class SQLiteMemoryRepository:
             "mi.updated_at, bm25(memory_item_fts) AS score "
             "FROM memory_item_fts "
             "JOIN memory_items mi ON mi.item_id = memory_item_fts.item_id "
-            "WHERE memory_item_fts MATCH ? "
-            "AND mi.status = 'active' "
-            "AND mi.scope_type = ? "
-            "AND mi.scope_id = ? "
+            f"WHERE {' AND '.join(filters)} "
             "ORDER BY score ASC, mi.importance DESC, mi.updated_at DESC "
             "LIMIT ?",
-            (fts_query, scope_type, scope_id, limit),
+            tuple(params),
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 
     async def list_memory_items(
         self,
         *,
-        scope_type: str,
-        scope_id: str,
+        scope_type: str | None,
+        scope_id: str | None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """List recent active durable memory items for a scope."""
+        """List active durable items, optionally filtering type and/or id."""
+        filters = ["status = 'active'"]
+        params: list[Any] = []
+        if scope_type is not None:
+            filters.append("scope_type = ?")
+            params.append(scope_type)
+        if scope_id is not None:
+            filters.append("scope_id = ?")
+            params.append(scope_id)
+        params.append(limit)
         rows = await self._engine.fetch_all(
             "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
             "confidence, importance, sensitivity, sensitivity_source, source, evidence_json, "
             "metadata_json, created_at, updated_at, 0.0 AS score "
             "FROM memory_items "
-            "WHERE status = 'active' AND scope_type = ? AND scope_id = ? "
+            f"WHERE {' AND '.join(filters)} "
             "ORDER BY importance DESC, updated_at DESC LIMIT ?",
-            (scope_type, scope_id, limit),
+            tuple(params),
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 
@@ -729,23 +744,29 @@ class SQLiteMemoryRepository:
         self,
         *,
         status: str | None = None,
-        scope_type: str = "global",
-        scope_id: str = "__global__",
+        scope_type: str | None = "global",
+        scope_id: str | None = "__global__",
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """List consolidation candidates."""
-        params: list[Any] = [scope_type, scope_id]
-        status_filter = ""
+        """List candidates, optionally filtering scope type and/or id."""
+        filters: list[str] = []
+        params: list[Any] = []
+        if scope_type is not None:
+            filters.append("scope_type = ?")
+            params.append(scope_type)
+        if scope_id is not None:
+            filters.append("scope_id = ?")
+            params.append(scope_id)
         if status:
-            status_filter = "AND status = ? "
+            filters.append("status = ?")
             params.append(status)
         params.append(limit)
+        where_sql = f"WHERE {' AND '.join(filters)} " if filters else ""
         rows = await self._engine.fetch_all(
             "SELECT candidate_id, scope_type, scope_id, kind, title, content, "
             "status, confidence, evidence_json, metadata_json, created_at, "
             "updated_at FROM memory_candidates "
-            "WHERE scope_type = ? AND scope_id = ? "
-            f"{status_filter}"
+            f"{where_sql}"
             "ORDER BY updated_at DESC LIMIT ?",
             tuple(params),
         )

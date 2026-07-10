@@ -185,8 +185,8 @@ export function useMemoryItems(
     queryFn: () => {
       const p = new URLSearchParams();
       if (params.value.q) p.set("q", params.value.q);
-      p.set("scope_type", params.value.scope_type || "global");
-      p.set("scope_id", params.value.scope_id || "__global__");
+      p.set("scope_type", params.value.scope_type);
+      p.set("scope_id", params.value.scope_id);
       p.set("limit", String(params.value.limit || 100));
       return api.get(`/memory/items?${p}`);
     },
@@ -206,8 +206,8 @@ export function useMemoryCandidates(
     queryFn: () => {
       const p = new URLSearchParams();
       if (params.value.status) p.set("status", params.value.status);
-      p.set("scope_type", params.value.scope_type || "global");
-      p.set("scope_id", params.value.scope_id || "__global__");
+      p.set("scope_type", params.value.scope_type);
+      p.set("scope_id", params.value.scope_id);
       p.set("limit", String(params.value.limit || 50));
       return api.get(`/memory/candidates?${p}`);
     },

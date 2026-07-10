@@ -355,11 +355,11 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         query: str = "",
         *,
-        scope_type: str = SCOPE_TYPE_GLOBAL,
-        scope_id: str = SCOPE_ID_GLOBAL,
+        scope_type: str | None = SCOPE_TYPE_GLOBAL,
+        scope_id: str | None = SCOPE_ID_GLOBAL,
         limit: int = 10,
     ) -> list[MemoryItem]:
-        """Search durable memory items using FTS5 BM25 over pre-tokenized text."""
+        """Search durable items, optionally filtering scope type and/or id."""
         fts_query = build_fts_query(query)
         if fts_query:
             rows = await self._repo.search_memory_items(
@@ -454,8 +454,8 @@ class SQLiteMemoryStore(MemoryStore):
         self,
         *,
         status: str | None = None,
-        scope_type: str = SCOPE_TYPE_GLOBAL,
-        scope_id: str = SCOPE_ID_GLOBAL,
+        scope_type: str | None = SCOPE_TYPE_GLOBAL,
+        scope_id: str | None = SCOPE_ID_GLOBAL,
         limit: int = 20,
     ) -> list[MemoryCandidate]:
         """List memory consolidation candidates."""

@@ -33,8 +33,8 @@ import { formatDateTime, relativeTime } from "@/lib/utils";
 type MemoryTab = "items" | "candidates" | "turns";
 
 const activeTab = ref<MemoryTab>("items");
-const scopeType = ref("global");
-const scopeId = ref("__global__");
+const scopeType = ref("");
+const scopeId = ref("");
 const itemSearch = ref("");
 const candidateStatus = ref("");
 
@@ -45,15 +45,15 @@ const turnRole = ref("");
 
 const itemParams = computed(() => ({
   q: itemSearch.value.trim(),
-  scope_type: scopeType.value.trim() || "global",
-  scope_id: scopeId.value.trim() || "__global__",
+  scope_type: scopeType.value.trim(),
+  scope_id: scopeId.value.trim(),
   limit: 150,
 }));
 
 const candidateParams = computed(() => ({
   status: candidateStatus.value,
-  scope_type: scopeType.value.trim() || "global",
-  scope_id: scopeId.value.trim() || "__global__",
+  scope_type: scopeType.value.trim(),
+  scope_id: scopeId.value.trim(),
   limit: 100,
 }));
 
@@ -121,8 +121,11 @@ const newProject = ref(false);
 const showArchiveDialog = ref(false);
 const archiveTarget = ref<MemoryItem | null>(null);
 
+const hasExactScope = computed(
+  () => !!scopeType.value.trim() && !!scopeId.value.trim(),
+);
 const createDisabled = computed(
-  () => !newContent.value.trim() || !scopeType.value.trim() || !scopeId.value.trim(),
+  () => !newContent.value.trim() || !hasExactScope.value,
 );
 
 function openCreate() {
@@ -142,8 +145,8 @@ async function doCreate() {
     title: newTitle.value.trim(),
     content: newContent.value.trim(),
     kind: newKind.value,
-    scope_type: scopeType.value.trim() || "global",
-    scope_id: scopeId.value.trim() || "__global__",
+    scope_type: scopeType.value.trim(),
+    scope_id: scopeId.value.trim(),
     sensitivity: newSensitivity.value,
     confidence: newConfidence.value,
     importance: newImportance.value,
@@ -178,9 +181,10 @@ async function doArchive() {
 }
 
 function projectCurrentScope() {
+  if (!hasExactScope.value) return;
   projectMut.mutate({
-    scope_type: scopeType.value.trim() || "global",
-    scope_id: scopeId.value.trim() || "__global__",
+    scope_type: scopeType.value.trim(),
+    scope_id: scopeId.value.trim(),
   });
 }
 
@@ -250,10 +254,21 @@ function formatJson(value: Record<string, unknown>) {
         </div>
       </div>
       <div class="header-actions">
-        <Button size="sm" variant="outline" :disabled="projectMut.isPending.value" @click="projectCurrentScope()">
+        <Button
+          size="sm"
+          variant="outline"
+          title="Select an exact scope type and ID before projecting"
+          :disabled="projectMut.isPending.value || !hasExactScope"
+          @click="projectCurrentScope()"
+        >
           <RefreshCw :size="15" /> Project
         </Button>
-        <Button size="sm" @click="openCreate()">
+        <Button
+          size="sm"
+          title="Select an exact scope type and ID before creating an item"
+          :disabled="!hasExactScope"
+          @click="openCreate()"
+        >
           <Plus :size="15" /> New
         </Button>
       </div>
@@ -274,12 +289,13 @@ function formatJson(value: Record<string, unknown>) {
 
       <div class="scope-controls">
         <select v-model="scopeType" class="select-control">
+          <option value="">all types</option>
           <option value="global">global</option>
           <option value="chat">chat</option>
           <option value="account">account</option>
           <option value="person">person</option>
         </select>
-        <Input v-model="scopeId" placeholder="scope id" />
+        <Input v-model="scopeId" placeholder="all scope ids" />
       </div>
     </div>
 
@@ -338,6 +354,7 @@ function formatJson(value: Record<string, unknown>) {
             </div>
             <div class="item-row-meta">
               <Badge variant="outline">{{ item.kind }}</Badge>
+              <code>{{ scopeLabel(item) }}</code>
               <span>{{ percent(item.importance) }} importance</span>
               <span :title="formatDateTime(itemTime(item))">{{ relativeTime(itemTime(item)) }}</span>
             </div>
