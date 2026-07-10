@@ -251,8 +251,21 @@ class MockBotAPI:
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
-    ) -> None:
-        pass
+    ) -> str | None:
+        return None
+
+    async def memory_update(
+        self,
+        item_id: str,
+        content: str,
+        *,
+        key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str | None:
+        return None
+
+    async def memory_archive(self, item_id: str) -> bool:
+        return False
 
     # ── Plugin Data Store ─────────────────────────────
 
@@ -865,8 +878,21 @@ class ConsoleMockBotAPI:
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
-    ) -> None:
-        pass
+    ) -> str | None:
+        return None
+
+    async def memory_update(
+        self,
+        item_id: str,
+        content: str,
+        *,
+        key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str | None:
+        return None
+
+    async def memory_archive(self, item_id: str) -> bool:
+        return False
 
     # ── Plugin Data Store ─────────────────────────────
 

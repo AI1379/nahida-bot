@@ -108,8 +108,10 @@ workspace context would help, or when you need to check remembered preferences.
 
 ## Available Tools
 
-- `memory_read(query?, days?, max_length?)` reads `MEMORY.md` and recent daily notes.
-- `memory_write(content, target?, section?)` appends a concise memory note.
+- `memory_read(query?, days?, max_length?)` searches structured durable memory and compatible workspace notes.
+- `memory_write(content, title?, kind?, audience?, sensitivity?)` creates a structured memory item.
+- `memory_update(item_id, content, ...)` replaces an outdated visible item and archives the old version.
+- `memory_archive(item_id, reason)` archives an obsolete, wrong, or duplicate visible item.
 
 ## Rules
 
@@ -117,6 +119,11 @@ workspace context would help, or when you need to check remembered preferences.
 - Current user instructions and current files take precedence.
 - Only write stable preferences, decisions, project facts, task outcomes, or
   explicit user requests to remember something.
+- If there is no stable durable information, do not write a memory.
+- Default audience to `current`; use `global` only for public knowledge that
+  intentionally applies across every chat and user. Summaries are never global.
+- Read an item before updating or archiving it. Prefer update over creating a
+  contradictory duplicate.
 - Do not write secrets, tokens, cookies, private keys, temporary URLs, base64,
   or raw event dumps.
 """,

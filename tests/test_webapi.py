@@ -675,6 +675,23 @@ async def test_memory_items_route_supports_independent_scope_wildcards(
         await engine.close()
 
 
+async def test_memory_items_route_rejects_restricted_global_memory(
+    client_no_auth: AsyncClient,
+) -> None:
+    response = await client_no_auth.post(
+        "/api/memory/items",
+        json={
+            "content": "A private value must not enter shared recall.",
+            "scope_type": "global",
+            "scope_id": "__global__",
+            "sensitivity": "private",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "global memory must be public" in response.text
+
+
 async def test_memory_candidates_and_turns_routes(
     client_no_auth: AsyncClient,
 ) -> None:

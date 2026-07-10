@@ -114,7 +114,7 @@ class _MemoryStore:
                 scope_id=scope_id,
                 kind="decision",
                 source="consolidation",
-                sensitivity="private",
+                sensitivity="public",
                 evidence={},
                 metadata={},
             )

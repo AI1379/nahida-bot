@@ -17,6 +17,7 @@ from nahida_bot.agent.memory.consolidation import (
     classify_sensitivity,
 )
 from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
+from nahida_bot.agent.memory.service import MemoryService
 from nahida_bot.agent.retrieval.adapters import MemoryStoreRetrievalAdapter
 from nahida_bot.agent.retrieval.models import RetrievalRequest, RetrievalScope
 from nahida_bot.db.engine import DatabaseEngine
@@ -146,16 +147,20 @@ async def test_consolidation_tags_secret_signal_that_passes_validation(
     store: SQLiteMemoryStore,
 ) -> None:
     """A secret signal not in _SECRET_MARKERS (e.g. Chinese 密钥) passes the
-    safety filter and is tagged ``secret_like`` by the real pipeline."""
-    consolidator = MemoryConsolidator(store)
+    safety filter and is tagged ``secret_like`` inside a typed chat scope."""
+    consolidator = MemoryConsolidator(
+        store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10001",
+    )
     applied = await consolidator.consolidate_turn(
-        session_id="test-session",
+        session_id="milky:private:10001",
         user_message="记住: 这是数据库的密钥 千万别丢",
         assistant_message="",
     )
     assert applied >= 1
     items = await store.search_items(
-        "", scope_type="global", scope_id="__global__", limit=10
+        "", scope_type="chat", scope_id="milky:private:10001", limit=10
     )
     assert any(item.sensitivity == "secret_like" for item in items)
 
@@ -219,6 +224,38 @@ async def test_soft_scope_off_excludes_cross_scope_items(
     results = await adapter.retrieve(_chat_a_request())
     assert results == []
     assert titles["public"] not in {r.title for r in results}
+
+
+@pytest.mark.asyncio
+async def test_global_fallback_excludes_restricted_items(
+    store: SQLiteMemoryStore,
+) -> None:
+    await store.append_item(
+        content="public global pineapples guidance",
+        title="public global",
+        kind="procedure",
+        sensitivity="public",
+    )
+    await store.append_item(
+        content="private global pineapples legacy row",
+        title="private global",
+        kind="procedure",
+        sensitivity="private",
+        sensitivity_source="dream",
+    )
+
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store, soft_scope=False)
+    adapter_results = await adapter.retrieve(_chat_a_request())
+    assert {item.title for item in adapter_results} == {"public global"}
+
+    service = MemoryService(store)
+    service_results = await service.search_items_cascade(
+        "pineapples",
+        ctx=None,
+        session_id="milky:private:chatA",
+        limit=10,
+    )
+    assert {item.title for item in service_results} == {"public global"}
 
 
 @pytest.mark.asyncio

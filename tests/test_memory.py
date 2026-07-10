@@ -658,7 +658,33 @@ def test_parse_memory_dream_accepts_fenced_json() -> None:
 
     assert dream.additions[0].kind == "preference"
     assert dream.additions[0].content == "用户偏好用中文讨论技术实现。"
+    assert dream.additions[0].audience == "current"
     assert dream.archives[0].item_id == "mem_old"
+
+
+def test_parse_memory_dream_normalizes_audience_and_keeps_summary_current() -> None:
+    dream = parse_memory_dream(
+        """{
+          "add": [
+            {
+              "kind": "decision",
+              "audience": "global",
+              "title": "bot-wide rule",
+              "content": "This public rule applies to every chat."
+            },
+            {
+              "kind": "summary",
+              "audience": "global",
+              "title": "chat recap",
+              "content": "This is only a current-chat summary."
+            }
+          ],
+          "archive": []
+        }"""
+    )
+
+    assert dream.additions[0].audience == "global"
+    assert dream.additions[1].audience == "current"
 
 
 def test_dream_system_prompt_uses_app_name_without_language_hardcoding() -> None:
@@ -778,6 +804,98 @@ async def test_memory_service_search_cascade_dedups_and_cascades(
     assert items and items[0].content == "user prefers Chinese"
     # Repeated scope entries in the cascade do not duplicate results.
     assert len({item.item_id for item in items}) == len(items)
+
+
+@pytest.mark.asyncio
+async def test_memory_service_updates_and_archives_only_visible_items(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    session_id = "milky:private:10001"
+    old_id = await memory_store.append_item(
+        title="old preference",
+        content="User prefers verbose answers.",
+        kind="preference",
+        scope_type="chat",
+        scope_id=session_id,
+    )
+    foreign_id = await memory_store.append_item(
+        title="foreign",
+        content="Another chat's private fact.",
+        kind="fact",
+        scope_type="chat",
+        scope_id="milky:private:20002",
+    )
+    service = MemoryService(memory_store)
+
+    replacement_id = await service.update_item_for_context(
+        old_id,
+        "User prefers concise answers.",
+        key="answer preference",
+        ctx=None,
+        session_id=session_id,
+        metadata={"kind": "preference"},
+    )
+
+    assert replacement_id is not None
+    assert await memory_store.get_items_by_ids([old_id]) == []
+    replacements = await memory_store.get_items_by_ids([replacement_id])
+    assert replacements[0].scope_type == "chat"
+    assert replacements[0].scope_id == session_id
+    assert replacements[0].metadata["replaces_item_id"] == old_id
+    assert not await service.archive_item_for_context(
+        foreign_id, ctx=None, session_id=session_id
+    )
+    assert await service.archive_item_for_context(
+        replacement_id, ctx=None, session_id=session_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_service_requires_explicit_public_global_audience(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    session_id = "milky:private:10001"
+    service = MemoryService(memory_store)
+
+    local_decision_id = await service.store_item(
+        "local decision",
+        "This decision belongs to the current project chat.",
+        session_id=session_id,
+        metadata={"kind": "decision"},
+    )
+    global_decision_id = await service.store_item(
+        "bot-wide decision",
+        "This public decision intentionally applies across every chat.",
+        session_id=session_id,
+        metadata={"kind": "decision", "audience": "global"},
+    )
+    local_summary_id = await service.store_item(
+        "chat summary",
+        "This summary remains local even if global was requested.",
+        session_id=session_id,
+        metadata={"kind": "summary", "audience": "global"},
+    )
+    private_id = await service.store_item(
+        "private fact",
+        "This private fact must remain in the current scope.",
+        session_id=session_id,
+        metadata={
+            "kind": "fact",
+            "audience": "global",
+            "sensitivity": "private",
+        },
+    )
+
+    by_id = {
+        item.item_id: item
+        for item in await memory_store.get_items_by_ids(
+            [local_decision_id, global_decision_id, local_summary_id, private_id]
+        )
+    }
+    assert by_id[local_decision_id].scope_type == "chat"
+    assert by_id[global_decision_id].scope_type == "global"
+    assert by_id[local_summary_id].scope_type == "chat"
+    assert by_id[private_id].scope_type == "chat"
 
 
 @pytest.mark.asyncio

@@ -157,6 +157,21 @@ class StructuredMemoryStore(Protocol):
         """Archive (soft-delete) a durable memory item."""
         ...
 
+    async def get_items_by_ids(self, item_ids: list[str]) -> list[MemoryItem]:
+        """Return active durable items by id in input order."""
+        ...
+
+    async def search_items_public(
+        self,
+        query: str = "",
+        *,
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+        limit: int = 10,
+    ) -> list[MemoryItem]:
+        """Search active public items within one exact scope."""
+        ...
+
     async def search_items_public_all_scopes(
         self,
         query: str = "",
@@ -205,3 +220,25 @@ class StructuredMemoryStore(Protocol):
     ) -> list[MemoryCandidate]:
         """List consolidation candidates (audit ledger)."""
         ...
+
+
+def resolve_public_search(store: Any, *, public_only: bool = False) -> Any | None:
+    """Return the best available ``(query, *, scope_type, scope_id, limit)``
+    search callable for a store.
+
+    When *public_only* is true the function prefers the store's
+    ``search_items_public`` so the sensitivity predicate can be pushed to the
+    SQL/index layer.  It falls back to plain ``search_items`` when the store
+    has not yet implemented the public variant; the caller is then expected to
+    post-filter by ``sensitivity == "public"`` itself.
+
+    Returns ``None`` when no search method is available at all.
+    """
+    if public_only:
+        candidate = getattr(store, "search_items_public", None)
+        if callable(candidate):
+            return candidate
+    search = getattr(store, "search_items", None)
+    if callable(search):
+        return search
+    return None

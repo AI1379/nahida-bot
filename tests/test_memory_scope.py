@@ -80,9 +80,9 @@ class TestScopeForKind:
         for kind in ("preference", "fact", "task"):
             assert scope_for_kind(kind) == "chat"
 
-    def test_shared_kinds_are_global_scoped(self) -> None:
+    def test_contextual_kinds_default_to_chat_scope(self) -> None:
         for kind in ("decision", "procedure", "warning", "summary"):
-            assert scope_for_kind(kind) == "global"
+            assert scope_for_kind(kind) == "chat"
 
 
 # ---------------------------------------------------------------------------
@@ -146,8 +146,10 @@ async def test_consolidator_writes_preference_to_chat_scope(memory_store: Any) -
 
 
 @pytest.mark.asyncio
-async def test_consolidator_per_kind_keeps_decisions_global(memory_store: Any) -> None:
-    """Within a chat session, shared kinds still land in global scope."""
+async def test_consolidator_keeps_decisions_in_current_chat_by_default(
+    memory_store: Any,
+) -> None:
+    """Content kind alone must not promote a chat decision to global."""
     consolidator = MemoryConsolidator(
         memory_store,
         default_scope_type="chat",
@@ -158,10 +160,14 @@ async def test_consolidator_per_kind_keeps_decisions_global(memory_store: Any) -
         user_message="项目决定使用 Python 作为主语言",
     )
 
+    chat_hits = await memory_store.search_items(
+        "Python", scope_type="chat", scope_id="milky:private:10001", limit=10
+    )
+    assert any("Python" in h.content and h.kind == "decision" for h in chat_hits)
     global_hits = await memory_store.search_items(
         "Python", scope_type="global", scope_id="__global__", limit=10
     )
-    assert any("Python" in h.content and h.kind == "decision" for h in global_hits)
+    assert not any(h.kind == "decision" for h in global_hits)
 
 
 @pytest.mark.asyncio
@@ -272,10 +278,10 @@ async def test_consolidator_writes_personal_to_account_scope_when_unlinked(
 
 
 @pytest.mark.asyncio
-async def test_consolidator_global_kind_stays_global_when_linked(
+async def test_consolidator_contextual_kind_uses_chat_when_linked(
     memory_store: Any,
 ) -> None:
-    """A linked sender's shared decision still lands in global scope."""
+    """A linked sender's contextual decision belongs to the current chat."""
     consolidator = MemoryConsolidator(
         memory_store,
         default_scope_type="chat",
@@ -287,10 +293,14 @@ async def test_consolidator_global_kind_stays_global_when_linked(
         person_id="owner",
     )
 
+    chat_hits = await memory_store.search_items(
+        "Python", scope_type="chat", scope_id="milky:private:10001", limit=10
+    )
+    assert any("Python" in h.content and h.kind == "decision" for h in chat_hits)
     global_hits = await memory_store.search_items(
         "Python", scope_type="global", scope_id="__global__", limit=10
     )
-    assert any("Python" in h.content and h.kind == "decision" for h in global_hits)
+    assert not any(h.kind == "decision" for h in global_hits)
     person_hits = await memory_store.search_items(
         "Python", scope_type="person", scope_id="owner", limit=10
     )
@@ -424,6 +434,83 @@ class _FakeDreamProvider:
     ) -> ProviderResponse:
         self.model = model
         return ProviderResponse(content=self.content)
+
+
+@pytest.mark.asyncio
+async def test_dreaming_requires_explicit_audience_for_global_scope(
+    memory_store: Any,
+) -> None:
+    provider = _FakeDreamProvider(
+        """{
+          "add": [
+            {
+              "kind": "decision",
+              "audience": "global",
+              "title": "bot-wide decision",
+              "content": "All chats use the same public safety rule."
+            },
+            {
+              "kind": "summary",
+              "audience": "global",
+              "title": "current recap",
+              "content": "This recap belongs only to the current chat."
+            }
+          ],
+          "archive": []
+        }"""
+    )
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id="milky:private:10001",
+    )
+
+    await consolidator.consolidate_turn(
+        session_id="milky:private:10001",
+        user_message="unused",
+        dream_provider=provider,
+        run_rules=False,
+    )
+
+    global_hits = await memory_store.search_items(
+        "safety", scope_type="global", scope_id="__global__", limit=10
+    )
+    chat_hits = await memory_store.search_items(
+        "recap", scope_type="chat", scope_id="milky:private:10001", limit=10
+    )
+    assert any(item.kind == "decision" for item in global_hits)
+    assert any(item.kind == "summary" for item in chat_hits)
+
+
+@pytest.mark.asyncio
+async def test_dreaming_never_writes_restricted_memory_to_legacy_global_scope(
+    memory_store: Any,
+) -> None:
+    provider = _FakeDreamProvider(
+        """{
+          "add": [{
+            "kind": "decision",
+            "audience": "global",
+            "title": "private note",
+            "content": "This is private and only belongs to the current conversation."
+          }],
+          "archive": []
+        }"""
+    )
+    consolidator = MemoryConsolidator(memory_store)
+
+    applied = await consolidator.consolidate_turn(
+        session_id="legacy-session",
+        user_message="unused",
+        dream_provider=provider,
+        run_rules=False,
+    )
+
+    assert applied == 0
+    global_hits = await memory_store.search_items(
+        "private", scope_type="global", scope_id="__global__", limit=10
+    )
+    assert global_hits == []
 
 
 @pytest.mark.asyncio

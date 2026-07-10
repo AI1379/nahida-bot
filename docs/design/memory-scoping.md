@@ -1,7 +1,9 @@
 # 记忆作用域隔离设计
 
 > 记录时间：2026-05-24
-> 状态：应用层 chat/global 隔离已实现；生产存量 global 数据需要先审计再迁移
+> 状态：应用层隔离已实现；2026-07-10 起，kind 与 audience 解耦，新增记忆默认归当前
+> person/account/chat，只有显式 `audience=global` 的公共 bot-wide decision/procedure/warning
+> 才能进入 global；summary 永不写 global。生产存量 global 数据留待单独审计整理。
 > 相关文档：
 >
 > - [memory-system.md](memory-system.md#9-配置建议) — 记忆系统总体设计，§9.0 审计中标注了 scope 缺口
@@ -46,17 +48,14 @@
 | `global` | `__global__` | 共享知识：通用决策、操作规范、项目约定 |
 | `chat` | `{chat_key}` (如 `milky:private:10001`) | 用户/聊天私有记忆：偏好、个人事实 |
 
-### 3.2 Scope 与 kind 的对应关系
+### 3.2 Scope、kind 与 audience 的对应关系
 
-| kind | 默认 scope | 理由 |
-|------|-----------|------|
-| `preference` | `chat` | 用户个人偏好 |
-| `fact` | `chat` | 用户个人事实 |
-| `task` | `chat` | 用户待办任务 |
-| `decision` | `global` | 项目/系统级决策 |
-| `procedure` | `global` | 操作规范 |
-| `warning` | `global` | 通用警告 |
-| `summary` | `global` | 摘要 |
+`kind` 只描述内容形态，不再决定可见范围。所有 kind 默认 `audience=current`：个人 kind
+优先写 person/account，其他内容写当前 chat。只有模型或工具明确选择 `audience=global`，且内容
+是 public 的 decision/procedure/warning 时才提升到 global；summary 始终留在当前 scope。
+
+这取代了旧版“decision/procedure/warning/summary 自动 global”的规则，避免把当前项目状态、
+个人决定、cron 操作和会话摘要误当成 bot-wide 知识。
 
 ### 3.3 搜索策略（Scope Cascade）
 

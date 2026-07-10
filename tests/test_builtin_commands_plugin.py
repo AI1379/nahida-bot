@@ -63,6 +63,8 @@ class _FakeAPI:
         self.command_registry = CommandRegistry()
         self.scheduler_service: Any | None = None
         self.stored_memories: list[tuple[str, str, dict[str, Any] | None]] = []
+        self.updated_memories: list[tuple[str, str, str, dict[str, Any] | None]] = []
+        self.archived_memories: list[str] = []
         self.workspace_root = Path("fake-workspace")
         self.sent_messages: list[tuple[str, OutboundMessage, str]] = []
         self.recorded_events: list[tuple[str, str, str, dict[str, Any] | None]] = []
@@ -147,8 +149,24 @@ class _FakeAPI:
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
-    ) -> None:
+    ) -> str:
         self.stored_memories.append((key, content, metadata))
+        return f"mem_stored_{len(self.stored_memories)}"
+
+    async def memory_update(
+        self,
+        item_id: str,
+        content: str,
+        *,
+        key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        self.updated_memories.append((item_id, content, key, metadata))
+        return f"mem_updated_{len(self.updated_memories)}"
+
+    async def memory_archive(self, item_id: str) -> bool:
+        self.archived_memories.append(item_id)
+        return True
 
     async def publish_event(self, event: Any) -> None:
         pass
@@ -237,6 +255,8 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "send_local_attachment",
         "memory_read",
         "memory_write",
+        "memory_update",
+        "memory_archive",
         "cron_create",
         "cron_update",
         "cron_list",
@@ -566,25 +586,28 @@ async def test_send_local_attachment_enforces_external_root_allowlist(
 
 
 @pytest.mark.asyncio
-async def test_memory_tools_read_and_write_markdown_memory() -> None:
+async def test_memory_tools_use_structured_store() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
     result = await plugin._tool_memory_write(
         "User prefers Chinese architecture discussions.",
-        target="both",
-        section="Preferences",
+        title="Language preference",
+        kind="preference",
     )
 
-    assert "MEMORY.md" in result
-    daily_paths = [path for path in api.files if path.startswith("memory/")]
-    assert len(daily_paths) == 1
-    assert "User prefers Chinese" in api.files["MEMORY.md"]
-    assert "User prefers Chinese" in api.files[daily_paths[0]]
+    assert "mem_stored_1" in result
+    assert api.files == {}
+    key, content, metadata = api.stored_memories[-1]
+    assert key == "Language preference"
+    assert content == "User prefers Chinese architecture discussions."
+    assert metadata is not None
+    assert metadata["kind"] == "preference"
+    assert metadata["audience"] == "current"
 
-    read_result = await plugin._tool_memory_read(query="Chinese", days=1)
-    assert "MEMORY.md" in read_result
-    assert "User prefers Chinese" in read_result
+    read_result = await plugin._tool_memory_read(query="nahida", days=1)
+    assert "Memory results:" in read_result
+    assert "mem_1" in read_result
 
 
 @pytest.mark.asyncio
@@ -610,8 +633,7 @@ async def test_memory_write_private_skips_markdown_and_persists_structured() -> 
 
     result = await plugin._tool_memory_write(
         "this stays between us",
-        target="both",
-        section="Private",
+        title="Private",
         sensitivity="private",
     )
 
@@ -622,7 +644,27 @@ async def test_memory_write_private_skips_markdown_and_persists_structured() -> 
     _key, content, metadata = api.stored_memories[-1]
     assert content == "this stays between us"
     assert metadata is not None and metadata.get("sensitivity") == "private"
-    assert "protected" in result.lower() or "sensitivity" in result.lower()
+    assert "mem_stored_1" in result
+
+
+@pytest.mark.asyncio
+async def test_memory_update_and_archive_tools_use_item_ids() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    updated = await plugin._tool_memory_update(
+        "mem_1",
+        "Corrected durable content.",
+        title="Corrected",
+        kind="fact",
+    )
+    archived = await plugin._tool_memory_archive("mem_2", "duplicate")
+
+    assert "mem_updated_1" in updated
+    assert api.updated_memories[0][0] == "mem_1"
+    assert api.updated_memories[0][2] == "Corrected"
+    assert archived == "Memory archived: mem_2"
+    assert api.archived_memories == ["mem_2"]
 
 
 @pytest.mark.asyncio

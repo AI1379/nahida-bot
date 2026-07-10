@@ -29,9 +29,13 @@ capabilities:
     - name: send_local_attachment
       description: Send a workspace file to the current chat as an attachment
     - name: memory_read
-      description: Read workspace Markdown memory
+      description: Search structured durable memory and compatible workspace notes
     - name: memory_write
-      description: Append workspace Markdown memory
+      description: Create a structured durable memory item
+    - name: memory_update
+      description: Replace a visible structured memory item
+    - name: memory_archive
+      description: Archive a visible obsolete or incorrect memory item
     - name: exec
       description: Execute a shell command and return stdout/stderr
     - name: web_fetch

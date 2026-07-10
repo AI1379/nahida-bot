@@ -471,8 +471,23 @@ class BotAPI(Protocol):
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
-    ) -> None:
-        """Persist a record to the memory store."""
+    ) -> str | None:
+        """Persist a record to the memory store and return its item id."""
+        ...
+
+    async def memory_update(
+        self,
+        item_id: str,
+        content: str,
+        *,
+        key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Replace a visible memory item and return the replacement id."""
+        ...
+
+    async def memory_archive(self, item_id: str) -> bool:
+        """Archive a visible memory item."""
         ...
 
     async def search_chat_history(

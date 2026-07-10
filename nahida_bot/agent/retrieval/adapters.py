@@ -10,6 +10,7 @@ from nahida_bot.agent.memory.scope import (
     SCOPE_TYPE_CHAT,
     SCOPE_TYPE_GLOBAL,
 )
+from nahida_bot.agent.memory.store import resolve_public_search
 from nahida_bot.agent.retrieval.models import (
     RetrievalMode,
     RetrievalProvenance,
@@ -376,16 +377,27 @@ class MemoryStoreRetrievalAdapter:
                 vector_index=self._vector_index,
             )
         else:
-            search_items = getattr(self._memory_store, "search_items", None)
-            if not callable(search_items):
+            search_items = resolve_public_search(
+                self._memory_store,
+                public_only=scope.scope_type == SCOPE_TYPE_GLOBAL,
+            )
+            if search_items is None:
                 return []
-            search_items = cast(Any, search_items)
             items = await search_items(
                 query,
                 scope_type=scope.scope_type,
                 scope_id=scope.scope_id,
                 limit=limit,
             )
+        if scope.scope_type == SCOPE_TYPE_GLOBAL:
+            # Vector/hybrid backends do not yet have a sensitivity predicate at
+            # the index layer. Fail closed after hydration so legacy restricted
+            # global rows can never enter an ordinary chat's global fallback.
+            items = [
+                item
+                for item in items
+                if str(getattr(item, "sensitivity", "public")) == "public"
+            ]
         return [_memory_item_to_retrieval(item, mode=mode) for item in list(items)]
 
 

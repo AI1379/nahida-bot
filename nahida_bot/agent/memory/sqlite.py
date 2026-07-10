@@ -380,6 +380,36 @@ class SQLiteMemoryStore(MemoryStore):
         """Archive a durable memory item."""
         return await self._repo.archive_memory_item(item_id)
 
+    async def get_items_by_ids(self, item_ids: list[str]) -> list[MemoryItem]:
+        """Return active durable items by id in input order."""
+        rows = await self._repo.get_memory_items_by_ids(item_ids)
+        return [_row_to_item(row) for row in rows]
+
+    async def search_items_public(
+        self,
+        query: str = "",
+        *,
+        scope_type: str = SCOPE_TYPE_GLOBAL,
+        scope_id: str = SCOPE_ID_GLOBAL,
+        limit: int = 10,
+    ) -> list[MemoryItem]:
+        """Search active public items within one exact scope."""
+        fts_query = build_fts_query(query)
+        if fts_query:
+            rows = await self._repo.search_memory_items_public_scoped(
+                fts_query,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=limit,
+            )
+        else:
+            rows = await self._repo.list_memory_items_public_scoped(
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=limit,
+            )
+        return [_row_to_item(row) for row in rows]
+
     async def list_public_items(
         self,
         *,

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from nahida_bot.agent.memory.scope import (
     CHAT_SCOPED_KINDS,
+    GLOBAL_SCOPED_KINDS,
     SCOPE_ID_GLOBAL,
     SCOPE_TYPE_ACCOUNT,
     SCOPE_TYPE_CHAT,
@@ -164,27 +165,37 @@ class MemoryWriteRequest:
 def resolve_memory_write_scope(
     req: MemoryWriteRequest,
     kind: str,
+    *,
+    global_scope: bool = False,
 ) -> tuple[str, str]:
     """Resolve ``(scope_type, scope_id)`` for a memory item of ``kind``.
 
-    - global-scoped kind (decision/procedure/warning/summary) → ``global``
-    - personal kind (preference/fact/task):
+    ``kind`` describes the content shape, not its audience. New writes are
+    therefore local by default. A caller may explicitly request ``global`` for
+    genuinely cross-chat public knowledge; summaries are never eligible for
+    that promotion because a conversation summary is inherently contextual.
+
+    - explicit global + eligible kind (decision/procedure/warning) → ``global``
+    - personal kind (preference/fact/task), current audience:
         ``person_id`` set              → ``person:{person_id}``
         else ``sender_account_key`` set → ``account:{account_key}``
-        else ``chat_scope_id`` set      → ``chat:{chat_scope_id}``   (V1)
-        else                            → ``global:__global__``      (V1 legacy)
+        else ``chat_scope_id`` set      → ``chat:{chat_scope_id}``
+    - contextual kind (decision/procedure/warning/summary), current audience:
+        ``chat_scope_id`` set           → ``chat:{chat_scope_id}``
+    - any kind without a typed current chat → legacy ``global`` fallback
 
     Personal memory thus follows the *sender*, not the chat address: an owner's
     preference lands in their ``person`` scope so it recalls across all their
     accounts (Phase 2 read cascade), and an unlinked group guest's facts land
     in ``account`` scope so they don't pollute the group's shared ``chat`` scope.
     """
-    if kind not in CHAT_SCOPED_KINDS:
+    if global_scope and kind in GLOBAL_SCOPED_KINDS and kind != "summary":
         return SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL
-    if req.person_id:
-        return SCOPE_TYPE_PERSON, req.person_id
-    if req.sender_account_key:
-        return SCOPE_TYPE_ACCOUNT, req.sender_account_key
+    if kind in CHAT_SCOPED_KINDS:
+        if req.person_id:
+            return SCOPE_TYPE_PERSON, req.person_id
+        if req.sender_account_key:
+            return SCOPE_TYPE_ACCOUNT, req.sender_account_key
     if req.chat_scope_id:
         return SCOPE_TYPE_CHAT, req.chat_scope_id
     return SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL

@@ -20,9 +20,6 @@ from nahida_bot.agent.memory.markdown import (
     MEMORY_FILE,
     MEMORY_SUMMARY_FILE,
     MAX_TOOL_READ_CHARS,
-    append_daily_memory,
-    append_long_term_memory,
-    daily_memory_path,
     filter_memory_text,
     recent_daily_memory_paths,
     validate_memory_content,
@@ -232,8 +229,10 @@ class BuiltinCommandsPlugin(Plugin):
     def _register_memory_tools(self) -> None:
         self.api.register_tool(
             "memory_read",
-            "Read workspace Markdown memory from MEMORY.md and recent daily notes. "
-            "Use this before relying on remembered facts that are not already in context.",
+            "Search structured durable memory visible to the current chat, plus compatible "
+            "workspace Markdown notes. Use this before relying on remembered facts that "
+            "are not already in context. Returned structured entries include item ids for "
+            "memory_update or memory_archive.",
             {
                 "type": "object",
                 "properties": {
@@ -257,8 +256,10 @@ class BuiltinCommandsPlugin(Plugin):
         )
         self.api.register_tool(
             "memory_write",
-            "Append a concise note to workspace Markdown memory. Use only for durable "
-            "preferences, decisions, project facts, or explicit user requests to remember.",
+            "Create one structured durable memory. Use only for stable preferences, facts, "
+            "tasks, decisions, procedures, warnings, or explicit requests to remember. "
+            "Audience defaults to the current identity/chat; global is exceptional and "
+            "must apply intentionally across every chat and user.",
             {
                 "type": "object",
                 "properties": {
@@ -266,29 +267,44 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "string",
                         "description": "Concise memory text to append.",
                     },
-                    "target": {
+                    "title": {
                         "type": "string",
-                        "enum": ["daily", "long_term", "both"],
-                        "description": "Where to write the memory. Default daily.",
+                        "description": "Short descriptive title.",
                     },
-                    "section": {
+                    "kind": {
                         "type": "string",
-                        "description": "Section title for long_term writes. Default Notes.",
+                        "enum": [
+                            "fact",
+                            "preference",
+                            "task",
+                            "decision",
+                            "procedure",
+                            "warning",
+                            "summary",
+                        ],
+                        "description": "Content type. Default fact.",
+                    },
+                    "audience": {
+                        "type": "string",
+                        "enum": ["current", "global"],
+                        "description": (
+                            "Visibility intent. Default current. Use global only for "
+                            "public bot-wide knowledge that applies across every chat. "
+                            "Summaries cannot be global."
+                        ),
                     },
                     "sensitivity": {
                         "type": "string",
                         "enum": ["public", "private", "secret_like"],
                         "description": (
                             "Sensitivity tag (Piece A4). Default public — soft, recallable "
-                            "across chats, written to the Markdown notebook. Use 'private' "
+                            "according to scope. Use 'private' "
                             "when the user asks to keep it between you ('别告诉别人'/'私下'), "
                             "or 'secret_like' for content that must NEVER leave this chat "
                             "(e.g. sensitive personal matters you promised to keep secret). "
                             "Raw credentials (passwords/api keys/tokens) are NEVER stored — "
                             "do not use this to save them. private/secret_like notes are "
-                            "stored ONLY in the protected durable store (never the "
-                            "auto-injected Markdown) so they won't surface in other chats; "
-                            "'target' is ignored for them."
+                            "stored only in the protected durable store."
                         ),
                     },
                 },
@@ -296,6 +312,57 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_memory_write,
+        )
+        self.api.register_tool(
+            "memory_update",
+            "Replace a visible structured memory item when its content is outdated or "
+            "incorrect. This creates a replacement with provenance and archives the old "
+            "item. Do not use it merely to rephrase an already-correct memory.",
+            {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "string"},
+                    "content": {"type": "string"},
+                    "title": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": [
+                            "fact",
+                            "preference",
+                            "task",
+                            "decision",
+                            "procedure",
+                            "warning",
+                            "summary",
+                        ],
+                    },
+                    "sensitivity": {
+                        "type": "string",
+                        "enum": ["public", "private", "secret_like"],
+                    },
+                },
+                "required": ["item_id", "content"],
+                "additionalProperties": False,
+            },
+            self._tool_memory_update,
+        )
+        self.api.register_tool(
+            "memory_archive",
+            "Archive a visible structured memory item only when it is obsolete, wrong, "
+            "duplicated, or explicitly revoked. Read the item first and pass its item id.",
+            {
+                "type": "object",
+                "properties": {
+                    "item_id": {"type": "string"},
+                    "reason": {
+                        "type": "string",
+                        "description": "Short reason for the archival decision.",
+                    },
+                },
+                "required": ["item_id", "reason"],
+                "additionalProperties": False,
+            },
+            self._tool_memory_archive,
         )
 
     # ── Cross-session history & chat lookup ────────────────
@@ -736,6 +803,7 @@ class BuiltinCommandsPlugin(Plugin):
         max_length: int = 10000,
     ) -> str:
         _logger.debug("tool.memory_read", query=query, days=days)
+        structured = await self.api.memory_search(query, limit=20)
         paths = [
             MEMORY_FILE,
             MEMORY_SUMMARY_FILE,
@@ -743,6 +811,8 @@ class BuiltinCommandsPlugin(Plugin):
         ]
         max_chars = min(max(max_length, 1), MAX_TOOL_READ_CHARS)
         blocks: list[str] = []
+        if structured:
+            blocks.append(self._format_memory_refs(structured))
         for path in paths:
             raw = await self._read_workspace_text_or_empty(path)
             filtered = filter_memory_text(raw, query).strip()
@@ -751,7 +821,7 @@ class BuiltinCommandsPlugin(Plugin):
             blocks.append(f"## {path}\n{filtered}")
 
         if not blocks:
-            return "No matching workspace memory found."
+            return "No matching durable memory found."
 
         result = "\n\n".join(blocks)
         if len(result) > max_chars:
@@ -761,61 +831,117 @@ class BuiltinCommandsPlugin(Plugin):
     async def _tool_memory_write(
         self,
         content: str,
-        target: str = "daily",
-        section: str = "Notes",
+        title: str = "",
+        kind: str = "fact",
+        audience: str = "current",
         sensitivity: str = "public",
     ) -> str:
         _logger.debug(
-            "tool.memory_write", target=target, section=section, sensitivity=sensitivity
+            "tool.memory_write",
+            kind=kind,
+            audience=audience,
+            sensitivity=sensitivity,
         )
         error = validate_memory_content(content)
         if error is not None:
             return error
-        if target not in {"daily", "long_term", "both"}:
-            return "Error: target must be one of: daily, long_term, both."
+        valid_kinds = {
+            "fact",
+            "preference",
+            "task",
+            "decision",
+            "procedure",
+            "warning",
+            "summary",
+        }
+        if kind not in valid_kinds:
+            return "Error: invalid memory kind."
+        if audience not in {"current", "global"}:
+            return "Error: audience must be current or global."
         if sensitivity not in {"public", "private", "secret_like"}:
             return "Error: sensitivity must be one of: public, private, secret_like."
+        if kind == "summary":
+            audience = "current"
+        if sensitivity != "public":
+            audience = "current"
+        try:
+            item_id = await self.api.memory_store(
+                title,
+                content,
+                metadata={
+                    "source": "memory_tool",
+                    "kind": kind,
+                    "audience": audience,
+                    "sensitivity": sensitivity,
+                },
+            )
+        except Exception as exc:
+            _logger.warning("tool.memory_write_failed", error=str(exc))
+            return "Error: failed to store durable memory."
+        return f"Memory stored: {item_id or '(id unavailable)'}"
 
-        # Sensitive content must NOT enter the auto-injected Markdown notebook:
-        # workspace Markdown (MEMORY.md / daily notes) is injected into context
-        # every turn with NO sensitivity filter (see ContextBuilder), so writing
-        # it there would leak the content into every chat. Route private/
-        # secret_like SOLELY to the structured durable store, whose retrieval is
-        # sensitivity-filtered. ``target`` is ignored for sensitive writes
-        # because the Markdown targets are exactly the leak surface. (Piece A4)
-        if sensitivity in {"private", "secret_like"}:
-            try:
-                await self.api.memory_store(
-                    section or "memory_write",
-                    content,
-                    metadata={"sensitivity": sensitivity, "kind": "fact"},
-                )
-            except Exception as exc:
-                _logger.warning(
-                    "tool.memory_write_sensitive_persist_failed", error=str(exc)
-                )
-                return "Error: failed to store sensitive memory."
+    async def _tool_memory_update(
+        self,
+        item_id: str,
+        content: str,
+        title: str = "",
+        kind: str = "",
+        sensitivity: str = "",
+    ) -> str:
+        error = validate_memory_content(content)
+        if error is not None:
+            return error
+        if kind and kind not in {
+            "fact",
+            "preference",
+            "task",
+            "decision",
+            "procedure",
+            "warning",
+            "summary",
+        }:
+            return "Error: invalid memory kind."
+        if sensitivity and sensitivity not in {
+            "public",
+            "private",
+            "secret_like",
+        }:
+            return "Error: invalid memory sensitivity."
+        metadata: dict[str, Any] = {"update_reason": "bot_memory_tool"}
+        if kind:
+            metadata["kind"] = kind
+        if sensitivity:
+            metadata["sensitivity"] = sensitivity
+        try:
+            replacement_id = await self.api.memory_update(
+                item_id,
+                content,
+                key=title,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            _logger.warning(
+                "tool.memory_update_failed", item_id=item_id, error=str(exc)
+            )
+            return "Error: failed to update durable memory."
+        if replacement_id is None:
             return (
-                f"Memory stored (sensitivity={sensitivity}): protected from "
-                "cross-chat recall."
+                "Error: memory item is missing, inaccessible, or could not be updated."
             )
+        return f"Memory updated: {item_id} -> {replacement_id}"
 
-        written: list[str] = []
-        if target in {"daily", "both"}:
-            path = daily_memory_path()
-            existing = await self._read_workspace_text_or_empty(path)
-            await self.api.workspace_write(path, append_daily_memory(existing, content))
-            written.append(path)
-
-        if target in {"long_term", "both"}:
-            existing = await self._read_workspace_text_or_empty(MEMORY_FILE)
-            await self.api.workspace_write(
-                MEMORY_FILE,
-                append_long_term_memory(existing, content, section=section),
+    async def _tool_memory_archive(self, item_id: str, reason: str) -> str:
+        try:
+            archived = await self.api.memory_archive(item_id)
+        except Exception as exc:
+            _logger.warning(
+                "tool.memory_archive_failed", item_id=item_id, error=str(exc)
             )
-            written.append(MEMORY_FILE)
-
-        return "Memory written: " + ", ".join(written)
+            return "Error: failed to archive durable memory."
+        if not archived:
+            return "Error: memory item is missing, inaccessible, or already archived."
+        _logger.info("tool.memory_archived", item_id=item_id, reason=reason)
+        return f"Memory archived: {item_id}"
 
     @staticmethod
     def _format_plan(data: dict[str, Any]) -> str:

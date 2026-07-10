@@ -489,7 +489,7 @@ Needs review:
 
 ## 9. 配置建议
 
-### 9.0 当前实现审计（初版 2026-05-15，更新 2026-06-14）
+### 9.0 当前实现审计（初版 2026-05-15，更新 2026-07-10）
 
 已确认完成：
 
@@ -497,7 +497,10 @@ Needs review:
 - `memory_items`、`memory_item_fts`、`memory_candidates`、`memory_embeddings` schema 已落地。
 - `memory_store()` 已从 no-op 改为写入 structured memory item。
 - FTS/BM25 长期记忆注入已接入 `SessionRunner`。
-- Markdown memory、`memory_read` / `memory_write`、workspace `MEMORY.md` 投影已可用。
+- `memory_items` 是唯一可写长期记忆源；`memory_read` 同时查询结构化记忆和兼容 Markdown，
+  `memory_write` 只写结构化记忆，workspace Markdown 是 sensitivity 过滤后的派生投影。
+- Bot 可通过 `memory_update` 以“追加替代项 + 归档旧项”方式修正记忆，并通过
+  `memory_archive` 归档当前上下文可见的过时/错误/重复项。
 - 规则 consolidation 和 scheduler 后台 LLM dreaming 已可用。
 - 新增正式 `memory.retrieval` / `memory.embedding` 配置模型。
 - OpenAI-compatible / OpenAI Responses provider 支持 `/embeddings`。
@@ -506,13 +509,16 @@ Needs review:
 - consolidation 或 dreaming 写入长期记忆后可自动刷新 `memory_embeddings`。
 - `sqlite-vec` 仍为可选后端；未安装或未配置维度时回退到 SQLite JSON embedding 扫描。
 - scheduler 后台 dreaming 已按 `memory_dream_last_turn_id` 做增量处理。
-- durable memory 已按 session 的 typed ChatAddress 自动隔离到 `chat` scope（`preference`/`fact`/`task` → chat，共享 kind 仍写 `global`）；读取走 chat→global cascade；embedding 跨 scope 刷新。详见 [memory-scoping.md](memory-scoping.md)。存量 global 数据不能在生产环境跳过：需要先用 `scripts/migrate_memory_scope.py inspect` 生成计划，人工审查/备份后再按 approved 条目迁移。
+- durable memory 按身份/typed ChatAddress 隔离到 person/account/chat；kind 不再自动推导 global，
+  只有显式 public bot-wide audience 才能写 global，summary 永远留在当前 scope。读取走当前身份
+  cascade→public global；restricted global 不进入普通召回。embedding 跨 scope 刷新。存量 global
+  数据可在新写入/召回边界稳定后，再用审计工具或 Bot 自我整理能力分批处理。
 
 仍未完成：
 
 - 没有独立 embedding 维护任务表；当前是按 consolidation/dreaming 后批量刷新。
 - `/memory forget`、`/memory review`、手动触发 embedding rebuild 还没实现。
-- scope 的 `workspace` / `user`（person/account）自动隔离仍未实现（依赖 #7 身份系统）；`chat` 已隔离（2026-06-14）。
+- `workspace` scope 尚未自动隔离；person/account/chat 身份级联已接入。
 - consolidation 输入还不是完整 agent run/event，只包含主要 user/assistant 文本。
 - 还没有实际 reranker 接入；`ModelRouter.resolve_for_task()` 已能支撑后续 reranker model spec 选择。
 - 还没有 `agent_runs` / `agent_events` 持久化表，也没有 dream run 历史表。
@@ -578,7 +584,8 @@ scheduler:
 - [x] workspace 初始化时创建 `MEMORY.md` 和 memory skill。
 - [x] `ContextBuilder` 注入 bounded Markdown memory。
 - [x] 内置 `memory_read` 工具：读取 `MEMORY.md` 和最近 N 天 daily notes，支持简单 query 过滤。
-- [x] 内置 `memory_write` 工具：写入 daily、long-term 或 both。
+- [x] 内置 `memory_write` 工具：只写结构化 `memory_items`；Markdown 保留为派生兼容投影。
+- [x] 内置 `memory_update` / `memory_archive` 工具：允许 Bot 按当前可见 scope 修正或归档记忆。
 - [x] 内置工具 manifest 暴露 memory 工具。
 - [ ] 根据真实使用结果决定 Phase 1 的 schema 和检索指标。
 
@@ -589,7 +596,7 @@ scheduler:
 - [x] 中文入库和查询前使用 jieba search-mode 预分词。
 - [x] `memory_store()` 从 no-op 改为写入 structured memory item。
 - [x] 新增 `/memory search`、`/memory list`、`/memory remember` 基础命令。
-- [ ] 新增 `/memory forget` 或等价删除/归档 API。
+- [x] 新增等价归档 API 和 Bot `memory_archive` 工具（CLI `/memory forget` 语法仍可后续补充）。
 - [x] SessionRunner 按当前用户消息检索少量长期记忆并注入预算内 context。
 
 ### Phase 2：Embedding 和 sqlite-vec

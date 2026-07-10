@@ -500,6 +500,30 @@ class SQLiteMemoryRepository:
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 
+    async def search_memory_items_public_scoped(
+        self,
+        fts_query: str,
+        *,
+        scope_type: str,
+        scope_id: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """FTS search active PUBLIC items within one exact scope."""
+        rows = await self._engine.fetch_all(
+            "SELECT mi.item_id, mi.scope_type, mi.scope_id, mi.kind, mi.title, "
+            "mi.content, mi.status, mi.confidence, mi.importance, mi.sensitivity, "
+            "mi.sensitivity_source, mi.source, mi.evidence_json, mi.metadata_json, "
+            "mi.created_at, mi.updated_at, bm25(memory_item_fts) AS score "
+            "FROM memory_item_fts "
+            "JOIN memory_items mi ON mi.item_id = memory_item_fts.item_id "
+            "WHERE memory_item_fts MATCH ? AND mi.status = 'active' "
+            "AND mi.sensitivity = 'public' "
+            "AND mi.scope_type = ? AND mi.scope_id = ? "
+            "ORDER BY score ASC, mi.importance DESC, mi.updated_at DESC LIMIT ?",
+            (fts_query, scope_type, scope_id, limit),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
     async def search_memory_items_public_all_scopes(
         self,
         fts_query: str,

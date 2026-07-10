@@ -786,6 +786,10 @@ class RealBotAPI:
                     "kind": item.kind,
                     "title": item.title,
                     "source": item.source,
+                    "sensitivity": getattr(item, "sensitivity", "public"),
+                    "audience": getattr(item, "metadata", {}).get(
+                        "audience", "current"
+                    ),
                 },
             )
             for item in items
@@ -867,7 +871,7 @@ class RealBotAPI:
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None
-    ) -> None:
+    ) -> str | None:
         self._permissions.check_memory_write()
         service = self._memory_service()
         if service is None:
@@ -876,14 +880,65 @@ class RealBotAPI:
 
         session_ctx = current_session.get()
         session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
-        await service.store_item(
+        item_id = await service.store_item(
             key,
             content,
             ctx=session_ctx,
             session_id=session_id,
             metadata=metadata,
         )
-        self._logger.debug("memory_store_called", key=key, backend="items")
+        self._logger.debug(
+            "memory_store_called", key=key, item_id=item_id, backend="items"
+        )
+        return item_id
+
+    async def memory_update(
+        self,
+        item_id: str,
+        content: str,
+        *,
+        key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str | None:
+        self._permissions.check_memory_write()
+        service = self._memory_service()
+        if service is None:
+            return None
+        from nahida_bot.core.context import current_session
+
+        session_ctx = current_session.get()
+        session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
+        replacement_id = await service.update_item_for_context(
+            item_id,
+            content,
+            key=key,
+            ctx=session_ctx,
+            session_id=session_id,
+            metadata=metadata,
+        )
+        self._logger.debug(
+            "memory_update_called",
+            item_id=item_id,
+            replacement_id=replacement_id or "",
+        )
+        return replacement_id
+
+    async def memory_archive(self, item_id: str) -> bool:
+        self._permissions.check_memory_write()
+        service = self._memory_service()
+        if service is None:
+            return False
+        from nahida_bot.core.context import current_session
+
+        session_ctx = current_session.get()
+        session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
+        archived = await service.archive_item_for_context(
+            item_id,
+            ctx=session_ctx,
+            session_id=session_id,
+        )
+        self._logger.debug("memory_archive_called", item_id=item_id, archived=archived)
+        return archived
 
     # ── Plugin Data Store ─────────────────────────────
 

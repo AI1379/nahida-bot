@@ -38,11 +38,16 @@ SCOPE_ID_GLOBAL = "__global__"
 
 CHAT_SCOPED_KINDS = frozenset({"preference", "fact", "task"})
 GLOBAL_SCOPED_KINDS = frozenset({"decision", "procedure", "warning", "summary"})
+MEMORY_KINDS = CHAT_SCOPED_KINDS | GLOBAL_SCOPED_KINDS
 
 
 def scope_for_kind(kind: str) -> str:
-    """Return the default scope type for a memory kind."""
-    return SCOPE_TYPE_CHAT if kind in CHAT_SCOPED_KINDS else SCOPE_TYPE_GLOBAL
+    """Return the conservative default scope type for a memory kind.
+
+    Content kind no longer implies a global audience. Known kinds default to
+    the current chat; explicit audience policy may promote eligible items.
+    """
+    return SCOPE_TYPE_CHAT if kind in MEMORY_KINDS else SCOPE_TYPE_GLOBAL
 
 
 def chat_scope_id(address: ChatAddress) -> str:

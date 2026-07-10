@@ -191,12 +191,22 @@ def test_context_request_group_injects_declared_person() -> None:
 # ── resolve_memory_write_scope ──────────────────────────────
 
 
-def test_write_global_kind_always_global() -> None:
+def test_write_contextual_kinds_default_to_current_chat() -> None:
     req = MemoryWriteRequest(
         chat_scope_id=PRIVATE_CHAT, person_id="owner", sender_account_key=ACCOUNT
     )
     for kind in ("decision", "procedure", "warning", "summary"):
-        assert resolve_memory_write_scope(req, kind) == GLOBAL
+        assert resolve_memory_write_scope(req, kind) == ("chat", PRIVATE_CHAT)
+
+
+def test_write_explicit_global_promotes_eligible_kinds_but_not_summary() -> None:
+    req = MemoryWriteRequest(chat_scope_id=PRIVATE_CHAT)
+    for kind in ("decision", "procedure", "warning"):
+        assert resolve_memory_write_scope(req, kind, global_scope=True) == GLOBAL
+    assert resolve_memory_write_scope(req, "summary", global_scope=True) == (
+        "chat",
+        PRIVATE_CHAT,
+    )
 
 
 def test_write_personal_linked_goes_to_person() -> None:

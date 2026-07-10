@@ -116,16 +116,21 @@ Return ONLY valid JSON. Do not include markdown.
 
 Rules:
 - Add only stable user preferences, project facts, decisions, procedures, warnings, or follow-up tasks.
+- If the conversation contains no stable durable change, return empty add/archive arrays. Do not create a memory merely to summarize that nothing happened.
+- Never store routine chat recaps, transient reactions, image-only exchanges, greetings, or "recent conversation" summaries.
 - Do not store secrets, credentials, tokens, cookies, private keys, signed URLs, base64, or raw event dumps.
 - Do not invent facts. Use the conversation as evidence.
 - Prefer the language and terminology the user normally uses in the conversation.
 - Archive an existing memory only when the new conversation clearly makes it obsolete or contradictory.
+- Audience is independent from kind. Use "current" unless the item is intentionally applicable across every chat and user of this bot.
+- "global" is exceptional: only cross-chat bot-wide decisions, procedures, or warnings qualify. Personal information, project/session state, cron-specific instructions, and every summary must use "current".
 
 Schema:
 {
   "add": [
     {
       "kind": "fact|preference|decision|task|procedure|warning|summary",
+      "audience": "current|global",
       "title": "short title",
       "content": "one concise durable memory",
       "confidence": 0.0,
@@ -158,6 +163,7 @@ class ExtractedMemory:
     kind: str
     title: str
     content: str
+    audience: str = "current"
     confidence: float = 0.7
     importance: float = 0.5
     evidence: dict[str, Any] = field(default_factory=dict)
@@ -491,9 +497,20 @@ class MemoryConsolidator:
             if validate_memory_content(memory.content) is not None:
                 skipped_unsafe += 1
                 continue
-            item_scope_type, item_scope_id = resolve_memory_write_scope(
-                write_req, memory.kind
+            sensitivity, sensitivity_source = classify_sensitivity(
+                memory.content, title=memory.title
             )
+            item_scope_type, item_scope_id = resolve_memory_write_scope(
+                write_req,
+                memory.kind,
+                global_scope=(memory.audience == "global" and sensitivity == "public"),
+            )
+            # A legacy/untyped session has no private destination. Never fall
+            # back to a restricted global row; skip it until the session can
+            # provide a typed chat/person/account scope.
+            if item_scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
+                skipped_unsafe += 1
+                continue
             if await self._has_duplicate(
                 memory.content,
                 scope_type=item_scope_type,
@@ -512,11 +529,11 @@ class MemoryConsolidator:
                 "session_id": session_id,
                 "workspace_id": workspace_id or "",
                 "candidate_id": candidate_id,
+                "audience": (
+                    "global" if item_scope_type == SCOPE_TYPE_GLOBAL else "current"
+                ),
                 "consolidated_at": datetime.now(UTC).isoformat(),
             }
-            sensitivity, sensitivity_source = classify_sensitivity(
-                memory.content, title=memory.title
-            )
             await cast(Any, append_item)(
                 title=memory.title,
                 content=memory.content,
@@ -765,6 +782,10 @@ def parse_memory_dream(raw: str) -> MemoryDream:
             kind = str(raw_item.get("kind", "fact") or "fact").strip()
             if kind not in _VALID_KINDS:
                 kind = "fact"
+            audience = str(raw_item.get("audience", "current") or "current")
+            audience = audience.strip().casefold()
+            if audience not in {"current", "global"} or kind == "summary":
+                audience = "current"
             title = _clean_candidate_content(str(raw_item.get("title", "")))
             if not title:
                 title = _title_from_content(content)
@@ -774,6 +795,7 @@ def parse_memory_dream(raw: str) -> MemoryDream:
                     kind=kind,
                     title=title,
                     content=content,
+                    audience=audience,
                     confidence=_clamp_float(raw_item.get("confidence"), default=0.65),
                     importance=_clamp_float(raw_item.get("importance"), default=0.5),
                     evidence={"llm_evidence": evidence_text} if evidence_text else {},

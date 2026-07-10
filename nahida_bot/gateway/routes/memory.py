@@ -88,6 +88,11 @@ class MemoryCreateRequest(BaseModel):
             raise ValueError("scope_type cannot be empty")
         if not self.scope_id.strip():
             raise ValueError("scope_id cannot be empty")
+        if (
+            self.scope_type.strip() == SCOPE_TYPE_GLOBAL
+            and self.sensitivity != "public"
+        ):
+            raise ValueError("global memory must be public")
         return self
 
 

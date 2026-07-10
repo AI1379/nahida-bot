@@ -36,10 +36,11 @@ from nahida_bot.agent.memory.models import (
     normalize_sensitivity,
 )
 from nahida_bot.agent.memory.scope import (
+    MEMORY_KINDS,
     SCOPE_ID_GLOBAL,
     SCOPE_TYPE_GLOBAL,
 )
-from nahida_bot.agent.memory.store import StructuredMemoryStore
+from nahida_bot.agent.memory.store import StructuredMemoryStore, resolve_public_search
 
 if TYPE_CHECKING:
     from nahida_bot.core.context import SessionContext
@@ -195,14 +196,27 @@ class MemoryService:
         for scope_type, scope_id in scopes:
             if remaining <= 0:
                 break
+            public_only = scope_type == SCOPE_TYPE_GLOBAL
+            search = resolve_public_search(self._store, public_only=public_only)
+            if search is None:
+                continue
             scoped = list(
-                await self._store.search_items(
+                await search(
                     query,
                     scope_type=scope_type,
                     scope_id=scope_id,
                     limit=remaining,
                 )
             )
+            if public_only:
+                # Compatibility fallback for third-party/test stores that have
+                # not implemented ``search_items_public`` yet. Missing legacy
+                # sensitivity metadata is the historical public baseline.
+                scoped = [
+                    item
+                    for item in scoped
+                    if str(getattr(item, "sensitivity", "public")) == "public"
+                ]
             for item in scoped:
                 if item.item_id in seen:
                     continue
@@ -244,9 +258,10 @@ class MemoryService:
     ) -> str:
         """Write a durable memory item.
 
-        Scope is resolved identity-aware, matching the consolidator (issue #7,
-        Phase 3): personal kinds (``preference``/``fact``/``task``) follow the
-        sender (``person`` -> ``account`` -> ``chat``), global kinds stay global.
+        Scope is resolved identity-aware, matching the consolidator: current
+        memories follow the sender (``person`` -> ``account`` -> ``chat`` for
+        personal kinds, otherwise the current chat). Only an explicit public
+        ``audience=global`` request may use the shared global scope.
         An explicit ``scope_type`` + ``scope_id`` pair in ``metadata`` overrides
         identity routing. Applies the sensitivity policy
         (see :func:`resolve_write_sensitivity`) and returns the new item id.
@@ -255,7 +270,13 @@ class MemoryService:
         the item's metadata blob.
         """
         metadata = dict(metadata or {})
-        kind = str(metadata.pop("kind", "fact"))
+        kind = str(metadata.pop("kind", "fact")).strip().casefold()
+        if kind not in MEMORY_KINDS:
+            kind = "fact"
+        audience = str(metadata.pop("audience", "current")).strip().casefold()
+        if audience not in {"current", "global"}:
+            audience = "current"
+        sensitivity_value, sensitivity_source = resolve_write_sensitivity(metadata)
         scope_type_value = metadata.pop("scope_type", None)
         scope_id_value = metadata.pop("scope_id", None)
         if scope_type_value is None or scope_id_value is None:
@@ -268,9 +289,30 @@ class MemoryService:
 
             write_req = memory_write_request_from_context(ctx, session_id)
             scope_type_value, scope_id_value = resolve_memory_write_scope(
-                write_req, kind
+                write_req,
+                kind,
+                global_scope=(audience == "global" and sensitivity_value == "public"),
             )
-        sensitivity_value, sensitivity_source = resolve_write_sensitivity(metadata)
+        elif (
+            str(scope_type_value) == SCOPE_TYPE_GLOBAL and sensitivity_value != "public"
+        ):
+            # Restricted memory must never be placed in the shared global
+            # scope. Re-route it to the current identity/chat; reject legacy
+            # callers that have no private destination instead of leaking.
+            from nahida_bot.identity.policy import (
+                memory_write_request_from_context,
+                resolve_memory_write_scope,
+            )
+
+            write_req = memory_write_request_from_context(ctx, session_id)
+            scope_type_value, scope_id_value = resolve_memory_write_scope(
+                write_req, kind, global_scope=False
+            )
+            if scope_type_value == SCOPE_TYPE_GLOBAL:
+                raise ValueError("restricted memory requires a typed current scope")
+        metadata["audience"] = (
+            "global" if str(scope_type_value) == SCOPE_TYPE_GLOBAL else "current"
+        )
         return await self._store.append_item(
             title=key,
             content=content,
@@ -289,6 +331,107 @@ class MemoryService:
     async def archive_item(self, item_id: str) -> bool:
         """Archive (soft-delete) a durable memory item."""
         return await self._store.archive_item(item_id)
+
+    async def archive_item_for_context(
+        self,
+        item_id: str,
+        *,
+        ctx: "SessionContext | None",
+        session_id: str = "",
+    ) -> bool:
+        """Archive an item only when it is visible to the current context."""
+        item = await self._accessible_item(item_id, ctx=ctx, session_id=session_id)
+        if item is None:
+            return False
+        return await self._store.archive_item(item.item_id)
+
+    async def update_item_for_context(
+        self,
+        item_id: str,
+        content: str,
+        *,
+        ctx: "SessionContext | None",
+        session_id: str = "",
+        key: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Replace a visible item, preserving scope and provenance.
+
+        Durable memory is append-oriented: an update creates a replacement and
+        archives the old item. This keeps a recoverable provenance chain and
+        avoids mutating historical evidence in place.
+        """
+        old = await self._accessible_item(item_id, ctx=ctx, session_id=session_id)
+        if old is None or not content.strip():
+            return None
+
+        updates = dict(metadata or {})
+        kind = str(updates.pop("kind", old.kind)).strip().casefold()
+        if kind not in MEMORY_KINDS:
+            kind = old.kind
+        if "sensitivity" in updates:
+            sensitivity, sensitivity_source = resolve_write_sensitivity(updates)
+        else:
+            sensitivity = old.sensitivity
+            sensitivity_source = old.sensitivity_source
+        if old.scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
+            return None
+
+        replacement_metadata = {
+            **old.metadata,
+            **updates,
+            "replaces_item_id": old.item_id,
+            "updated_via": "memory_update",
+        }
+        replacement_id = await self._store.append_item(
+            title=key.strip() or old.title,
+            content=content.strip(),
+            scope_type=old.scope_type,
+            scope_id=old.scope_id,
+            kind=kind,
+            source="memory_update",
+            confidence=float(replacement_metadata.pop("confidence", old.confidence)),
+            importance=float(replacement_metadata.pop("importance", old.importance)),
+            sensitivity=sensitivity,
+            sensitivity_source=sensitivity_source,
+            evidence=old.evidence,
+            metadata=replacement_metadata,
+        )
+        if await self._store.archive_item(old.item_id):
+            return replacement_id
+        # Best-effort rollback: never leave two active versions when the old
+        # item could not be archived.
+        await self._store.archive_item(replacement_id)
+        return None
+
+    async def _accessible_item(
+        self,
+        item_id: str,
+        *,
+        ctx: "SessionContext | None",
+        session_id: str,
+    ) -> MemoryItem | None:
+        if not item_id:
+            return None
+        items = await self._store.get_items_by_ids([item_id])
+        if not items:
+            return None
+        item = items[0]
+        # Old restricted-global rows remain operator-visible for later cleanup,
+        # but are intentionally unavailable to ordinary bot recall/mutation.
+        if item.scope_type == SCOPE_TYPE_GLOBAL and item.sensitivity != "public":
+            return None
+
+        from nahida_bot.identity.policy import (
+            memory_read_request_from_context,
+            resolve_memory_read_scopes,
+        )
+
+        request = memory_read_request_from_context(ctx, session_id)
+        allowed = set(resolve_memory_read_scopes(request))
+        if (item.scope_type, item.scope_id) not in allowed:
+            return None
+        return item
 
     async def list_items(
         self,

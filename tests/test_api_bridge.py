@@ -134,6 +134,17 @@ class _Memory:
             )
         ][:limit]
 
+    async def get_items_by_ids(self, item_ids: list[str]) -> list[MemoryItem]:
+        by_id = {item.item_id: item for item in self.items}
+        return [by_id[item_id] for item_id in item_ids if item_id in by_id]
+
+    async def archive_item(self, item_id: str) -> bool:
+        for index, item in enumerate(self.items):
+            if item.item_id == item_id:
+                self.items.pop(index)
+                return True
+        return False
+
     async def clear_session(self, session_id: str) -> int:
         return 3
 
@@ -326,11 +337,26 @@ async def test_workspace_and_memory_methods_delegate_to_runtime(
 
     results = await api.memory_search("nahida")
     assert results[0].content == "found nahida"
-    await api.memory_store("k", "v", metadata={"kind": "preference"})
+    item_id = await api.memory_store("k", "v", metadata={"kind": "preference"})
+    assert item_id == "mem_1"
     stored = await api.memory_search("v")
     assert stored[0].key == "mem_1"
     assert stored[0].content == "v"
     assert stored[0].metadata["kind"] == "preference"
+
+    replacement_id = await api.memory_update(
+        item_id,
+        "updated value",
+        key="updated key",
+        metadata={"kind": "fact"},
+    )
+    assert replacement_id == "mem_2"
+    updated = await api.memory_search("updated value")
+    assert updated[0].key == "mem_2"
+    assert updated[0].content == "updated value"
+    assert updated[0].metadata["kind"] == "fact"
+    assert await api.memory_archive(replacement_id) is True
+    assert await api.memory_archive(replacement_id) is False
     assert await api.clear_session("s1") == 3
 
 

@@ -1,8 +1,9 @@
 # 记忆系统去冗余提案:Markdown ↔ memory_items 的合并
 
 > 记录时间：2026-07-01
-> 状态：**提案 / 待评估，不阻塞日常开发**。本文记录一次关于"记忆系统是否冗余、能否简化"的讨论与
-> 初步结论，**尚未决策**。重开此议题前，先观察 soft-scope（A2）上线后的实际召回质量与打标可靠性。
+> 状态：**核心方案已于 2026-07-10 实施**。`memory_items` 是唯一可写长期记忆源；`memory_write`
+> 已切到结构化写入，`memory_read` 同时提供结构化查询和兼容 Markdown 读取，Markdown 仅保留为
+> sensitivity 过滤后的派生/兼容召回面。Bot 同时获得 `memory_update` / `memory_archive` 自我整理能力。
 > 关联：[memory-architecture-exploration.md](memory-architecture-exploration.md)、
 > [memory-soft-scope-and-authz.md](memory-soft-scope-and-authz.md)。关联 issue：#22（tracking）。
 
