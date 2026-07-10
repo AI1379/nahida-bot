@@ -769,6 +769,18 @@ class TestMessageRouterAgentDispatch:
         )
 
         await router.start()
+        # Real channel flow persists every untriggered batch message as
+        # observed-only before ConversationJoiner asks for a proactive run.
+        for observed_message in batch:
+            await event_bus.publish(
+                MessageObserved(
+                    payload=MessagePayload(
+                        message=observed_message,
+                        session_id="test:group:g1",
+                    ),
+                    source="test",
+                )
+            )
         await event_bus.publish(
             AgentResponseRequested(
                 payload=AgentResponseRequestPayload(
@@ -792,15 +804,35 @@ class TestMessageRouterAgentDispatch:
 
         system_prompt = agent.calls[0]["system_prompt"]
         user_message = agent.calls[0]["user_message"]
+        history = agent.calls[0]["history_messages"]
         assert "Conversation Joiner Batch Context" not in system_prompt
-        assert "Conversation Joiner Batch Context" in user_message
-        assert "Batch message_id: m1" in user_message
-        assert "Batch message_id: m2" in user_message
-        assert "Batch message_id: m3" in user_message
+        assert "Conversation Joiner Batch Context" not in user_message
+        assert "but will it spam?" in user_message
+        frames = [
+            message
+            for message in history
+            if message.source == "proactive_attention_frame"
+        ]
+        assert len(frames) == 1
+        assert not [
+            message for message in history if message.source == "group_observed_context"
+        ]
+        assert "Conversation Joiner Batch Context" in frames[0].content
+        assert "Batch message_id: m1" in frames[0].content
+        assert "Batch message_id: m2" not in frames[0].content
+        assert "Batch message_id: m3" in frames[0].content
+        assert "Current anchor message_id: m2" in frames[0].content
         assert (
-            '<message_context trust="untrusted" role="batch_message">' in user_message
+            '<message_context trust="untrusted" role="batch_message">'
+            in frames[0].content
         )
-        assert "Reply anchor message_id: m2" in user_message
+        assert "Reply anchor message_id: m2" in frames[0].content
+
+        turns = memory.sessions["test:group:g1"]
+        proactive_turns = [turn for turn in turns if turn.source == "proactive_join"]
+        assert len(proactive_turns) == 1
+        assert proactive_turns[0].content == "but will it spam?"
+        assert "Conversation Joiner Batch Context" not in proactive_turns[0].content
 
         channel = channel_registry.get("test")
         assert isinstance(channel, _StubChannel)
@@ -847,6 +879,15 @@ class TestMessageRouterAgentDispatch:
             )
         )
         await router.stop()
+
+        frames = [
+            message
+            for message in agent.calls[0]["history_messages"]
+            if message.source == "proactive_attention_frame"
+        ]
+        assert len(frames) == 1
+        assert "Current anchor message_id: m2" in frames[0].content
+        assert "ambient topic" not in frames[0].content
 
         channel = channel_registry.get("test")
         assert isinstance(channel, _StubChannel)

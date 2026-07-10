@@ -87,6 +87,7 @@ class ConversationJoinerPlugin(Plugin):
         self._sm: EngagementStateMachine | None = None
         self._pending_requests: dict[str, _PendingRequest] = {}
         self._monitor_tasks: dict[str, asyncio.Task[None]] = {}
+        self._last_direct_engaged_message_id: dict[str, str] = {}
 
     async def on_load(self) -> None:
         self.api.subscribe(MessageObserved, self._on_message_observed)
@@ -928,6 +929,7 @@ class ConversationJoinerPlugin(Plugin):
             payload.session_id,
         )
         if chat_key is None:
+            self._engage_after_direct_trigger(payload.message)
             return
 
         now = time.monotonic()
@@ -960,6 +962,60 @@ class ConversationJoinerPlugin(Plugin):
                 sm.transition_to_cooling(chat_key, now)
 
         self._clear_pending_request(chat_key)
+
+    def _engage_after_direct_trigger(self, message: InboundMessage) -> None:
+        """Treat a visible reply to a direct group mention as participation.
+
+        Mention-triggered messages are emitted as ``MessageReceived`` rather
+        than ``MessageObserved``, so the joiner never sees them on its normal
+        observation path. Once the router has sent a visible reply, refresh the
+        group engagement state and remember the triggering message. This keeps
+        the bot attentive to natural follow-ups instead of immediately falling
+        back to random observing.
+        """
+        sm = self._sm
+        if sm is None or not message.is_group or not message.mentions_bot:
+            return
+        address = _address_from_message(message)
+        if address is None:
+            return
+        chat_key = address.chat_key
+        cfg = effective_group_config(self._config, chat_key)
+        if not cfg.enabled or not cfg.engagement.enabled:
+            return
+
+        message_id = message.message_id
+        if (
+            message_id
+            and self._last_direct_engaged_message_id.get(chat_key) == message_id
+        ):
+            # Streaming output may publish MessageSent more than once for the
+            # same inbound trigger. Do not reset the batch repeatedly.
+            sm.get_state(chat_key).last_agent_reply_at = time.monotonic()
+            return
+        if message_id:
+            self._last_direct_engaged_message_id[chat_key] = message_id
+
+        now = time.monotonic()
+        self._remember_context(chat_key, message, cfg)
+        sm.record_observation(
+            chat_key,
+            now,
+            max_age_seconds=cfg.engagement.exit_gate.activity_window_seconds,
+        )
+        sm.transition_to_engaged(chat_key, now)
+        sm.reset_low_value_strikes(chat_key)
+        sm.update_engagement_score(
+            chat_key,
+            0.8,
+            cfg.engagement.engagement_score_alpha,
+            now,
+        )
+        self.api.logger.info(
+            "conversation_joiner.direct_trigger_engaged",
+            chat_key=chat_key,
+            message_id=message_id,
+        )
 
     def _start_monitor(
         self,

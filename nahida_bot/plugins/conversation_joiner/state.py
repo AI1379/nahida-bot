@@ -94,6 +94,10 @@ class EngagementStateMachine:
         old = state.state
         state.state = "engaged"
         state.state_updated_at = now
+        # Direct mentions enter engagement without passing through ``joining``.
+        # They start a real participation episode just as a proactive join does.
+        if old != "joining" or state.topic_started_at <= 0:
+            state.topic_started_at = now
         state.last_agent_reply_at = now
         state.engagement_score = min(1.0, state.engagement_score + 0.1)
         state.score_updated_at = now

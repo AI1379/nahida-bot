@@ -440,6 +440,31 @@ def _sent_event(session_id: str) -> MessageSent:
     )
 
 
+def _direct_mention_sent_event(
+    session_id: str = "test:group:g1",
+) -> MessageSent:
+    """MessageSent carrying the original mention-triggering inbound message."""
+    inbound = InboundMessage(
+        message_id="mention-1",
+        platform="test",
+        chat_id="g1",
+        user_id="u1",
+        text="@bot what do you think?",
+        raw_event={},
+        is_group=True,
+        mentions_bot=True,
+        chat_context=ChatContext(platform="test", chat_type="group"),
+        sender_context=SenderContext(
+            display_name="Alice",
+            platform_user_id="u1",
+        ),
+    )
+    return MessageSent(
+        payload=MessagePayload(message=inbound, session_id=session_id),
+        source="message_router",
+    )
+
+
 async def _load_engaged_plugin(
     api: _JoinerAPI,
     engagement_overrides: dict[str, Any] | None = None,
@@ -920,6 +945,32 @@ async def test_joining_to_engaged_on_message_sent() -> None:
     state = sm.get_state("test:group:g1")
     assert state.state == "engaged"
     assert sm.get_batch("test:group:g1") is not None
+
+
+@pytest.mark.asyncio
+async def test_direct_mention_reply_enters_engaged_state() -> None:
+    """A visible reply to @bot starts participation without a joiner request."""
+    api = _JoinerAPI([])
+    plugin = await _load_engaged_plugin(api)
+    sm = cast(Any, plugin)._sm
+    assert sm.get_state("test:group:g1").state == "observing"
+
+    sent_handler = api.registered_event_handlers[MessageSent][0]
+    await sent_handler(_direct_mention_sent_event())
+
+    state = sm.get_state("test:group:g1")
+    assert state.state == "engaged"
+    assert state.topic_started_at > 0
+    assert state.last_agent_reply_at > 0
+    assert sm.get_batch("test:group:g1") is not None
+    contexts = cast(Any, plugin)._contexts["test:group:g1"]
+    assert contexts[-1].message_id == "mention-1"
+
+    # Streaming may emit multiple MessageSent events for one inbound trigger;
+    # the same mention must not reset engagement repeatedly.
+    topic_started_at = state.topic_started_at
+    await sent_handler(_direct_mention_sent_event())
+    assert sm.get_state("test:group:g1").topic_started_at == topic_started_at
 
 
 @pytest.mark.asyncio

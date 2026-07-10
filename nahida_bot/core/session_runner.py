@@ -384,6 +384,7 @@ class SessionRunner:
         tool_allowlist: AbstractSet[str] | None = None,
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
+        ephemeral_context: str = "",
         stop_event: asyncio.Event | None = None,
     ) -> AgentRunResult:
         """Run the agent loop and return the final result (backward-compat)."""
@@ -402,6 +403,7 @@ class SessionRunner:
             tool_allowlist=tool_allowlist,
             tool_filter=tool_filter,
             source_tag=source_tag,
+            ephemeral_context=ephemeral_context,
             stop_event=stop_event,
         ):
             if event.type == "done":
@@ -427,6 +429,7 @@ class SessionRunner:
         tool_filter: AbstractSet[str] | None = None,
         source_tag: str = "user_input",
         agent_instruction: str = "",
+        ephemeral_context: str = "",
         stop_event: asyncio.Event | None = None,
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
@@ -534,20 +537,47 @@ class SessionRunner:
                 capabilities=capabilities,
                 message_context=message_context,
             )
-            observed_context = await self._load_observed_group_context(
-                session_id,
-                records=recent_records,
-                current_message_context=message_context,
-                current_message_content=user_message,
-            )
-            if observed_context is not None:
-                history.append(observed_context)
+            explicit_ephemeral_context = ephemeral_context.strip()
+            if explicit_ephemeral_context:
+                # ConversationJoiner selected this exact batch for the current
+                # run. Keep it as an untrusted, ephemeral history message so it
+                # is visible to the model but never becomes the active user
+                # turn, a persisted memory turn, or transcript replay input.
+                # The generic observed loader is intentionally skipped here:
+                # its rows overlap the selected batch and previously caused the
+                # same group messages to appear multiple times in one prompt.
+                history.append(
+                    ContextMessage(
+                        role="user",
+                        source="proactive_attention_frame",
+                        content=explicit_ephemeral_context,
+                        metadata={
+                            "ephemeral": True,
+                            "selected_by": "conversation_joiner",
+                        },
+                    )
+                )
                 logger.debug(
-                    "session_runner.group_observed_context_added",
+                    "session_runner.proactive_attention_frame_added",
                     session_id=session_id,
-                    observed_context_chars=len(observed_context.content),
+                    attention_frame_chars=len(explicit_ephemeral_context),
                     history_count=len(history),
                 )
+            else:
+                observed_context = await self._load_observed_group_context(
+                    session_id,
+                    records=recent_records,
+                    current_message_context=message_context,
+                    current_message_content=user_message,
+                )
+                if observed_context is not None:
+                    history.append(observed_context)
+                    logger.debug(
+                        "session_runner.group_observed_context_added",
+                        session_id=session_id,
+                        observed_context_chars=len(observed_context.content),
+                        history_count=len(history),
+                    )
             relevant_memory = await self._load_relevant_memory(
                 user_message, session_id=session_id
             )
