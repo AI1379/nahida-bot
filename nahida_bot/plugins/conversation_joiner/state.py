@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from uuid import uuid4
 
 from nahida_bot.plugins.base import InboundMessage
 from nahida_bot.plugins.conversation_joiner.config import EngagementConfig
@@ -18,6 +19,7 @@ class GroupJoinerState:
 
     chat_key: str
     state: EngagementState = "observing"
+    episode_id: str = ""
     topic_started_at: float = 0.0
     state_updated_at: float = 0.0
     last_decision_at: float = 0.0
@@ -84,6 +86,7 @@ class EngagementStateMachine:
         state = self.get_state(chat_key)
         old = state.state
         state.state = "joining"
+        state.episode_id = uuid4().hex
         state.state_updated_at = now
         state.topic_started_at = now
         self._log_transition(chat_key, old, "joining")
@@ -94,9 +97,12 @@ class EngagementStateMachine:
         old = state.state
         state.state = "engaged"
         state.state_updated_at = now
-        # Direct mentions enter engagement without passing through ``joining``.
-        # They start a real participation episode just as a proactive join does.
-        if old != "joining" or state.topic_started_at <= 0:
+        # Direct mentions can enter engagement without passing through
+        # ``joining``. Start a new episode only from observing; cooling and
+        # already-engaged direct replies remain part of the current episode.
+        if old == "observing" or not state.episode_id:
+            state.episode_id = uuid4().hex
+        if old == "observing" or state.topic_started_at <= 0:
             state.topic_started_at = now
         state.last_agent_reply_at = now
         state.engagement_score = min(1.0, state.engagement_score + 0.1)
@@ -120,6 +126,7 @@ class EngagementStateMachine:
         state = self.get_state(chat_key)
         old = state.state
         state.state = "observing"
+        state.episode_id = ""
         state.state_updated_at = now
         state.low_value_strikes = 0
         state.score_updated_at = now
@@ -389,6 +396,7 @@ class EngagementStateMachine:
         return {
             "chat_key": state.chat_key,
             "state": state.state,
+            "episode_id": state.episode_id,
             "topic_started_at": state.topic_started_at,
             "state_updated_at": state.state_updated_at,
             "last_decision_at": state.last_decision_at,
@@ -407,6 +415,7 @@ class EngagementStateMachine:
         state = GroupJoinerState(
             chat_key=data.get("chat_key", chat_key),
             state=data.get("state", "observing"),
+            episode_id=str(data.get("episode_id", "") or ""),
             topic_started_at=data.get("topic_started_at", 0.0),
             state_updated_at=data.get("state_updated_at", 0.0),
             last_decision_at=data.get("last_decision_at", 0.0),
@@ -422,6 +431,8 @@ class EngagementStateMachine:
                 data.get("state_updated_at", 0.0),
             ),
         )
+        if state.state != "observing" and not state.episode_id:
+            state.episode_id = uuid4().hex
         self._states[chat_key] = state
 
     # ------------------------------------------------------------------
@@ -441,6 +452,7 @@ class EngagementStateMachine:
             chat_key=chat_key,
             old_state=old_state,
             new_state=new_state,
+            episode_id=self.get_state(chat_key).episode_id,
             reason=reason,
         )
 

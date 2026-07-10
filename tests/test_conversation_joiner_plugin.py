@@ -169,6 +169,7 @@ async def test_should_join_true_requests_agent_response() -> None:
     frame = request["attention_frame"]
     assert frame is not None
     assert frame.trigger_kind == "proactive_join"
+    assert frame.episode_id
     assert frame.anchor_message_id == "m1"
     assert [message.message_id for message in frame.messages] == ["m1"]
     assert frame.focus == "deployment"
@@ -517,15 +518,18 @@ class TestEngagementStateMachine:
         sm.transition_to_joining("g1", now)
         state = sm.get_state("g1")
         assert state.state == "joining"
+        assert state.episode_id
         assert state.topic_started_at == now
 
     def test_transition_to_engaged(self) -> None:
         sm = self._make_sm()
         now = time.monotonic()
         sm.transition_to_joining("g1", now)
+        joining_episode = sm.get_state("g1").episode_id
         sm.transition_to_engaged("g1", now + 1)
         state = sm.get_state("g1")
         assert state.state == "engaged"
+        assert state.episode_id == joining_episode
         assert state.last_agent_reply_at == now + 1
         assert state.low_value_strikes == 0
         # Batch should be created.
@@ -539,7 +543,20 @@ class TestEngagementStateMachine:
         sm.transition_to_observing("g1", now + 2, reason="test")
         state = sm.get_state("g1")
         assert state.state == "observing"
+        assert state.episode_id == ""
         assert sm.get_batch("g1") is None
+
+    def test_direct_engagement_starts_and_reuses_episode(self) -> None:
+        sm = self._make_sm()
+        now = time.monotonic()
+
+        sm.transition_to_engaged("g1", now)
+        first_episode = sm.get_state("g1").episode_id
+        sm.transition_to_cooling("g1", now + 1)
+        sm.transition_to_engaged("g1", now + 2)
+
+        assert first_episode
+        assert sm.get_state("g1").episode_id == first_episode
 
     def test_transition_to_cooling(self) -> None:
         sm = self._make_sm()
@@ -817,11 +834,13 @@ class TestEngagementStateMachine:
         data = sm.serialize_state("g1")
         assert data is not None
         assert data["state"] == "engaged"
+        assert data["episode_id"]
 
         sm2 = self._make_sm()
         sm2.deserialize_state("g1", data)
         restored = sm2.get_state("g1")
         assert restored.state == "engaged"
+        assert restored.episode_id == data["episode_id"]
         assert (
             abs(restored.engagement_score - sm.get_state("g1").engagement_score) < 1e-9
         )
@@ -1344,6 +1363,10 @@ async def test_batch_full_triggers_continue_gate_and_agent_request() -> None:
     assert second_req["message"].message_id == "m2"
     assert [msg.message_id for msg in second_req["observed_messages"]] == ["m2", "m3"]
     assert second_req["reply_to_message_id"] == "m2"
+    first_frame = api.agent_response_requests[0]["attention_frame"]
+    second_frame = second_req["attention_frame"]
+    assert first_frame.episode_id
+    assert second_frame.episode_id == first_frame.episode_id
     continue_prompt = api.llm_calls[1]["messages"][1]["content"]
     assert "[m2] Alice: follow up one" in continue_prompt
     assert "[m3] Alice: follow up two" in continue_prompt

@@ -416,6 +416,7 @@ class SessionRunner:
         source_tag: str = "user_input",
         trigger_kind: str = "",
         ephemeral_context: str = "",
+        attention_episode_id: str = "",
         stop_event: asyncio.Event | None = None,
     ) -> AgentRunResult:
         """Run the agent loop and return the final result (backward-compat)."""
@@ -436,6 +437,7 @@ class SessionRunner:
             source_tag=source_tag,
             trigger_kind=trigger_kind,
             ephemeral_context=ephemeral_context,
+            attention_episode_id=attention_episode_id,
             stop_event=stop_event,
         ):
             if event.type == "done":
@@ -463,6 +465,7 @@ class SessionRunner:
         agent_instruction: str = "",
         trigger_kind: str = "",
         ephemeral_context: str = "",
+        attention_episode_id: str = "",
         stop_event: asyncio.Event | None = None,
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
@@ -596,6 +599,7 @@ class SessionRunner:
                         metadata={
                             "ephemeral": True,
                             "selected_by": "conversation_joiner",
+                            "attention_episode_id": attention_episode_id,
                         },
                     )
                 )
@@ -800,6 +804,7 @@ class SessionRunner:
                 message_context=message_context,
                 source_tag=source_tag,
                 trigger_kind=trigger_kind,
+                attention_episode_id=attention_episode_id,
                 workspace_id=workspace_id,
                 workspace_root=workspace_root,
             )
@@ -2709,6 +2714,7 @@ class SessionRunner:
         message_context: MessageContext | None,
         source_tag: str,
         trigger_kind: str = "",
+        attention_episode_id: str = "",
     ) -> dict[str, Any] | None:
         metadata: dict[str, Any] | None = None
         message_context_metadata = message_context_to_metadata(message_context)
@@ -2723,6 +2729,10 @@ class SessionRunner:
                 metadata = {}
             metadata["triggered_agent"] = source_tag != "group_observation"
             metadata["trigger_kind"] = trigger_kind or source_tag
+        if attention_episode_id:
+            if metadata is None:
+                metadata = {}
+            metadata["attention_episode_id"] = attention_episode_id
         if attachments:
             persisted_attachments: list[dict[str, Any]] = []
             for att in attachments:
@@ -2945,6 +2955,7 @@ class SessionRunner:
         message_context: MessageContext | None = None,
         source_tag: str,
         trigger_kind: str = "",
+        attention_episode_id: str = "",
         workspace_id: str | None = None,
         workspace_root: Any = None,
     ) -> None:
@@ -2973,6 +2984,7 @@ class SessionRunner:
             message_context=message_context,
             source_tag=source_tag,
             trigger_kind=trigger_kind,
+            attention_episode_id=attention_episode_id,
         )
         user_turn = ConversationTurn(
             role="user", content=user_message, source=source_tag, metadata=metadata

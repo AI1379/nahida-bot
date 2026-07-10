@@ -127,7 +127,18 @@ class MessageRouter:
         # defined drop/reject policy for bursts during long-running agent runs.
         self._pending: dict[
             str,
-            list[tuple[InboundMessage, str, str | None, str, str, str | None, str]],
+            list[
+                tuple[
+                    InboundMessage,
+                    str,
+                    str | None,
+                    str,
+                    str,
+                    str | None,
+                    str,
+                    str,
+                ]
+            ],
         ] = {}
         self._stopping = False
 
@@ -728,6 +739,9 @@ class MessageRouter:
                 agent_instruction=event.payload.instruction,
                 reply_to_override=event.payload.reply_to_message_id,
                 proactive_context=proactive_context,
+                attention_episode_id=(
+                    attention_frame.episode_id if attention_frame is not None else ""
+                ),
             )
         finally:
             current_session.reset(token)
@@ -764,6 +778,7 @@ class MessageRouter:
         agent_instruction: str = "",
         reply_to_override: str | None = None,
         proactive_context: str = "",
+        attention_episode_id: str = "",
     ) -> None:
         """Command matching + agent execution (called within session context)."""
         logger.debug(
@@ -867,6 +882,7 @@ class MessageRouter:
                     agent_instruction,
                     reply_to_override,
                     proactive_context,
+                    attention_episode_id,
                 )
             )
             logger.debug(
@@ -889,6 +905,7 @@ class MessageRouter:
                 agent_instruction,
                 reply_to_override,
                 proactive_context,
+                attention_episode_id,
             )
         )
         tracker.start(session_id, task, stop_event)
@@ -910,6 +927,7 @@ class MessageRouter:
         agent_instruction: str = "",
         reply_to_override: str | None = None,
         proactive_context: str = "",
+        attention_episode_id: str = "",
     ) -> None:
         """Run agent loop in background, streaming responses as they arrive."""
         tracker = runner.run_tracker
@@ -949,6 +967,7 @@ class MessageRouter:
                 agent_instruction=agent_instruction,
                 trigger_kind=_trigger_kind(inbound, source_tag=source_tag),
                 ephemeral_context=proactive_context,
+                attention_episode_id=attention_episode_id,
                 stop_event=stop_event,
             ):
                 logger.debug(
@@ -1087,6 +1106,7 @@ class MessageRouter:
             next_instruction,
             next_reply_to_override,
             next_proactive_context,
+            next_attention_episode_id,
         ) = queue.pop(0)
         if not queue:
             del self._pending[session_id]
@@ -1098,6 +1118,7 @@ class MessageRouter:
             agent_instruction=next_instruction,
             reply_to_override=next_reply_to_override,
             proactive_context=next_proactive_context,
+            attention_episode_id=next_attention_episode_id,
         )
 
     async def _load_reasoning_display_config(
@@ -1420,8 +1441,11 @@ def _render_observed_batch_context(
     if attention_frame is not None:
         trigger_kind = str(getattr(attention_frame, "trigger_kind", "") or "")
         focus = str(getattr(attention_frame, "focus", "") or "")
+        episode_id = str(getattr(attention_frame, "episode_id", "") or "")
         if trigger_kind:
             lines.append(f"Attention trigger: {trigger_kind}")
+        if episode_id:
+            lines.append(f"Attention episode_id: {episode_id}")
         if focus:
             lines.append(f"Attention focus: {focus}")
     if anchor_message.message_id:

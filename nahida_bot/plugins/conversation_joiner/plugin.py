@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import (
@@ -679,6 +680,7 @@ class ConversationJoinerPlugin(Plugin):
                 reply_to_message_id=reply_to_message_id,
                 attention_frame=AttentionFrame(
                     trigger_kind="engaged_continue",
+                    episode_id=state.episode_id,
                     anchor_message_id=anchor.message_id,
                     messages=tuple(batch.messages),
                     reason=decision.reason if decision is not None else "",
@@ -1272,8 +1274,16 @@ class ConversationJoinerPlugin(Plugin):
         decision: _SecretaryDecision,
     ) -> AttentionFrame:
         selected = _select_context_entries(self._contexts.get(chat_key, ()), cfg)
+        episode_id = ""
+        if self._sm is not None:
+            episode_id = self._sm.get_state(chat_key).episode_id
+        if not episode_id:
+            # Engagement-disabled mode still represents a bounded one-shot
+            # attention episode, even though no state remains active afterward.
+            episode_id = uuid4().hex
         return AttentionFrame(
             trigger_kind="proactive_join",
+            episode_id=episode_id,
             anchor_message_id=anchor.message_id,
             messages=tuple(entry.message for entry in selected),
             reason=decision.reason,

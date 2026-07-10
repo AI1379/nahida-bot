@@ -799,6 +799,7 @@ class TestMessageRouterAgentDispatch:
                     reply_to_message_id="m2",
                     attention_frame=AttentionFrame(
                         trigger_kind="engaged_continue",
+                        episode_id="episode-1",
                         anchor_message_id="m2",
                         messages=batch,
                         reason="batch",
@@ -833,7 +834,9 @@ class TestMessageRouterAgentDispatch:
         assert "Batch message_id: m3" in frames[0].content
         assert "Current anchor message_id: m2" in frames[0].content
         assert "Attention trigger: engaged_continue" in frames[0].content
+        assert "Attention episode_id: episode-1" in frames[0].content
         assert "Attention focus: spam concern" in frames[0].content
+        assert frames[0].metadata["attention_episode_id"] == "episode-1"
         assert (
             '<message_context trust="untrusted" role="batch_message">'
             in frames[0].content
@@ -844,6 +847,8 @@ class TestMessageRouterAgentDispatch:
         proactive_turns = [turn for turn in turns if turn.source == "proactive_join"]
         assert len(proactive_turns) == 1
         assert proactive_turns[0].content == "but will it spam?"
+        assert proactive_turns[0].metadata is not None
+        assert proactive_turns[0].metadata["attention_episode_id"] == "episode-1"
         assert "Conversation Joiner Batch Context" not in proactive_turns[0].content
 
         channel = channel_registry.get("test")
