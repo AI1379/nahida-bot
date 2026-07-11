@@ -246,6 +246,16 @@ class MockBotAPI:
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
         return []
 
+    async def identity_manage(
+        self,
+        action: str,
+        *,
+        person_id: str = "",
+        display_name: str = "",
+        account_key: str = "",
+    ) -> dict[str, Any]:
+        return {"action": action}
+
     @property
     def scheduler_service(self) -> Any | None:
         return None
@@ -880,6 +890,16 @@ class ConsoleMockBotAPI:
 
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
         return []
+
+    async def identity_manage(
+        self,
+        action: str,
+        *,
+        person_id: str = "",
+        display_name: str = "",
+        account_key: str = "",
+    ) -> dict[str, Any]:
+        return {"action": action}
 
     async def memory_store(
         self, key: str, content: str, *, metadata: dict[str, Any] | None = None

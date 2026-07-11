@@ -7,9 +7,16 @@ domain objects.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.db.repositories.sqlite_identity_repo import SQLiteIdentityRepository
-from nahida_bot.identity.models import AccountLink, Person, ParticipantObservation
+from nahida_bot.identity.models import (
+    AccountLink,
+    IdentityAuditEntry,
+    Person,
+    ParticipantObservation,
+)
 
 
 class SQLiteIdentityStore:
@@ -59,6 +66,32 @@ class SQLiteIdentityStore:
             last_message_id=observation.last_message_id,
         )
 
+    async def list_people(self) -> list[Person]:
+        return [_row_to_person(row) for row in await self._repo.list_people()]
+
+    async def list_observations(
+        self, *, account_key: str = "", limit: int = 100
+    ) -> list[ParticipantObservation]:
+        rows = await self._repo.list_observations(
+            account_key=account_key,
+            limit=limit,
+        )
+        return [_row_to_observation(row) for row in rows]
+
+    async def record_audit(self, entry: IdentityAuditEntry) -> int:
+        return await self._repo.record_audit(
+            action=entry.action,
+            actor=entry.actor,
+            target_type=entry.target_type,
+            target_id=entry.target_id,
+            before=dict(entry.before),
+            after=dict(entry.after),
+            metadata=dict(entry.metadata),
+        )
+
+    async def list_audit(self, *, limit: int = 100) -> list[IdentityAuditEntry]:
+        return [_row_to_audit(row) for row in await self._repo.list_audit(limit=limit)]
+
 
 def _row_to_account_link(row: dict[str, object]) -> AccountLink:
     metadata = row.get("metadata")
@@ -73,4 +106,46 @@ def _row_to_account_link(row: dict[str, object]) -> AccountLink:
         verification=str(row["verification"]),  # type: ignore[arg-type]
         linked_by=str(row.get("linked_by", "")),
         metadata=dict(metadata) if isinstance(metadata, dict) else {},
+    )
+
+
+def _row_to_person(row: dict[str, object]) -> Person:
+    metadata = row.get("metadata")
+    return Person(
+        person_id=str(row["person_id"]),
+        display_name=str(row.get("display_name", "")),
+        status=str(row.get("status", "active")),
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+    )
+
+
+def _row_to_observation(row: dict[str, object]) -> ParticipantObservation:
+    role_tags = row.get("role_tags")
+    return ParticipantObservation(
+        chat_address=str(row["chat_address"]),
+        account_key=str(row["account_key"]),
+        display_name=str(row.get("display_name", "")),
+        role_tags=tuple(str(tag) for tag in role_tags)
+        if isinstance(role_tags, list)
+        else (),
+        first_seen_at=datetime.fromisoformat(str(row["first_seen_at"])),
+        last_seen_at=datetime.fromisoformat(str(row["last_seen_at"])),
+        last_message_id=str(row.get("last_message_id", "")),
+    )
+
+
+def _row_to_audit(row: dict[str, object]) -> IdentityAuditEntry:
+    before = row.get("before")
+    after = row.get("after")
+    metadata = row.get("metadata")
+    return IdentityAuditEntry(
+        audit_id=int(str(row["audit_id"])),
+        action=str(row["action"]),
+        actor=str(row["actor"]),
+        target_type=str(row["target_type"]),
+        target_id=str(row["target_id"]),
+        before=dict(before) if isinstance(before, dict) else {},
+        after=dict(after) if isinstance(after, dict) else {},
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        created_at=datetime.fromisoformat(str(row["created_at"])),
     )

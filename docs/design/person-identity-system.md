@@ -2,7 +2,7 @@
 
 > 记录时间：2026-06-07
 > 最近修订：2026-06-19（架构调整：**信任边界移到"动作授权"，与"记忆身份"解耦**，据此降级软/硬身份、sensitivity/visibility 访问控制、OTP 自助链接；Phase 3 落地：identity-aware 记忆写入）
-> 状态：Phase 0-3 已实现并验证；Phase A（动作授权闸）**按用户决定暂缓**——先完成记忆相关部分，授权闸之后做（记忆侧已与之解耦，见 §2.5）；Phase 4-5（管理命令、迁移）待实现
+> 状态：Phase 0-3 与 Phase A 已实现并验证；Phase 4-5（管理命令、迁移）待实现。2026-07-11 起新增 Phase B，收敛 transport / actor / conversation / reply route / credential 边界。
 > 相关文档：
 >
 > - [memory-scoping.md](memory-scoping.md) — 当前 `chat` / `global` 记忆隔离设计
@@ -604,15 +604,33 @@ person/account > chat > global
 
 ### Phase 4：管理命令与 WebUI
 
-- [ ] 管理员命令：whoami / accounts / observations / link / unlink。
-- [ ] WebUI 身份页面：person 列表、账号、观察记录、记忆 scope。
-- [ ] 所有声明/解除操作写审计日志。
+- [x] 管理员命令：whoami / people / observations / create / link / unlink。
+- [x] WebUI 身份页面：person 列表、账号、观察记录与审计记录。
+- [x] 所有声明/解除操作写持久 `identity_audit_log`。
 > 无 OTP、无自助链接命令（§9.3）。
 
 ### Phase 5：迁移
 
-- [ ] 迁移脚本 inspect/apply（scope 调整，无 visibility 标签）。
+- [x] 迁移脚本 inspect/apply（`scripts/migrate_identity_memory.py`；仅依据
+  active account link 与结构化 metadata，生成 pending plan 后人工确认）。
 - [ ] 后台 compaction 合并 account scope 到 person scope。
+
+### Phase B：Turn 身份与路由边界收敛
+
+Desktop Node 联调表明，现有 `session_id` 仍被实现层同时用于推导入口、
+发送者、短期历史、回复目的地和记忆 scope。Phase B 采用兼容迁移，不立即
+替换 `SessionKey`：
+
+- [x] `SessionContext` 显式携带 `transport_address`、`conversation_id`、
+  `reply_route`、`credential_id`；现有 `sender_account_key` / `person_id` 继续
+  表示 actor identity。
+- [x] 传统 Channel turn 投影兼容值，确保现有行为与持久 session 不变。
+- [x] Node credential 绑定 actor account；设备 `node_id` 不再伪装成人员账号。
+- [x] Node ingress 不依赖 `channel_registry`，回复按 `reply_route` 定向返回。
+- [x] Node turn 使用 credential 绑定的 `conversation_id` 作为 history lane；
+  memory policy 继续独立消费
+  person/account/chat(global) scope。
+- [x] 为 node/person/conversation/reply-route 的授权组合补不变量测试。
 
 ## 13. 测试计划
 

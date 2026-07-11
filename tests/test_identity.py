@@ -277,6 +277,43 @@ async def test_resolver_unlinked(store: SQLiteIdentityStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolver_uses_gateway_approved_actor_override(
+    store: SQLiteIdentityStore,
+) -> None:
+    await store.upsert_person(Person(person_id="owner"))
+    await store.upsert_account_link(
+        AccountLink(
+            account_key="desktop:user:owner",
+            person_id="owner",
+            channel="desktop",
+            platform_account_id="owner",
+        )
+    )
+    resolver = IdentityResolver(store, enabled=True)
+    inbound = _inbound(
+        platform="conversation",
+        user_id="must-not-be-used",
+        sender_context=SenderContext(platform_user_id="must-not-be-used"),
+    )
+    address = ChatAddress(
+        channel="conversation",
+        target_type="private",
+        target_id="owner-desktop",
+    )
+
+    identity = await resolver.resolve(
+        inbound,
+        address,
+        "conversation:private:owner-desktop",
+        account_key_override="desktop:user:owner",
+    )
+
+    assert identity is not None
+    assert identity.sender_account_key == "desktop:user:owner"
+    assert identity.person_id == "owner"
+
+
+@pytest.mark.asyncio
 async def test_resolver_no_account_returns_none(store: SQLiteIdentityStore) -> None:
     resolver = IdentityResolver(store, enabled=True)
     inbound = _inbound(user_id="", sender_context=None)

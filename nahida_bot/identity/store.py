@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from nahida_bot.identity.models import AccountLink, Person, ParticipantObservation
+from nahida_bot.identity.models import (
+    AccountLink,
+    IdentityAuditEntry,
+    Person,
+    ParticipantObservation,
+)
 
 
 class IdentityStore(Protocol):
@@ -41,3 +46,13 @@ class IdentityStore(Protocol):
     async def record_observation(self, observation: ParticipantObservation) -> None:
         """Upsert how an account last appeared in a chat."""
         ...
+
+    async def list_people(self) -> list[Person]: ...
+
+    async def list_observations(
+        self, *, account_key: str = "", limit: int = 100
+    ) -> list[ParticipantObservation]: ...
+
+    async def record_audit(self, entry: IdentityAuditEntry) -> int: ...
+
+    async def list_audit(self, *, limit: int = 100) -> list[IdentityAuditEntry]: ...

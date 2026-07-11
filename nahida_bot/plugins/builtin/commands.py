@@ -2274,12 +2274,25 @@ class BuiltinCommandsPlugin(Plugin):
     async def _cmd_identity(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
-        action = args.strip().lower()
-        if action not in {"", "whoami"}:
-            return "Usage:\n  /identity whoami  — show your resolved identity"
+        parts = args.strip().split()
+        action = parts[0].lower() if parts else "whoami"
+        if action not in {
+            "whoami",
+            "people",
+            "observations",
+            "create",
+            "link",
+            "unlink",
+        }:
+            return self._identity_usage()
         ctx = current_session.get()
         if ctx is None:
             return "No active session context."
+        if action != "whoami":
+            try:
+                return await self._run_identity_management(action, parts[1:])
+            except Exception as exc:
+                return f"Identity operation failed: {exc}"
         lines = [f"Session: {session_id}"]
         if ctx.sender_account_key:
             lines.append(f"Account: {ctx.sender_account_key}")
@@ -2293,6 +2306,68 @@ class BuiltinCommandsPlugin(Plugin):
         if ctx.sender_display_name:
             lines.append(f"Display name: {ctx.sender_display_name}")
         return "\n".join(lines)
+
+    async def _run_identity_management(self, action: str, args: list[str]) -> str:
+        if action == "people":
+            result = await self.api.identity_manage("list")
+            people = result.get("people", [])
+            if not people:
+                return "No people configured."
+            return "\n".join(
+                f"{item.get('person_id')}: {item.get('display_name') or '-'} "
+                f"[{', '.join(item.get('accounts', [])) or 'no accounts'}]"
+                for item in people
+                if isinstance(item, dict)
+            )
+        if action == "observations":
+            account_key = args[0] if args else ""
+            result = await self.api.identity_manage(
+                "observations",
+                account_key=account_key,
+            )
+            rows = result.get("observations", [])
+            if not rows:
+                return "No identity observations."
+            return "\n".join(
+                f"{item.get('account_key')} in {item.get('chat_address')} "
+                f"({item.get('display_name') or '-'})"
+                for item in rows
+                if isinstance(item, dict)
+            )
+        if action == "create" and args:
+            result = await self.api.identity_manage(
+                "create",
+                person_id=args[0],
+                display_name=" ".join(args[1:]),
+            )
+            return f"Person saved: {result.get('person_id')}"
+        if action == "link" and len(args) == 2:
+            result = await self.api.identity_manage(
+                "link",
+                account_key=args[0],
+                person_id=args[1],
+            )
+            return f"Linked {result.get('account_key')} -> {result.get('person_id')}"
+        if action == "unlink" and len(args) == 1:
+            result = await self.api.identity_manage("unlink", account_key=args[0])
+            return (
+                f"Unlinked {args[0]}"
+                if result.get("unlinked")
+                else f"No active link for {args[0]}"
+            )
+        return self._identity_usage()
+
+    @staticmethod
+    def _identity_usage() -> str:
+        return (
+            "Usage:\n"
+            "  /identity whoami\n"
+            "  /identity people\n"
+            "  /identity observations [account_key]\n"
+            "  /identity create <person_id> [display name]\n"
+            "  /identity link <account_key> <person_id>\n"
+            "  /identity unlink <account_key>"
+        )
 
     @staticmethod
     def _format_agent_status(status: dict) -> str:

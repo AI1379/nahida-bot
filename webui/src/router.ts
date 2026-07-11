@@ -68,6 +68,12 @@ const routes: RouteRecordRaw[] = [
         meta: { label: "Memory", icon: "Database" },
       },
       {
+        path: "identity",
+        name: "identity",
+        component: () => import("@/features/identity/IdentityPage.vue"),
+        meta: { label: "Identity", icon: "ContactRound" },
+      },
+      {
         path: "files",
         name: "files",
         component: () => import("@/features/files/FilesPage.vue"),

@@ -148,6 +148,12 @@ class MessageRouter:
         address: ChatAddress,
         session_id: str,
         workspace_id: str | None,
+        *,
+        actor_account_key: str = "",
+        transport_address: str = "",
+        conversation_id: str = "",
+        reply_route: str = "",
+        credential_id: str = "",
     ) -> SessionContext:
         """Construct the SessionContext for an inbound turn, with identity.
 
@@ -158,7 +164,10 @@ class MessageRouter:
         person_id: str | None = None
         if self._identity_resolver is not None:
             identity = await self._identity_resolver.resolve(
-                inbound, address, session_id
+                inbound,
+                address,
+                session_id,
+                account_key_override=actor_account_key,
             )
             if identity is not None:
                 sender_account_key = identity.sender_account_key
@@ -181,6 +190,14 @@ class MessageRouter:
             ),
             sender_account_key=sender_account_key,
             person_id=person_id,
+            # Compatibility projection for traditional channel turns.  These
+            # fields are explicit so non-channel transports (Desktop Node,
+            # WebUI identities, future workers) no longer need to overload a
+            # ChatAddress-shaped session id with unrelated responsibilities.
+            transport_address=transport_address or address.chat_key,
+            conversation_id=conversation_id or session_id,
+            reply_route=reply_route or address.chat_key,
+            credential_id=credential_id or sender_account_key,
         )
 
     async def _observe_chat_name(
@@ -603,7 +620,15 @@ class MessageRouter:
 
         # Set session context so tool handlers can access it
         session_ctx = await self._build_session_context(
-            inbound, address, session_id, workspace_id
+            inbound,
+            address,
+            session_id,
+            workspace_id,
+            actor_account_key=event.payload.actor_account_key,
+            transport_address=event.payload.transport_address,
+            conversation_id=event.payload.conversation_id,
+            reply_route=event.payload.reply_route,
+            credential_id=event.payload.credential_id,
         )
         token = current_session.set(session_ctx)
         try:
@@ -1229,14 +1254,20 @@ class MessageRouter:
             )
             return
 
-        channel = self._channels.get(inbound.platform)
-        if channel is None:
-            logger.warning(
-                "message_router.no_channel",
-                platform=inbound.platform,
-                session_id=session_id,
-            )
-            return
+        turn_ctx = current_session.get()
+        message_payload_kwargs = {
+            "conversation_id": (
+                turn_ctx.effective_conversation_id if turn_ctx is not None else ""
+            ),
+            "transport_address": (
+                turn_ctx.transport_address if turn_ctx is not None else ""
+            ),
+            "reply_route": turn_ctx.reply_route if turn_ctx is not None else "",
+            "credential_id": turn_ctx.credential_id if turn_ctx is not None else "",
+            "actor_account_key": (
+                turn_ctx.actor_account_key if turn_ctx is not None else ""
+            ),
+        }
 
         # Publish MessageSending event for observation/audit hooks.
         sending_result = await self._event_bus.publish(
@@ -1245,6 +1276,7 @@ class MessageRouter:
                     message=inbound,
                     session_id=session_id,
                     outbound=outbound,
+                    **message_payload_kwargs,
                 ),
                 source="message_router",
             )
@@ -1257,6 +1289,40 @@ class MessageRouter:
             **_inbound_log_fields(inbound),
             **_outbound_log_fields(outbound),
         )
+
+        # Node-originated turns are delivered by NodeEventBridge.  Publishing
+        # MessageSent here keeps the normal event contract without inventing a
+        # fake Channel implementation or treating a device as a chat account.
+        reply_route = str(message_payload_kwargs["reply_route"])
+        if reply_route.startswith("node:"):
+            sent_result = await self._event_bus.publish(
+                MessageSent(
+                    payload=MessagePayload(
+                        message=inbound,
+                        session_id=session_id,
+                        outbound=outbound,
+                        **message_payload_kwargs,
+                    ),
+                    source="message_router",
+                )
+            )
+            logger.debug(
+                "message_router.node_response_dispatched",
+                session_id=session_id,
+                reply_route=reply_route,
+                message_sent_dispatched=sent_result.dispatched,
+                message_sent_failure_count=len(sent_result.failures),
+            )
+            return
+
+        channel = self._channels.get(inbound.platform)
+        if channel is None:
+            logger.warning(
+                "message_router.no_channel",
+                platform=inbound.platform,
+                session_id=session_id,
+            )
+            return
 
         outbound_message = (
             _with_chat_address(outbound, _address_from_inbound(inbound))
@@ -1296,6 +1362,7 @@ class MessageRouter:
                     message=inbound,
                     session_id=session_id,
                     outbound=outbound_message,
+                    **message_payload_kwargs,
                 ),
                 source="message_router",
             )

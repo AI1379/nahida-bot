@@ -13,6 +13,7 @@ import {
   Brain,
   BookOpen,
   Info,
+  ContactRound,
   PanelLeftOpen,
   PanelLeftClose,
 } from "lucide-vue-next";
@@ -35,6 +36,7 @@ const items: NavItem[] = [
   { name: "cron", icon: Clock, to: "/cron", label: "CRON" },
   { name: "sessions", icon: MessageSquare, to: "/sessions", label: "Sessions" },
   { name: "memory", icon: Database, to: "/memory", label: "Memory" },
+  { name: "identity", icon: ContactRound, to: "/identity", label: "Identity" },
   { name: "files", icon: FolderOpen, to: "/files", label: "Files" },
   { name: "logs", icon: ScrollText, to: "/logs", label: "Logs" },
   { name: "plugins", icon: Plug, to: "/plugins", label: "Plugins" },

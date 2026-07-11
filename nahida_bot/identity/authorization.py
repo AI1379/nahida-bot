@@ -26,7 +26,9 @@ from __future__ import annotations
 # cross-session effects. ``memory_write`` is deliberately NOT here: it writes
 # the sender's own memory scope and is a memory concern, not an authorization
 # one (gating it would violate the auth/memory decoupling).
-PRIVILEGED_TOOLS: frozenset[str] = frozenset({"exec", "message", "workspace_write"})
+PRIVILEGED_TOOLS: frozenset[str] = frozenset(
+    {"exec", "message", "workspace_write", "identity_manage"}
+)
 
 
 class NotAuthorized(Exception):

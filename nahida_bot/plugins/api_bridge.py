@@ -213,6 +213,78 @@ class RealBotAPI:
 
     # ── Messaging ──────────────────────────────────────
 
+    async def identity_manage(
+        self,
+        action: str,
+        *,
+        person_id: str = "",
+        display_name: str = "",
+        account_key: str = "",
+    ) -> dict[str, Any]:
+        """Run an audited, admin-only identity management operation."""
+        from nahida_bot.core.context import current_session
+        from nahida_bot.identity.management import IdentityManager
+
+        app = self._event_bus.context.app
+        store = getattr(app, "_identity_store", None)
+        gate = getattr(app, "_authorization_gate", None)
+        ctx = current_session.get()
+        actor = ctx.actor_account_key if ctx is not None else ""
+        if gate is not None:
+            gate.authorize("identity_manage", actor)
+        if store is None:
+            raise RuntimeError("identity store is not initialized")
+        manager = IdentityManager(store)
+
+        if action == "list":
+            people = await store.list_people()
+            return {
+                "people": [
+                    {
+                        "person_id": person.person_id,
+                        "display_name": person.display_name,
+                        "accounts": [
+                            item.account_key
+                            for item in await store.list_accounts(person.person_id)
+                        ],
+                    }
+                    for person in people
+                ]
+            }
+        if action == "observations":
+            observations = await store.list_observations(
+                account_key=account_key,
+                limit=50,
+            )
+            return {
+                "observations": [
+                    {
+                        "account_key": item.account_key,
+                        "chat_address": item.chat_address,
+                        "display_name": item.display_name,
+                    }
+                    for item in observations
+                ]
+            }
+        if action == "create":
+            person = await manager.create_or_update_person(
+                person_id=person_id,
+                display_name=display_name,
+                actor=actor,
+            )
+            return {"person_id": person.person_id, "display_name": person.display_name}
+        if action == "link":
+            link = await manager.link_account(
+                account_key=account_key,
+                person_id=person_id,
+                actor=actor,
+            )
+            return {"account_key": link.account_key, "person_id": link.person_id}
+        if action == "unlink":
+            changed = await manager.unlink_account(account_key=account_key, actor=actor)
+            return {"account_key": account_key, "unlinked": changed}
+        raise ValueError(f"unknown identity action: {action}")
+
     async def send_message(
         self, target: str, message: OutboundMessage, *, channel: str = ""
     ) -> str:

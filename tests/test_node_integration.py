@@ -33,10 +33,20 @@ from nahida_bot.node.client import NodeClient
 
 class _RecordingInputSink:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str, str, str, str]] = []
 
-    async def submit(self, *, node_id: str, session_id: str, text: str) -> None:
-        self.calls.append((node_id, session_id, text))
+    async def submit(
+        self,
+        *,
+        node_id: str,
+        credential_id: str,
+        actor_account_key: str,
+        conversation_id: str,
+        text: str,
+    ) -> None:
+        self.calls.append(
+            (node_id, credential_id, actor_account_key, conversation_id, text)
+        )
 
 
 @pytest.fixture
@@ -95,7 +105,11 @@ def _bound_port(server: uvicorn.Server) -> int | None:
 
 @pytest.fixture
 def node_token(gateway_app: FastAPI) -> str:
-    full_token, _ = gateway_app.state.node_auth.issue_node_token(node_id="test-node")
+    full_token, _ = gateway_app.state.node_auth.issue_node_token(
+        node_id="test-node",
+        actor_account_key="desktop:user:owner",
+        conversation_id="conversation:private:owner-desktop",
+    )
     return full_token
 
 
@@ -295,7 +309,13 @@ async def test_registered_node_input_reaches_configured_sink(
         assert response["ok"] is True
         assert response["payload"] == {"accepted": True}
         assert gateway_app.state.node_input_sink.calls == [
-            ("test-node", "test:private:c1", "hello from node")
+            (
+                "test-node",
+                gateway_app.state.node_auth._extract_token_id(node_token),
+                "desktop:user:owner",
+                "conversation:private:owner-desktop",
+                "hello from node",
+            )
         ]
 
 

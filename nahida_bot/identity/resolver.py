@@ -76,6 +76,8 @@ class IdentityResolver:
         inbound: InboundMessage,
         address: ChatAddress | None,
         session_id: str,
+        *,
+        account_key_override: str = "",
     ) -> IdentityResolution | None:
         """Resolve identity for one inbound message.
 
@@ -85,11 +87,20 @@ class IdentityResolver:
         if not self._enabled:
             return None
 
-        account_key = account_key_from_inbound(inbound, address)
-        if account_key is None:
-            return None
-
-        account_key_str = str(account_key)
+        if account_key_override:
+            try:
+                account_key_str = str(AccountKey.parse(account_key_override))
+            except ValueError:
+                _logger.warning(
+                    "identity.invalid_account_override",
+                    account_key=account_key_override,
+                )
+                return None
+        else:
+            account_key = account_key_from_inbound(inbound, address)
+            if account_key is None:
+                return None
+            account_key_str = str(account_key)
         chat_address = address.chat_key if address is not None else ""
 
         await self._record_observation(inbound, account_key_str, chat_address)

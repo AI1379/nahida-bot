@@ -18,10 +18,20 @@ from nahida_bot.gateway.services.node_registry import NodeRegistry
 
 class _FakeSink(NodeInputSink):
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str, str, str, str]] = []
 
-    async def submit(self, *, node_id: str, session_id: str, text: str) -> None:
-        self.calls.append((node_id, session_id, text))
+    async def submit(
+        self,
+        *,
+        node_id: str,
+        credential_id: str,
+        actor_account_key: str,
+        conversation_id: str,
+        text: str,
+    ) -> None:
+        self.calls.append(
+            (node_id, credential_id, actor_account_key, conversation_id, text)
+        )
 
 
 def _make_registered_session(
@@ -159,10 +169,22 @@ async def test_submit_node_input_delegates_to_sink() -> None:
     invoker = NodeInvoker(registry, input_sink=sink)
 
     await invoker.submit_node_input(
-        node_id="desktop-1", session_id="milky:private:10001", text="hello"
+        node_id="desktop-1",
+        credential_id="nt_desktop_1",
+        actor_account_key="desktop:user:owner",
+        conversation_id="conversation:private:owner-desktop",
+        text="hello",
     )
 
-    assert sink.calls == [("desktop-1", "milky:private:10001", "hello")]
+    assert sink.calls == [
+        (
+            "desktop-1",
+            "nt_desktop_1",
+            "desktop:user:owner",
+            "conversation:private:owner-desktop",
+            "hello",
+        )
+    ]
 
 
 @pytest.mark.asyncio

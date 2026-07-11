@@ -44,33 +44,61 @@ async def test_submit_publishes_typed_node_message() -> None:
 
     await sink.submit(
         node_id="desktop-1",
-        session_id="test:private:c1:desktop",
+        credential_id="nt_desktop_1",
+        actor_account_key="desktop:user:owner",
+        conversation_id="conversation:private:owner-desktop",
         text="  hello from desktop  ",
     )
 
     assert len(seen) == 1
     event = seen[0]
     assert event.source == "node:desktop-1"
-    assert event.payload.session_id == "test:private:c1:desktop"
+    assert event.payload.session_id == "conversation:private:owner-desktop"
+    assert event.payload.reply_route == "node:desktop-1"
+    assert event.payload.actor_account_key == "desktop:user:owner"
     assert event.payload.message.text == "hello from desktop"
-    assert event.payload.message.user_id == "node:desktop-1"
+    assert event.payload.message.user_id == "desktop:user:owner"
     assert event.payload.message.raw_event["source"] == "node"
     assert event.payload.message.message_context is not None
     assert "source:node" in event.payload.message.message_context.extra_tags
 
 
 @pytest.mark.asyncio
-async def test_submit_rejects_untyped_or_disconnected_targets() -> None:
-    with pytest.raises(ValueError, match="typed chat address"):
+async def test_submit_rejects_untyped_or_unbound_targets() -> None:
+    with pytest.raises(ValueError, match="typed address"):
         await ApplicationNodeInputSink(_app()).submit(
             node_id="desktop-1",
-            session_id="test:c1",
+            credential_id="nt_desktop_1",
+            actor_account_key="desktop:user:owner",
+            conversation_id="test:c1",
             text="hello",
         )
 
-    with pytest.raises(NodeInputUnavailable, match="not connected"):
+    with pytest.raises(NodeInputUnavailable, match="not bound"):
         await ApplicationNodeInputSink(_app(connected=False)).submit(
             node_id="desktop-1",
-            session_id="test:private:c1",
+            credential_id="nt_desktop_1",
+            actor_account_key="",
+            conversation_id="conversation:private:owner-desktop",
             text="hello",
         )
+
+
+@pytest.mark.asyncio
+async def test_submit_does_not_require_a_channel_for_node_conversation() -> None:
+    app = _app(connected=False)
+    seen: list[MessageReceived] = []
+
+    async def capture(event: MessageReceived, ctx: EventContext) -> None:
+        seen.append(event)
+
+    app.event_bus.subscribe(MessageReceived, capture)
+    await ApplicationNodeInputSink(app).submit(
+        node_id="desktop-1",
+        credential_id="nt_desktop_1",
+        actor_account_key="desktop:user:owner",
+        conversation_id="conversation:private:owner-desktop",
+        text="hello",
+    )
+
+    assert len(seen) == 1

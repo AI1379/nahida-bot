@@ -11,7 +11,14 @@ from nahida_bot.plugins.base import InboundAttachment
 
 @dataclass(slots=True, frozen=True)
 class SessionContext:
-    """Carries the current request's session identity through the call stack."""
+    """Carries the current turn's identity and routing through the call stack.
+
+    ``session_id`` remains the legacy history/run key.  The explicit routing
+    fields below prevent consumers from having to infer transport, actor,
+    conversation, reply destination, and credential from that one string.
+    Channel-originated turns initially use compatibility values; node and
+    other non-channel transports can supply independent values later.
+    """
 
     platform: str  # e.g. "telegram"
     chat_id: str  # e.g. "12345"
@@ -26,6 +33,25 @@ class SessionContext:
     # account could not be derived. Populated by MessageRouter via IdentityResolver.
     sender_account_key: str = ""
     person_id: str | None = None
+    # Boundary fields introduced while finishing issue #7.  They deliberately
+    # do not replace the legacy fields yet, so existing plugins and persisted
+    # sessions remain compatible during the migration.
+    transport_address: str = ""
+    conversation_id: str = ""
+    reply_route: str = ""
+    credential_id: str = ""
+
+    @property
+    def effective_conversation_id(self) -> str:
+        """Return the explicit conversation id or the legacy session id."""
+
+        return self.conversation_id or self.session_id
+
+    @property
+    def actor_account_key(self) -> str:
+        """Stable actor-account alias used by new identity-aware code."""
+
+        return self.sender_account_key
 
 
 @dataclass(slots=True, frozen=True)

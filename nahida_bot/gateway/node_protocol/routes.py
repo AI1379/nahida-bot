@@ -162,7 +162,11 @@ def register_inbound_handlers(
 
         payload = envelope.typed_request_payload(NodeInputSubmitPayload)
         await invoker.submit_node_input(
-            node_id=sess.node_id, session_id=payload.session_id, text=payload.text
+            node_id=sess.node_id,
+            credential_id=sess.credential_id,
+            actor_account_key=sess.actor_account_key,
+            conversation_id=sess.conversation_id or payload.session_id,
+            text=payload.text,
         )
         return InboundHandlerResult(ok=True, payload={"accepted": True})
 
@@ -212,6 +216,9 @@ async def node_websocket(websocket: WebSocket) -> None:
     session = NodeSession(
         session_id=f"node_session_{principal.token_id[:16]}",
         node_id=principal.node_id,
+        credential_id=principal.token_id,
+        actor_account_key=principal.actor_account_key,
+        conversation_id=principal.conversation_id,
     )
     session.state = NodeSessionState.REGISTERING
     dispatcher = NodeDispatcher(session)

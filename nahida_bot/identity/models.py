@@ -115,3 +115,18 @@ class IdentityResolution:
     person_id: str | None
     confidence: Confidence
     source: LinkSource
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityAuditEntry:
+    """One immutable identity-management audit record."""
+
+    action: str
+    actor: str
+    target_type: str
+    target_id: str
+    before: dict[str, object] = field(default_factory=dict)
+    after: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=_utc_now)
+    audit_id: int | None = None

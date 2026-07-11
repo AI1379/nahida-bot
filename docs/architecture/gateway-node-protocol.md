@@ -437,6 +437,18 @@ node token 与现有 bearer/webui 体系并行，由 `node_auth` service 独立�
 
 Gateway 维护 capability 授权策略：哪些 user/session/plugin 可以调用哪些 node 的哪些 capability。Node 注册 capability 不等于默认信任。调用入口、类型化 actor、策略模型、审批和持久审计见 [Gateway-Node 调用入口与授权设计](gateway-node-invocation-authorization.md)。公开入口启用后采用 fail-closed；owner 也需要显式 grant，高风险调用还需要 approval。
 
+Node credential 与人员身份分离。配对/签发时，Gateway 可为 credential 绑定：
+
+- `actor_account_key`：该 credential 获准代表的账号，例如
+  `desktop:user:owner`；不能从 `node_id` 推导。
+- `conversation_id`：该 credential 默认使用的短期 history lane，例如
+  `conversation:private:owner-desktop`。
+
+运行时由 Gateway 从已验证 token 恢复这两个绑定，客户端声明的 person 或
+node id 均不能替代 actor account。`IdentityStore` 再独立解析
+`actor_account_key -> person_id`；worker/tool-host 可不绑定人员账号，但不能
+提交人员输入。
+
 ## 9. 错误码
 
 错误码是稳定契约，新增允许，已有码语义不破坏性变更。

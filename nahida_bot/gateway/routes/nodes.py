@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from nahida_bot.gateway.deps import get_application
+from nahida_bot.identity.models import AccountKey
 
 router = APIRouter()
 
@@ -23,6 +24,14 @@ class PairingStartRequest(BaseModel):
     node_id: str = Field(..., description="Proposed node identifier")
     display_name: str = ""
     scope: list[str] = Field(default_factory=list)
+    actor_account_key: str = Field(
+        default="",
+        description="Account this credential may act for; never inferred from node_id",
+    )
+    conversation_id: str = Field(
+        default="",
+        description="Optional server-approved default conversation/history lane",
+    )
 
 
 class PairingStartResponse(BaseModel):
@@ -40,6 +49,8 @@ class PairingCompleteResponse(BaseModel):
     node_token: str
     token_id: str
     node_id: str
+    actor_account_key: str = ""
+    conversation_id: str = ""
 
 
 class NodeSummaryResponse(BaseModel):
@@ -103,10 +114,20 @@ async def pairing_start(
     body: PairingStartRequest, request: Request, app=Depends(get_application)
 ) -> PairingStartResponse:
     _registry, auth, _invoker = _get_services(request)
+    if body.actor_account_key:
+        try:
+            AccountKey.parse(body.actor_account_key)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
     pairing_token, token_id = auth.issue_pairing_token(
         node_id=body.node_id,
         display_name=body.display_name,
         scope=tuple(body.scope),
+        actor_account_key=body.actor_account_key,
+        conversation_id=body.conversation_id,
     )
     return PairingStartResponse(
         pairing_token=pairing_token,
@@ -135,6 +156,8 @@ async def pairing_complete(
         node_token=node_token,
         token_id=token_id,
         node_id=node_id,
+        actor_account_key=(record.actor_account_key if record is not None else ""),
+        conversation_id=(record.conversation_id if record is not None else ""),
     )
 
 

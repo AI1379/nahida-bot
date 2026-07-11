@@ -51,7 +51,15 @@ class NodeInputSink(Protocol):
     Agent/Session internals.
     """
 
-    async def submit(self, *, node_id: str, session_id: str, text: str) -> None: ...
+    async def submit(
+        self,
+        *,
+        node_id: str,
+        credential_id: str,
+        actor_account_key: str,
+        conversation_id: str,
+        text: str,
+    ) -> None: ...
 
 
 @dataclass
@@ -204,11 +212,25 @@ class NodeInvoker:
     # -- Node input submission --------------------------------------------
 
     async def submit_node_input(
-        self, *, node_id: str, session_id: str, text: str
+        self,
+        *,
+        node_id: str,
+        credential_id: str = "",
+        actor_account_key: str = "",
+        conversation_id: str = "",
+        session_id: str = "",
+        text: str,
     ) -> None:
         if self._input_sink is None:
             raise NodeInputUnavailable("node input submission is not configured")
-        await self._input_sink.submit(node_id=node_id, session_id=session_id, text=text)
+        target_conversation = conversation_id or session_id
+        await self._input_sink.submit(
+            node_id=node_id,
+            credential_id=credential_id,
+            actor_account_key=actor_account_key,
+            conversation_id=target_conversation,
+            text=text,
+        )
 
     # -- Authorization / audit --------------------------------------------
 

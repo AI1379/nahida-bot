@@ -23,6 +23,21 @@ class SQLiteIdentityRepository:
 
     # ── Persons ─────────────────────────────────────────────
 
+    async def list_people(self) -> list[dict[str, Any]]:
+        rows = await self._engine.fetch_all(
+            "SELECT person_id, display_name, status, metadata_json "
+            "FROM persons ORDER BY person_id"
+        )
+        return [
+            {
+                "person_id": str(row["person_id"]),
+                "display_name": str(row["display_name"]),
+                "status": str(row["status"]),
+                "metadata": json.loads(row["metadata_json"] or "{}"),
+            }
+            for row in rows
+        ]
+
     async def upsert_person(
         self,
         *,
@@ -215,3 +230,81 @@ class SQLiteIdentityRepository:
             (account_key,),
         )
         return int(rows[0]["n"]) if rows else 0
+
+    async def list_observations(
+        self, *, account_key: str = "", limit: int = 100
+    ) -> list[dict[str, Any]]:
+        where = "WHERE account_key = ?" if account_key else ""
+        params: tuple[object, ...] = (account_key, limit) if account_key else (limit,)
+        rows = await self._engine.fetch_all(
+            "SELECT account_key, chat_address, display_name, role_tags_json, "
+            "first_seen_at, last_seen_at, last_message_id FROM account_observations "
+            f"{where} ORDER BY last_seen_at DESC LIMIT ?",
+            params,
+        )
+        return [
+            {
+                "account_key": str(row["account_key"]),
+                "chat_address": str(row["chat_address"]),
+                "display_name": str(row["display_name"]),
+                "role_tags": json.loads(row["role_tags_json"] or "[]"),
+                "first_seen_at": str(row["first_seen_at"]),
+                "last_seen_at": str(row["last_seen_at"]),
+                "last_message_id": str(row["last_message_id"]),
+            }
+            for row in rows
+        ]
+
+    # ── Audit ──────────────────────────────────────────────
+
+    async def record_audit(
+        self,
+        *,
+        action: str,
+        actor: str,
+        target_type: str,
+        target_id: str,
+        before: dict[str, Any] | None = None,
+        after: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                "INSERT INTO identity_audit_log "
+                "(action, actor, target_type, target_id, before_json, after_json, "
+                "metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    action,
+                    actor,
+                    target_type,
+                    target_id,
+                    json.dumps(before or {}, ensure_ascii=False),
+                    json.dumps(after or {}, ensure_ascii=False),
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                    _utc_now_iso(),
+                ),
+            )
+            await self._engine.db.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def list_audit(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        rows = await self._engine.fetch_all(
+            "SELECT audit_id, action, actor, target_type, target_id, before_json, "
+            "after_json, metadata_json, created_at FROM identity_audit_log "
+            "ORDER BY audit_id DESC LIMIT ?",
+            (limit,),
+        )
+        return [
+            {
+                "audit_id": int(row["audit_id"]),
+                "action": str(row["action"]),
+                "actor": str(row["actor"]),
+                "target_type": str(row["target_type"]),
+                "target_id": str(row["target_id"]),
+                "before": json.loads(row["before_json"] or "{}"),
+                "after": json.loads(row["after_json"] or "{}"),
+                "metadata": json.loads(row["metadata_json"] or "{}"),
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]

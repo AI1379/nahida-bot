@@ -424,6 +424,25 @@ _SCHEMA_MIGRATIONS = [
     """
     -- Phase 5 transcript replay: transcript_json added in post-migration guard.
     """,
+    # Migration 021: auditable identity management (issue #7 Phase 4).
+    """
+    CREATE TABLE IF NOT EXISTS identity_audit_log (
+        audit_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        action         TEXT NOT NULL,
+        actor          TEXT NOT NULL,
+        target_type    TEXT NOT NULL,
+        target_id      TEXT NOT NULL,
+        before_json    TEXT,
+        after_json     TEXT,
+        metadata_json  TEXT,
+        created_at     TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_identity_audit_created
+        ON identity_audit_log(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_identity_audit_target
+        ON identity_audit_log(target_type, target_id, created_at DESC);
+    """,
 ]
 
 

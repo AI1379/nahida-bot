@@ -180,6 +180,17 @@ class BotAPI(Protocol):
         """Send a message to an external target. Returns platform message ID."""
         ...
 
+    async def identity_manage(
+        self,
+        action: str,
+        *,
+        person_id: str = "",
+        display_name: str = "",
+        account_key: str = "",
+    ) -> dict[str, Any]:
+        """Run one authorized identity-management operation."""
+        ...
+
     async def record_session_event(
         self,
         session_id: str,

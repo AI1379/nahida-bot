@@ -21,6 +21,10 @@ class NodePrincipal:
     token_type: str = "node"  # "node" or "pairing"
     expires_at: str | None = None
     scope: tuple[str, ...] = ()
+    # The credential authenticates a device/service.  It may explicitly act
+    # for an account, but the node id itself is never an account identity.
+    actor_account_key: str = ""
+    conversation_id: str = ""
 
 
 class NodeTokenVerifier(Protocol):

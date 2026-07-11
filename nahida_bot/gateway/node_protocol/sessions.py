@@ -53,6 +53,9 @@ class NodeSession:
     metadata: dict[str, object] = field(default_factory=dict)
     connected_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_seen_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    credential_id: str = ""
+    actor_account_key: str = ""
+    conversation_id: str = ""
     # Wired by the WebSocket endpoint (transport layer). ``request`` performs a
     # full round-trip; ``send`` is one-way. Both are optional so the session
     # can be constructed in tests without a live socket.
@@ -116,6 +119,8 @@ class NodeSession:
             "metadata": self.metadata,
             "connected_at": self.connected_at.isoformat(),
             "last_seen_at": self.last_seen_at.isoformat(),
+            "actor_account_key": self.actor_account_key,
+            "conversation_id": self.conversation_id,
         }
 
 

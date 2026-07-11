@@ -152,3 +152,59 @@ async def test_bridge_finishes_run_without_outbound_message() -> None:
         "terminal": "failed",
         "error": "provider failed",
     }
+
+
+@pytest.mark.asyncio
+async def test_bridge_routes_node_reply_only_to_originating_node() -> None:
+    app = SimpleNamespace()
+    app.event_bus = EventBus(
+        EventContext(app=cast(Any, app), settings=None, logger=MagicMock())
+    )
+    registry = NodeRegistry()
+    deliveries: dict[str, list[NodeEnvelope]] = {
+        "desktop-1": [],
+        "desktop-2": [],
+    }
+
+    for node_id in deliveries:
+        session = NodeSession(session_id=f"session-{node_id}", node_id=node_id)
+
+        async def send(
+            envelope: NodeEnvelope,
+            *,
+            target: str = node_id,
+        ) -> None:
+            deliveries[target].append(envelope)
+
+        session.send = send
+        registry.register_session(
+            session,
+            node_id=node_id,
+            display_name=node_id,
+            node_type="desktop",
+            capabilities=[],
+            metadata={},
+        )
+
+    bridge = NodeEventBridge(cast(Any, app), registry)
+    await bridge.start()
+    try:
+        await app.event_bus.publish(
+            MessageSent(
+                payload=MessagePayload(
+                    message=object(),
+                    session_id="conversation:private:owner-desktop",
+                    conversation_id="conversation:private:owner-desktop",
+                    reply_route="node:desktop-1",
+                    outbound=OutboundMessage(text="only desktop 1"),
+                ),
+                source="message_router",
+            )
+        )
+    finally:
+        await bridge.stop()
+
+    assert [item.event for item in deliveries["desktop-1"]] == [
+        "agent.message.completed"
+    ]
+    assert deliveries["desktop-2"] == []

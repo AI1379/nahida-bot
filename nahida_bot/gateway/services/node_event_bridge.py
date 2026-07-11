@@ -80,11 +80,18 @@ class NodeEventBridge:
         if envelope_payload is None:
             return
         event_name = envelope_payload["event"]
-        # Fan out to every online node. V1 is permissive: all online nodes
-        # receive all events. Authorization filtering is a follow-up.
+        reply_route = str(envelope_payload.get("reply_route", ""))
+        target_node_id = (
+            reply_route.removeprefix("node:") if reply_route.startswith("node:") else ""
+        )
+        # Replies to node-originated turns are routed only to that authenticated
+        # node. Legacy core events without an explicit route retain the V1
+        # broadcast behavior until session subscription policy is implemented.
         for summary in self._registry.list_online_nodes():
             session = self._registry.get_session(summary["session_id"])  # type: ignore[arg-type]
             if session is None or session.send is None:
+                continue
+            if target_node_id and session.node_id != target_node_id:
                 continue
             node_event = build_event(event_name, payload=envelope_payload["payload"])
             try:
@@ -126,6 +133,7 @@ class NodeEventBridge:
             return {
                 "event": "agent.message.completed",
                 "payload": event_payload,
+                "reply_route": getattr(payload, "reply_route", ""),
             }
         if isinstance(event, PluginErrorOccurred):
             return {

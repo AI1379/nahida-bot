@@ -90,6 +90,25 @@ def test_pairing_exchange_rejects_node_token_input() -> None:
     assert svc.exchange_pairing_for_node_token(node_token) is None
 
 
+def test_pairing_preserves_actor_and_conversation_binding() -> None:
+    svc = NodeAuthService()
+    pairing_token, _ = svc.issue_pairing_token(
+        node_id="desktop-local",
+        actor_account_key="desktop:user:owner",
+        conversation_id="conversation:private:owner-desktop",
+    )
+
+    exchanged = svc.exchange_pairing_for_node_token(pairing_token)
+
+    assert exchanged is not None
+    node_token, _ = exchanged
+    principal = svc.verify(node_token)
+    assert principal is not None
+    assert principal.node_id == "desktop-local"
+    assert principal.actor_account_key == "desktop:user:owner"
+    assert principal.conversation_id == "conversation:private:owner-desktop"
+
+
 def test_node_token_expiry() -> None:
     svc = NodeAuthService(default_ttl_seconds=0)  # no global expiry
     full_token, _ = svc.issue_node_token(node_id="n1", ttl_seconds=1)

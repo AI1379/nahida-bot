@@ -115,7 +115,7 @@ async def test_migration_adds_transcript_column_and_bumps_version() -> None:
     await eng.initialize()
     try:
         cur = await eng.db.execute("SELECT version FROM schema_version")
-        assert int((await cur.fetchone())["version"]) == 20
+        assert int((await cur.fetchone())["version"]) == 21
 
         cols = {
             str(r["name"]) for r in await eng.fetch_all("PRAGMA table_info(agent_runs)")

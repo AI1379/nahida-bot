@@ -26,7 +26,15 @@ class ApplicationNodeInputSink:
     def __init__(self, application: Application) -> None:
         self._application = application
 
-    async def submit(self, *, node_id: str, session_id: str, text: str) -> None:
+    async def submit(
+        self,
+        *,
+        node_id: str,
+        credential_id: str,
+        actor_account_key: str,
+        conversation_id: str,
+        text: str,
+    ) -> None:
         router = self._application.message_router
         if router is None:
             raise NodeInputUnavailable("message router is not initialized")
@@ -35,20 +43,23 @@ class ApplicationNodeInputSink:
         if not clean_text:
             raise ValueError("node input text must not be empty")
 
-        try:
-            session_key = SessionKey.parse(session_id)
-        except ValueError as exc:
-            raise ValueError(f"invalid node input session_id: {exc}") from exc
-        address = session_key.address
-        if not address.is_typed:
-            raise ValueError("node input session_id must use a typed chat address")
-        if self._application.channel_registry.get(address.channel) is None:
+        if not actor_account_key:
             raise NodeInputUnavailable(
-                f"channel {address.channel!r} is not connected for node input"
+                "node credential is not bound to an actor account"
             )
 
+        try:
+            session_key = SessionKey.parse(conversation_id)
+        except ValueError as exc:
+            raise ValueError(f"invalid node conversation_id: {exc}") from exc
+        address = session_key.address
+        if not address.is_typed:
+            raise ValueError("node conversation_id must use a typed address")
+
         now = time.time()
-        source_user_id = f"node:{node_id}"
+        # The account is approved by the gateway when the credential is issued.
+        # Never derive human identity from the device/node id.
+        source_user_id = actor_account_key
         inbound = InboundMessage(
             message_id=f"node_{uuid4().hex}",
             platform=address.channel,
@@ -58,7 +69,9 @@ class ApplicationNodeInputSink:
             raw_event={
                 "source": "node",
                 "node_id": node_id,
-                "session_id": session_id,
+                "conversation_id": conversation_id,
+                "credential_id": credential_id,
+                "actor_account_key": actor_account_key,
             },
             is_group=address.target_type == "group",
             timestamp=now,
@@ -85,7 +98,15 @@ class ApplicationNodeInputSink:
         )
         result = await self._application.event_bus.publish(
             MessageReceived(
-                payload=MessagePayload(message=inbound, session_id=session_id),
+                payload=MessagePayload(
+                    message=inbound,
+                    session_id=conversation_id,
+                    conversation_id=conversation_id,
+                    transport_address=f"node:{node_id}",
+                    reply_route=f"node:{node_id}",
+                    credential_id=credential_id,
+                    actor_account_key=actor_account_key,
+                ),
                 source=f"node:{node_id}",
             )
         )

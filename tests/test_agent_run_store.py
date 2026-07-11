@@ -37,7 +37,7 @@ async def test_migration_creates_ledger_tables_and_version() -> None:
     try:
         cur = await engine.db.execute("SELECT version FROM schema_version")
         row = await cur.fetchone()
-        assert int(row["version"]) == 20
+        assert int(row["version"]) == 21
         names = {
             r["name"]
             for r in await engine.fetch_all(

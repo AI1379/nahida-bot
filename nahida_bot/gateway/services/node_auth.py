@@ -51,6 +51,8 @@ class NodeTokenRecord:
     used: bool = False  # pairing tokens are single-use
     display_name: str = ""
     scope: tuple[str, ...] = ()
+    actor_account_key: str = ""
+    conversation_id: str = ""
 
 
 @dataclass
@@ -138,6 +140,8 @@ class NodeAuthService:
             token_type=record.token_type,
             expires_at=str(record.expires_at) if record.expires_at else None,
             scope=record.scope,
+            actor_account_key=record.actor_account_key,
+            conversation_id=record.conversation_id,
         )
 
     # -- Issuance ----------------------------------------------------------
@@ -148,6 +152,8 @@ class NodeAuthService:
         node_id: str,
         display_name: str = "",
         scope: tuple[str, ...] = (),
+        actor_account_key: str = "",
+        conversation_id: str = "",
         ttl_seconds: int | None = None,
     ) -> tuple[str, str]:
         """Issue a long-lived node token. Returns ``(full_token, token_id)``.
@@ -165,6 +171,8 @@ class NodeAuthService:
             expires_at=(time.time() + ttl) if ttl > 0 else 0.0,
             display_name=display_name,
             scope=scope,
+            actor_account_key=actor_account_key,
+            conversation_id=conversation_id,
         )
         self._store.put(token_id, record)
         logger.info("node_auth.node_token_issued", node_id=node_id, token_id=token_id)
@@ -176,6 +184,8 @@ class NodeAuthService:
         node_id: str,
         display_name: str = "",
         scope: tuple[str, ...] = (),
+        actor_account_key: str = "",
+        conversation_id: str = "",
     ) -> tuple[str, str]:
         """Issue a one-shot pairing token. Returns ``(full_token, token_id)``."""
         full_token, token_id = _new_secret(_PAIRING_PREFIX)
@@ -187,6 +197,8 @@ class NodeAuthService:
             expires_at=time.time() + self._pairing_ttl,
             display_name=display_name,
             scope=scope,
+            actor_account_key=actor_account_key,
+            conversation_id=conversation_id,
         )
         self._store.put(token_id, record)
         logger.info(
@@ -208,6 +220,8 @@ class NodeAuthService:
         return self.issue_node_token(
             node_id=principal.node_id,
             scope=principal.scope,
+            actor_account_key=principal.actor_account_key,
+            conversation_id=principal.conversation_id,
         )
 
     # -- Management --------------------------------------------------------

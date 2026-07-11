@@ -116,6 +116,13 @@ class MessagePayload:
     # ``message`` so existing subscribers that use the originating inbound
     # message for chat correlation remain backwards-compatible.
     outbound: Any | None = None
+    # Explicit turn boundaries. Empty values preserve the legacy channel
+    # contract while node/WebUI transports can avoid overloading session_id.
+    conversation_id: str = ""
+    transport_address: str = ""
+    reply_route: str = ""
+    credential_id: str = ""
+    actor_account_key: str = ""
 
 
 @dataclass(slots=True, frozen=True)

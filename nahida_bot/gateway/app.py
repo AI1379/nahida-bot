@@ -150,6 +150,7 @@ class WebAPIApp:
         from nahida_bot.gateway.routes.files import router as files_router
         from nahida_bot.gateway.routes.health import router as health_router
         from nahida_bot.gateway.routes.kb import router as kb_router
+        from nahida_bot.gateway.routes.identity import router as identity_router
         from nahida_bot.gateway.routes.logs import router as logs_router
         from nahida_bot.gateway.routes.messages import router as messages_router
         from nahida_bot.gateway.routes.memory import router as memory_router
@@ -216,6 +217,7 @@ class WebAPIApp:
         app.include_router(plugins_router, dependencies=[Depends(require_token)])
         app.include_router(skills_router, dependencies=[Depends(require_token)])
         app.include_router(kb_router, dependencies=[Depends(require_token)])
+        app.include_router(identity_router, dependencies=[Depends(require_token)])
 
         if self.node_registry is not None:
             from nahida_bot.gateway.routes.nodes import router as nodes_router
