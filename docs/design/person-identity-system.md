@@ -1,8 +1,8 @@
 # 人员身份与账号映射系统设计
 
 > 记录时间：2026-06-07
-> 最近修订：2026-06-19（架构调整：**信任边界移到"动作授权"，与"记忆身份"解耦**，据此降级软/硬身份、sensitivity/visibility 访问控制、OTP 自助链接；Phase 3 落地：identity-aware 记忆写入）
-> 状态：Phase 0-3 与 Phase A 已实现并验证；Phase 4-5（管理命令、迁移）待实现。2026-07-11 起新增 Phase B，收敛 transport / actor / conversation / reply route / credential 边界。
+> 最近修订：2026-07-13（保持“动作授权与记忆身份解耦”，同时拆开记忆主体与披露场景：群聊不再因 Person 到场自动展开个人 scope；群内人物事实使用 chat scope + subject metadata + `portable=false`）
+> 状态：Phase 0-4、Phase A、Phase B 与 Phase 5 inspect/apply 已实现并验证；后台 account→person compaction 仍待实现。
 > 相关文档：
 >
 > - [memory-scoping.md](memory-scoping.md) — 当前 `chat` / `global` 记忆隔离设计
@@ -21,7 +21,7 @@
 3. 用户在私聊里告诉 bot 的偏好，换到另一个平台后应能被识别为同一个人的偏好。
 4. 用户在群里说“我喜欢 Python”，这条记忆应属于发言者，而不是属于整个群。
 5. 管理员需要显式声明“这个 QQ 号、这个 Telegram 账号、这个群成员身份是同一个人”，并能审计和撤销。
-6. **最危险的场景**：bot 把别人当成管理员，以管理员身份在服务器上执行危险操作（shell、文件、跨会话发消息、改配置）。相比之下，bot 在**记忆**里认错人本身无害——最坏只是回错话。
+6. **最危险的场景**：bot 把别人当成管理员，以管理员身份在服务器上执行危险操作（shell、文件、跨会话发消息、改配置）。记忆身份不授予动作权限，但认错或在错误受众中披露仍可能造成隐私伤害，因此需要独立的 sensitivity/portability 约束。
 
 当前系统已有这些基础：
 
@@ -38,7 +38,7 @@
 ### 2.1 目标
 
 - **信任边界落在动作授权**：所有危险操作（特权工具、管理命令、跨会话消息）只允许“声明的管理员账号”执行，这道闸独立于记忆（§2.5）。
-- **记忆身份松耦合**：用 `person` / `account` scope 提供跨账号记忆连续性；记忆认错人无害，记忆被当作软上下文。
+- **记忆身份松耦合**：用 `person` / `account` scope 提供跨账号记忆连续性；记忆是软上下文，不作为权限证据，但仍遵守 sensitivity/portability 披露边界。
 - **统一人员身份**：用稳定的 `person_id` 表示 bot 本地认识的一个人。
 - **账号映射**：把多个平台账号映射到同一个 `person_id`（纯记忆连续性用途，零安全权重）。
 - **群聊发言者识别**：群聊消息的个人事实归属发言者，而不是整个群。
@@ -56,7 +56,7 @@
 
 ## 2.5 核心原则：记忆身份 ≠ 动作授权
 
-本系统最危险的失败模式**不是记忆错乱**，而是 bot 把别人当成管理员、然后以管理员身份在服务器上执行危险操作（shell、文件、跨会话发消息、改配置……）。bot 在**记忆**里认错人本身无害——最坏只是回错话。因此整套设计围绕一个原则：
+本系统最危险的失败模式**不是记忆错乱**，而是 bot 把别人当成管理员、然后以管理员身份在服务器上执行危险操作（shell、文件、跨会话发消息、改配置……）。因此动作授权必须完全独立于记忆；但“记忆不授予权限”不等于“记忆泄漏无害”，披露边界由 memory 自己的 sensitivity/portability 策略负责。
 
 > **信任边界在“动作授权”上，不在“记忆身份”上。两者必须解耦。**
 
@@ -65,12 +65,12 @@
 | 风险 | 低：认错只是回错话 | **高：冒充管理员执行危险操作** |
 | 该多严 | 松、声明式、无验证 | 硬闸 |
 | 依据 | `person` / `account` scope，可模糊 | sender 的**账号** ∈ 声明过的管理员账号集 |
-| 认错的后果 | 无所谓 | 必须不可能发生 |
+| 认错的后果 | 回错话或错误披露；不能升级成动作权限 | 必须不可能发生 |
 
 推论：
 
-1. **记忆侧不需要验证机制。** 没有 OTP、没有软/硬身份之分、没有 sensitivity/visibility 访问控制。记忆被当作软上下文（system prompt 已声明“memory 是参考而非权威”），认错无害。
-2. **多账号 link 零安全权重**，纯粹是记忆连续性的便利。link 不上的唯一代价是记忆稍差，无害。所以 link 可以很松，甚至自动/不做。
+1. **记忆 link 不承担动作授权验证。** 没有 OTP、没有软/硬身份解锁工具权限；memory 的 sensitivity/portability 只约束召回与披露。
+2. **多账号 link 零动作安全权重**，纯粹服务记忆连续性。自动发现可以产生候选，但未确认候选不得改变 person scope 读取，也不得影响权限。
 3. **安全由一道独立的硬闸保证**：每个危险动作前，查 `sender_account_key` 是否在配置声明的管理员账号集里。这道闸**不依赖记忆是否正确**——就算记忆全乱、person 全认错，陌生人也无法触发特权操作，因为闸查的是账号（平台已认证），不是“回忆出的身份”。
 4. **为什么不需要运行时验证（OTP/self-link）？** 因为平台本身已认证账号：QQ 保证“这条消息来自账号 10001”。管理员只要在部署时把账号声明进配置（admin 物理控制自己的配置，无冒充窗口），就既充分又可靠。验证只在“不预先声明、却要运行时认定同一人”时才需要——而本系统不需要。
 
@@ -200,7 +200,7 @@ InboundMessage
 
 ### 4.5 软身份与硬身份（已弃用）
 
-> **2026-06-19 起不再采用。** 原因见 §2.5：记忆不是信任边界，“bot 认错人”本身无害，所以
+> **2026-06-19 起不再采用。** 原因见 §2.5：记忆不是动作授权边界，所以
 > 不需要把身份分成“软（概率假设）”和“硬（验证过）”两层，也不需要验证闸防止软身份静默
 > 解锁 sensitive 记忆——因为根本没有 sensitive 记忆访问控制（见 §5.3）。
 >
@@ -249,11 +249,12 @@ InboundMessage
 
 ```text
 1. chat:{group_chat_key}
-2. 若 sender 是声明的 Person：person:{sender_person_id} → account:{sender_account_key}
-3. global:__global__
+2. global:__global__
 ```
 
-群聊规则由“sender 是否解析到声明的 Person”自动决定，**不需要** `group_person_memory` 配置旋钮：管理员是可信人，在其出现的群里也注入其个人 scope（这是管理员的 bot，记忆越权无害，见 §2.5）；访客 sender 不是声明 Person，只走 `chat → global`（即 V1 行为）。Identity 关闭或 sender 未链接时，cascade 退化为 V1 的 `chat → global`（legacy 仅 `global`），默认行为零变化。
+群聊的回复受众是整个群，而不是只有当前 sender。`Person` 表示记忆主体，不能推出“本人到场即同意向全群披露”。因此无论 sender 是否已链接，自动 cascade 都是 `chat → global`；person/account 只在私聊自动展开，未来若增加群聊中的显式个人召回，也必须经过独立的披露判断。
+
+群内人物事实（例如“这个群里大家叫 P 老王”）写入 `chat:{group_chat_key}`，并在 metadata 记录 `subject_person_id`/`subject_account_key`、`relation=alias`、`alias` 与 `portable=false`。这样它能在原群召回，不会污染 Person 的跨群名称，也不会参加 soft-scope 跨域召回。
 
 > **意图触发的跨 scope 召回**（未来可选）：用户在群里说“还记得我们私下聊的吗”这类自然
 > 语言触发，需要额外的意图判断层把本轮可读集扩张到请求者本人 person/account scope。由于
@@ -291,7 +292,8 @@ Extractor 只输出固定集合内的 `kind` + 内容；**scope 完全由系统�
 | `preference` / `fact` / `task` | 已链接 person | `person:{person_id}` |
 | `preference` / `fact` / `task` | 未链接（有 account_key） | `account:{account_key}` |
 | `preference` / `fact` / `task` | identity 关闭 / 无 account | `chat:{chat_key}`（V1） |
-| `decision` / `procedure` / `warning` / `summary` | 任意 | `global:__global__` |
+| `decision` / `procedure` / `warning` / `summary` | 默认 | `chat:{chat_key}` |
+| `decision` / `procedure` / `warning`（public） | 显式 `audience=global` | `global:__global__` |
 
 旧设计里 extractor 输出受控 `subject`（`current_sender`/`current_chat`/`global`）的方案已简化：kind + identity 足以决定 scope，不需要 subject 字段，也不需要 LLM 选 subject。
 
@@ -499,7 +501,7 @@ identity:
 
 ## 10. 群聊策略
 
-群聊真正的风险不是“记忆泄漏”（管理员的 bot，记忆越权无害，见 §2.5），而是**群里的陌生人触发管理员动作**。因此群聊策略以**授权**为核心。
+群聊同时有两类独立风险：**陌生人触发管理员动作**与**个人记忆向错误受众披露**。前者由账号授权闸处理，后者由群聊 read cascade 与 sensitivity/portability 处理，两者不得互相替代。
 
 ### 10.1 授权（硬约束）
 
@@ -576,31 +578,29 @@ person/account > chat > global
 
 ### Phase 2：identity-aware memory read
 
-> 状态：**已实现并验证（2026-06-18）**；`uv run pytest` / `ruff` / `pyright` 全绿（仅 live/network 集成测试因沙箱无网络被跳过）。群聊规则现为“sender 是声明 Person 才注入其 scope，否则 chat → global”，由 resolver 结果自动决定，无需配置旋钮。
+> 状态：**已实现并验证；2026-07-13 收紧群聊披露边界**。私聊继续使用 identity-aware cascade；群聊统一 `chat → global`，Person 到场不再自动注入个人 scope。
 
 - [x] `SessionRunner._load_relevant_memory` 使用 identity-aware cascade。（`nahida_bot/identity/policy.py` 生成 scope 序列，`MemoryStoreRetrievalAdapter` 泛化为 N 级 cascade；`RetrievalRequest.scopes` 驱动。）
 - [x] 私聊加载 person/account/chat/global。（policy：`person → account → chat → global`，按优先级填满 budget 并按 `result_id` 去重。）
-- [x] 群聊：管理员 sender 注入 person/account scope，访客只 chat → global。
+- [x] 群聊：所有 sender 均只自动读取 chat → global；群内人物事实留在 chat scope。
 - [x] `api_bridge.memory_search` 支持相同策略。（同一 policy + budget-fill cascade。）
 
-### Phase A：动作授权闸（暂缓）
+### Phase A：动作授权闸（已完成）
 
-> **按用户决定暂缓（2026-06-19）**：先完成记忆相关部分（Phase 3/4/5），授权闸之后做。记忆侧已与之解耦（§2.5）——两者都只读 `SessionContext.sender_account_key`/`person_id`，记忆用它选 scope，授权（将来）用它判权限，互不依赖，加闸是纯增量。当前权宜：LLM 自身判断充当半层；但 prompt injection 可绕过，授权闸仍是真正必要的。
->
-> 审计结论（2026-06-19）：bot 现在对任何能发消息的人开放——`exec`（任意 shell）、`message`（跨会话/跨平台发消息）、`workspace_write`、`memory_write`、管理命令（`/reset` `/model` 等）均无 sender 级闸。`PermissionChecker` 只是插件 manifest 沙箱（问"插件有没有能力"，不问"发送者是谁"）。无 admin 账号集、无 `is_admin`。
+> 2026-06-29 已落地 `identity.admins` + `AuthorizationGate`，危险动作按 `sender_account_key` fail-closed；memory 模块不得依赖 admin 状态。详见 `memory-soft-scope-and-authz.md`。
 
-- [ ] 新增 `nahida_bot/identity/authorization.py`：`is_admin(sender_account_key)` 查声明的管理员账号集。
-- [ ] 把所有特权工具 / 管理命令 / 跨会话消息统一收口到这道闸。
-- [ ] 测试：非管理员账号**无法**触发特权动作，即使记忆/person 解析出错或被 prompt injection 诱导。
+- [x] 新增 `nahida_bot/identity/authorization.py`：`is_admin(sender_account_key)` 查声明的管理员账号集。
+- [x] 把特权工具 / 管理命令 / 跨会话消息统一收口到授权闸。
+- [x] 测试：非管理员账号**无法**触发特权动作，即使记忆/person 解析出错或被 prompt injection 诱导。
 
 ### Phase 3：identity-aware memory write
 
-> 状态：**已实现并验证（2026-06-19）**；`uv run pytest` / `ruff` / `pyright` 全绿。`nahida_bot/identity/policy.py` 新增 `resolve_memory_write_scope`：personal kind（preference/fact/task）→ `person`（已链接）/ `account`（未链接有 account_key）/ `chat`（identity 关闭，V1）；global kind → `global`。consolidator 接收 `person_id`/`sender_account_key`，按 turn 写入对应 scope；duplicate 检测复用既有 scope-aware `_has_duplicate`，无需改动。后台 dreaming 暂保持 V1（chat/global），identity-aware dreaming 留作 follow-up。
+> 状态：**已实现并验证**。personal kind（preference/fact/task）默认写 person/account，contextual kind 默认写当前 chat；只有显式 `audience=global` 的 public decision/procedure/warning 可进入 global，summary 永不自动 global。`portable=false` 的上下文事实强制写当前 chat。后台 dreaming 暂保持 session 级 actor 缺失限制，不能确认群聊人物归属。
 
 - [x] Consolidator 接收身份（`person_id`/`sender_account_key`）。
 - [x] personal memory 写入 person（已链接）/ account（未链接）/ chat（identity 关闭）scope。
 - [x] duplicate 检测按目标 scope 过滤（`_has_duplicate` 已 scope-aware）。
-> 无 subject-allowlist、无 visibility policy——记忆不是信任边界（§5.3）。Extractor 仍只输出 kind（不需要 subject），scope = identity + kind。
+> 动作授权仍不读取 memory。一般 personal memory 的 scope 由 identity + kind 决定；上下文人物事实可额外携带 subject metadata 与 `portable=false`，但这些字段没有动作权限权重。
 
 ### Phase 4：管理命令与 WebUI
 
@@ -652,7 +652,7 @@ Desktop Node 联调表明，现有 `session_id` 仍被实现层同时用于推�
 |------|------|------|
 | **冒充管理员触发危险操作** | **服务器被以管理员身份执行危险命令** | **授权闸：`sender_account_key` ∈ 声明管理员账号集；独立于记忆；危险动作统一收口（Phase A）** |
 | 错误声明管理员账号 | 权限过大 | 配置由管理员物理控制；可审计可撤销；声明是显式行为 |
-| 记忆认错人 | 回错话（低危） | 可接受——记忆是软上下文；不做硬过滤（§5.3） |
+| 记忆认错人或错误披露 | 回错话、隐私伤害 | 记忆不授予动作权限；群聊不自动展开 person scope，跨 scope 受 sensitivity + portable 过滤 |
 | 显示名碰撞 | 记忆归错人（低危） | 显示名只做 observation；`AccountKey` 用平台 id |
 | 多 bot 账号 namespace 碰撞 | 同平台多实例时 account key 碰撞 | **当前不支持多实例**：channel 段即平台名（SDK 无实例 id），单实例安全。多实例需实例 id（§16 审查 #1，TODO） |
 | 解绑后旧记忆残留 | 访客误以为完全隔离 | 解绑只改变读取；提供迁出/归档工具并在 UI 明示 |
@@ -670,7 +670,7 @@ Person       -> 哪些账号属于同一个真实聊天对象（记忆连续性�
 
 长期个人记忆归属 `person` 或 `account`，群/频道约定归属 `chat`，系统知识归属 `global`。
 
-但最关键的设计决定是：**信任边界在“动作授权”，不在“记忆身份”。** 管理员账号在部署时声明，平台已认证，无需运行时验证；危险动作由一道独立于记忆的硬闸把关。记忆侧因此可以完全无感——没有 OTP、没有软/硬身份、没有 sensitivity 分级——因为 bot 在记忆里认错人无害，真正不能认错的是“能不能执行危险操作”。
+但最关键的设计决定仍是：**动作授权不依赖记忆身份。** 管理员账号由平台认证并显式声明，危险动作由独立硬闸把关。与此同时，memory 用 sensitivity 表示披露风险、用 `portable` 表示能否离开主 scope；这些字段不会授予或撤销任何工具权限。
 
 ## 16. 审查记录与已知问题
 

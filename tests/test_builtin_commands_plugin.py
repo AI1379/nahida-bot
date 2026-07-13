@@ -664,10 +664,30 @@ async def test_memory_tools_use_structured_store() -> None:
     assert metadata is not None
     assert metadata["kind"] == "preference"
     assert metadata["audience"] == "current"
+    assert metadata["portable"] is True
 
     read_result = await plugin._tool_memory_read(query="nahida", days=1)
     assert "Memory results:" in read_result
     assert "mem_1" in read_result
+
+
+@pytest.mark.asyncio
+async def test_memory_write_can_mark_current_chat_context_non_portable() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_memory_write(
+        "People in this group call the current sender Old Wang.",
+        title="Group-local alias",
+        audience="global",
+        portable=False,
+    )
+
+    assert "mem_stored_1" in result
+    metadata = api.stored_memories[-1][2]
+    assert metadata is not None
+    assert metadata["portable"] is False
+    assert metadata["audience"] == "current"
 
 
 @pytest.mark.asyncio
@@ -717,12 +737,16 @@ async def test_memory_update_and_archive_tools_use_item_ids() -> None:
         "Corrected durable content.",
         title="Corrected",
         kind="fact",
+        portable=False,
     )
     archived = await plugin._tool_memory_archive("mem_2", "duplicate")
 
     assert "mem_updated_1" in updated
     assert api.updated_memories[0][0] == "mem_1"
     assert api.updated_memories[0][2] == "Corrected"
+    update_metadata = api.updated_memories[0][3]
+    assert update_metadata is not None
+    assert update_metadata["portable"] is False
     assert archived == "Memory archived: mem_2"
     assert api.archived_memories == ["mem_2"]
 

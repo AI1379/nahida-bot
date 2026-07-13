@@ -3,7 +3,9 @@
 > 记录时间：2026-05-24
 > 状态：应用层隔离已实现；2026-07-10 起，kind 与 audience 解耦，新增记忆默认归当前
 > person/account/chat，只有显式 `audience=global` 的公共 bot-wide decision/procedure/warning
-> 才能进入 global；summary 永不写 global。生产存量 global 数据留待单独审计整理。
+> 才能进入 global；summary 永不写 global。2026-07-13 增加轻量 `metadata.portable`：public 只表示
+> 内容不敏感，`portable=false` 的上下文事实仍不得参加 soft-scope 跨域召回。生产存量 global 数据
+> 留待单独审计整理。
 > 相关文档：
 >
 > - [memory-system.md](memory-system.md#9-配置建议) — 记忆系统总体设计，§9.0 审计中标注了 scope 缺口
@@ -57,13 +59,24 @@
 这取代了旧版“decision/procedure/warning/summary 自动 global”的规则，避免把当前项目状态、
 个人决定、cron 操作和会话摘要误当成 bot-wide 知识。
 
+### 3.2.1 Scope、sensitivity 与 portability
+
+- `scope`：记忆主要在哪个主体/上下文中成立。
+- `sensitivity`：内容披露风险；`public` 只表示不敏感，不表示全局适用。
+- `metadata.portable`：public 记忆能否离开主 scope 参加 soft-scope 召回；缺省 `true` 保持兼容，
+  显式 `false` 在 SQLite 查询的 LIMIT 之前排除。
+
+群内人物事实采用轻量组合，不增加 schema：`scope=chat:{group}`，metadata 保存
+`subject_person_id`/`subject_account_key`、`relation`、具体值和 `portable=false`。例如同一个 Person
+在两个群有不同外号时产生两条 chat-scoped item，不修改 Person 的 canonical display name。
+
 ### 3.3 搜索策略（Scope Cascade）
 
 当为 typed session 加载记忆时：
 
 ```
-1. 搜索 chat scope  → 用户自己的记忆（优先）
-2. 搜索 global scope → 补充共享知识
+1. 私聊：person → account → chat → global
+2. 群聊/频道：chat → global（Person 到场不等于同意向全群披露个人 scope）
 3. 合并去重，chat scope 优先占用 budget
 ```
 

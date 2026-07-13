@@ -178,9 +178,10 @@ class StructuredMemoryStore(Protocol):
         *,
         limit: int = 10,
     ) -> list[MemoryItem]:
-        """Soft-scope cross-scope recall: public items across all scopes.
+        """Soft-scope recall: public, portable items across all scopes.
 
-        The store enforces ``sensitivity='public'`` at the SQL layer.
+        The store enforces ``sensitivity='public'`` and excludes explicit
+        ``metadata.portable=false`` before applying the result limit.
         """
         ...
 

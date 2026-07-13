@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+from nahida_bot.agent.memory.portability import item_is_portable
 from nahida_bot.agent.memory.scope import (
     SCOPE_ID_GLOBAL,
     SCOPE_TYPE_CHAT,
@@ -274,10 +275,9 @@ class MemoryStoreRetrievalAdapter:
         slot that a stronger match in a later scope could fill.
 
         When ``soft_scope`` is on and budget remains after the in-scope
-        cascade, a supplementary global pass admits ONLY ``sensitivity=
-        'public'`` items from outside the cascade (Piece A2). Restricted
-        items never leave the store — the public filter is enforced in SQL —
-        so this round can only *add* cross-scope public recall, never leak.
+        cascade, a supplementary pass admits only public, portable items from
+        outside the cascade. SQLite enforces both predicates before LIMIT;
+        the adapter repeats portability as a defensive backend invariant.
         """
         results: list[RetrievalResult] = []
         seen: set[str] = set()
@@ -312,7 +312,7 @@ class MemoryStoreRetrievalAdapter:
                 min_score,
             )
             for item in public_items:
-                if item.result_id in seen:
+                if item.result_id in seen or not item_is_portable(item.raw):
                     continue
                 seen.add(item.result_id)
                 results.append(item)
@@ -326,12 +326,12 @@ class MemoryStoreRetrievalAdapter:
         query: str,
         limit: int,
     ) -> list[RetrievalResult]:
-        """Soft-scope global pass: public items across all scopes, deduped later.
+        """Soft-scope pass: public portable items across all scopes.
 
-        The store enforces ``sensitivity='public'`` at the SQL layer, so this
-        only ever returns soft/cross-scope items. Results are reported as
-        FTS-mode regardless of the primary cascade mode, because the soft
-        round is FTS-sourced even when the in-scope cascade ran vector/hybrid.
+        The SQLite store enforces ``sensitivity='public'`` and
+        ``metadata.portable != false`` before LIMIT. Results are reported as
+        FTS-mode regardless of the primary cascade mode, because this round is
+        FTS-sourced even when the in-scope cascade ran vector/hybrid.
         """
         search_public = getattr(
             self._memory_store, "search_items_public_all_scopes", None

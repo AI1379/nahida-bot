@@ -1,7 +1,8 @@
 # 记忆软 scope（薄敏感 tag）与动作授权闸（Phase A）
 
 > 记录时间：2026-06-29 · 更新：2026-06-29（实施完成）
-> 状态：**已实施（v2 分支，`memory.retrieval.soft_scope` 默认关）**。本文是 [memory-architecture-exploration.md](memory-architecture-exploration.md)
+> 状态：**已实施（v2 分支，`memory.retrieval.soft_scope` 默认关）**。2026-07-13 增加
+> `metadata.portable=false` 轻量边界：不敏感但仅在原上下文成立的 public 记忆不参与跨 scope 召回。本文是 [memory-architecture-exploration.md](memory-architecture-exploration.md)
 > §8.3（薄敏感 tag）与 [person-identity-system.md](person-identity-system.md) §2.5/§8.4（Phase A
 > 授权闸）的落地设计；两块均已落地并通过两轮代码评审。图引擎、独立库拆分、
 > 意图触发 scope 扩张等大改动**继续推迟**。
@@ -67,6 +68,10 @@ schema 默认值改为 `public`。
 - 若 `sensitivity == private` 且来源 scope ≠ 当前上下文 → **排除，除非**来源当事人（person/account）
   在当前会话中在场且是提问对象。
 - `public` 不受限。
+
+补充维度：`public` 只表示内容不敏感；若 item metadata 明确 `portable=false`，它仍只在自己的
+主 scope 内召回。典型例子是群内外号：可在原群公开使用，但不应带到另一个群。SQLite 的
+all-scopes public 查询同时过滤 sensitivity 与 portable，避免过滤发生在 LIMIT 之后造成结果饥饿。
 
 当前上下文 = 当前 `chat_address`；来源 scope = 记忆的 `scope_type/scope_id`（已有）。当事人到场判断
 复用 identity 解析（当前会话的 sender 是否命中记忆来源的 person/account）。

@@ -322,6 +322,15 @@ class BuiltinCommandsPlugin(Plugin):
                             "stored only in the protected durable store."
                         ),
                     },
+                    "portable": {
+                        "type": "boolean",
+                        "description": (
+                            "Whether a public memory may be recalled outside its primary "
+                            "scope. Default true. Set false for current-chat-only social "
+                            "context such as a nickname used only in this group. This is "
+                            "independent from sensitivity."
+                        ),
+                    },
                 },
                 "required": ["content"],
                 "additionalProperties": False,
@@ -364,6 +373,13 @@ class BuiltinCommandsPlugin(Plugin):
             "sensitivity": {
                 "type": "string",
                 "enum": ["public", "private", "secret_like"],
+            },
+            "portable": {
+                "type": "boolean",
+                "description": (
+                    "Whether a public item may leave its primary scope during "
+                    "soft-scope recall. Omit to keep the existing value."
+                ),
             },
         }
         if can_reassign:
@@ -1045,12 +1061,14 @@ class BuiltinCommandsPlugin(Plugin):
         kind: str = "fact",
         audience: str = "current",
         sensitivity: str = "public",
+        portable: bool = True,
     ) -> str:
         _logger.debug(
             "tool.memory_write",
             kind=kind,
             audience=audience,
             sensitivity=sensitivity,
+            portable=portable,
         )
         error = validate_memory_content(content)
         if error is not None:
@@ -1074,6 +1092,8 @@ class BuiltinCommandsPlugin(Plugin):
             audience = "current"
         if sensitivity != "public":
             audience = "current"
+        if not portable:
+            audience = "current"
         try:
             item_id = await self.api.memory_store(
                 title,
@@ -1083,6 +1103,7 @@ class BuiltinCommandsPlugin(Plugin):
                     "kind": kind,
                     "audience": audience,
                     "sensitivity": sensitivity,
+                    "portable": portable,
                 },
             )
         except Exception as exc:
@@ -1100,6 +1121,7 @@ class BuiltinCommandsPlugin(Plugin):
         target_scope_type: str = "",
         target_scope_id: str = "",
         sensitivity: str = "",
+        portable: bool | None = None,
     ) -> str:
         error = validate_memory_content(content)
         if error is not None:
@@ -1147,6 +1169,8 @@ class BuiltinCommandsPlugin(Plugin):
             metadata["target_scope_id"] = target_scope_id
         if sensitivity:
             metadata["sensitivity"] = sensitivity
+        if portable is not None:
+            metadata["portable"] = portable
         try:
             replacement_id = await self.api.memory_update(
                 item_id,

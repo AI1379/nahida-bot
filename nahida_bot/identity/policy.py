@@ -4,14 +4,14 @@ Owns BOTH sides of the memory-scope decision:
 
 - **Read cascade** (Phase 2): turn an inbound turn's identity into the ordered
   scope list the read path cascades through — private 1:1 is
-  ``person -> account -> chat -> global``; group is ``chat -> global`` for
-  guests but ``chat -> person -> account -> global`` when the sender is a
-  declared Person (it's the admin's bot — a memory leak is harmless, §2.5);
-  legacy is ``global`` only.
+  ``person -> account -> chat -> global``; multi-party chats are always
+  ``chat -> global``. A Person identifies the subject of durable memory; their
+  presence in a group is not consent to disclose their personal scope there.
+  Legacy sessions remain ``global`` only.
 - **Write scope** (Phase 3): pick the single scope a memory item of a given
   ``kind`` is written to — personal kinds go to ``person`` (linked) or
-  ``account`` (unlinked) or ``chat`` (identity off); global kinds go to
-  ``global``.
+  ``account`` (unlinked) or ``chat`` (identity off); contextual kinds stay in
+  the current chat unless an eligible public item explicitly requests global.
 
 Identity-off invariant (the safety contract): when identity is disabled or the
 sender is unlinked (``person_id is None`` and ``sender_account_key == ""``),
@@ -86,16 +86,12 @@ def resolve_memory_read_scopes(
         scopes.append((SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL))
         return scopes
 
-    # Group / channel / thread: chat rules + global knowledge. A *declared*
-    # Person (linked sender) also gets their personal scope injected — it's the
-    # admin's bot and a memory leak is harmless (§2.5). Unlinked guests stay on
-    # the V1 ``chat -> global`` cascade. No config knob: injection is automatic
-    # for declared persons.
+    # Group / channel / thread: the reply audience is the whole chat, not only
+    # the sender. Person/account scopes describe whose memory an item belongs
+    # to; they do not imply that the item is safe to disclose to every group
+    # participant. Group-local facts live in the chat scope, while personal
+    # recall remains available in 1:1 chats (or a future explicit-intent path).
     scopes.append((SCOPE_TYPE_CHAT, req.chat_scope_id))
-    if req.person_id:
-        scopes.append((SCOPE_TYPE_PERSON, req.person_id))
-        if req.sender_account_key:
-            scopes.append((SCOPE_TYPE_ACCOUNT, req.sender_account_key))
     scopes.append((SCOPE_TYPE_GLOBAL, SCOPE_ID_GLOBAL))
     return scopes
 

@@ -491,11 +491,12 @@ class SQLiteMemoryStore(MemoryStore):
         *,
         limit: int = 10,
     ) -> list[MemoryItem]:
-        """Soft-scope cross-scope recall (Piece A2): public items, all scopes.
+        """Soft-scope recall (Piece A2): public portable items, all scopes.
 
-        Admits only ``sensitivity='public'`` items regardless of origin scope,
-        enforced at the SQL layer by the repository. The retrieval adapter
-        dedupes these against the in-scope cascade by ``item_id``.
+        Admits only ``sensitivity='public'`` items that do not set
+        ``metadata.portable=false``, enforced at the SQL layer by the
+        repository. The retrieval adapter dedupes these against the in-scope
+        cascade by ``item_id``.
         """
         fts_query = build_fts_query(query)
         if fts_query:

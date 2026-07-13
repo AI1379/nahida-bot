@@ -62,11 +62,11 @@ def test_private_person_without_account_skips_account_scope() -> None:
     assert scopes == [("person", "owner"), ("chat", PRIVATE_CHAT), GLOBAL]
 
 
-def test_group_injects_declared_person_scopes() -> None:
-    """A declared Person (linked sender) gets their scopes injected in groups.
+def test_group_does_not_treat_person_presence_as_disclosure_consent() -> None:
+    """A linked sender still gets only chat/global recall in a group.
 
-    It's the admin's bot — a memory leak is harmless (design §2.5) — so a linked
-    sender's person/account scope is injected automatically, with no config knob.
+    Person/account scopes identify the subject of memory. Their presence does
+    not make the whole personal scope safe to disclose to every participant.
     """
     scopes = resolve_memory_read_scopes(
         MemoryReadRequest(
@@ -76,12 +76,7 @@ def test_group_injects_declared_person_scopes() -> None:
             sender_account_key=ACCOUNT,
         )
     )
-    assert scopes == [
-        ("chat", GROUP_CHAT),
-        ("person", "owner"),
-        ("account", ACCOUNT),
-        GLOBAL,
-    ]
+    assert scopes == [("chat", GROUP_CHAT), GLOBAL]
 
 
 def test_group_guest_without_person_stays_chat_global() -> None:
@@ -166,7 +161,7 @@ def test_context_request_legacy_session_is_global_only() -> None:
     assert resolve_memory_read_scopes(req) == [GLOBAL]
 
 
-def test_context_request_group_injects_declared_person() -> None:
+def test_context_request_group_keeps_identity_but_not_person_scope() -> None:
     req = memory_read_request_from_context(
         _ctx(
             target_type="group",
@@ -177,15 +172,11 @@ def test_context_request_group_injects_declared_person() -> None:
         ),
         GROUP_CHAT,
     )
-    # A declared Person is auto-injected in groups (admin's bot; §2.5).
+    # Identity remains available to authorization/consolidation, but it does
+    # not expand the group's automatic memory audience.
     assert req.person_id == "owner"
     assert req.sender_account_key == ACCOUNT
-    assert resolve_memory_read_scopes(req) == [
-        ("chat", GROUP_CHAT),
-        ("person", "owner"),
-        ("account", ACCOUNT),
-        GLOBAL,
-    ]
+    assert resolve_memory_read_scopes(req) == [("chat", GROUP_CHAT), GLOBAL]
 
 
 # ── resolve_memory_write_scope ──────────────────────────────

@@ -284,6 +284,55 @@ async def test_soft_scope_on_excludes_cross_scope_restricted(
 
 
 @pytest.mark.asyncio
+async def test_soft_scope_excludes_public_non_portable_outside_origin_scope(
+    store: SQLiteMemoryStore,
+) -> None:
+    """A harmless but context-local fact stays in its primary chat."""
+
+    await store.append_item(
+        content="In this group the user is called Pineapple Captain.",
+        title="group-local alias",
+        scope_type="chat",
+        scope_id="chatB",
+        kind="fact",
+        sensitivity="public",
+        metadata={
+            "portable": False,
+            "relation": "alias",
+            "subject_person_id": "owner",
+        },
+    )
+
+    # The SQL leak boundary excludes it before LIMIT.
+    public_pool = await store.search_items_public_all_scopes("Pineapple", limit=10)
+    assert public_pool == []
+
+    adapter = MemoryStoreRetrievalAdapter(memory_store=store, soft_scope=True)
+    results = await adapter.retrieve(_chat_a_request("Pineapple"))
+    assert results == []
+
+    service = MemoryService(store, soft_scope=True)
+    service_results = await service.search_items_cascade(
+        "Pineapple",
+        ctx=None,
+        session_id="milky:private:chatA",
+        limit=10,
+    )
+    assert service_results == []
+
+    # It remains normally visible inside the chat where it applies.
+    in_scope = await adapter.retrieve(
+        RetrievalRequest(
+            query="Pineapple",
+            source_type="memory",
+            scopes=(RetrievalScope("chat", "chatB"),),
+            limit=10,
+        )
+    )
+    assert {item.title for item in in_scope} == {"group-local alias"}
+
+
+@pytest.mark.asyncio
 async def test_soft_scope_dedups_in_scope_items(store: SQLiteMemoryStore) -> None:
     """An in-scope public item is not duplicated by the soft global pass."""
     await _seed_other_chat(store)

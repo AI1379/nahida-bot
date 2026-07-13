@@ -653,12 +653,12 @@ class SQLiteMemoryRepository:
         *,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """FTS5 BM25 search across ALL scopes, public items only (soft-scope).
+        """FTS5 search across all scopes for public, portable items.
 
         The soft-scope cascade (Piece A2) calls this to admit cross-scope
-        recall while guaranteeing restricted items (``private`` /
-        ``secret_like``) never enter the result set — the filter is enforced
-        here at the SQL layer, not in Python.
+        recall while guaranteeing restricted items and public items explicitly
+        marked ``metadata.portable=false`` never enter the result set. Both
+        filters are enforced here before LIMIT, not only in Python.
         """
         rows = await self._engine.fetch_all(
             "SELECT mi.item_id, mi.scope_type, mi.scope_id, mi.kind, mi.title, "
@@ -670,6 +670,7 @@ class SQLiteMemoryRepository:
             "WHERE memory_item_fts MATCH ? "
             "AND mi.status = 'active' "
             "AND mi.sensitivity = 'public' "
+            "AND COALESCE(json_extract(mi.metadata_json, '$.portable'), 1) != 0 "
             "ORDER BY score ASC, mi.importance DESC, mi.updated_at DESC "
             "LIMIT ?",
             (fts_query, limit),
@@ -681,11 +682,11 @@ class SQLiteMemoryRepository:
         *,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """List recent active public items across all scopes (soft-scope).
+        """List recent active public, portable items across all scopes.
 
         The empty-query fallback for the soft-scope cascade — mirrors
         ``list_memory_items`` but drops the scope filter and restricts to
-        ``sensitivity = 'public'``.
+        ``sensitivity = 'public'`` and excludes ``metadata.portable=false``.
         """
         rows = await self._engine.fetch_all(
             "SELECT item_id, scope_type, scope_id, kind, title, content, status, "
@@ -693,6 +694,7 @@ class SQLiteMemoryRepository:
             "metadata_json, created_at, updated_at, 0.0 AS score "
             "FROM memory_items "
             "WHERE status = 'active' AND sensitivity = 'public' "
+            "AND COALESCE(json_extract(metadata_json, '$.portable'), 1) != 0 "
             "ORDER BY importance DESC, updated_at DESC LIMIT ?",
             (limit,),
         )

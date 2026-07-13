@@ -35,6 +35,8 @@ from nahida_bot.agent.storage.vector import (
 )
 from nahida_bot.agent.providers.base import ProviderResponse
 from nahida_bot.agent.memory.store import MemoryStore
+from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.context import SessionContext
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 
@@ -978,6 +980,65 @@ async def test_memory_service_requires_explicit_public_global_audience(
     assert by_id[global_decision_id].scope_type == "global"
     assert by_id[local_summary_id].scope_type == "chat"
     assert by_id[private_id].scope_type == "chat"
+
+
+@pytest.mark.asyncio
+async def test_memory_service_routes_non_portable_fact_to_current_chat(
+    memory_store: SQLiteMemoryStore,
+) -> None:
+    service = MemoryService(memory_store)
+    group_chat = "milky:group:20001"
+
+    item_id = await service.store_item(
+        "group-local nickname",
+        "People in this group call the current sender Old Wang.",
+        session_id=group_chat,
+        metadata={
+            "kind": "fact",
+            "audience": "global",
+            "sensitivity": "public",
+            "portable": False,
+        },
+    )
+
+    items = await memory_store.get_items_by_ids([item_id])
+    assert len(items) == 1
+    assert items[0].scope_type == "chat"
+    assert items[0].scope_id == group_chat
+    assert items[0].metadata["portable"] is False
+    assert items[0].metadata["audience"] == "current"
+
+    promoted = await service.update_item_for_context(
+        item_id,
+        "This nickname should still not become bot-wide.",
+        ctx=None,
+        session_id=group_chat,
+        metadata={"audience": "global"},
+    )
+    assert promoted is None
+    assert len(await memory_store.get_items_by_ids([item_id])) == 1
+
+    ctx = SessionContext(
+        platform="milky",
+        chat_id="20001",
+        session_id=group_chat,
+        chat_address=ChatAddress(
+            channel="milky", target_type="group", target_id="20001"
+        ),
+        person_id="owner",
+        sender_account_key="milky:user:10001",
+    )
+    replacement_id = await service.update_item_for_context(
+        item_id,
+        "People in this group still use the same nickname.",
+        ctx=ctx,
+        session_id=group_chat,
+        metadata={"audience": "current"},
+    )
+    assert replacement_id is not None
+    replacement = await memory_store.get_items_by_ids([replacement_id])
+    assert replacement[0].scope_type == "chat"
+    assert replacement[0].scope_id == group_chat
 
 
 @pytest.mark.asyncio

@@ -308,6 +308,72 @@ async def test_consolidator_contextual_kind_uses_chat_when_linked(
 
 
 @pytest.mark.asyncio
+async def test_group_local_self_alias_stays_in_chat_with_subject_metadata(
+    memory_store: Any,
+) -> None:
+    """A contextual alias is about a Person but belongs to one group."""
+
+    group_chat = "milky:group:20001"
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id=group_chat,
+    )
+
+    applied = await consolidator.consolidate_turn(
+        session_id=group_chat,
+        user_message="请记住：在这个群里大家都叫我老王。",
+        person_id="owner",
+        sender_account_key="milky:user:10001",
+    )
+
+    assert applied == 1
+    chat_items = await memory_store.search_items(
+        "老王", scope_type="chat", scope_id=group_chat, limit=10
+    )
+    assert len(chat_items) == 1
+    item = chat_items[0]
+    assert item.sensitivity == "public"
+    assert item.metadata["portable"] is False
+    assert item.metadata["relation"] == "alias"
+    assert item.metadata["alias"] == "老王"
+    assert item.metadata["subject_person_id"] == "owner"
+    assert item.metadata["subject_account_key"] == "milky:user:10001"
+    assert item.metadata["context_chat_id"] == group_chat
+
+    person_items = await memory_store.search_items(
+        "老王", scope_type="person", scope_id="owner", limit=10
+    )
+    assert person_items == []
+
+
+@pytest.mark.asyncio
+async def test_contextual_alias_without_turn_actor_is_not_persisted(
+    memory_store: Any,
+) -> None:
+    """Aggregated background dreaming must not guess which group sender is me."""
+
+    group_chat = "milky:group:20001"
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id=group_chat,
+    )
+    applied = await consolidator.consolidate_turn(
+        session_id=group_chat,
+        user_message="请记住：在这个群里大家都叫我老王。",
+    )
+
+    assert applied == 0
+    assert (
+        await memory_store.search_items(
+            "老王", scope_type="chat", scope_id=group_chat, limit=10
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
 async def test_consolidator_dedup_is_person_scoped(memory_store: Any) -> None:
     """A duplicate is deduped within a person; independent across persons."""
     consolidator = MemoryConsolidator(
@@ -480,6 +546,50 @@ async def test_dreaming_requires_explicit_audience_for_global_scope(
     )
     assert any(item.kind == "decision" for item in global_hits)
     assert any(item.kind == "summary" for item in chat_hits)
+
+
+@pytest.mark.asyncio
+async def test_dreaming_persists_group_alias_as_non_portable_chat_fact(
+    memory_store: Any,
+) -> None:
+    group_chat = "milky:group:20001"
+    provider = _FakeDreamProvider(
+        """{
+          "add": [{
+            "kind": "fact",
+            "audience": "current",
+            "title": "群内称呼",
+            "content": "在当前群聊中，当前发送者被称为老王。",
+            "relation": "alias",
+            "subject": "current_sender",
+            "alias": "老王",
+            "portable": false
+          }],
+          "archive": []
+        }"""
+    )
+    consolidator = MemoryConsolidator(
+        memory_store,
+        default_scope_type="chat",
+        default_scope_id=group_chat,
+    )
+
+    applied = await consolidator.consolidate_turn(
+        session_id=group_chat,
+        user_message="unused",
+        dream_provider=provider,
+        run_rules=False,
+        person_id="owner",
+        sender_account_key="milky:user:10001",
+    )
+
+    assert applied == 1
+    items = await memory_store.search_items(
+        "老王", scope_type="chat", scope_id=group_chat, limit=10
+    )
+    assert len(items) == 1
+    assert items[0].metadata["portable"] is False
+    assert items[0].metadata["subject_person_id"] == "owner"
 
 
 @pytest.mark.asyncio

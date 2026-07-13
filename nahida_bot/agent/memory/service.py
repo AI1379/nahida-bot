@@ -35,9 +35,14 @@ from nahida_bot.agent.memory.models import (
     SensitivitySource,
     normalize_sensitivity,
 )
+from nahida_bot.agent.memory.portability import (
+    item_is_portable,
+    normalize_portable,
+)
 from nahida_bot.agent.memory.scope import (
     MEMORY_KINDS,
     SCOPE_ID_GLOBAL,
+    SCOPE_TYPE_CHAT,
     SCOPE_TYPE_GLOBAL,
 )
 from nahida_bot.agent.memory.store import StructuredMemoryStore, resolve_public_search
@@ -170,10 +175,9 @@ class MemoryService:
         ``item_id``.
 
         When ``soft_scope`` is on and budget remains, a supplementary global pass
-        admits ONLY ``sensitivity='public'`` items from outside the cascade
-        (Piece A2). Restricted items never leave the store — the public filter is
-        enforced in SQL — so this round can only add cross-scope public recall,
-        never leak.
+        admits only ``sensitivity='public'`` items whose metadata does not set
+        ``portable=false``. Both filters are enforced in the SQLite query; the
+        Python checks below are defensive guards for alternate stores.
 
         Returns raw :class:`MemoryItem` objects; callers project to their own
         shape (``MemoryRef`` for the SDK, ``RetrievalResult`` for retrieval,
@@ -238,7 +242,11 @@ class MemoryService:
                 )
             )
             for item in public_items:
-                if not item.item_id or item.item_id in seen:
+                if (
+                    not item.item_id
+                    or item.item_id in seen
+                    or not item_is_portable(item)
+                ):
                     continue
                 seen.add(item.item_id)
                 items.append(item)
@@ -277,6 +285,9 @@ class MemoryService:
         if audience not in {"current", "global"}:
             audience = "current"
         sensitivity_value, sensitivity_source = resolve_write_sensitivity(metadata)
+        portable = normalize_portable(metadata.get("portable"), default=True)
+        if "portable" in metadata:
+            metadata["portable"] = portable
         scope_type_value = metadata.pop("scope_type", None)
         scope_id_value = metadata.pop("scope_id", None)
         if scope_type_value is None or scope_id_value is None:
@@ -288,13 +299,23 @@ class MemoryService:
             )
 
             write_req = memory_write_request_from_context(ctx, session_id)
-            scope_type_value, scope_id_value = resolve_memory_write_scope(
-                write_req,
-                kind,
-                global_scope=(audience == "global" and sensitivity_value == "public"),
-            )
-        elif (
-            str(scope_type_value) == SCOPE_TYPE_GLOBAL and sensitivity_value != "public"
+            if not portable:
+                if not write_req.chat_scope_id:
+                    raise ValueError(
+                        "non-portable memory requires a typed current chat"
+                    )
+                scope_type_value = SCOPE_TYPE_CHAT
+                scope_id_value = write_req.chat_scope_id
+            else:
+                scope_type_value, scope_id_value = resolve_memory_write_scope(
+                    write_req,
+                    kind,
+                    global_scope=(
+                        audience == "global" and sensitivity_value == "public"
+                    ),
+                )
+        elif str(scope_type_value) == SCOPE_TYPE_GLOBAL and (
+            sensitivity_value != "public" or not portable
         ):
             # Restricted memory must never be placed in the shared global
             # scope. Re-route it to the current identity/chat; reject legacy
@@ -305,9 +326,13 @@ class MemoryService:
             )
 
             write_req = memory_write_request_from_context(ctx, session_id)
-            scope_type_value, scope_id_value = resolve_memory_write_scope(
-                write_req, kind, global_scope=False
-            )
+            if not portable and write_req.chat_scope_id:
+                scope_type_value = SCOPE_TYPE_CHAT
+                scope_id_value = write_req.chat_scope_id
+            else:
+                scope_type_value, scope_id_value = resolve_memory_write_scope(
+                    write_req, kind, global_scope=False
+                )
             if scope_type_value == SCOPE_TYPE_GLOBAL:
                 raise ValueError("restricted memory requires a typed current scope")
         metadata["audience"] = (
@@ -379,18 +404,24 @@ class MemoryService:
         else:
             sensitivity = old.sensitivity
             sensitivity_source = old.sensitivity_source
+        old_portable = normalize_portable(old.metadata.get("portable"), default=True)
+        portable = normalize_portable(updates.get("portable"), default=old_portable)
+        if "portable" in updates or "portable" in old.metadata:
+            updates["portable"] = portable
 
         target_scope_type = str(updates.pop("target_scope_type", "")).strip()
         target_scope_id = str(updates.pop("target_scope_id", "")).strip()
         if target_scope_type and target_scope_id:
-            if target_scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
+            if target_scope_type == SCOPE_TYPE_GLOBAL and (
+                sensitivity != "public" or not portable
+            ):
                 return None
             scope_type = target_scope_type
             scope_id = target_scope_id
         else:
             audience = str(updates.pop("audience", "")).strip().casefold()
             if audience == "global":
-                if sensitivity != "public":
+                if sensitivity != "public" or not portable:
                     return None
                 scope_type = SCOPE_TYPE_GLOBAL
                 scope_id = SCOPE_ID_GLOBAL
@@ -401,18 +432,24 @@ class MemoryService:
                 )
 
                 write_req = memory_write_request_from_context(ctx, session_id)
-                scope_type, scope_id = resolve_memory_write_scope(
-                    write_req,
-                    kind,
-                    global_scope=False,
-                )
+                if not portable and write_req.chat_scope_id:
+                    scope_type = SCOPE_TYPE_CHAT
+                    scope_id = write_req.chat_scope_id
+                else:
+                    scope_type, scope_id = resolve_memory_write_scope(
+                        write_req,
+                        kind,
+                        global_scope=False,
+                    )
                 if scope_type == SCOPE_TYPE_GLOBAL:
                     return None
             else:
                 scope_type = old.scope_type
                 scope_id = old.scope_id
 
-        if scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
+        if scope_type == SCOPE_TYPE_GLOBAL and (
+            sensitivity != "public" or not portable
+        ):
             return None
 
         replacement_metadata = {

@@ -11,6 +11,10 @@ from typing import Any, cast
 from uuid import uuid4
 
 from nahida_bot.agent.memory.models import Sensitivity, SensitivitySource
+from nahida_bot.agent.memory.portability import (
+    metadata_is_portable,
+    normalize_portable,
+)
 
 import structlog
 
@@ -81,6 +85,12 @@ _PRIVACY_MARKER_RE = re.compile(
     r"this is private|off the record)",
     re.IGNORECASE,
 )
+_GROUP_CONTEXT_RE = re.compile(r"(?:这个群|本群|群里|群友|group chat)", re.IGNORECASE)
+_SELF_ALIAS_RE = re.compile(
+    r"(?:都|一般|通常|平时)?\s*(?:叫|称呼)我(?:为|作)?\s*"
+    r"[「『“\"']?([^\s，。！？、；;「」『』“”\"']{1,20})",
+    re.IGNORECASE,
+)
 
 
 def classify_sensitivity(
@@ -124,6 +134,7 @@ Rules:
 - Archive an existing memory only when the new conversation clearly makes it obsolete or contradictory.
 - Audience is independent from kind. Use "current" unless the item is intentionally applicable across every chat and user of this bot.
 - "global" is exceptional: only cross-chat bot-wide decisions, procedures, or warnings qualify. Personal information, project/session state, cron-specific instructions, and every summary must use "current".
+- A group-local nickname for the current sender is a contextual alias: set relation="alias", subject="current_sender", alias to the nickname, and portable=false. Do not infer aliases for third parties or use an alias as proof that two accounts are the same Person.
 
 Schema:
 {
@@ -135,7 +146,11 @@ Schema:
       "content": "one concise durable memory",
       "confidence": 0.0,
       "importance": 0.0,
-      "evidence": "short quote or reason"
+      "evidence": "short quote or reason",
+      "relation": "alias or omit",
+      "subject": "current_sender or omit",
+      "alias": "group-local nickname or omit",
+      "portable": true
     }
   ],
   "archive": [
@@ -207,14 +222,29 @@ class RuleBasedMemoryExtractor:
             return []
 
         candidates: list[ExtractedMemory] = []
+        contextual_alias = _extract_contextual_self_alias(user_text, session_id)
         explicit = _EXPLICIT_MEMORY_RE.search(user_text)
         if explicit is not None:
-            content = _clean_candidate_content(explicit.group(1))
+            content = (
+                _contextual_alias_content(contextual_alias[0])
+                if contextual_alias is not None
+                else _clean_candidate_content(explicit.group(1))
+            )
             if content:
+                metadata: dict[str, Any] = {
+                    "extractor": "rule_based",
+                    "signal": "explicit",
+                }
+                if contextual_alias is not None:
+                    metadata.update(_contextual_alias_metadata(contextual_alias[0]))
                 candidates.append(
                     ExtractedMemory(
                         kind="fact",
-                        title=_title_from_content(content),
+                        title=(
+                            f"群内称呼：{contextual_alias[0]}"
+                            if contextual_alias is not None
+                            else _title_from_content(content)
+                        ),
                         content=content,
                         confidence=0.95,
                         importance=0.8,
@@ -223,12 +253,36 @@ class RuleBasedMemoryExtractor:
                             "source_role": "user",
                             "user_message": user_text[:500],
                         },
-                        metadata={"extractor": "rule_based", "signal": "explicit"},
+                        metadata=metadata,
                     )
                 )
 
+        if contextual_alias is not None and explicit is None:
+            alias, source_sentence = contextual_alias
+            candidates.append(
+                ExtractedMemory(
+                    kind="fact",
+                    title=f"群内称呼：{alias}",
+                    content=_contextual_alias_content(alias),
+                    confidence=0.9,
+                    importance=0.65,
+                    evidence={
+                        "session_id": session_id,
+                        "source_role": "user",
+                        "user_message": source_sentence[:500],
+                    },
+                    metadata={
+                        "extractor": "rule_based",
+                        "signal": "contextual_alias",
+                        **_contextual_alias_metadata(alias),
+                    },
+                )
+            )
+
         for sentence in _candidate_sentences(user_text):
             if explicit is not None and explicit.group(0) in sentence:
+                continue
+            if contextual_alias is not None and contextual_alias[1] in sentence:
                 continue
             kind = _classify_sentence(sentence)
             if kind is None:
@@ -500,11 +554,36 @@ class MemoryConsolidator:
             sensitivity, sensitivity_source = classify_sensitivity(
                 memory.content, title=memory.title
             )
-            item_scope_type, item_scope_id = resolve_memory_write_scope(
-                write_req,
-                memory.kind,
-                global_scope=(memory.audience == "global" and sensitivity == "public"),
-            )
+            item_metadata = dict(memory.metadata)
+            portable = metadata_is_portable(item_metadata)
+            if not portable:
+                # Context-bound memories (for example a group-local nickname)
+                # belong to the exact current chat even when ``kind=fact``
+                # would normally follow the sender into person/account scope.
+                if eff_scope_type != SCOPE_TYPE_CHAT or not eff_scope_id:
+                    skipped_unsafe += 1
+                    continue
+                item_scope_type, item_scope_id = SCOPE_TYPE_CHAT, eff_scope_id
+            else:
+                item_scope_type, item_scope_id = resolve_memory_write_scope(
+                    write_req,
+                    memory.kind,
+                    global_scope=(
+                        memory.audience == "global" and sensitivity == "public"
+                    ),
+                )
+            if item_metadata.get("relation") == "alias":
+                if not eff_person_id and not eff_account_key:
+                    # Background group dreaming currently aggregates multiple
+                    # senders. Without a turn-level actor, "current_sender"
+                    # is ambiguous and must not become an identity fact.
+                    skipped_unsafe += 1
+                    continue
+                item_metadata["context_chat_id"] = item_scope_id
+                if eff_person_id:
+                    item_metadata["subject_person_id"] = eff_person_id
+                if eff_account_key:
+                    item_metadata["subject_account_key"] = eff_account_key
             # A legacy/untyped session has no private destination. Never fall
             # back to a restricted global row; skip it until the session can
             # provide a typed chat/person/account scope.
@@ -518,14 +597,24 @@ class MemoryConsolidator:
             ):
                 skipped_duplicates += 1
                 continue
+            candidate_memory = ExtractedMemory(
+                kind=memory.kind,
+                title=memory.title,
+                content=memory.content,
+                audience=memory.audience,
+                confidence=memory.confidence,
+                importance=memory.importance,
+                evidence=memory.evidence,
+                metadata=item_metadata,
+            )
             candidate_id = await self._append_candidate(
-                memory,
+                candidate_memory,
                 workspace_id=workspace_id,
                 scope_type=item_scope_type,
                 scope_id=item_scope_id,
             )
             metadata = {
-                **memory.metadata,
+                **item_metadata,
                 "session_id": session_id,
                 "workspace_id": workspace_id or "",
                 "candidate_id": candidate_id,
@@ -717,6 +806,44 @@ def _candidate_sentences(text: str) -> list[str]:
     return [part for part in parts if 8 <= len(part) <= 500]
 
 
+def _extract_contextual_self_alias(
+    text: str, session_id: str
+) -> tuple[str, str] | None:
+    """Extract the narrow, safe group-local "people call me X" form.
+
+    This intentionally handles only the current sender. Resolving a nickname
+    for another participant requires structured mention/account data; guessing
+    from display text would turn a social observation into a false identity
+    link.
+    """
+
+    if ":group:" not in session_id.casefold():
+        return None
+    for sentence in _candidate_sentences(text):
+        if _GROUP_CONTEXT_RE.search(sentence) is None:
+            continue
+        match = _SELF_ALIAS_RE.search(sentence)
+        if match is None:
+            continue
+        alias = _clean_candidate_content(match.group(1))
+        if alias:
+            return alias, sentence
+    return None
+
+
+def _contextual_alias_content(alias: str) -> str:
+    return f"在当前群聊中，当前发送者被称为“{alias}”。"
+
+
+def _contextual_alias_metadata(alias: str) -> dict[str, Any]:
+    return {
+        "relation": "alias",
+        "subject": "current_sender",
+        "alias": alias,
+        "portable": False,
+    }
+
+
 def _classify_sentence(sentence: str) -> str | None:
     if _PREFERENCE_RE.search(sentence) is not None:
         return "preference"
@@ -790,6 +917,16 @@ def parse_memory_dream(raw: str) -> MemoryDream:
             if not title:
                 title = _title_from_content(content)
             evidence_text = _clean_candidate_content(str(raw_item.get("evidence", "")))
+            metadata: dict[str, Any] = {"extractor": "llm_dream"}
+            relation = str(raw_item.get("relation", "") or "").strip().casefold()
+            subject = str(raw_item.get("subject", "") or "").strip().casefold()
+            alias = _clean_candidate_content(str(raw_item.get("alias", "") or ""))
+            if relation == "alias" and subject == "current_sender" and alias:
+                metadata.update(_contextual_alias_metadata(alias))
+            elif "portable" in raw_item:
+                metadata["portable"] = normalize_portable(
+                    raw_item.get("portable"), default=True
+                )
             additions.append(
                 ExtractedMemory(
                     kind=kind,
@@ -799,7 +936,7 @@ def parse_memory_dream(raw: str) -> MemoryDream:
                     confidence=_clamp_float(raw_item.get("confidence"), default=0.65),
                     importance=_clamp_float(raw_item.get("importance"), default=0.5),
                     evidence={"llm_evidence": evidence_text} if evidence_text else {},
-                    metadata={"extractor": "llm_dream"},
+                    metadata=metadata,
                 )
             )
 
