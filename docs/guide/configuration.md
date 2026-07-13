@@ -625,3 +625,32 @@ scheduler:
   memory_dreaming_enabled: true
   memory_dreaming_model: "memory"
 ```
+
+## 身份与临时授权票据
+
+开启 `identity` 后，`identity.admins` 中的平台账号可以直接调用特权工具。
+Person 链接只用于身份和记忆归属，不会自动赋予管理员权限。
+
+```yaml
+identity:
+  enabled: true
+  admins:
+    - channel: "milky"
+      platform_account_id: "123456789"
+  authorization_tickets:
+    enabled: true
+    challenge_ttl_seconds: 600
+    grant_ttl_seconds: 300
+    max_grant_ttl_seconds: 900
+```
+
+非管理员可以申请一次精确调用，管理员在自己的会话中批准：
+
+```text
+/auth request exec {"command":"git status --short","workdir":"."}
+/auth approve CH-1234ABCD
+```
+
+授权同时绑定请求账号、工具名和完整 JSON 参数，只能使用一次。参数不同、账号不同、
+过期或重复调用都会被拒绝。`identity_manage` 不可委托。票据当前只保存在进程内存中，
+重启会全部失效；申请参数会展示给管理员，因此不要在参数中放明文密钥。

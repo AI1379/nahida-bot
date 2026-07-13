@@ -345,6 +345,22 @@ agent_runtime:
 #   reasoning_policy: "budget"          # strip / append / budget
 #   max_reasoning_tokens: 2000          # reasoning chain token 预算
 
+# ── Identity / delegated authorization ────────────────
+# Identity must be enabled for the privileged-tool gate and tickets to apply.
+# Admins are authenticated account keys assembled from channel + account id;
+# being linked to a Person does not make an account an admin.
+#
+# identity:
+#   enabled: false
+#   admins:
+#     - channel: "milky"
+#       platform_account_id: "123456789"
+#   authorization_tickets:
+#     enabled: false                    # explicit opt-in
+#     challenge_ttl_seconds: 600        # requester waits for admin approval
+#     grant_ttl_seconds: 300            # approved one-use grant lifetime
+#     max_grant_ttl_seconds: 900        # hard cap for /auth approve TTL
+
 # ── Scheduler ──────────────────────────────────────────
 # 控制定时任务调度行为。
 # 以下均为默认值，不写则使用默认值。

@@ -71,6 +71,7 @@ class _FakeAPI:
         self.recorded_deliveries: list[dict[str, Any]] = []
         self.chat_history_rows: list[dict[str, Any]] = []
         self.chat_history_calls: list[dict[str, Any]] = []
+        self.authorization_calls: list[tuple[str, dict[str, Any]]] = []
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -94,6 +95,23 @@ class _FakeAPI:
     async def record_message_delivery(self, **kwargs: Any) -> str:
         self.recorded_deliveries.append(kwargs)
         return "delivery-1"
+
+    async def authorization_ticket(self, action: str, **kwargs: Any) -> dict[str, Any]:
+        self.authorization_calls.append((action, kwargs))
+        if action == "request":
+            return {
+                "ticket_id": "CH-12345678",
+                "tool_name": kwargs["tool_name"],
+                "expires_at": "2026-07-13T04:00:00+00:00",
+            }
+        if action == "approve":
+            return {
+                "ticket_id": "GR-12345678",
+                "tool_name": "exec",
+                "requester_account_key": "milky:user:guest",
+                "expires_at": "2026-07-13T04:00:00+00:00",
+            }
+        return {"challenges": [], "grants": []}
 
     def on_event(self, event_type: type) -> Any:
         return lambda handler: handler
@@ -251,9 +269,17 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
 
     await plugin.on_load()
 
-    assert {"reset", "new", "status", "model", "reasoning", "help", "memory"} <= set(
-        api.commands
-    )
+    assert {
+        "reset",
+        "new",
+        "status",
+        "model",
+        "reasoning",
+        "help",
+        "memory",
+        "identity",
+        "auth",
+    } <= set(api.commands)
     assert {
         "message",
         "workspace_read",
@@ -294,6 +320,49 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert "cron_expression" in create_params["properties"]
     assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
     assert "cron_expression" in update_params["properties"]
+
+
+@pytest.mark.asyncio
+async def test_auth_request_parses_exact_json_arguments() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._cmd_auth(
+        args='request exec {"command":"git status --short","workdir":"."}',
+        inbound=_inbound(),
+        session_id="telegram:private:c1",
+    )
+
+    assert "CH-12345678" in result
+    assert api.authorization_calls == [
+        (
+            "request",
+            {
+                "tool_name": "exec",
+                "arguments": {"command": "git status --short", "workdir": "."},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_auth_approve_passes_optional_ttl() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._cmd_auth(
+        args="approve CH-12345678 120",
+        inbound=_inbound(),
+        session_id="telegram:private:c1",
+    )
+
+    assert "GR-12345678" in result
+    assert api.authorization_calls == [
+        (
+            "approve",
+            {"ticket_id": "CH-12345678", "ttl_seconds": 120},
+        )
+    ]
 
 
 @pytest.mark.asyncio

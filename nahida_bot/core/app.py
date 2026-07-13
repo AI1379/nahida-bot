@@ -341,7 +341,16 @@ class Application:
             for account in identity_cfg.admins
         )
         self._authorization_gate = AuthorizationGate(
-            admin_keys, enabled=identity_cfg.enabled
+            admin_keys,
+            enabled=identity_cfg.enabled,
+            tickets_enabled=identity_cfg.authorization_tickets.enabled,
+            challenge_ttl_seconds=(
+                identity_cfg.authorization_tickets.challenge_ttl_seconds
+            ),
+            grant_ttl_seconds=identity_cfg.authorization_tickets.grant_ttl_seconds,
+            max_grant_ttl_seconds=(
+                identity_cfg.authorization_tickets.max_grant_ttl_seconds
+            ),
         )
 
         # Build providers from config

@@ -1239,7 +1239,11 @@ class AgentLoop:
             from nahida_bot.identity.authorization import NotAuthorized
 
             try:
-                self.authorization.authorize(tool_call.name, sender_account_key)
+                self.authorization.authorize(
+                    tool_call.name,
+                    sender_account_key,
+                    tool_call.arguments,
+                )
             except NotAuthorized:
                 logger.warning(
                     "agent_loop.tool_not_authorized",
