@@ -115,7 +115,7 @@ class ConversationJoinerConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    enabled: bool = False
+    default_group_enabled: bool = True
     model: str = "cheap"
     threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     max_context_messages: int = Field(default=12, ge=1)
@@ -160,7 +160,9 @@ def effective_group_config(
     """Resolve global defaults plus optional per-group overrides."""
     group = config.groups.get(chat_key)
     return EffectiveJoinerConfig(
-        enabled=_coalesce(group.enabled if group else None, config.enabled),
+        enabled=_coalesce(
+            group.enabled if group else None, config.default_group_enabled
+        ),
         model=_coalesce(group.model if group else None, config.model),
         threshold=_coalesce(group.threshold if group else None, config.threshold),
         max_context_messages=_coalesce(

@@ -88,6 +88,31 @@ def _model_spec_resolves(settings: Settings, spec: str) -> bool:
     )
 
 
+def _enabled_plugin_config(
+    report: ValidationReport,
+    plugin_id: str,
+    raw: dict,
+    *,
+    default: bool,
+) -> dict | None:
+    """Return business config when a framework-managed plugin is enabled."""
+    enabled = raw.get("enabled", default)
+    if not isinstance(enabled, bool):
+        report.issues.append(
+            ValidationIssue(
+                "error",
+                f"{plugin_id}.enabled",
+                "Plugin enabled must be a boolean",
+            )
+        )
+        return None
+    if not enabled:
+        return None
+    business_config = dict(raw)
+    business_config.pop("enabled", None)
+    return business_config
+
+
 def _add_unresolved_model_issue(
     report: ValidationReport,
     path: str,
@@ -300,12 +325,19 @@ def validate_settings(settings: Settings) -> ValidationReport:
     if "telegram" in extra and isinstance(extra["telegram"], dict):
         from nahida_bot.channels.telegram.config import parse_telegram_config
 
+        telegram_config = _enabled_plugin_config(
+            report, "telegram", extra["telegram"], default=False
+        )
         try:
-            telegram = parse_telegram_config(extra["telegram"])
+            telegram = (
+                parse_telegram_config(telegram_config)
+                if telegram_config is not None
+                else None
+            )
         except ValidationError as exc:
             _add_pydantic_issues(report, prefix="telegram", exc=exc)
         else:
-            if not telegram.bot_token:
+            if telegram is not None and not telegram.bot_token:
                 report.issues.append(
                     ValidationIssue(
                         "warning",
@@ -317,12 +349,17 @@ def validate_settings(settings: Settings) -> ValidationReport:
     if "milky" in extra and isinstance(extra["milky"], dict):
         from nahida_bot.channels.milky.config import parse_milky_config
 
+        milky_config = _enabled_plugin_config(
+            report, "milky", extra["milky"], default=False
+        )
         try:
-            milky = parse_milky_config(extra["milky"])
+            milky = (
+                parse_milky_config(milky_config) if milky_config is not None else None
+            )
         except ValidationError as exc:
             _add_pydantic_issues(report, prefix="milky", exc=exc)
         else:
-            if not milky.access_token:
+            if milky is not None and not milky.access_token:
                 report.issues.append(
                     ValidationIssue(
                         "warning",
@@ -334,8 +371,12 @@ def validate_settings(settings: Settings) -> ValidationReport:
     if "onebot" in extra and isinstance(extra["onebot"], dict):
         from nahida_bot.channels.onebot.config import parse_onebot_config
 
+        onebot_config = _enabled_plugin_config(
+            report, "onebot", extra["onebot"], default=False
+        )
         try:
-            parse_onebot_config(extra["onebot"])
+            if onebot_config is not None:
+                parse_onebot_config(onebot_config)
         except ValidationError as exc:
             _add_pydantic_issues(report, prefix="onebot", exc=exc)
 

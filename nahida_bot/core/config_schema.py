@@ -291,6 +291,13 @@ def _build_plugin_schema(
                 default_="{}",
             )
         )
+        entries.append(
+            SchemaEntry(
+                path=f"{plugin_id}.enabled",
+                type_="bool",
+                default_=str(manifest.enabled),
+            )
+        )
 
         config_model = _plugin_config_model(plugin_id)
         if config_model is not None:
@@ -299,15 +306,22 @@ def _build_plugin_schema(
 
         config_schema = manifest.config_schema or {}
         if config_schema:
+            schema_entries = _walk_json_schema(
+                config_schema,
+                prefix=plugin_id,
+                defaults=manifest.config,
+            )
             entries.extend(
-                _walk_json_schema(
-                    config_schema,
-                    prefix=plugin_id,
-                    defaults=manifest.config,
-                )
+                entry
+                for entry in schema_entries
+                if entry.path != f"{plugin_id}.enabled"
             )
         else:
-            entries.extend(_infer_config_entries(manifest.config, prefix=plugin_id))
+            entries.extend(
+                entry
+                for entry in _infer_config_entries(manifest.config, prefix=plugin_id)
+                if entry.path != f"{plugin_id}.enabled"
+            )
     return entries
 
 

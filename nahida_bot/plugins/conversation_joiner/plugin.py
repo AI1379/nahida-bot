@@ -108,7 +108,6 @@ class ConversationJoinerPlugin(Plugin):
         )
         self.api.logger.info(
             "conversation_joiner.loaded",
-            enabled=self._config.enabled,
             engagement=self._config.engagement.enabled,
             group_count=len(self._config.groups),
         )

@@ -86,6 +86,7 @@ class PluginManifest(BaseModel):
     nahida_bot_version: str = ""
     sdk_version: str = ""
     load_phase: Literal["pre-agent", "post-agent"] = "post-agent"
+    enabled: bool = True
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     config: dict[str, Any] = Field(default_factory=dict)

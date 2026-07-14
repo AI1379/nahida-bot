@@ -4,6 +4,7 @@ version: "0.1.0"
 description: "Observes group context and asks the main agent to naturally join a topic when appropriate"
 entrypoint: "nahida_bot.plugins.conversation_joiner.plugin:ConversationJoinerPlugin"
 load_phase: "post-agent"
+enabled: false
 permissions:
   llm_access: true
   filesystem:
@@ -21,7 +22,9 @@ capabilities:
   emits:
     - AgentResponseRequested
 config:
-  enabled: false
+  # joiner 加载后是否默认对所有群生效。设为 false 则改为逐群 opt-in
+  # （在 groups.<chat_key>.enabled 中显式启用）。
+  default_group_enabled: true
   model: cheap
   threshold: 0.75
   max_context_messages: 12

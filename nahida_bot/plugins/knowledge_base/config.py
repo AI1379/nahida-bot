@@ -50,7 +50,6 @@ class KBConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    enabled: bool = True
     default_chunk_size: int = Field(
         default=500,
         ge=1,

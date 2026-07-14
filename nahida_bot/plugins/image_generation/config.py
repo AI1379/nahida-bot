@@ -35,7 +35,6 @@ class ImageGenerationConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    enabled: bool = False
     provider: str = "default"
     backends: dict[str, OpenAIImagesBackendConfig] = Field(
         default_factory=lambda: {"default": OpenAIImagesBackendConfig()}

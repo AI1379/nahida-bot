@@ -43,9 +43,9 @@ class PluginState(StrEnum):
     """Lifecycle states for a plugin."""
 
     FOUND = "found"  # Manifest discovered on disk
-    LOADED = "loaded"  # Module imported, class instantiated
+    LOADED = "loaded"  # Module imported and instantiated, but not active
     ENABLED = "enabled"  # on_load + on_enable called, handlers active
-    DISABLED = "disabled"  # on_disable called, handlers removed
+    DISABLED = "disabled"  # Inactive and fully unloaded by framework policy
     ERROR = "error"  # Plugin crashed; no further dispatch
     UNLOADED = "unloaded"  # Fully cleaned up
 
@@ -57,6 +57,8 @@ class PluginRecord:
     manifest: PluginManifest
     plugin_dir: Path
     state: PluginState = PluginState.FOUND
+    configured_enabled: bool = True
+    config_overrides: dict[str, Any] | None = None
     instance: Plugin | None = None
     api_bridge: RealBotAPI | None = None
     error_message: str = ""
@@ -230,6 +232,8 @@ class PluginManager:
             self._records[manifest.id] = PluginRecord(
                 manifest=manifest,
                 plugin_dir=plugin_dir,
+                state=(PluginState.FOUND if manifest.enabled else PluginState.DISABLED),
+                configured_enabled=manifest.enabled,
             )
             discovered.append(manifest)
             logger.info(
@@ -240,12 +244,40 @@ class PluginManager:
             )
         return discovered
 
+    def apply_config(self, plugin_id: str, config: dict[str, Any]) -> None:
+        """Apply application config and consume framework-reserved fields.
+
+        ``enabled`` is owned by the plugin host.  It is intentionally removed
+        before the remaining business config is passed to the plugin instance.
+        """
+        record = self._require_record(plugin_id)
+        overrides = dict(config)
+        configured_enabled = overrides.pop("enabled", record.manifest.enabled)
+        if not isinstance(configured_enabled, bool):
+            raise ValueError(f"Plugin '{plugin_id}' enabled must be a boolean")
+
+        merged = {**record.manifest.config, **overrides}
+        record.manifest = record.manifest.model_copy(update={"config": merged})
+        record.configured_enabled = configured_enabled
+        record.config_overrides = dict(config)
+
+        if record.instance is None:
+            if configured_enabled and record.state == PluginState.DISABLED:
+                record.state = PluginState.FOUND
+            elif not configured_enabled and record.state == PluginState.FOUND:
+                record.state = PluginState.DISABLED
+
     # ── Loading ────────────────────────────────────────
 
     async def load(self, plugin_id: str) -> None:
         """Load a discovered plugin: import module, instantiate class."""
         record = self._require_record(plugin_id)
-        self._require_state(record, PluginState.FOUND)
+        self._require_state(
+            record,
+            PluginState.FOUND,
+            PluginState.DISABLED,
+            PluginState.UNLOADED,
+        )
 
         try:
             plugin_class = self._loader.load(record.manifest, record.plugin_dir)
@@ -285,7 +317,15 @@ class PluginManager:
             temp_file_service=self._temp_file_service,
         )
 
-        instance = plugin_class(api=api_bridge, manifest=record.manifest)
+        try:
+            instance = plugin_class(api=api_bridge, manifest=record.manifest)
+        except Exception as exc:  # noqa: BLE001
+            self._loader.unload(record.manifest)
+            record.state = PluginState.ERROR
+            record.error_message = f"{type(exc).__name__}: {exc}"
+            raise PluginLoadError(
+                f"Plugin '{plugin_id}' failed to initialize: {exc}"
+            ) from exc
         api_bridge.add_decorated_registrations(instance)
         record.instance = instance
         record.api_bridge = api_bridge
@@ -298,34 +338,45 @@ class PluginManager:
         await self._publish_plugin_event("PluginLoaded", record)
 
     async def load_all(self, *, phase: str | None = None) -> None:
-        """Load all discovered plugins. Errors are logged, not raised."""
+        """Load configured plugins. Errors are logged, not raised."""
         for plugin_id in list(self._records):
             record = self._records[plugin_id]
             if phase is not None and record.manifest.load_phase != phase:
                 continue
-            if record.state == PluginState.FOUND:
+            if record.configured_enabled and record.state in (
+                PluginState.FOUND,
+                PluginState.UNLOADED,
+            ):
                 await self._safe_call(plugin_id, "load")
 
     # ── Enabling ───────────────────────────────────────
 
     async def enable(self, plugin_id: str) -> None:
-        """Enable a loaded plugin: call on_enable (and on_load for first enable)."""
+        """Ensure a plugin is loaded, then activate its lifecycle."""
         record = self._require_record(plugin_id)
-        prev_state = record.state
-        self._require_state(record, PluginState.LOADED, PluginState.DISABLED)
+        self._require_state(
+            record,
+            PluginState.FOUND,
+            PluginState.LOADED,
+            PluginState.DISABLED,
+            PluginState.UNLOADED,
+        )
+
+        if record.state != PluginState.LOADED:
+            await self.load(plugin_id)
+            if record.state != PluginState.LOADED:
+                return
+
         assert record.instance is not None
         assert record.api_bridge is not None
 
         if not await self._safe_activate_registrations(record):
             return
 
-        # Only call on_load on first enable (LOADED → ENABLED).
-        # Re-enabling from DISABLED skips on_load to avoid duplicate init.
-        if prev_state == PluginState.LOADED:
-            await self._safe_invoke(record.instance, "on_load")
-            if record.state == PluginState.ERROR:
-                self._clear_plugin_registrations(plugin_id, record)
-                return
+        await self._safe_invoke(record.instance, "on_load")
+        if record.state == PluginState.ERROR:
+            self._clear_plugin_registrations(plugin_id, record)
+            return
         await self._safe_invoke(record.instance, "on_enable")
 
         if record.state != PluginState.ERROR:
@@ -335,18 +386,23 @@ class PluginManager:
             self._clear_plugin_registrations(plugin_id, record)
 
     async def enable_all(self, *, phase: str | None = None) -> None:
-        """Enable all loaded plugins."""
+        """Enable all plugins whose framework configuration enables them."""
         for plugin_id in list(self._records):
             record = self._records[plugin_id]
             if phase is not None and record.manifest.load_phase != phase:
                 continue
-            if record.state in (PluginState.LOADED, PluginState.DISABLED):
+            if record.configured_enabled and record.state in (
+                PluginState.FOUND,
+                PluginState.LOADED,
+                PluginState.DISABLED,
+                PluginState.UNLOADED,
+            ):
                 await self._safe_call(plugin_id, "enable")
 
     # ── Disabling ──────────────────────────────────────
 
     async def disable(self, plugin_id: str) -> None:
-        """Disable an enabled plugin: remove handlers, cancel tasks, call on_disable."""
+        """Deactivate an enabled plugin and release its loaded instance."""
         record = self._require_record(plugin_id)
         self._require_state(record, PluginState.ENABLED)
 
@@ -360,38 +416,59 @@ class PluginManager:
         if record.instance is not None:
             await self._safe_invoke(record.instance, "on_disable")
 
-        if record.state != PluginState.ERROR:
-            record.state = PluginState.DISABLED
-            await self._publish_plugin_event("PluginDisabled", record)
+        if record.state == PluginState.ERROR:
+            self._clear_plugin_registrations(plugin_id, record)
+            return
+
+        if record.instance is not None:
+            await self._safe_invoke(record.instance, "on_unload")
+        if record.state == PluginState.ERROR:
+            self._clear_plugin_registrations(plugin_id, record)
+            return
+
+        if record.api_bridge is not None:
+            record.api_bridge.clear_registrations()
+        self._loader.unload(record.manifest)
+        record.instance = None
+        record.api_bridge = None
+        record.state = PluginState.DISABLED
+        await self._publish_plugin_event("PluginDisabled", record)
 
     # ── Reloading ──────────────────────────────────────
 
     async def reload(self, plugin_id: str) -> None:
-        """Hot-reload: disable → unload → load → enable."""
+        """Re-read a plugin and restore its previous runtime activation level."""
         record = self._require_record(plugin_id)
+        should_reenable = record.state in (PluginState.ENABLED, PluginState.ERROR)
+        was_loaded = record.state == PluginState.LOADED
 
         if record.state == PluginState.ENABLED:
             await self.disable(plugin_id)
-        if record.state in (PluginState.DISABLED, PluginState.LOADED):
+        elif record.state in (PluginState.LOADED, PluginState.ERROR):
             await self.unload(plugin_id)
 
         # Re-read manifest from disk
         manifest_path = record.plugin_dir / "plugin.yaml"
         new_manifest = parse_manifest(manifest_path)
         record.manifest = new_manifest
-        record.state = PluginState.FOUND
+        record.configured_enabled = new_manifest.enabled
+        record.state = (
+            PluginState.FOUND if new_manifest.enabled else PluginState.DISABLED
+        )
+        if record.config_overrides is not None:
+            self.apply_config(plugin_id, record.config_overrides)
 
-        await self.load(plugin_id)
-        await self.enable(plugin_id)
+        if should_reenable:
+            await self.enable(plugin_id)
+        elif was_loaded:
+            await self.load(plugin_id)
 
     # ── Unloading ──────────────────────────────────────
 
     async def unload(self, plugin_id: str) -> None:
         """Unload a plugin: call on_unload, release resources."""
         record = self._require_record(plugin_id)
-        self._require_state(
-            record, PluginState.DISABLED, PluginState.LOADED, PluginState.ERROR
-        )
+        self._require_state(record, PluginState.LOADED, PluginState.ERROR)
 
         if record.instance is not None:
             await self._safe_invoke(record.instance, "on_unload")
@@ -417,17 +494,16 @@ class PluginManager:
         # earlier ones) are shut down first.
         reversed_ids = list(reversed(self._records))
 
-        # Disable all enabled plugins
+        # Disable all enabled plugins. Disable also unloads their instances.
         for plugin_id in reversed_ids:
             record = self._records[plugin_id]
             if record.state == PluginState.ENABLED:
                 await self._safe_call(plugin_id, "disable")
 
-        # Unload everything that's loaded or in error state
+        # Unload everything still loaded or in error state.
         for plugin_id in reversed_ids:
             record = self._records[plugin_id]
             if record.state in (
-                PluginState.DISABLED,
                 PluginState.LOADED,
                 PluginState.ERROR,
             ):

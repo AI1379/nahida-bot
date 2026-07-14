@@ -107,6 +107,9 @@ capabilities:
 ### 1.3 插件配置
 
 ```yaml
+# 框架级生命周期默认值；不属于插件业务配置
+enabled: false
+
 # 默认配置值
 config:
   api_key: ""
@@ -133,7 +136,10 @@ config_schema:
   required: ["api_key"]
 ```
 
-配置值在运行时通过 `self.manifest.config` 访问。外部注入（bot 的 `config.yaml` 或环境变量）会自动合并。
+`enabled` 是 Plugin Host 保留字段。主配置中可通过
+`<plugin-id>.enabled` 覆盖它；框架会在实例化前消费该字段，不会把它放入
+`self.manifest.config`。其余配置值会自动合并，并可在运行时通过
+`self.manifest.config` 访问。
 
 ---
 
@@ -147,7 +153,7 @@ class MyPlugin(Plugin):
     """我的插件。"""
 
     async def on_load(self) -> None:
-        """首次启用前调用一次。可在此注册动态命令、工具、事件处理器。"""
+        """每次启用新实例时调用。可在此注册动态命令、工具、事件处理器。"""
         ...
 
     async def on_unload(self) -> None:
@@ -165,10 +171,10 @@ class MyPlugin(Plugin):
 
 | 方法 | 调用时机 | 是否必须 |
 |------|---------|:------:|
-| `on_load()` | 首次启用时（装饰器声明激活后） | 否 |
-| `on_enable()` | 每次启用后 | 否 |
-| `on_disable()` | 每次禁用后 | 否 |
-| `on_unload()` | 卸载/热重载时 | 否 |
+| `on_load()` | 每次启用新实例时（装饰器声明激活后） | 否 |
+| `on_enable()` | `on_load()` 成功后 | 否 |
+| `on_disable()` | 禁用已启用实例时 | 否 |
+| `on_unload()` | 禁用、显式卸载或热重载时 | 否 |
 
 插件实例持有两个属性：
 - `self.api` — [`BotAPI`](#3-botapi-协议) 实例，插件的全部能力入口
@@ -628,8 +634,8 @@ class ChatAddress:
 | 事件 | 载荷 | 触发时机 |
 |------|------|---------|
 | `PluginLoaded` | `PluginPayload(plugin_id, plugin_name, plugin_version)` | 模块导入后 |
-| `PluginEnabled` | 同上 | 首次启用时 on_load + on_enable 后；再次启用时 on_enable 后 |
-| `PluginDisabled` | 同上 | on_disable 后 |
+| `PluginEnabled` | 同上 | on_load + on_enable 后 |
+| `PluginDisabled` | 同上 | on_disable + on_unload 并释放实例后 |
 | `PluginUnloaded` | 同上 | 完全卸载后 |
 | `PluginErrorOccurred` | `PluginErrorPayload(plugin_id, plugin_name, method, error)` | 方法抛出异常 |
 

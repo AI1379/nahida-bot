@@ -155,8 +155,12 @@ def _collect_services(app: Application) -> ServiceStatus:
         for record in app.plugin_manager.list_plugins():
             if record.state == PluginState.ERROR:
                 svc.plugins[record.manifest.id] = "error"
-            elif record.state in (PluginState.LOADED, PluginState.ENABLED):
+            elif record.state == PluginState.ENABLED:
+                svc.plugins[record.manifest.id] = "enabled"
+            elif record.state == PluginState.LOADED:
                 svc.plugins[record.manifest.id] = "loaded"
+            elif record.state == PluginState.DISABLED:
+                svc.plugins[record.manifest.id] = "disabled"
             else:
                 svc.plugins[record.manifest.id] = "discovered"
 

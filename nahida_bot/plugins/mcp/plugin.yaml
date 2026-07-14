@@ -3,6 +3,7 @@ name: "MCP Integration"
 version: "0.1.0"
 description: "Connect to MCP (Model Context Protocol) servers and expose their tools"
 entrypoint: "nahida_bot.plugins.mcp.plugin:MCPPlugin"
+enabled: true
 load_phase: "post-agent"
 permissions:
   network:

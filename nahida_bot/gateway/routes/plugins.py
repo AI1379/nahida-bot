@@ -183,6 +183,7 @@ def _record_to_response(record: PluginRecord) -> PluginSummaryResponse:
         version=manifest.version,
         description=manifest.description,
         state=record.state.value,
+        configured_enabled=record.configured_enabled,
         path=str(record.plugin_dir),
         entrypoint=manifest.entrypoint,
         load_phase=manifest.load_phase,

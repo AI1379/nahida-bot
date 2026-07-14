@@ -721,34 +721,23 @@ class PluginManifest(BaseModel):
 ### 5.1 状态机
 
 ```text
-         discover
-            │
-            ▼
-        ┌────────┐
-        │Found   │  plugin.yaml 被扫描到
-        └───┬────┘
-    load │
-            ▼
-        ┌────────┐
-        │Loaded  │  Python 包被导入，Plugin 类被实例化
-        └───┬────┘
-   enable │
-            ▼
-        ┌─────────┐
-        │Enabled  │  注册声明已激活；首次启用调用 on_load()，每次启用调用 on_enable()
-        └──┬──┬───┘
-  disable │  │ reload
-           │  │
-           ▼  ▼
-    ┌──────────┐  ┌──────────┐
-    │Disabled  │  │Reloading │  on_disable() → on_unload() → 重新 load → enable
-    └─────┬────┘  └──────────┘
- unload │
-           ▼
-        ┌──────────┐
-        │Unloaded  │  模块从 sys.modules 移除（如可安全移除）
-        └──────────┘
+discover ── configured false ───────────────► Disabled
+   │                                            │
+   └── configured true ─► Found ─► Loaded ─► Enabled
+                                      │           │
+                                      │           ├─ disable ─► Disabled
+                                      │           └─ reload ──► Enabled
+                                      └─ unload ──────────────► Unloaded
+
+Loaded:   Python 包已导入、Plugin 已实例化，但注册项尚未激活
+Enabled:  on_load() → on_enable() 成功，注册项已激活
+Disabled: 未实例化；禁用时执行 on_disable() → on_unload() 并释放实例
 ```
+
+`enabled` 是 Plugin Host 的保留字段，而不是插件业务配置。配置禁用的插件在
+discover 后直接进入 `Disabled`，不会导入模块或创建实例。`Loaded` 保留给管理员
+显式加载但尚未激活的诊断场景；正常启用会自动完成 load。禁用已启用插件会完整
+执行 `on_disable()`、`on_unload()` 并释放实例。
 
 ### 5.2 PluginManager 接口
 
@@ -769,11 +758,11 @@ class PluginManager:
         ...
 
     async def enable(self, plugin_id: str) -> None:
-        """启用插件：激活注册；首次启用调用 on_load()，每次启用调用 on_enable()。"""
+        """启用插件：必要时先加载，再调用 on_load() 和 on_enable()。"""
         ...
 
     async def disable(self, plugin_id: str) -> None:
-        """禁用插件：调用 on_disable()，取消所有事件订阅和工具注册。"""
+        """禁用插件：调用 on_disable()/on_unload()，移除注册并释放实例。"""
         ...
 
     async def reload(self, plugin_id: str) -> None:

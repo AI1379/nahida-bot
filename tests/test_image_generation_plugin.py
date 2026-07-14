@@ -97,7 +97,6 @@ class _FakeImageClient:
 
 def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
     base_config: dict[str, Any] = {
-        "enabled": True,
         "provider": "default",
         "backends": {
             "default": {
@@ -416,12 +415,12 @@ async def test_tool_can_select_configured_provider(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_disabled_plugin_registers_nothing(tmp_path: Path) -> None:
+async def test_framework_enabled_is_not_a_business_config_gate(tmp_path: Path) -> None:
     api = _ImageAPI(tmp_path)
     await _load_plugin(api, {"enabled": False})
 
-    assert api.registered_commands == {}
-    assert api.registered_tools == {}
+    assert "draw" in api.registered_commands
+    assert "image_generate" in api.registered_tools
 
 
 @pytest.mark.asyncio

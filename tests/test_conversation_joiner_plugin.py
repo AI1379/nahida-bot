@@ -18,7 +18,10 @@ from nahida_bot.core.events import (
 )
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import ChatContext, InboundMessage, SenderContext
-from nahida_bot.plugins.conversation_joiner.config import effective_group_config
+from nahida_bot.plugins.conversation_joiner.config import (
+    effective_group_config,
+    parse_conversation_joiner_config,
+)
 from nahida_bot.plugins.conversation_joiner.plugin import ConversationJoinerPlugin
 from nahida_bot.plugins.conversation_joiner.state import EngagementStateMachine
 from nahida_bot.plugins.manifest import (
@@ -89,7 +92,6 @@ class _JoinerAPI(RecordingMockBotAPI):
 
 def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
     base_config = {
-        "enabled": True,
         "model": "cheap",
         "threshold": 0.75,
         "cooldown_seconds": 0,
@@ -361,7 +363,6 @@ def _engagement_manifest(
     if engagement_overrides:
         engagement.update(engagement_overrides)
     config: dict[str, Any] = {
-        "enabled": True,
         "model": "cheap",
         "threshold": 0.75,
         "cooldown_seconds": 0,
@@ -2043,3 +2044,45 @@ async def test_enable_poke_false_drops_poke_event() -> None:
 
     assert api.llm_calls == []
     assert api.agent_response_requests == []
+
+
+class TestDefaultGroupEnabledSwitch:
+    """``default_group_enabled`` controls whether loading the joiner opts every
+    group in (default) or requires per-group opt-in."""
+
+    def test_defaults_to_true_so_unconfigured_group_is_active(self) -> None:
+        config = parse_conversation_joiner_config({"groups": {}})
+
+        cfg = effective_group_config(config, "test:group:g1")
+
+        assert cfg.enabled is True
+
+    def test_per_group_override_still_wins_when_default_true(self) -> None:
+        config = parse_conversation_joiner_config(
+            {"groups": {"test:group:g1": {"enabled": False}}}
+        )
+
+        cfg = effective_group_config(config, "test:group:g1")
+
+        assert cfg.enabled is False
+
+    def test_setting_false_makes_unconfigured_groups_inactive(self) -> None:
+        config = parse_conversation_joiner_config(
+            {"default_group_enabled": False, "groups": {}}
+        )
+
+        cfg = effective_group_config(config, "test:group:g1")
+
+        assert cfg.enabled is False
+
+    def test_setting_false_keeps_explicit_per_group_opt_in(self) -> None:
+        config = parse_conversation_joiner_config(
+            {
+                "default_group_enabled": False,
+                "groups": {"test:group:g1": {"enabled": True}},
+            }
+        )
+
+        cfg = effective_group_config(config, "test:group:g1")
+
+        assert cfg.enabled is True

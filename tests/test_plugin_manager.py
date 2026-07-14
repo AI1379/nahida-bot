@@ -30,7 +30,11 @@ class _ChannelRegistry:
 
 
 def _create_test_plugin(
-    parent: Path, plugin_id: str, *, load_phase: str = "post-agent"
+    parent: Path,
+    plugin_id: str,
+    *,
+    load_phase: str = "post-agent",
+    enabled: bool = True,
 ) -> Path:
     """Create a minimal test plugin directory with a unique module name."""
     plugin_dir = parent / plugin_id
@@ -44,6 +48,7 @@ name: {plugin_id.replace("_", " ").title()}
 version: "1.0.0"
 entrypoint: "{module_name}:TestPlugin"
 load_phase: "{load_phase}"
+enabled: {str(enabled).lower()}
 """
     (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 
@@ -142,8 +147,12 @@ class TestPluginLifecycle:
         # Disable
         await manager.disable("lifecycle_test")
         assert record.state == PluginState.DISABLED
+        assert record.instance is None
+        assert record.api_bridge is None
 
-        # Unload
+        # Administrators may still load without activating, then unload.
+        await manager.load("lifecycle_test")
+        assert record.state == PluginState.LOADED
         await manager.unload("lifecycle_test")
         assert record.state == PluginState.UNLOADED
         assert record.instance is None
@@ -216,7 +225,10 @@ class TestPluginLifecycle:
         await manager.shutdown_all()
 
         for pid in ("p1", "p2"):
-            assert manager.get_record(pid).state == PluginState.UNLOADED  # type: ignore[union-attr]
+            record = manager.get_record(pid)
+            assert record is not None
+            assert record.state == PluginState.DISABLED
+            assert record.instance is None
 
     async def test_reenable_restores_imperative_registrations(
         self, tmp_path: Path
@@ -278,6 +290,9 @@ class LifecyclePlugin(Plugin):
             == 1
         )
 
+        first_instance = record.instance
+        assert first_instance is not None
+
         await manager.disable("imperative_lifecycle")
         assert manager.command_registry.get("hello") is None
         assert manager.tool_registry.get("echo_tool") is None
@@ -295,9 +310,10 @@ class LifecyclePlugin(Plugin):
 
         instance = record.instance
         assert instance is not None
+        assert instance is not first_instance
         assert instance.on_load_count == 1  # type: ignore[attr-defined]
-        assert instance.on_enable_count == 2  # type: ignore[attr-defined]
-        assert instance.on_disable_count == 1  # type: ignore[attr-defined]
+        assert instance.on_enable_count == 1  # type: ignore[attr-defined]
+        assert first_instance.on_disable_count == 1  # type: ignore[attr-defined]
 
     async def test_reenable_restores_decorator_registrations(
         self, tmp_path: Path
@@ -358,13 +374,66 @@ class DecoratorPlugin(Plugin):
 
 
 class TestPluginStateTransitions:
-    async def test_cannot_enable_found_plugin(self, tmp_path: Path) -> None:
+    async def test_enable_found_plugin_loads_and_activates_it(
+        self, tmp_path: Path
+    ) -> None:
         _create_test_plugin(tmp_path, "state_test")
         manager = PluginManager(event_bus=_make_event_bus())
         await manager.discover([tmp_path])
 
-        with pytest.raises(PluginStateError, match="expected loaded or disabled"):
-            await manager.enable("state_test")
+        await manager.enable("state_test")
+
+        record = manager.get_record("state_test")
+        assert record is not None
+        assert record.state == PluginState.ENABLED
+
+    async def test_configured_disabled_plugin_is_not_loaded(
+        self, tmp_path: Path
+    ) -> None:
+        _create_test_plugin(tmp_path, "disabled_test", enabled=False)
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+
+        await manager.load_all()
+        await manager.enable_all()
+
+        record = manager.get_record("disabled_test")
+        assert record is not None
+        assert record.configured_enabled is False
+        assert record.state == PluginState.DISABLED
+        assert record.instance is None
+
+    async def test_reload_retries_plugin_in_error_state(self, tmp_path: Path) -> None:
+        _create_crashing_plugin(tmp_path, "reload_error")
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+        await manager.enable("reload_error")
+        record = manager.get_record("reload_error")
+        assert record is not None
+        assert record.state == PluginState.ERROR
+
+        await manager.reload("reload_error")
+
+        assert record.state == PluginState.ERROR
+        assert "deliberate crash" in record.error_message
+
+    async def test_framework_enabled_is_removed_from_plugin_config(
+        self, tmp_path: Path
+    ) -> None:
+        _create_test_plugin(tmp_path, "configured_test", enabled=False)
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+
+        manager.apply_config(
+            "configured_test",
+            {"enabled": True, "business_value": "ok"},
+        )
+
+        record = manager.get_record("configured_test")
+        assert record is not None
+        assert record.configured_enabled is True
+        assert record.state == PluginState.FOUND
+        assert record.manifest.config == {"business_value": "ok"}
 
     async def test_cannot_load_unknown_plugin(self) -> None:
         manager = PluginManager(event_bus=_make_event_bus())

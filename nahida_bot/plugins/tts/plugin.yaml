@@ -4,6 +4,7 @@ version: "0.1.0"
 description: "Synthesize voice via the unified TTS layer (GPT-SoVITS adapter) and send it as a voice message"
 entrypoint: "nahida_bot.plugins.tts.plugin:TtsPlugin"
 load_phase: "post-agent"
+enabled: false
 permissions:
   filesystem:
     read:
@@ -18,7 +19,6 @@ capabilities:
     - name: speak
       description: Synthesize speech from text and send it to the current chat as a voice message
 config:
-  enabled: false
   default_backend: "default"
   backends: {}
   voices: {}
@@ -35,10 +35,6 @@ config:
 config_schema:
   type: object
   properties:
-    enabled:
-      type: boolean
-      default: false
-      description: Enable the speak command and tool.
     default_backend:
       type: string
       default: "default"

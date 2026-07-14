@@ -15,15 +15,17 @@ from .helpers import RecordingMockBotAPI
 
 
 def _make_manifest(**overrides: object) -> PluginManifest:
-    defaults = {
+    config: dict[str, object] = {"bot_token": "test-token-123"}
+    user_config: dict[str, object] = overrides.pop("config", {})  # type: ignore[assignment]
+    config.update(user_config)
+    defaults: dict[str, object] = {
         "id": "telegram",
         "name": "Telegram Channel",
         "version": "0.1.0",
         "entrypoint": "nahida_bot.channels.telegram.plugin:TelegramPlugin",
-        "config": {"bot_token": "test-token-123"},
     }
-    defaults.update(overrides)  # type: ignore[typeddict-item]
-    return PluginManifest(**defaults)  # type: ignore[arg-type]
+    defaults.update(overrides)
+    return PluginManifest(config=config, **defaults)  # type: ignore[arg-type]
 
 
 class TestTelegramPluginLifecycle:

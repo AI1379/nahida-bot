@@ -64,9 +64,6 @@ class ImageGenerationPlugin(Plugin):
         self._image_quota_next_id = 0
 
     async def on_load(self) -> None:
-        if not self._config.enabled:
-            self.api.logger.info("image_generation.disabled")
-            return
         self._register_command()
         self._register_tool()
         self.api.logger.info(

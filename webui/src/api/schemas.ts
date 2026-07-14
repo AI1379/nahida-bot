@@ -436,6 +436,7 @@ export interface PluginSummary {
   version: string;
   description: string;
   state: PluginState;
+  configured_enabled: boolean;
   path: string;
   entrypoint: string;
   load_phase: "pre-agent" | "post-agent" | string;

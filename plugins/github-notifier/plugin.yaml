@@ -4,6 +4,7 @@ version: "0.1.0"
 description: "Push GitHub issue and pull request open/close events to chat addresses"
 entrypoint: "nahida_plugin_github_notifier.plugin:GitHubNotifierPlugin"
 load_phase: "post-agent"
+enabled: true
 
 permissions:
   network:

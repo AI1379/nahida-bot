@@ -79,7 +79,6 @@ class _FakeSpeechService:
 
 def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
     base: dict[str, Any] = {
-        "enabled": True,
         "default_backend": "default",
         "backends": {"default": {"type": "gpt-sovits-v2", "base_url": "http://x:9880"}},
         "voices": {
@@ -142,11 +141,11 @@ async def test_plugin_registers_command_and_tool(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_plugin_disabled_registers_nothing(tmp_path: Path) -> None:
+async def test_framework_enabled_is_not_a_business_config_gate(tmp_path: Path) -> None:
     api = _TtsAPI(tmp_path)
     await _load_plugin(api, config={"enabled": False})
-    assert api.registered_commands == {}
-    assert api.registered_tools == {}
+    assert "speak" in api.registered_commands
+    assert "speak" in api.registered_tools
 
 
 # ── speak tool: success ─────────────────────────────────────────────────

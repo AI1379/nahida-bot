@@ -118,12 +118,18 @@ function stateLabel(state: PluginState): string {
   return stateMeta[state]?.label ?? state;
 }
 
+function configuredLabel(plugin: PluginSummary): string {
+  return plugin.configured_enabled ? "Configured enabled" : "Configured disabled";
+}
+
 function canAction(plugin: PluginSummary, action: PluginAction): boolean {
   switch (action) {
     case "load":
-      return plugin.state === "found";
+      return ["found", "disabled", "unloaded"].includes(plugin.state);
     case "enable":
-      return plugin.state === "loaded" || plugin.state === "disabled";
+      return ["found", "loaded", "disabled", "unloaded"].includes(
+        plugin.state,
+      );
     case "disable":
       return plugin.state === "enabled";
     case "reload":
@@ -131,7 +137,7 @@ function canAction(plugin: PluginSummary, action: PluginAction): boolean {
         plugin.state,
       );
     case "unload":
-      return ["loaded", "disabled", "error"].includes(plugin.state);
+      return ["loaded", "error"].includes(plugin.state);
   }
 }
 
@@ -221,6 +227,9 @@ function schemaKeys(plugin: PluginSummary): string[] {
               {{ stateLabel(plugin.state) }}
             </Badge>
           </span>
+          <span class="plugin-row-policy">
+            {{ configuredLabel(plugin) }}
+          </span>
           <span class="plugin-row-id">{{ plugin.id }}</span>
           <span class="plugin-row-meta">
             {{ plugin.version }} · {{ plugin.load_phase }}
@@ -241,6 +250,11 @@ function schemaKeys(plugin: PluginSummary): string[] {
                 {{ stateLabel(selectedPlugin.state) }}
               </Badge>
               <Badge variant="outline">{{ selectedPlugin.load_phase }}</Badge>
+              <Badge
+                :variant="selectedPlugin.configured_enabled ? 'success' : 'secondary'"
+              >
+                {{ configuredLabel(selectedPlugin) }}
+              </Badge>
             </div>
           </div>
           <div class="detail-actions">
@@ -306,6 +320,10 @@ function schemaKeys(plugin: PluginSummary): string[] {
 
         <section class="detail-section">
           <h3>Runtime</h3>
+          <p class="section-note">
+            Disable performs a full runtime unload. Loaded means the plugin was
+            instantiated explicitly for administration but is not active.
+          </p>
           <dl class="kv-list">
             <div>
               <dt>Entrypoint</dt>
@@ -314,6 +332,10 @@ function schemaKeys(plugin: PluginSummary): string[] {
             <div>
               <dt>Path</dt>
               <dd><code>{{ selectedPlugin.path }}</code></dd>
+            </div>
+            <div>
+              <dt>Configured lifecycle</dt>
+              <dd>{{ configuredLabel(selectedPlugin) }}</dd>
             </div>
             <div>
               <dt>Instance</dt>
@@ -598,12 +620,17 @@ function schemaKeys(plugin: PluginSummary): string[] {
 }
 
 .plugin-row-id,
-.plugin-row-meta {
+.plugin-row-meta,
+.plugin-row-policy {
   color: var(--color-muted-foreground);
   font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.plugin-row-policy {
+  color: var(--color-foreground);
 }
 
 .empty-list {
@@ -661,6 +688,13 @@ function schemaKeys(plugin: PluginSummary): string[] {
   color: var(--color-muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.6;
+  margin: 0;
+}
+
+.section-note {
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.5;
   margin: 0;
 }
 

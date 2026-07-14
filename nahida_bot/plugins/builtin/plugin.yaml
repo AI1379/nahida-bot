@@ -3,6 +3,7 @@ name: "Builtin Commands"
 version: "0.1.0"
 description: "Core commands, workspace tools, exec, web fetch, plan, cron, and agent orchestration"
 entrypoint: "nahida_bot.plugins.builtin.commands:BuiltinCommandsPlugin"
+enabled: true
 config:
   allow_external_attachment_paths: false
   external_attachment_roots: []

@@ -880,17 +880,17 @@ class Application:
         await self.plugin_manager.discover([Path(module_file).parent])
 
     def _inject_plugin_configs(self) -> None:
-        """Merge config.yaml top-level plugin config into discovered manifests."""
+        """Apply plugin config and framework-reserved lifecycle settings."""
         if self.plugin_manager is None:
             return
 
         plugin_configs = self._get_plugin_configs()
         for record in self.plugin_manager.list_plugins():
             plugin_id = record.manifest.id
-            if plugin_id in plugin_configs:
-                existing = record.manifest.config or {}
-                merged = {**existing, **plugin_configs[plugin_id]}
-                record.manifest = record.manifest.model_copy(update={"config": merged})
+            self.plugin_manager.apply_config(
+                plugin_id,
+                plugin_configs.get(plugin_id, {}),
+            )
 
     async def start(self) -> None:
         """Start the application."""

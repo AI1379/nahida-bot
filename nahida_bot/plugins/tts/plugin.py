@@ -64,9 +64,6 @@ class TtsPlugin(Plugin):
         self._quota_next_id = 0
 
     async def on_load(self) -> None:
-        if not self._config.enabled:
-            self.api.logger.info("tts.disabled")
-            return
         if not self._config.backends:
             self.api.logger.warning("tts.no_backends_configured")
             return

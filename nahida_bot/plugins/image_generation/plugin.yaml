@@ -4,6 +4,7 @@ version: "0.1.0"
 description: "Generate images through an OpenAI-compatible Images API backend"
 entrypoint: "nahida_bot.plugins.image_generation.plugin:ImageGenerationPlugin"
 load_phase: "post-agent"
+enabled: false
 permissions:
   filesystem:
     read:
@@ -18,7 +19,6 @@ capabilities:
     - name: image_generate
       description: Generate images from a text prompt and optionally send them to the current chat
 config:
-  enabled: false
   provider: "default"
   output_dir: "generated/images"
   auto_send: true
@@ -48,10 +48,6 @@ config:
 config_schema:
   type: object
   properties:
-    enabled:
-      type: boolean
-      default: false
-      description: Enable the image generation command and tool.
     provider:
       type: string
       default: "default"

@@ -134,7 +134,7 @@ multimodal:
 
 # ── 插件配置 ──────────────────────────────────────────
 # Settings 的 extra="allow" 机制：顶层 key 如果不是已知字段，
-# 且值为 dict，则按 plugin id 匹配并注入到对应插件的 manifest.config 中。
+# 且值为 dict，则按 plugin id 匹配。enabled 由框架消费，其余字段注入插件配置。
 
 builtin-commands:
   # send_local_attachment 默认只允许发送 active workspace 内的相对路径。
@@ -264,6 +264,7 @@ conversation_joiner:
       activity_window_seconds: 120
 
 telegram:
+  enabled: true
   bot_token: "${TELEGRAM_BOT_TOKEN:}"
   # group_trigger_mode: "always"      # none / mention / command / always
   # group_context_capture: false      # mention/command 模式下，是否记录未触发群消息作为上下文
@@ -277,6 +278,7 @@ telegram:
 # 可被内置 channel discovery 扫描到。保持注释状态不会启用 Milky。
 #
 # milky:
+#   enabled: true
 #   base_url: "http://127.0.0.1:3000"
 #   access_token: "${MILKY_ACCESS_TOKEN:}"
 #   api_prefix: "/api"

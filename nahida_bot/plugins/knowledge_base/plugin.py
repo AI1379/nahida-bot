@@ -119,10 +119,6 @@ class KnowledgeBasePlugin(Plugin):
     # ── Lifecycle ────────────────────────────────────────
 
     async def on_load(self) -> None:
-        if not self._config.enabled:
-            self.api.logger.info("kb.disabled")
-            return
-
         self._manager = self.api.get_document_store_manager()
         if self._manager is None:
             self.api.logger.warning("kb.no_manager")

@@ -3,6 +3,7 @@ name: "Telegram Channel"
 version: "0.1.0"
 description: "Telegram Bot channel via aiogram"
 entrypoint: "nahida_bot.channels.telegram.plugin:TelegramPlugin"
+enabled: false
 
 permissions:
   network:

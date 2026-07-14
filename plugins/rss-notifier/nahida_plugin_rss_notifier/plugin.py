@@ -109,7 +109,6 @@ class RSSNotifierConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    enabled: bool = True
     target_chat_addresses: list[str] = Field(default_factory=list)
     feeds: list[RSSFeedConfig] = Field(default_factory=list)
     polling: RSSPollingConfig = Field(default_factory=RSSPollingConfig)
@@ -164,10 +163,6 @@ class RSSNotifierPlugin(Plugin):
         self._config = RSSNotifierConfig.model_validate(manifest.config or {})
 
     async def on_load(self) -> None:
-        if not self._config.enabled:
-            self.api.logger.info("rss_notifier.disabled_by_config")
-            return
-
         if self._config.registration.enabled:
             self.api.register_command(
                 "rss_sub",
@@ -207,7 +202,6 @@ class RSSNotifierPlugin(Plugin):
 
         self.api.logger.info(
             "rss_notifier.loaded",
-            enabled=self._config.enabled,
             configured_feeds=len(self._config.feeds),
             default_targets=len(self._config.target_chat_addresses),
             registration_enabled=self._config.registration.enabled,
@@ -216,10 +210,9 @@ class RSSNotifierPlugin(Plugin):
         )
 
     async def on_enable(self) -> None:
-        if not self._config.enabled or not self._config.polling.enabled:
+        if not self._config.polling.enabled:
             self.api.logger.info(
                 "rss_notifier.polling_not_started",
-                enabled=self._config.enabled,
                 polling_enabled=self._config.polling.enabled,
             )
             return

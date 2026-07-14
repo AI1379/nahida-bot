@@ -121,11 +121,14 @@ def test_schema_uses_channel_config_models() -> None:
     }
 
     assert telegram_entries["telegram.bot_token"].type_ == "str"
+    assert telegram_entries["telegram.enabled"].default_ == "False"
     assert telegram_entries["telegram.polling_timeout"].constraints == ">=1"
     assert telegram_entries["telegram.allowed_chats"].type_ == "list[str]"
     assert onebot_entries["onebot.ws_url"].type_ == "str"
+    assert onebot_entries["onebot.enabled"].default_ == "False"
     assert onebot_entries["onebot.ws_access_token"].type_ == "str"
     assert milky_entries["milky.access_token"].type_ == "str"
+    assert milky_entries["milky.enabled"].default_ == "False"
     assert milky_entries["milky.connect_timeout"].constraints == ">0"
 
 
@@ -138,15 +141,11 @@ id: demo
 name: Demo Plugin
 version: "1.0.0"
 entrypoint: demo:DemoPlugin
-config:
-  enabled: true
+enabled: true
 config_schema:
   type: object
   required: [api_key]
   properties:
-    enabled:
-      type: boolean
-      default: false
     api_key:
       type: string
     retries:
@@ -229,9 +228,13 @@ def test_validate_warns_for_sqlite_vec_without_dimensions() -> None:
 def test_validate_uses_channel_config_models() -> None:
     settings = Settings.model_validate(
         {
-            "telegram": {"group_trigger_mode": "all"},
-            "onebot": {"protocol_version": "v11"},
-            "milky": {"reconnect_initial_delay": 10.0, "reconnect_max_delay": 1.0},
+            "telegram": {"enabled": True, "group_trigger_mode": "all"},
+            "onebot": {"enabled": True, "protocol_version": "v11"},
+            "milky": {
+                "enabled": True,
+                "reconnect_initial_delay": 10.0,
+                "reconnect_max_delay": 1.0,
+            },
         }
     )
 

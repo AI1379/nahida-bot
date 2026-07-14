@@ -82,6 +82,7 @@ class PluginSummaryResponse(BaseModel):
     version: str
     description: str = ""
     state: str
+    configured_enabled: bool = True
     path: str
     entrypoint: str
     load_phase: str

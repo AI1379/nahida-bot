@@ -3,6 +3,7 @@ name: "OneBot Channel"
 version: "0.1.0"
 description: "QQ and other IM channels via OneBot v11 protocol (NapCat, Lagrange, LLOneBot)"
 entrypoint: "nahida_bot.channels.onebot.plugin:OneBotPlugin"
+enabled: false
 
 permissions:
   network:

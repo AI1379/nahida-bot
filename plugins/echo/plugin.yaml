@@ -3,6 +3,7 @@ name: "Echo Plugin"
 version: "0.1.0"
 description: "Simple echo commands: /echo and /ping"
 entrypoint: "nahida_plugin_echo.plugin:EchoPlugin"
+enabled: true
 load_phase: "post-agent"
 permissions:
   llm_access: false

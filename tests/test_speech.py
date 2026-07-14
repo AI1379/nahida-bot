@@ -56,7 +56,6 @@ def _voice(**overrides: object) -> GPTSoVITSVoice:
 def test_config_parses_backends_and_voices_as_raw_dicts() -> None:
     config = parse_tts_config(
         {
-            "enabled": True,
             "backends": {
                 "default": {"type": "gpt-sovits-v2", "base_url": "http://x:9880"}
             },
@@ -67,7 +66,6 @@ def test_config_parses_backends_and_voices_as_raw_dicts() -> None:
             "default_voice": "nahida",
         }
     )
-    assert config.enabled is True
     # backends/voices stay raw — providers parse their own sub-configs.
     assert config.backends["default"]["type"] == "gpt-sovits-v2"
     assert config.voices["nahida"]["ref_audio_path"] == "/n.wav"
@@ -351,7 +349,6 @@ async def test_provider_speed_unset_falls_back_to_backend_default() -> None:
 def _service_config() -> TtsConfig:
     return parse_tts_config(
         {
-            "enabled": True,
             "default_backend": "default",
             "backends": {"default": _gpt_sovits_backend_raw()},
             "voices": {

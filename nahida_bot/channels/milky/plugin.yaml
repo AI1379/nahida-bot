@@ -3,6 +3,7 @@ name: "Milky QQ Channel"
 version: "0.1.0"
 description: "QQ channel via Milky-compatible protocol services such as Lagrange.Milky"
 entrypoint: "nahida_bot.channels.milky.plugin:MilkyPlugin"
+enabled: false
 
 permissions:
   network:

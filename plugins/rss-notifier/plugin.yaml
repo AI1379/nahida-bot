@@ -4,6 +4,7 @@ version: "0.1.0"
 description: "Poll RSS/Atom feeds and push new items to chat addresses"
 entrypoint: "nahida_plugin_rss_notifier.plugin:RSSNotifierPlugin"
 load_phase: "post-agent"
+enabled: true
 
 permissions:
   network:
@@ -14,7 +15,6 @@ permissions:
     write: true
 
 config:
-  enabled: true
   target_chat_addresses: []
   feeds: []
   polling:
@@ -42,8 +42,6 @@ config:
 config_schema:
   type: object
   properties:
-    enabled:
-      type: boolean
     target_chat_addresses:
       type: array
       items:

@@ -17,7 +17,6 @@ class TtsConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    enabled: bool = False
     default_backend: str = "default"
     # Raw per-backend config dicts; each must carry a ``type`` discriminator.
     backends: dict[str, dict[str, Any]] = Field(default_factory=dict)

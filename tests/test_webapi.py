@@ -499,6 +499,7 @@ async def test_plugins_list_returns_sanitized_manifest(
     plugin = resp.json()["plugins"][0]
     assert plugin["id"] == "demo.plugin"
     assert plugin["state"] == "enabled"
+    assert plugin["configured_enabled"] is True
     assert plugin["has_config"] is True
     assert plugin["config_keys"] == ["api_key", "mode"]
     assert "secret-value" not in resp.text
