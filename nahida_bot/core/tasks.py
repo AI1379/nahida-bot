@@ -305,7 +305,7 @@ class TaskManager:
     def list_tasks(self, *, owner: str | None = None) -> list[TaskInfo]:
         """Return snapshots of managed tasks, optionally filtered by *owner*."""
         results: list[TaskInfo] = []
-        for key, managed in self._tasks.items():
+        for managed in self._tasks.values():
             if owner is not None and managed.owner != owner:
                 continue
             results.append(self._to_info(managed))

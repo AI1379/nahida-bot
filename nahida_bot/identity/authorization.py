@@ -27,7 +27,7 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Mapping, TypedDict
 
 # Tool names that require an admin sender. These have system-side or
 # cross-session effects. ``memory_write`` is deliberately NOT here: it writes
@@ -89,6 +89,13 @@ class NotAuthorized(Exception):
             f"Tool '{tool_name}' requires admin authorization; sender "
             f"{sender_account_key or '(unknown)'} is not a declared admin."
         )
+
+
+class TicketStatus(TypedDict):
+    """Snapshot of outstanding challenges and grants returned by ticket_status."""
+
+    challenges: list[AuthorizationChallenge]
+    grants: list[AuthorizationGrant]
 
 
 class AuthorizationGate:
@@ -238,7 +245,7 @@ class AuthorizationGate:
 
     def ticket_status(
         self, *, actor_account_key: str, now: datetime | None = None
-    ) -> dict[str, list[AuthorizationChallenge | AuthorizationGrant]]:
+    ) -> TicketStatus:
         current = now or _utc_now()
         self._prune(current)
         is_admin = self.is_admin(actor_account_key)
@@ -285,7 +292,7 @@ class AuthorizationGate:
         }
 
     @staticmethod
-    def _new_id(prefix: str, existing: dict[str, object]) -> str:
+    def _new_id(prefix: str, existing: Mapping[str, object]) -> str:
         while True:
             value = f"{prefix}-{secrets.token_hex(4).upper()}"
             if value not in existing:
