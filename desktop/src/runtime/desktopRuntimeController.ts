@@ -19,8 +19,15 @@ import {
 import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
 import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
 import {
-  createDefaultDesktopEventSource,
+  completeGatewayPairing,
+  pairDevice,
+  type PairDeviceResult,
+  type PairingCompleteResult,
+} from "@/services/gatewayPairing";
+import {
+  createDesktopEventSource,
   type DesktopEventSource,
+  type DesktopEventSourceOptions,
 } from "@/runtime/desktopEventSource";
 import type { useDesktopStore } from "@/stores/desktop";
 
@@ -29,6 +36,11 @@ type DesktopStore = ReturnType<typeof useDesktopStore>;
 export interface DesktopRuntimeActions {
   connectMockBackend(): void;
   disconnectMockBackend(): void;
+  connectGateway(): void;
+  disconnectGateway(): void;
+  reconnectGateway(): void;
+  exchangePairingToken(token: string): Promise<PairingCompleteResult>;
+  pairDevice(adminBearerToken?: string): Promise<PairDeviceResult>;
   submitUserMessage(text: string): void;
   submitMockLlmResult(rawOutput: string): void;
 }
@@ -39,7 +51,7 @@ function clearTimer(timer: ReturnType<typeof setTimeout> | null) {
 
 export function useDesktopRuntimeController(
   store: DesktopStore,
-  eventSource: DesktopEventSource = createDefaultDesktopEventSource(),
+  initialEventSource?: DesktopEventSource,
 ): DesktopRuntimeActions {
   const runtimeSnapshot = computed<DesktopRuntimeSnapshot>(() => ({
     connected: store.connected,
@@ -57,6 +69,12 @@ export function useDesktopRuntimeController(
   let autoRetreatTimer: ReturnType<typeof setTimeout> | null = null;
   let unlistenPetCommands: UnlistenFn | null = null;
   let scheduledPresentationId: string | null = null;
+  // `eventSource` is the live source the controller is currently bound to.
+  // It starts as the injected one (legacy path) or whatever the persisted
+  // connection mode requires, and gets swapped whenever the user changes
+  // the mode and reconnects.
+  let eventSource: DesktopEventSource | null =
+    initialEventSource ?? createDesktopEventSource(store.gatewayConnection);
 
   const speechPlayback = new SpeechPlaybackCoordinator(
     new SystemSpeechAdapter(
@@ -87,15 +105,137 @@ export function useDesktopRuntimeController(
     autoRetreatTimer = null;
   }
 
+  function startEventSource(
+    source: DesktopEventSource | null,
+    options?: DesktopEventSourceOptions,
+  ) {
+    if (!source) return;
+    source.start((event) => store.applyDesktopEvent(event), options);
+  }
+
+  function stopEventSource() {
+    eventSource?.stop();
+  }
+
+  function swapEventSource(next: DesktopEventSource) {
+    if (eventSource === next) return;
+    stopEventSource();
+    eventSource = next;
+  }
+
   function connectMockBackend() {
-    eventSource.start((event) => store.applyDesktopEvent(event));
+    store.updateGatewayConnection({ mode: "mock" });
+    swapEventSource(createDesktopEventSource(store.gatewayConnection));
+    startEventSource(eventSource);
   }
 
   function disconnectMockBackend() {
-    eventSource.stop();
+    stopEventSource();
     store.activePlan = null;
     store.activePresentation = null;
     store.clearPendingAfterEmerge();
+  }
+
+  function connectGateway() {
+    const settings = store.gatewayConnection;
+    if (settings.mode !== "gateway") {
+      store.updateGatewayConnection({ mode: "gateway" });
+    }
+    swapEventSource(createDesktopEventSource(store.gatewayConnection));
+    store.setGatewayConnectionError(null);
+    startEventSource(eventSource, { connection: store.gatewayConnection });
+  }
+
+  function disconnectGateway() {
+    stopEventSource();
+    store.activePlan = null;
+    store.activePresentation = null;
+    store.clearPendingAfterEmerge();
+  }
+
+  function reconnectGateway() {
+    stopEventSource();
+    swapEventSource(createDesktopEventSource(store.gatewayConnection));
+    store.setGatewayConnectionError(null);
+    startEventSource(eventSource, { connection: store.gatewayConnection });
+  }
+
+  async function exchangePairingToken(token: string): Promise<PairingCompleteResult> {
+    const trimmed = token.trim();
+    if (!trimmed) {
+      const result: PairingCompleteResult = {
+        ok: false,
+        error: "Pairing token is empty.",
+      };
+      if (!result.ok) {
+        store.setGatewayPairingState({
+          status: "error",
+          message: result.error,
+        });
+      }
+      return result;
+    }
+
+    store.setGatewayPairingState({ status: "exchanging" });
+    const result = await completeGatewayPairing(
+      store.gatewayConnection.gatewayWsUrl,
+      trimmed,
+    );
+    if (result.ok) {
+      store.updateGatewayConnection({
+        nodeToken: result.nodeToken,
+        mode: "gateway",
+        nodeId: result.nodeId || store.gatewayConnection.nodeId,
+        defaultSessionId:
+          result.conversationId ?? store.gatewayConnection.defaultSessionId,
+      });
+      store.setGatewayPairingState({
+        status: "success",
+        message: `Paired as ${result.nodeId}.`,
+      });
+    } else {
+      store.setGatewayPairingState({
+        status: "error",
+        message: result.error,
+      });
+    }
+    return result;
+  }
+
+  async function pairDeviceFromForm(
+    adminBearerToken?: string,
+  ): Promise<PairDeviceResult> {
+    const settings = store.gatewayConnection;
+    store.setGatewayPairingState({ status: "exchanging" });
+    const result = await pairDevice({
+      gatewayWsUrl: settings.gatewayWsUrl,
+      nodeId: settings.nodeId,
+      displayName: settings.displayName,
+      adminBearerToken,
+    });
+
+    if (result.ok) {
+      store.updateGatewayConnection({
+        mode: "gateway",
+        nodeToken: result.nodeToken,
+        nodeId: result.nodeId,
+        defaultSessionId:
+          result.conversationId ?? settings.defaultSessionId,
+      });
+      const authHint = result.usedAdminBearer
+        ? " (via admin token)"
+        : " (no admin token required)";
+      store.setGatewayPairingState({
+        status: "success",
+        message: `Paired as ${result.nodeId}${authHint}.`,
+      });
+    } else {
+      store.setGatewayPairingState({
+        status: "error",
+        message: result.error,
+      });
+    }
+    return result;
   }
 
   function submitUserMessage(text: string) {
@@ -108,13 +248,13 @@ export function useDesktopRuntimeController(
       sessionId: store.sessionId,
       text: trimmed,
     });
-    eventSource.submitUserMessage(trimmed, store.sessionId);
+    eventSource?.submitUserMessage(trimmed, store.sessionId);
   }
 
   function submitMockLlmResult(rawOutput: string) {
     const trimmed = rawOutput.trim();
     if (!trimmed) return;
-    eventSource.submitMockLlmResult(trimmed);
+    eventSource?.submitMockLlmResult(trimmed);
   }
 
   function scheduleActivePresentation() {
@@ -251,19 +391,26 @@ export function useDesktopRuntimeController(
 
   onMounted(async () => {
     unlistenPetCommands = await listenForPetCommands(handlePetCommand);
-    connectMockBackend();
+    if (store.gatewayConnection.mode === "mock") {
+      startEventSource(eventSource);
+    }
   });
 
   onBeforeUnmount(() => {
     speechPlayback.dispose();
     clearPetStateTimers();
     unlistenPetCommands?.();
-    disconnectMockBackend();
+    stopEventSource();
   });
 
   return {
     connectMockBackend,
     disconnectMockBackend,
+    connectGateway,
+    disconnectGateway,
+    reconnectGateway,
+    exchangePairingToken,
+    pairDevice: pairDeviceFromForm,
     submitUserMessage,
     submitMockLlmResult,
   };

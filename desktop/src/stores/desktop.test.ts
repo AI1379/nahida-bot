@@ -150,4 +150,64 @@ describe("desktop store pet transitions", () => {
 
     expect(store.localConfig.performanceMode).toBe("active");
   });
+
+  it("persists gateway connection updates and bumps the revision", () => {
+    const store = useDesktopStore();
+    const initialVersion = store.gatewayConnectionVersion;
+
+    store.updateGatewayConnection({
+      mode: "gateway",
+      gatewayWsUrl: "wss://gateway.example.com/api/nodes/ws",
+      nodeToken: "nt_abc.def",
+    });
+
+    expect(store.gatewayConnection.mode).toBe("gateway");
+    expect(store.gatewayConnection.gatewayWsUrl).toBe(
+      "wss://gateway.example.com/api/nodes/ws",
+    );
+    expect(store.gatewayConnection.nodeToken).toBe("nt_abc.def");
+    expect(store.gatewayConnectionVersion).toBe(initialVersion + 1);
+  });
+
+  it("rejects invalid URLs when updating gateway connection settings", () => {
+    const store = useDesktopStore();
+
+    store.updateGatewayConnection({
+      gatewayWsUrl: "javascript:alert(1)",
+    });
+
+    expect(store.gatewayConnection.gatewayWsUrl).toBe(
+      "ws://127.0.0.1:6185/api/nodes/ws",
+    );
+  });
+
+  it("clears the node token without losing other settings", () => {
+    const store = useDesktopStore();
+
+    store.updateGatewayConnection({
+      nodeToken: "nt_abc.def",
+      nodeId: "desktop-test",
+    });
+    store.clearGatewayNodeToken();
+
+    expect(store.gatewayConnection.nodeToken).toBe("");
+    expect(store.gatewayConnection.nodeId).toBe("desktop-test");
+    expect(store.gatewayPairing.status).toBe("idle");
+  });
+
+  it("records the failure reason when a connection drops", () => {
+    const store = useDesktopStore();
+
+    store.applyDesktopEvent({
+      type: "connection.changed",
+      source: "gateway",
+      at: "2026-07-19T00:00:00.000Z",
+      connected: false,
+      reason: "handshake rejected",
+    });
+
+    expect(store.connected).toBe(false);
+    expect(store.gatewayConnectionError).toBe("handshake rejected");
+    expect(store.petRuntime.emotion).toBe("offline");
+  });
 });

@@ -5,6 +5,12 @@ These are HTTP companions to the WebSocket endpoint in
 online nodes and run the pairing flow. Node tokens themselves are issued via
 ``NodeAuthService``; this surface exposes that capability to authenticated
 WebUI/operator callers.
+
+The ``pairing/complete`` endpoint is split into ``public_router`` because the
+pairing token is the credential: requiring WebUI admin auth on top of it would
+defeat the whole point of the out-of-band pairing dance (admin mints a
+pairing token, hands it to the desktop user, desktop exchanges it without
+needing admin rights).
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from nahida_bot.gateway.deps import get_application
 from nahida_bot.identity.models import AccountKey
 
 router = APIRouter()
+public_router = APIRouter()
 
 
 class PairingStartRequest(BaseModel):
@@ -137,10 +144,18 @@ async def pairing_start(
     )
 
 
-@router.post("/api/nodes/pairing/complete", response_model=PairingCompleteResponse)
+@public_router.post(
+    "/api/nodes/pairing/complete", response_model=PairingCompleteResponse
+)
 async def pairing_complete(
     body: PairingCompleteRequest, request: Request, app=Depends(get_application)
 ) -> PairingCompleteResponse:
+    """Exchange a one-shot pairing token for a long-lived node token.
+
+    Public endpoint: the pairing token itself is the credential. Admin auth
+    is intentionally NOT required so the desktop user can complete pairing
+    after an admin hands them a pairing token out-of-band.
+    """
     _registry, auth, _invoker = _get_services(request)
     result = auth.exchange_pairing_for_node_token(body.pairing_token)
     if result is None:
@@ -174,4 +189,4 @@ async def revoke_node(
     return RevokeResponse(revoked=count > 0 or disconnected, token_id=node_id)
 
 
-__all__ = ["router"]
+__all__ = ["router", "public_router"]

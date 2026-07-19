@@ -220,9 +220,16 @@ class WebAPIApp:
         app.include_router(identity_router, dependencies=[Depends(require_token)])
 
         if self.node_registry is not None:
-            from nahida_bot.gateway.routes.nodes import router as nodes_router
+            from nahida_bot.gateway.routes.nodes import (
+                public_router as nodes_public_router,
+                router as nodes_router,
+            )
 
+            # Admin-gated node management routes.
             app.include_router(nodes_router, dependencies=[Depends(require_token)])
+            # Public pairing completion: the pairing token itself is the
+            # credential, so admin auth is intentionally not required here.
+            app.include_router(nodes_public_router)
 
         # Mount WebUI static assets if build output exists
         self._mount_webui(app)

@@ -18,9 +18,19 @@ import {
   readPersistedMotionMaps,
 } from "@/services/modelMappingStorage";
 import { readPersistedTtsSettings } from "@/services/ttsSettingsStorage";
+import {
+  readPersistedGatewayConnection,
+  sanitizeGatewayConnection,
+} from "@/services/gatewayConnectionStorage";
+import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { withPersistedModelMappings } from "./modelConfig";
 import { createEmptyPendingAfterEmerge } from "./types";
 import type { TranscriptEntry } from "./types";
+
+export interface GatewayPairingState {
+  status: "idle" | "exchanging" | "success" | "error";
+  message?: string;
+}
 
 export function createDesktopState() {
   const persistedExpressions = readPersistedExpressionMaps();
@@ -37,6 +47,8 @@ export function createDesktopState() {
     persistedMotions,
   );
   localConfig.ttsSettings = readPersistedTtsSettings();
+  const gatewayConnection: GatewayConnectionSettings =
+    sanitizeGatewayConnection(readPersistedGatewayConnection());
 
   return {
     connected: false,
@@ -55,5 +67,9 @@ export function createDesktopState() {
     motionMapVersion: 0,
     transcript: [] as TranscriptEntry[],
     pendingAfterEmerge: createEmptyPendingAfterEmerge(),
+    gatewayConnection,
+    gatewayConnectionVersion: 0,
+    gatewayConnectionError: null as string | null,
+    gatewayPairing: { status: "idle" } as GatewayPairingState,
   };
 }

@@ -6,16 +6,25 @@ import {
 import { useDesktopRuntimeController } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
 import PetRuntimeView from "@/views/PetRuntimeView.vue";
+import SettingsView from "@/views/SettingsView.vue";
 import WorkbenchView from "@/views/WorkbenchView.vue";
 
 const store = useDesktopStore();
 const runtime = useDesktopRuntimeController(store);
 
-const activeView = ref<"runtime" | "workbench">("runtime");
+type DesktopView = "runtime" | "workbench" | "settings";
+const activeView = ref<DesktopView>("runtime");
 
-const title = computed(() =>
-  activeView.value === "runtime" ? "Pet Runtime" : "Development Workbench",
-);
+const title = computed(() => {
+  switch (activeView.value) {
+    case "workbench":
+      return "Development Workbench";
+    case "settings":
+      return "Settings";
+    default:
+      return "Pet Runtime";
+  }
+});
 
 function selectModel(event: Event) {
   const target = event.target as HTMLSelectElement;
@@ -55,6 +64,13 @@ function selectModel(event: Event) {
           >
             Workbench
           </button>
+          <button
+            type="button"
+            :class="{ 'is-active': activeView === 'settings' }"
+            @click="activeView = 'settings'"
+          >
+            Settings
+          </button>
         </div>
         <label class="model-picker" for="live2d-model-picker">
           <span>Model</span>
@@ -79,6 +95,7 @@ function selectModel(event: Event) {
     </section>
 
     <PetRuntimeView v-if="activeView === 'runtime'" :runtime="runtime" />
-    <WorkbenchView v-else :runtime="runtime" />
+    <WorkbenchView v-else-if="activeView === 'workbench'" :runtime="runtime" />
+    <SettingsView v-else :runtime="runtime" />
   </main>
 </template>

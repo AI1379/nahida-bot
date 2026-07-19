@@ -27,6 +27,7 @@ import {
   type PetRuntimeSignal,
 } from "@/domain/petRuntimeMachine";
 import type { DesktopRuntimeSnapshot } from "@/domain/desktopWindowProtocol";
+import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { defaultModelManifest } from "@/config/live2dModelManifests";
 import type {
   Live2DExpressionOption,
@@ -42,6 +43,10 @@ import {
   sanitizeTtsSettings,
   writePersistedTtsSettings,
 } from "@/services/ttsSettingsStorage";
+import {
+  sanitizeGatewayConnection as sanitizePersistedGatewayConnection,
+  writePersistedGatewayConnection,
+} from "@/services/gatewayConnectionStorage";
 import type { MotionMap } from "@/services/modelMappingStorage";
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
 import {
@@ -50,6 +55,7 @@ import {
   withModelConfig,
 } from "./desktop/modelConfig";
 import { createDesktopState } from "./desktop/state";
+import type { GatewayPairingState } from "./desktop/state";
 import {
   assistantTranscriptEntry,
   systemTranscriptEntry,
@@ -249,6 +255,41 @@ export const useDesktopStore = defineStore("desktop", {
         ttsSettings,
       });
       writePersistedTtsSettings(ttsSettings);
+    },
+    commitGatewayConnection(settings: GatewayConnectionSettings) {
+      this.gatewayConnection = sanitizePersistedGatewayConnection(settings);
+      this.gatewayConnectionVersion += 1;
+    },
+    updateGatewayConnection(patch: Partial<GatewayConnectionSettings>) {
+      const next: GatewayConnectionSettings = {
+        ...this.gatewayConnection,
+        ...patch,
+      };
+      this.commitGatewayConnection(next);
+      writePersistedGatewayConnection(next);
+    },
+    resetGatewayConnection() {
+      this.commitGatewayConnection({
+        mode: "mock",
+        gatewayWsUrl: "ws://127.0.0.1:6185/api/nodes/ws",
+        nodeId: "desktop-local",
+        displayName: "Nahida Desktop",
+        defaultSessionId: "",
+        nodeToken: "",
+      });
+      writePersistedGatewayConnection(this.gatewayConnection);
+      this.gatewayConnectionError = null;
+      this.gatewayPairing = { status: "idle" };
+    },
+    clearGatewayNodeToken() {
+      this.updateGatewayConnection({ nodeToken: "" });
+      this.gatewayPairing = { status: "idle" };
+    },
+    setGatewayConnectionError(message: string | null) {
+      this.gatewayConnectionError = message;
+    },
+    setGatewayPairingState(state: GatewayPairingState) {
+      this.gatewayPairing = state;
     },
     previewSystemSpeech(text: string) {
       const cleanText = text.trim();
@@ -465,6 +506,7 @@ export const useDesktopStore = defineStore("desktop", {
             this.gatewayUrl = event.gatewayUrl;
           }
           if (event.connected) {
+            this.gatewayConnectionError = null;
             if (this.pendingAfterEmerge.action.type === "error") {
               this.pendingAfterEmerge = {
                 ...this.pendingAfterEmerge,
@@ -489,6 +531,9 @@ export const useDesktopStore = defineStore("desktop", {
             );
           } else {
             this.clearPendingAfterEmerge();
+            if (event.reason) {
+              this.gatewayConnectionError = event.reason;
+            }
             if (this.petRuntime.status === "emerging") {
               this.queueErrorAfterEmerge();
             } else {
