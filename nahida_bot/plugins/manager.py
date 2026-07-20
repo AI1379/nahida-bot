@@ -93,6 +93,7 @@ class PluginManager:
         task_manager: Any | None = None,
         temp_file_service: ManagedTempFileService | None = None,
         memory_soft_scope: bool = False,
+        speech_service: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
@@ -108,6 +109,7 @@ class PluginManager:
         self._webhost_service = webhost_service
         self._task_manager = task_manager
         self._temp_file_service = temp_file_service
+        self._speech_service = speech_service
         self._document_store_manager: Any | None = None
         self._chat_metadata_store: Any | None = None
         self._loader = PluginLoader()
@@ -134,6 +136,7 @@ class PluginManager:
         document_store_manager: Any | None = None,
         chat_metadata_store: Any | None = None,
         temp_file_service: ManagedTempFileService | None = None,
+        speech_service: Any | None = None,
     ) -> None:
         """Update services injected into subsequently loaded plugin API bridges."""
         self._workspace = workspace_manager
@@ -155,6 +158,8 @@ class PluginManager:
             self._chat_metadata_store = chat_metadata_store
         if temp_file_service is not None:
             self._temp_file_service = temp_file_service
+        if speech_service is not None:
+            self._speech_service = speech_service
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
@@ -315,6 +320,7 @@ class PluginManager:
             task_manager=self._task_manager,
             document_store_manager=self._document_store_manager,
             temp_file_service=self._temp_file_service,
+            speech_service=self._speech_service,
         )
 
         try:

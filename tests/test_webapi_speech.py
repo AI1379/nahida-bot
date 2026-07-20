@@ -29,6 +29,7 @@ from nahida_bot.core.config import (
 )
 from nahida_bot.gateway.app import WebAPIApp
 from nahida_bot.speech.base import SpeechArtifact, SpeechRequest, TtsProvider
+from nahida_bot.speech.config import parse_tts_config
 
 
 WAV_BYTES = (
@@ -107,42 +108,52 @@ def _make_mock_app(
         ),
         webui=WebUIConfigModel(auth=WebUIAuthConfigModel()),
     )
-    mock = MagicMock(spec=["settings"])
+    mock = MagicMock(
+        spec=[
+            "settings",
+            "speech_service",
+            "speech_artifact_store",
+        ],
+    )
     mock.settings = settings
+    # Pre-populate with None so WebAPIApp.getattr finds them.
+    mock.speech_service = None
+    mock.speech_artifact_store = None
     return mock
 
 
-def _patch_speech_service(
-    webapi_app: WebAPIApp,
-    *,
-    cache_dir: Path,
-) -> None:
-    """Replace the auto-built SpeechService with one using the stub provider."""
-    assert webapi_app.speech_service is not None
-    assert webapi_app.speech_artifact_store is not None
-    # Register the stub adapter on the live service so synthesize() dispatches
-    # to it instead of the real GPT-SoVITS client.
-    webapi_app.speech_service.register_provider(_StubTtsProvider)
-    # Move the artifact store to a per-test temp dir.
-    from nahida_bot.speech.artifact_store import SpeechArtifactStore
+def _create_speech_service(config: dict[str, Any] | None = None) -> Any:
+    """Create a SpeechService with the stub provider registered."""
+    from nahida_bot.speech.service import SpeechService
 
-    webapi_app.speech_artifact_store = SpeechArtifactStore(cache_dir)
-    webapi_app._fastapi.state.speech_artifact_store = (  # type: ignore[attr-defined]
-        webapi_app.speech_artifact_store
+    tts_config = parse_tts_config(
+        config
+        or {
+            "default_backend": "default",
+            "backends": {"default": {"type": "stub-tts"}},
+            "voices": {"default": {"ref_audio_path": "/stub.wav"}},
+            "default_voice": "default",
+        }
     )
+    svc = SpeechService(tts_config)
+    svc.register_provider(_StubTtsProvider)
+    return svc
 
 
 @pytest.fixture
 def webapi_with_speech(tmp_path: Path) -> WebAPIApp:
     cache_dir = str(tmp_path / "speech_cache")
     mock = _make_mock_app(cache_dir=cache_dir)
+    mock.speech_service = _create_speech_service()
+    from nahida_bot.speech.artifact_store import SpeechArtifactStore
+
+    mock.speech_artifact_store = SpeechArtifactStore(cache_dir)
     app = WebAPIApp(
         application=mock,
         host="127.0.0.1",
         port=6185,
         auth_token="admin-secret",
     )
-    _patch_speech_service(app, cache_dir=tmp_path / "speech_cache")
     return app
 
 
@@ -262,7 +273,7 @@ async def test_media_download_404_for_unknown_or_expired(
         json={"text": "expired soon"},
     )
     artifact_id = job.json()["artifact_id"]
-    store = webapi_with_speech.speech_artifact_store
+    store = webapi_with_speech._application.speech_artifact_store
     assert store is not None
     # Force-expire by mutating the in-memory entry.
     for entry in store._index.values():  # type: ignore[attr-defined]

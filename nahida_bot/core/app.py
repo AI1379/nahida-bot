@@ -123,6 +123,8 @@ class Application:
         self.webhost_service: WebHostService = WebHostService()
         self._usage_ledger: UsageRecorder | None = None
         self._media_cache: MediaCache | None = None
+        self.speech_service: Any | None = None
+        self.speech_artifact_store: Any | None = None
         # Agent-loop observability. Wired into AgentLoop so every run gets a
         # non-empty trace_id and terminal-outcome counters (repair Phase 0).
         self._metrics: MetricsCollector = MetricsCollector()
@@ -195,6 +197,8 @@ class Application:
             await self._init_agent_subsystem()
             self._init_workspace_subsystem()
 
+            await self._init_speech()
+
             self.plugin_manager.set_runtime_services(
                 workspace_manager=self.workspace_manager,
                 memory_store=self.memory_store,
@@ -207,6 +211,7 @@ class Application:
                 document_store_manager=self.document_store_manager,
                 chat_metadata_store=self.chat_metadata_store,
                 temp_file_service=self.temp_file_service,
+                speech_service=self.speech_service,
             )
             if self.agent_loop is not None:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
@@ -469,6 +474,41 @@ class Application:
                 msg="Provider not configured — agent loop disabled. "
                 "Set providers.<id>.api_key and providers.<id>.models in config.",
             )
+
+    async def _init_speech(self) -> None:
+        """Create shared SpeechService + ArtifactStore from webapi.speech config.
+
+        Both the tts plugin (Channel /speak) and the WebAPI speech routes
+        (Desktop TTS) reuse this single instance. When disabled the service
+        is None and the plugin falls back to its own config.
+        """
+        cfg = self.settings.webapi.speech
+        if not cfg.enabled or not cfg.backends:
+            return
+        from nahida_bot.speech.artifact_store import SpeechArtifactStore
+        from nahida_bot.speech.config import TtsConfig
+        from nahida_bot.speech.service import SpeechService
+
+        tts_config = TtsConfig(
+            default_backend=cfg.default_backend,
+            backends=dict(cfg.backends),
+            voices=dict(cfg.voices),
+            default_voice=cfg.default_voice,
+            max_text_length=cfg.max_text_length,
+            max_concurrency=cfg.max_concurrency,
+        )
+        self.speech_service = SpeechService(tts_config)
+        self.speech_artifact_store = SpeechArtifactStore(
+            cfg.artifact_cache_dir,
+            ttl_seconds=cfg.artifact_ttl_seconds,
+            max_bytes=cfg.artifact_max_bytes,
+        )
+        logger.info(
+            "application.speech_initialized",
+            backends=list(cfg.backends),
+            voices=list(cfg.voices),
+            default_voice=cfg.default_voice,
+        )
 
     async def _init_memory_embedding(self) -> None:
         """Resolve optional memory embedding provider and vector index."""

@@ -179,6 +179,7 @@ class RealBotAPI:
         document_store_manager: Any | None = None,  # DocumentStoreManager
         temp_file_service: ManagedTempFileService | None = None,
         memory_soft_scope: bool = False,
+        speech_service: Any | None = None,  # SpeechService (shared)
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -207,6 +208,7 @@ class RealBotAPI:
         self._orchestration_service = orchestration_service
         self._chat_metadata_store: Any | None = None
         self._logger = _PluginLogger(plugin_id)
+        self._speech_service = speech_service
         self._registrations_active = False
         self._decorated_registrations_added = False
         self._registered_commands: dict[str, CommandEntry] = {}
@@ -1632,6 +1634,11 @@ class RealBotAPI:
     def get_model_router(self) -> Any:
         """Access the unified ModelRouter (if configured)."""
         return self._model_router
+
+    @property
+    def speech_service(self) -> Any | None:
+        """Access the shared SpeechService (if configured via webapi.speech)."""
+        return self._speech_service
 
     @property
     def orchestration_service(self) -> Any | None:

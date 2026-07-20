@@ -73,7 +73,6 @@ class WebAPIApp:
         self._serve_task: asyncio.Task[None] | None = None
         self._node_event_bridge: NodeEventBridge | None = None
         self._init_node_services(application)
-        self._init_speech_services(application)
         self._fastapi = self._build_fastapi(cors_origins or ["*"])
 
     def _init_node_services(self, application: Application) -> None:
@@ -115,47 +114,6 @@ class WebAPIApp:
             else None
         )
 
-    def _init_speech_services(self, application: Application) -> None:
-        """Initialize the WebAPI speech pipeline (Desktop TTS Part B).
-
-        Builds a :class:`SpeechService` from ``webapi.speech`` config plus an
-        on-disk :class:`SpeechArtifactStore`. Independent from the ``tts``
-        plugin (which owns its own service for Channel ``/speak``); use a YAML
-        anchor to share one backend config across both.
-        """
-        self.speech_service = None
-        self.speech_artifact_store = None
-        cfg = application.settings.webapi.speech
-        if not cfg.enabled:
-            return
-        if not cfg.backends:
-            logger.warning("webapi.speech_no_backends_configured")
-            return
-        from nahida_bot.speech.artifact_store import SpeechArtifactStore
-        from nahida_bot.speech.config import TtsConfig
-        from nahida_bot.speech.service import SpeechService
-
-        tts_config = TtsConfig(
-            default_backend=cfg.default_backend,
-            backends=dict(cfg.backends),
-            voices=dict(cfg.voices),
-            default_voice=cfg.default_voice,
-            max_text_length=cfg.max_text_length,
-            max_concurrency=cfg.max_concurrency,
-        )
-        self.speech_service = SpeechService(tts_config)
-        self.speech_artifact_store = SpeechArtifactStore(
-            cfg.artifact_cache_dir,
-            ttl_seconds=cfg.artifact_ttl_seconds,
-            max_bytes=cfg.artifact_max_bytes,
-        )
-        logger.info(
-            "webapi.speech_initialized",
-            backends=list(cfg.backends),
-            voices=list(cfg.voices),
-            default_voice=cfg.default_voice,
-        )
-
     @property
     def fastapi_app(self) -> FastAPI:
         return self._fastapi
@@ -173,8 +131,10 @@ class WebAPIApp:
         app.state.node_registry = self.node_registry
         app.state.node_auth = self.node_auth
         app.state.node_invoker = self.node_invoker
-        app.state.speech_service = self.speech_service
-        app.state.speech_artifact_store = self.speech_artifact_store
+        app.state.speech_service = getattr(self._application, "speech_service", None)
+        app.state.speech_artifact_store = getattr(
+            self._application, "speech_artifact_store", None
+        )
         app.state.speech_config = self._application.settings.webapi.speech
 
         app.add_middleware(
@@ -394,19 +354,19 @@ class WebAPIApp:
             await self._node_event_bridge.stop()
             self._node_event_bridge = None
 
-        # Close speech service (provider HTTP clients) and artifact store.
-        if self.speech_service is not None:
+        # Close shared speech service (provider HTTP clients).
+        svc = getattr(self._application, "speech_service", None)
+        if svc is not None:
             try:
-                await self.speech_service.close()
+                await svc.close()
             except Exception:  # noqa: BLE001
                 logger.warning("webapi.speech_close_failed")
-            self.speech_service = None
-        if self.speech_artifact_store is not None:
+        store = getattr(self._application, "speech_artifact_store", None)
+        if store is not None:
             try:
-                await self.speech_artifact_store.close()
+                await store.close()
             except Exception:  # noqa: BLE001
                 logger.warning("webapi.speech_artifact_store_close_failed")
-            self.speech_artifact_store = None
 
         # Stop SSE broadcaster
         broadcaster = getattr(self._fastapi.state, "event_broadcaster", None)

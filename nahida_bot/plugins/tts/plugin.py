@@ -64,10 +64,17 @@ class TtsPlugin(Plugin):
         self._quota_next_id = 0
 
     async def on_load(self) -> None:
-        if not self._config.backends:
+        # Prefer the shared Application-level SpeechService (configured via
+        # webapi.speech) so the plugin and the Desktop TTS REST surface share
+        # one provider client, HTTP session, and semaphore.
+        shared = getattr(self.api, "speech_service", None)
+        if shared is not None:
+            self._service = shared
+        elif self._config.backends:
+            self._service = SpeechService(self._config)
+        else:
             self.api.logger.warning("tts.no_backends_configured")
             return
-        self._service = SpeechService(self._config)
         self._semaphore = asyncio.Semaphore(self._config.max_concurrency)
         self._register_command()
         self._register_tool()
@@ -75,7 +82,9 @@ class TtsPlugin(Plugin):
             "tts.loaded",
             backends=list(self._config.backends),
             voices=list(self._config.voices),
-            providers=self._service.supported_provider_types(),
+            providers=(
+                self._service.supported_provider_types() if self._service else []
+            ),
         )
 
     async def on_disable(self) -> None:
