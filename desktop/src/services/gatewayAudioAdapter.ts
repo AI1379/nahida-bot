@@ -127,6 +127,11 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     if (request.voice?.style) body.style = request.voice.style;
     if (request.voice?.speed) body.speed = request.voice.speed;
     if (request.voice?.pitch) body.pitch = request.voice.pitch;
+    // TODO: voice selection is currently hardcoded to the gateway default.
+    // When multi-voice / persona-bound voice routing is implemented, pass the
+    // resolved voice name from the DisplayPlan segment here (e.g. via
+    // request.voice.name). The gateway SpeechService.resolve_voice will then
+    // pick the matching provider voice config.
     // Voice is intentionally omitted — let the gateway use its default_voice.
     // Desktop voice field maps to DisplayPlan keyword (not TTS voice name).
 

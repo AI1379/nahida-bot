@@ -59,8 +59,12 @@ class TtsConfig(BaseModel):
         Selection order: exact name → ``default_voice`` → the only configured
         voice. The backend is taken from the voice's optional ``backend`` field,
         falling back to ``default_backend``.
-        """
 
+        TODO: when persona-bound voice routing is implemented, this method
+        should accept an actor_account_key (or session context) and resolve
+        the voice from a persona → voice mapping instead of a flat
+        config-level default_voice.
+        """
         name = voice_name.strip()
         if name and name in self.voices:
             raw = self.voices[name]

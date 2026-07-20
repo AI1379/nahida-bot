@@ -166,6 +166,12 @@ async def create_speech_job(
     """Synchronously synthesize text and return a cached artifact reference."""
     service, store, config = _get_services(request)
 
+    # TODO: resolve voice from actor/session persona context when available,
+    # rather than always using the config-level default_voice (or the
+    # explicitly passed voice name). Desktop currently passes voice="" so it
+    # always hits default_voice. When persona-bound routing is implemented
+    # the voice field should come from the credential's actor_account_key
+    # or a session-level persona override.
     # Resolve the provider type from voice + config so the cache key matches
     # between find_cached and put (otherwise every call is a cache miss).
     provider_hint = service.resolve_provider_type(body.voice)

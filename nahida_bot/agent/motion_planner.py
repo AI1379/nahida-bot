@@ -48,7 +48,11 @@ _SYSTEM_PROMPT = """\
 输出JSON格式：
 {"segments":[{"text":"原文句子","emotion":"happy","motion":"nod","voice":{"style":"bright","speed":1.0,"pitch":0},"pause_after_ms":200}]}
 
-只输出JSON，不要添加任何其他文字、解释或markdown。"""
+只输出JSON，不要添加任何其他文字、解释或markdown。
+# TODO: when multi-voice / persona-bound voice routing is implemented, add
+# a `voice` field to the output JSON (e.g. `"voice": "nahida"`) so the Desktop
+# can select a specific TTS voice per segment. Currently the gateway always
+# uses default_voice."""
 
 
 @runtime_checkable
