@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 
-import type { GatewayConnectionMode } from "@/domain/gatewayConnection";
+import type { GatewayConnectionMode, TtsSourcePreference } from "@/domain/gatewayConnection";
 import {
   isNodeToken,
   isPairingToken,
@@ -24,6 +24,8 @@ const draft = ref({
   displayName: store.gatewayConnection.displayName,
   defaultSessionId: store.gatewayConnection.defaultSessionId,
   nodeToken: store.gatewayConnection.nodeToken,
+  adminBearerToken: store.gatewayConnection.adminBearerToken,
+  ttsSource: store.gatewayConnection.ttsSource,
 });
 
 const adminBearerInput = ref("");
@@ -43,10 +45,15 @@ watch(
       displayName: settings.displayName,
       defaultSessionId: settings.defaultSessionId,
       nodeToken: settings.nodeToken,
+      adminBearerToken: settings.adminBearerToken,
+      ttsSource: settings.ttsSource,
     };
   },
   { deep: true },
 );
+
+// Seed the admin bearer field from persisted state.
+adminBearerInput.value = store.gatewayConnection.adminBearerToken;
 
 const sanitizedDraftUrl = computed(() =>
   sanitizeGatewayWsUrl(draft.value.gatewayWsUrl),
@@ -81,7 +88,9 @@ const isDirty = computed(() => {
     draft.value.nodeId !== current.nodeId ||
     draft.value.displayName !== current.displayName ||
     draft.value.defaultSessionId !== current.defaultSessionId ||
-    draft.value.nodeToken !== current.nodeToken
+    draft.value.nodeToken !== current.nodeToken ||
+    draft.value.adminBearerToken !== current.adminBearerToken ||
+    draft.value.ttsSource !== current.ttsSource
   );
 });
 
@@ -172,6 +181,8 @@ function saveDraft() {
     displayName: draft.value.displayName.trim(),
     defaultSessionId: draft.value.defaultSessionId.trim(),
     nodeToken: draft.value.nodeToken.trim(),
+    adminBearerToken: draft.value.adminBearerToken.trim(),
+    ttsSource: draft.value.ttsSource,
   });
 }
 
@@ -184,6 +195,8 @@ function revertDraft() {
     displayName: current.displayName,
     defaultSessionId: current.defaultSessionId,
     nodeToken: current.nodeToken,
+    adminBearerToken: current.adminBearerToken,
+    ttsSource: current.ttsSource,
   };
 }
 
@@ -216,11 +229,13 @@ async function pairDevice() {
     actorAccountKeyInput.value,
   );
   if (result.ok) {
-    adminBearerInput.value = "";
+    // Keep the admin bearer so Desktop can reuse it for /api/speech/jobs.
+    draft.value.adminBearerToken = adminBearerInput.value;
     draft.value.nodeToken = result.nodeToken;
     if (result.conversationId) {
       draft.value.defaultSessionId = result.conversationId;
     }
+    saveDraft();
   }
 }
 
@@ -562,6 +577,59 @@ function resetToDefaults() {
         >
           Forget token
         </button>
+      </div>
+
+      <div v-if="draft.adminBearerToken" class="connection-panel__token">
+        <label class="connection-panel__field">
+          <span>Admin API token (saved from pairing)</span>
+          <div class="connection-panel__token-row">
+            <input
+              v-model="draft.adminBearerToken"
+              :type="showAdminBearer ? 'text' : 'password'"
+              spellcheck="false"
+              autocomplete="off"
+              readonly
+            />
+            <button
+              type="button"
+              class="connection-panel__toggle"
+              :aria-pressed="showAdminBearer"
+              @click="showAdminBearer = !showAdminBearer"
+            >
+              {{ showAdminBearer ? "Hide" : "Show" }}
+            </button>
+          </div>
+        </label>
+        <button
+          type="button"
+          class="connection-panel__link"
+          @click="draft.adminBearerToken = ''; saveDraft()"
+        >
+          Forget admin token
+        </button>
+      </div>
+
+      <div v-if="draft.mode === 'gateway'" class="connection-panel__tts-source">
+        <label class="connection-panel__field">
+          <span>TTS source</span>
+          <select
+            :value="draft.ttsSource"
+            @change="draft.ttsSource = ($event.target as HTMLSelectElement).value as TtsSourcePreference; saveDraft()"
+          >
+            <option value="auto">
+              Auto (gateway GPT-SoVITS, fallback to system)
+            </option>
+            <option value="gateway">
+              Gateway (requires admin API token)
+            </option>
+            <option value="system">
+              System Web Speech only
+            </option>
+          </select>
+        </label>
+        <small v-if="draft.ttsSource !== 'system' && !draft.adminBearerToken" class="connection-panel__hint">
+          Gateway TTS requires the admin API token above; pair with an admin token first.
+        </small>
       </div>
     </div>
   </section>

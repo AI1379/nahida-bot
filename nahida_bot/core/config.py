@@ -144,6 +144,40 @@ class NodeProtocolConfigModel(BaseModel):
     node_token_ttl_seconds: int = Field(default=0, ge=0, description="0 = no expiry")
 
 
+class WebApiSpeechConfigModel(BaseModel):
+    """Speech pipeline configuration for the WebAPI / Desktop TTS path.
+
+    Independent from the ``plugins.tts`` config: users can run the speak
+    plugin (Channel ``/speak``) without exposing the REST surface, or vice
+    versa. To share one GPT-SoVITS instance across both, use a YAML anchor::
+
+        webapi:
+          speech: &tts
+            backends:
+              default: {type: gpt-sovits-v2, base_url: "http://127.0.0.1:9880"}
+            voices:
+                nahida: {ref_audio_path: "/data/nahida.wav", prompt_text: "…"}
+        plugins:
+          tts:
+            enabled: true
+            config: *tts
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = False
+    # Raw backend / voice dicts; SpeechService parses them per provider type.
+    backends: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    voices: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    default_backend: str = "default"
+    default_voice: str = ""
+    artifact_cache_dir: str = "./data/speech_cache"
+    artifact_ttl_seconds: int = Field(default=6 * 60 * 60, ge=60)
+    artifact_max_bytes: int = Field(default=256 * 1024 * 1024, ge=16 * 1024 * 1024)
+    max_text_length: int = Field(default=500, ge=1)
+    max_concurrency: int = Field(default=1, ge=1, le=16)
+
+
 class WebAPIConfigModel(BaseModel):
     """WebAPI service configuration."""
 
@@ -155,6 +189,7 @@ class WebAPIConfigModel(BaseModel):
     host: str = ""
     port: int = 0
     nodes: NodeProtocolConfigModel = NodeProtocolConfigModel()
+    speech: WebApiSpeechConfigModel = WebApiSpeechConfigModel()
 
 
 class WebUIAuthConfigModel(BaseModel):

@@ -18,6 +18,8 @@ import {
 } from "@/services/desktopWindowBridge";
 import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
 import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
+import { GatewayAudioAdapter } from "@/services/gatewayAudioAdapter";
+import type { AudioPlaybackAdapter, AudioPlaybackRequest } from "@/services/audioPlaybackAdapter";
 import {
   completeGatewayPairing,
   pairDevice,
@@ -79,12 +81,52 @@ export function useDesktopRuntimeController(
   let eventSource: DesktopEventSource | null =
     initialEventSource ?? createDesktopEventSource(store.gatewayConnection);
 
+  const systemSpeechAdapter = new SystemSpeechAdapter(
+    undefined,
+    undefined,
+    () => store.localConfig.ttsSettings,
+  );
+
+  const gatewayTtsAdapter = new GatewayAudioAdapter(
+    () => store.gatewayConnection.adminBearerToken,
+    () => store.localConfig.ttsSettings,
+    () => store.gatewayConnection.gatewayWsUrl,
+  );
+
+  const speechPlaybackAdapter: AudioPlaybackAdapter = {
+    isAvailable(): boolean {
+      const source = store.gatewayConnection.ttsSource;
+      if (source === "system") return systemSpeechAdapter.isAvailable();
+      // auto / gateway: gateway is "available" only if we have the bearer.
+      return gatewayTtsAdapter.isAvailable() || systemSpeechAdapter.isAvailable();
+    },
+    async play(request: AudioPlaybackRequest, signal: AbortSignal): Promise<void> {
+      const source = store.gatewayConnection.ttsSource;
+      if (source === "system") {
+        return systemSpeechAdapter.play(request, signal);
+      }
+      if (source === "gateway") {
+        return gatewayTtsAdapter.play(request, signal);
+      }
+      // auto: try gateway first, fallback to system.
+      if (gatewayTtsAdapter.isAvailable()) {
+        try {
+          return await gatewayTtsAdapter.play(request, signal);
+        } catch {
+          await systemSpeechAdapter.play(request, signal);
+          return;
+        }
+      }
+      await systemSpeechAdapter.play(request, signal);
+    },
+    stop(): void {
+      systemSpeechAdapter.stop();
+      gatewayTtsAdapter.stop();
+    },
+  };
+
   const speechPlayback = new SpeechPlaybackCoordinator(
-    new SystemSpeechAdapter(
-      undefined,
-      undefined,
-      () => store.localConfig.ttsSettings,
-    ),
+    speechPlaybackAdapter,
     {
       onSegmentStart(presentation, index, _segment, mode) {
         if (store.activePresentation?.id !== presentation.id) return;
@@ -230,6 +272,9 @@ export function useDesktopRuntimeController(
         nodeId: result.nodeId,
         defaultSessionId:
           result.conversationId ?? settings.defaultSessionId,
+        // Keep the admin bearer for ongoing REST calls (e.g. /api/speech/jobs).
+        // On no-auth gateways adminBearerInput will be empty; that is fine.
+        adminBearerToken: adminBearerToken?.trim() ?? "",
       });
       const authHint = result.usedAdminBearer
         ? " (via admin token)"
@@ -410,6 +455,7 @@ export function useDesktopRuntimeController(
 
   onBeforeUnmount(() => {
     speechPlayback.dispose();
+    gatewayTtsAdapter.dispose();
     clearPetStateTimers();
     unlistenPetCommands?.();
     stopEventSource();

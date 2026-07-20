@@ -57,6 +57,21 @@ class SpeechService:
     def supported_provider_types(self) -> list[str]:
         return sorted(self._adapter_classes)
 
+    def resolve_provider_type(self, voice: str = "") -> str:
+        """Return the provider type discriminator for ``voice`` without I/O.
+
+        Used by callers (REST routes) that need to compute a cache key
+        *before* paying for synthesis: the cache key includes ``provider`` so
+        switching backends invalidates stale audio, but the provider is
+        derivable from voice + config alone.
+        """
+        try:
+            _voice_name, backend_name, _voice_raw = self._config.resolve_voice(voice)
+            _backend_name, backend_raw = self._config.backend_raw(backend_name)
+        except ValueError:
+            return ""
+        return str(backend_raw.get("type", "")).strip()
+
     async def synthesize(
         self,
         text: str,

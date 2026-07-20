@@ -482,6 +482,13 @@
   color: #6b2a32;
 }
 
+.connection-panel__tts-source {
+  border-top: 1px dashed var(--line);
+  padding-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+
 .settings-view {
   flex: 1;
   min-height: 0;

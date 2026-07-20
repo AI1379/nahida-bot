@@ -276,6 +276,8 @@ export const useDesktopStore = defineStore("desktop", {
         displayName: "Nahida Desktop",
         defaultSessionId: "",
         nodeToken: "",
+        adminBearerToken: "",
+        ttsSource: "auto",
       });
       writePersistedGatewayConnection(this.gatewayConnection);
       this.gatewayConnectionError = null;

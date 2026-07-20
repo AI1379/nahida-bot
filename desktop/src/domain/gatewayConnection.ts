@@ -18,6 +18,7 @@
  */
 
 export type GatewayConnectionMode = "mock" | "gateway";
+export type TtsSourcePreference = "system" | "gateway" | "auto";
 
 export const gatewayConnectionPolicy = {
   maximumUrlLength: 512,
@@ -40,6 +41,15 @@ export interface GatewayConnectionSettings {
   defaultSessionId: string;
   /** Long-lived node token (`nt_...`). Empty when not yet paired. */
   nodeToken: string;
+  /**
+   * Optional admin API token (`webapi.auth_token`). Reused for REST calls
+   * that require admin auth (e.g. /api/speech/jobs). Empty on no-auth
+   * gateways. Persisted alongside the node token so the desktop can keep
+   * using TTS without re-entering it each session.
+   */
+  adminBearerToken: string;
+  /** Which TTS path to use when both system and gateway are available. */
+  ttsSource: TtsSourcePreference;
 }
 
 export const defaultGatewayConnectionSettings: GatewayConnectionSettings = {
@@ -49,6 +59,8 @@ export const defaultGatewayConnectionSettings: GatewayConnectionSettings = {
   displayName: "Nahida Desktop",
   defaultSessionId: "",
   nodeToken: "",
+  adminBearerToken: "",
+  ttsSource: "auto",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,6 +81,12 @@ function cleanNodeId(value: unknown): string {
 
 function cleanMode(value: unknown): GatewayConnectionMode {
   return value === "gateway" ? "gateway" : "mock";
+}
+
+function cleanTtsSource(value: unknown): TtsSourcePreference {
+  return value === "system" || value === "gateway" || value === "auto"
+    ? value
+    : "auto";
 }
 
 export function sanitizeGatewayWsUrl(value: unknown): string {
@@ -127,6 +145,10 @@ export function sanitizeGatewayConnectionSettings(
     value.nodeToken,
     gatewayConnectionPolicy.maximumTokenLength,
   );
+  const adminBearerToken = cleanString(
+    value.adminBearerToken,
+    gatewayConnectionPolicy.maximumTokenLength,
+  );
 
   return {
     mode: cleanMode(value.mode),
@@ -135,6 +157,8 @@ export function sanitizeGatewayConnectionSettings(
     displayName,
     defaultSessionId,
     nodeToken,
+    adminBearerToken,
+    ttsSource: cleanTtsSource(value.ttsSource),
   };
 }
 
