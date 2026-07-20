@@ -382,6 +382,24 @@ class RouterConfigModel(BaseModel):
     group_context: GroupContextConfig = GroupContextConfig()
 
 
+class MotionPlannerConfigModel(BaseModel):
+    """Server-side motion planning for Desktop DisplayPlan generation.
+
+    When enabled, the agent pipeline calls a cheap LLM model to analyze the
+    reply text and produce emotion/motion/voice tags per sentence. The result
+    is attached to ``OutboundMessage.extra["display_plan"]`` and forwarded to
+    the Desktop node via ``agent.message.completed`` events.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = False
+    model_tag: str = Field(
+        default="cheap", description="Model tag resolved via ModelRouter"
+    )
+    timeout_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
+
+
 class Settings(BaseModel):
     """Main application settings."""
 
@@ -434,6 +452,7 @@ class Settings(BaseModel):
     webapi: WebAPIConfigModel = WebAPIConfigModel()
     webui: WebUIConfigModel = WebUIConfigModel()
     model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
+    motion_planner: MotionPlannerConfigModel = MotionPlannerConfigModel()
     memory: MemoryConfig = MemoryConfig()
     kb_auto_recall: KBAutoRecallConfig = KBAutoRecallConfig()
     identity: IdentityConfig = IdentityConfig()

@@ -103,6 +103,7 @@ class MessageRouter:
         identity_resolver: IdentityResolver | None = None,
         chat_metadata_store: Any | None = None,
         temp_file_service: ManagedTempFileService | None = None,
+        motion_planner: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._commands = command_registry
@@ -114,6 +115,7 @@ class MessageRouter:
         self._identity_resolver = identity_resolver
         self._chat_metadata_store = chat_metadata_store
         self._temp_file_service = temp_file_service
+        self._motion_planner = motion_planner
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
         self._agent_response_subscription: Subscription | None = None
@@ -1253,6 +1255,21 @@ class MessageRouter:
                 **_outbound_log_fields(outbound),
             )
             return
+
+        # Run motion planner (Desktop DisplayPlan) before event publish.
+        if self._motion_planner is not None and outbound.text.strip():
+            try:
+                plan = await self._motion_planner.plan(
+                    outbound.text, session_id=session_id
+                )
+                if plan is not None:
+                    outbound.extra["display_plan"] = plan.to_display_plan_dict()
+            except Exception:
+                logger.warning(
+                    "motion_planner.unexpected_error",
+                    session_id=session_id,
+                    exc_info=True,
+                )
 
         turn_ctx = current_session.get()
         message_payload_kwargs = {

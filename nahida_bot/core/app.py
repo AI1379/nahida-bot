@@ -912,6 +912,20 @@ class Application:
 
             # Create and start the message router
             assert self.plugin_manager is not None
+            motion_planner = None
+            cfg = self.settings.motion_planner
+            if cfg.enabled and self._model_router is not None:
+                from nahida_bot.agent.motion_planner import LLMMotionPlanner
+
+                motion_planner = LLMMotionPlanner(
+                    self._model_router,
+                    model_tag=cfg.model_tag,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+                logger.info(
+                    "application.motion_planner_initialized",
+                    model_tag=cfg.model_tag,
+                )
             self.message_router = MessageRouter(
                 event_bus=self.event_bus,
                 command_registry=self.plugin_manager.command_registry,
@@ -934,6 +948,7 @@ class Application:
                 identity_resolver=self._identity_resolver,
                 chat_metadata_store=self.chat_metadata_store,
                 temp_file_service=self.temp_file_service,
+                motion_planner=motion_planner,
             )
             await self.message_router.start()
 
