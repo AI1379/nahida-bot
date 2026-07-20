@@ -92,6 +92,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_agent_tools()
         self._register_message_tool()
         self._register_skill_tool()
+        self._register_identity_tool()
 
     # ── Command Registration ────────────────────────────────
 
@@ -2898,6 +2899,74 @@ class BuiltinCommandsPlugin(Plugin):
 
     def _get_router(self) -> Any:
         return getattr(self.api, "message_router", None)
+
+    # ── Identity Tool ──────────────────────────────────
+
+    def _register_identity_tool(self) -> None:
+        self.api.register_tool(
+            "identity_manage",
+            (
+                "Manage person/account identity records. Use this to create "
+                "persons, link cross-channel accounts to the same person, "
+                "unlink accounts, or query the current identity state. "
+                "Requires admin privileges."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "observations", "create", "link", "unlink"],
+                        "description": (
+                            "list: show all persons + linked accounts. "
+                            "observations: show recently seen account_keys. "
+                            "create: create or update a person. "
+                            "link: bind an account_key to a person_id. "
+                            "unlink: remove an account binding."
+                        ),
+                    },
+                    "person_id": {
+                        "type": "string",
+                        "description": (
+                            "Person identifier (for create/link). "
+                            "Use a stable lowercase id like 'owner', 'alice'."
+                        ),
+                    },
+                    "display_name": {
+                        "type": "string",
+                        "description": "Human-readable name (for create).",
+                    },
+                    "account_key": {
+                        "type": "string",
+                        "description": (
+                            "Canonical account key in the format "
+                            "'{channel}:user:{platform_user_id}', e.g. "
+                            "'milky:user:123456'. Required for link/unlink."
+                        ),
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+            self._tool_identity_manage,
+        )
+
+    async def _tool_identity_manage(
+        self,
+        action: str,
+        person_id: str = "",
+        display_name: str = "",
+        account_key: str = "",
+    ) -> str:
+        import json
+
+        result = await self.api.identity_manage(
+            action,
+            person_id=person_id,
+            display_name=display_name,
+            account_key=account_key,
+        )
+        return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
     async def _tool_workspace_read(self, path: str) -> str:
         """Read a text file from the active workspace."""

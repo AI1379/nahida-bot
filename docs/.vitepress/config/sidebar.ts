@@ -130,6 +130,10 @@ export const sidebar: DefaultTheme.Sidebar = {
           text: "AgentLoop 改造计划",
           link: "/design/agent-loop-repair-plan",
         },
+        {
+          text: "仓库减法清单",
+          link: "/design/subtraction-backlog",
+        },
       ],
     },
   ],
