@@ -7,6 +7,7 @@ import {
   isPairingToken,
   sanitizeGatewayWsUrl,
 } from "@/domain/gatewayConnection";
+import { isValidActorAccountKey } from "@/services/gatewayPairing";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
 
@@ -26,6 +27,7 @@ const draft = ref({
 });
 
 const adminBearerInput = ref("");
+const actorAccountKeyInput = ref("");
 const pairingTokenInput = ref("");
 const showToken = ref(false);
 const showPairingToken = ref(false);
@@ -107,6 +109,22 @@ const canPairDevice = computed(() => {
   // the gateway turns out to require one.
   return draft.value.mode === "gateway";
 });
+
+const actorAccountKeyWarning = computed<string | null>(() => {
+  const trimmed = actorAccountKeyInput.value.trim();
+  if (!trimmed) {
+    return "Without an actor binding the desktop can receive events but cannot submit messages.";
+  }
+  return isValidActorAccountKey(trimmed)
+    ? null
+    : "Use the format `{channel}:user:{platform_user_id}`, e.g. `telegram:user:12345`.";
+});
+
+const derivedConversationId = computed(() =>
+  draft.value.nodeId.trim()
+    ? `desktop:private:${draft.value.nodeId.trim()}`
+    : "",
+);
 
 const canExchangeManualPairing = computed(
   () =>
@@ -193,7 +211,10 @@ async function pairDevice() {
   // Persist the URL/node/displayName the user just typed so pairDevice reads
   // the resolved gateway URL.
   saveDraft();
-  const result = await props.runtime.pairDevice(adminBearerInput.value);
+  const result = await props.runtime.pairDevice(
+    adminBearerInput.value,
+    actorAccountKeyInput.value,
+  );
   if (result.ok) {
     adminBearerInput.value = "";
     draft.value.nodeToken = result.nodeToken;
@@ -227,6 +248,7 @@ function resetToDefaults() {
   store.resetGatewayConnection();
   store.setGatewayPairingState({ status: "idle" });
   adminBearerInput.value = "";
+  actorAccountKeyInput.value = "";
   pairingTokenInput.value = "";
 }
 </script>
@@ -397,6 +419,28 @@ function resetToDefaults() {
             </p>
           </div>
         </header>
+
+        <label class="connection-panel__field">
+          <span>Actor account key (recommended)</span>
+          <input
+            v-model="actorAccountKeyInput"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="telegram:user:12345"
+          />
+          <small
+            class="connection-panel__hint"
+            :class="{ 'connection-panel__hint--warn': !actorAccountKeyInput.trim() }"
+          >
+            {{ actorAccountKeyWarning }}
+          </small>
+          <small class="connection-panel__hint connection-panel__hint--muted">
+            Same person across channels shares long-term memory. The desktop
+            session stays independent (<code>{{ derivedConversationId || "desktop:private:&lt;node-id&gt;" }}</code
+            >); only the identity binding crosses channels.
+          </small>
+        </label>
 
         <label class="connection-panel__field">
           <span>Admin API token (optional)</span>

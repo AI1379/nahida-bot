@@ -43,11 +43,38 @@ export interface PairDeviceOptions {
   nodeId: string;
   displayName?: string;
   /**
+   * Cross-channel identity this desktop may act as, e.g.
+   * `telegram:user:12345`. Required for sending messages: the node input
+   * sink refuses unbound credentials. The identity resolver maps it to a
+   * person record so long-term memory is shared across channels.
+   */
+  actorAccountKey?: string;
+  /**
+   * Optional override for the desktop session lane. Defaults to
+   * `desktop:private:{nodeId}` so each desktop gets an independent
+   * session that does not mix with telegram/QQ/other channels.
+   */
+  conversationId?: string;
+  /**
    * Admin bearer token (typically `webapi.auth_token` from `config.yaml`).
    * Required when the gateway has auth enabled; omitted when bootstrap
    * reports `authRequired: false`.
    */
   adminBearerToken?: string;
+}
+
+/**
+ * Derive a stable, independent session lane for a desktop node.
+ *
+ * Format: `desktop:private:{nodeId}`. The desktop channel is intentionally
+ * separate from telegram/qq/other channels so messages don't mix; memory
+ * sharing across channels happens via `actor_account_key` and the identity
+ * resolver, not via session_id.
+ */
+export function defaultDesktopConversationId(nodeId: string): string {
+  const trimmed = nodeId.trim();
+  if (!trimmed) return "";
+  return `desktop:private:${trimmed}`;
 }
 
 export interface PairDeviceSuccess {
@@ -198,6 +225,8 @@ export async function requestGatewayPairingToken(
   options: {
     nodeId: string;
     displayName?: string;
+    actorAccountKey?: string;
+    conversationId?: string;
     bearerToken?: string;
   },
 ): Promise<{ ok: true; result: PairingStartSuccess } | { ok: false; error: string }> {
@@ -209,6 +238,14 @@ export async function requestGatewayPairingToken(
   if (!trimmedNodeId) {
     return { ok: false, error: "Node ID is required." };
   }
+  const trimmedActor = options.actorAccountKey?.trim();
+  if (trimmedActor && !isValidActorAccountKey(trimmedActor)) {
+    return {
+      ok: false,
+      error:
+        "Actor account key must follow `{channel}:user:{platform_user_id}`, e.g. `telegram:user:12345`.",
+    };
+  }
 
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -217,15 +254,23 @@ export async function requestGatewayPairingToken(
     headers.authorization = `Bearer ${options.bearerToken.trim()}`;
   }
 
+  const body: Record<string, string> = {
+    node_id: trimmedNodeId,
+    display_name: options.displayName?.trim() ?? "",
+  };
+  if (trimmedActor) {
+    body.actor_account_key = trimmedActor;
+  }
+  if (options.conversationId && options.conversationId.trim()) {
+    body.conversation_id = options.conversationId.trim();
+  }
+
   let response: Response;
   try {
     response = await fetch(`${httpBase}/api/nodes/pairing/start`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        node_id: trimmedNodeId,
-        display_name: options.displayName?.trim() ?? "",
-      }),
+      body: JSON.stringify(body),
     });
   } catch (error) {
     return { ok: false, error: `Network error: ${String(error)}` };
@@ -258,6 +303,12 @@ export async function requestGatewayPairingToken(
       nodeId: readString(payload?.node_id, 128),
     },
   };
+}
+
+const ACTOR_ACCOUNT_KEY_PATTERN = /^[a-z0-9_-]+:user:.+$/i;
+
+export function isValidActorAccountKey(value: string): boolean {
+  return ACTOR_ACCOUNT_KEY_PATTERN.test(value.trim());
 }
 
 interface RawBootstrapAuth {
@@ -385,6 +436,10 @@ export async function pairDevice(
     {
       nodeId,
       displayName: options.displayName,
+      actorAccountKey: options.actorAccountKey,
+      conversationId:
+        options.conversationId?.trim() ||
+        defaultDesktopConversationId(nodeId),
       bearerToken: needsBearer ? options.adminBearerToken : undefined,
     },
   );
@@ -413,7 +468,10 @@ export async function pairDevice(
     bootstrap,
     nodeToken: completeResult.nodeToken,
     nodeId: completeResult.nodeId || nodeId,
-    conversationId: completeResult.conversationId,
+    conversationId:
+      completeResult.conversationId ??
+      options.conversationId?.trim() ??
+      defaultDesktopConversationId(nodeId),
     usedAdminBearer: needsBearer,
   };
 }

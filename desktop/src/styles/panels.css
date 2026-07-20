@@ -362,6 +362,14 @@
   font-size: 12px;
 }
 
+.connection-panel__hint--muted {
+  color: var(--text-muted);
+}
+
+.connection-panel__hint--warn {
+  color: #8d3640;
+}
+
 .connection-panel__actions {
   display: flex;
   align-items: center;

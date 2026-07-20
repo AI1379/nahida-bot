@@ -302,3 +302,64 @@ async def test_pairing_dance_with_admin_bearer(webapi_app: WebAPIApp) -> None:
         )
         assert complete.status_code == 200
         assert complete.json()["node_token"].startswith("nt_")
+
+
+async def test_pairing_binds_actor_account_and_conversation(
+    webapi_app: WebAPIApp,
+) -> None:
+    """The Desktop pairDevice dance must persist actor/conversation bindings.
+
+    Without an actor_account_key the node input sink refuses message submit
+    (`node credential is not bound to an actor account`). This test mirrors
+    the Desktop flow: pair with an explicit actor + independent desktop
+    conversation lane, then verify the issued node token principal carries
+    both through.
+    """
+    transport = ASGITransport(app=webapi_app.fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        start = await c.post(
+            "/api/nodes/pairing/start",
+            json={
+                "node_id": "desktop-local",
+                "display_name": "Nahida Desktop",
+                "actor_account_key": "telegram:user:12345",
+                "conversation_id": "desktop:private:desktop-local",
+            },
+        )
+        assert start.status_code == 200, start.text
+        pairing_token = start.json()["pairing_token"]
+
+        complete = await c.post(
+            "/api/nodes/pairing/complete",
+            json={"pairing_token": pairing_token},
+        )
+        assert complete.status_code == 200, complete.text
+        body = complete.json()
+        assert body["node_token"].startswith("nt_")
+        # Server echoes the bindings back so the desktop can show them.
+        assert body["actor_account_key"] == "telegram:user:12345"
+        assert body["conversation_id"] == "desktop:private:desktop-local"
+
+        auth: NodeAuthService = webapi_app.node_auth  # type: ignore[assignment]
+        principal = auth.verify(body["node_token"])
+        assert principal is not None
+        assert principal.token_type == "node"
+        assert principal.actor_account_key == "telegram:user:12345"
+        assert principal.conversation_id == "desktop:private:desktop-local"
+
+
+async def test_pairing_rejects_malformed_actor_account_key(
+    webapi_app: WebAPIApp,
+) -> None:
+    """AccountKey.parse guards against binding a bogus identity."""
+    transport = ASGITransport(app=webapi_app.fastapi_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.post(
+            "/api/nodes/pairing/start",
+            json={
+                "node_id": "desktop-local",
+                "actor_account_key": "not-a-real-account-key",
+            },
+        )
+        assert resp.status_code == 422
+        assert "account key" in resp.text.lower()

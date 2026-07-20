@@ -40,7 +40,10 @@ export interface DesktopRuntimeActions {
   disconnectGateway(): void;
   reconnectGateway(): void;
   exchangePairingToken(token: string): Promise<PairingCompleteResult>;
-  pairDevice(adminBearerToken?: string): Promise<PairDeviceResult>;
+  pairDevice(
+    adminBearerToken?: string,
+    actorAccountKey?: string,
+  ): Promise<PairDeviceResult>;
   submitUserMessage(text: string): void;
   submitMockLlmResult(rawOutput: string): void;
 }
@@ -204,6 +207,7 @@ export function useDesktopRuntimeController(
 
   async function pairDeviceFromForm(
     adminBearerToken?: string,
+    actorAccountKey?: string,
   ): Promise<PairDeviceResult> {
     const settings = store.gatewayConnection;
     store.setGatewayPairingState({ status: "exchanging" });
@@ -211,6 +215,11 @@ export function useDesktopRuntimeController(
       gatewayWsUrl: settings.gatewayWsUrl,
       nodeId: settings.nodeId,
       displayName: settings.displayName,
+      actorAccountKey,
+      // Use any explicit session the user typed; otherwise let pairDevice
+      // auto-derive `desktop:private:{nodeId}` so the node gets an
+      // independent session lane.
+      conversationId: settings.defaultSessionId || undefined,
       adminBearerToken,
     });
 
@@ -225,9 +234,12 @@ export function useDesktopRuntimeController(
       const authHint = result.usedAdminBearer
         ? " (via admin token)"
         : " (no admin token required)";
+      const actorHint = actorAccountKey?.trim()
+        ? ` bound to ${actorAccountKey.trim()}`
+        : " without an actor binding (chat submit will be rejected)";
       store.setGatewayPairingState({
         status: "success",
-        message: `Paired as ${result.nodeId}${authHint}.`,
+        message: `Paired as ${result.nodeId}${authHint}${actorHint}.`,
       });
     } else {
       store.setGatewayPairingState({
