@@ -1,15 +1,13 @@
 """Bridge core EventBus events to online Gateway-Node sessions.
 
-The broadcaster that feeds the SSE stream is per-HTTP-client. Nodes need their
-own fan-out path because:
+Node events are routed only when explicitly targeted by ``reply_route``.
+A core event (e.g. ``MessageSent``) that was produced by a channel-specific
+session is not replayed to every connected node — it is forwarded only to the
+node identified by the ``node:`` prefix in ``reply_route``.
 
-- node subscriptions are per-node and authorization-filtered,
-- node events carry extra payload (e.g. ``display_plan``) not present in the
-  SSE contract,
-- node delivery must not block SSE clients and vice versa.
-
-This bridge subscribes to the same core events as the SSE broadcaster but
-translates them into node-protocol envelopes and pushes them to online nodes.
+This is intentional: a desktop node is conceptually a channel client, not a
+universal event subscriber. It should receive events for its own sessions,
+just as the Milky channel does not receive Telegram session events.
 """
 
 from __future__ import annotations
@@ -29,44 +27,26 @@ logger = structlog.get_logger(__name__)
 
 
 class NodeEventBridge:
-    """Forwards relevant core events to all online node sessions."""
+    """Forwards explicitly node-routed events to the target node session."""
 
     def __init__(self, app: Application, registry: NodeRegistry) -> None:
         self._app = app
         self._registry = registry
         self._subscriptions: list[Any] = []
-        self._active_runs: set[str] = set()
-        self._runs_with_output: set[str] = set()
 
     async def start(self) -> None:
         bus = self._app.event_bus
-        # Import lazily to avoid import cycles at module load.
-        from nahida_bot.core.events import (
-            AgentRunCancelled,
-            AgentRunFinished,
-            AgentRunStarted,
-            MessageSent,
-            PluginErrorOccurred,
-        )
+        from nahida_bot.core.events import MessageSent
 
-        for event_type in (
-            AgentRunStarted,
-            AgentRunFinished,
-            AgentRunCancelled,
-            MessageSent,
-            PluginErrorOccurred,
-        ):
-            self._subscriptions.append(
-                bus.subscribe(event_type, self._make_handler(event_type), priority=20)
-            )
+        self._subscriptions.append(
+            bus.subscribe(MessageSent, self._make_handler(MessageSent), priority=20)
+        )
         logger.info("node_event_bridge.started")
 
     async def stop(self) -> None:
         for sub in self._subscriptions:
             sub.unsubscribe()
         self._subscriptions.clear()
-        self._active_runs.clear()
-        self._runs_with_output.clear()
         logger.info("node_event_bridge.stopped")
 
     def _make_handler(self, event_type: type):
@@ -84,14 +64,13 @@ class NodeEventBridge:
         target_node_id = (
             reply_route.removeprefix("node:") if reply_route.startswith("node:") else ""
         )
-        # Replies to node-originated turns are routed only to that authenticated
-        # node. Legacy core events without an explicit route retain the V1
-        # broadcast behavior until session subscription policy is implemented.
+        if not target_node_id:
+            return
         for summary in self._registry.list_online_nodes():
             session = self._registry.get_session(summary["session_id"])  # type: ignore[arg-type]
             if session is None or session.send is None:
                 continue
-            if target_node_id and session.node_id != target_node_id:
+            if session.node_id != target_node_id:
                 continue
             node_event = build_event(event_name, payload=envelope_payload["payload"])
             try:
@@ -104,20 +83,10 @@ class NodeEventBridge:
                 )
 
     def _translate(self, event_type: type, event: Event[Any]) -> dict[str, Any] | None:
-        """Map a core event to a ``(event_name, payload)`` dict, or None."""
-        from nahida_bot.core.events import (
-            AgentRunCancelled,
-            AgentRunFinished,
-            AgentRunStarted,
-            MessageSent,
-            PluginErrorOccurred,
-        )
+        from nahida_bot.core.events import MessageSent
 
         payload = event.payload
         if isinstance(event, MessageSent):
-            session_id = getattr(payload, "session_id", "")
-            if session_id in self._active_runs:
-                self._runs_with_output.add(session_id)
             outbound = getattr(payload, "outbound", None)
             text = getattr(outbound, "text", "") if outbound is not None else ""
             extra = getattr(outbound, "extra", {}) if outbound is not None else {}
@@ -134,39 +103,6 @@ class NodeEventBridge:
                 "event": "agent.message.completed",
                 "payload": event_payload,
                 "reply_route": getattr(payload, "reply_route", ""),
-            }
-        if isinstance(event, PluginErrorOccurred):
-            return {
-                "event": "plugin.error",
-                "payload": {
-                    "plugin_id": getattr(payload, "plugin_name", ""),
-                    "method": getattr(payload, "method", ""),
-                    "error": getattr(payload, "error", ""),
-                },
-            }
-        if isinstance(event, AgentRunStarted):
-            session_id = getattr(payload, "session_id", "")
-            if session_id:
-                self._active_runs.add(session_id)
-            self._runs_with_output.discard(session_id)
-            return {
-                "event": "agent.message.started",
-                "payload": {"session_id": session_id},
-            }
-        if isinstance(event, (AgentRunFinished, AgentRunCancelled)):
-            session_id = getattr(payload, "session_id", "")
-            self._active_runs.discard(session_id)
-            if session_id in self._runs_with_output:
-                self._runs_with_output.discard(session_id)
-                return None
-            return {
-                "event": "agent.message.completed",
-                "payload": {
-                    "session_id": session_id,
-                    "text": "",
-                    "terminal": getattr(payload, "terminal", ""),
-                    "error": getattr(payload, "error", ""),
-                },
             }
         return None
 

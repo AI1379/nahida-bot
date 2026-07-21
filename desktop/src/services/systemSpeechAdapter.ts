@@ -1,6 +1,7 @@
 import type {
   AudioPlaybackAdapter,
   AudioPlaybackRequest,
+  PreloadedAudioHandle,
 } from "@/services/audioPlaybackAdapter";
 import { AudioPlaybackAbortedError } from "@/services/audioPlaybackAdapter";
 import type { TtsSettings } from "@/domain/config";
@@ -90,6 +91,26 @@ export class SystemSpeechAdapter implements AudioPlaybackAdapter {
     request: AudioPlaybackRequest,
     signal: AbortSignal,
   ): Promise<void> {
+    return this.playInternal(request, signal);
+  }
+
+  async fetch(
+    request: AudioPlaybackRequest,
+    _signal: AbortSignal,
+  ): Promise<PreloadedAudioHandle> {
+    const adapter = this;
+    return {
+      play(playSignal: AbortSignal): Promise<void> {
+        return adapter.playInternal(request, playSignal);
+      },
+      dispose(): void {},
+    };
+  }
+
+  private async playInternal(
+    request: AudioPlaybackRequest,
+    signal: AbortSignal,
+  ): Promise<void> {
     this.stop();
     const synthesis = this.synthesis;
     const createUtterance = this.createUtterance;
@@ -143,6 +164,16 @@ export class SystemSpeechAdapter implements AudioPlaybackAdapter {
 
       synthesis.speak(utterance);
     });
+  }
+
+  async fetch(
+    _request: AudioPlaybackRequest,
+    _signal: AbortSignal,
+  ): Promise<PreloadedAudioHandle> {
+    return {
+      play: (playSignal) => Promise.resolve(),
+      dispose: () => {},
+    };
   }
 
   stop(): void {

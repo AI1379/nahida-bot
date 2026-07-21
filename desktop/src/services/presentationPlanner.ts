@@ -36,5 +36,20 @@ export function presentationPlanFromDesktopEvent(
     };
   }
 
+  if (event.type === "notification.reminder") {
+    const displayPlan = planFromText(event.message, "neutral");
+    return {
+      id: nextPresentationId(),
+      source: event.source,
+      targetSessionId: event.sessionId,
+      displayPlan,
+      bubbleText: displayPlan.text,
+      ttsEnabled: false,
+      interruption: "queue",
+      dedupeKey: event.dedupeKey,
+      createdAt: event.at,
+    };
+  }
+
   return null;
 }

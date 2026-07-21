@@ -7,6 +7,7 @@ import ExpressionMappingPanel from "@/components/ExpressionMappingPanel.vue";
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
+import PomodoroSettingsPanel from "@/components/PomodoroSettingsPanel.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
@@ -55,6 +56,12 @@ const activeSegment = computed(
         :settings="store.localConfig.ttsSettings"
         @update="store.updateTtsSettings"
         @preview="store.previewSystemSpeech"
+      />
+      <PomodoroSettingsPanel
+        :settings="store.localConfig.pomodoro"
+        @update="store.updatePomodoroSettings"
+        @start="props.runtime.startPomodoro"
+        @stop="props.runtime.stopPomodoro"
       />
       <ExpressionMappingPanel
         :model="store.model"

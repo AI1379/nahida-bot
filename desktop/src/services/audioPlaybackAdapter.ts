@@ -15,10 +15,25 @@ export interface AudioPlaybackRequest {
   artifact?: SpeechArtifactRef;
 }
 
+export interface PreloadedAudioHandle {
+  play(signal: AbortSignal): Promise<void>;
+  dispose(): void;
+}
+
 export interface AudioPlaybackAdapter {
   isAvailable(): boolean;
   play(request: AudioPlaybackRequest, signal: AbortSignal): Promise<void>;
   stop(): void;
+  /**
+   * Fetch audio without playing it. Returns a handle that can be played
+   * later via {@link PreloadedAudioHandle.play}. The caller can preload
+   * multiple segments upfront, then play them sequentially so that text
+   * display and audio playback start at the same time.
+   */
+  fetch(
+    request: AudioPlaybackRequest,
+    signal: AbortSignal,
+  ): Promise<PreloadedAudioHandle>;
 }
 
 export class AudioPlaybackAbortedError extends Error {

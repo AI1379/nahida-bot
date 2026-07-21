@@ -44,6 +44,10 @@ import {
   writePersistedTtsSettings,
 } from "@/services/ttsSettingsStorage";
 import {
+  sanitizePomodoroSettings,
+  writePersistedPomodoroSettings,
+} from "@/services/pomodoroSettingsStorage";
+import {
   sanitizeGatewayConnection as sanitizePersistedGatewayConnection,
   writePersistedGatewayConnection,
 } from "@/services/gatewayConnectionStorage";
@@ -255,6 +259,14 @@ export const useDesktopStore = defineStore("desktop", {
         ttsSettings,
       });
       writePersistedTtsSettings(ttsSettings);
+    },
+    updatePomodoroSettings(settings: LocalDesktopConfig["pomodoro"]) {
+      const pomodoro = sanitizePomodoroSettings(settings);
+      this.commitLocalConfig({
+        ...this.localConfig,
+        pomodoro,
+      });
+      writePersistedPomodoroSettings(pomodoro);
     },
     commitGatewayConnection(settings: GatewayConnectionSettings) {
       this.gatewayConnection = sanitizePersistedGatewayConnection(settings);
@@ -614,11 +626,43 @@ export const useDesktopStore = defineStore("desktop", {
           this.transcript.unshift(systemTranscriptEntry(event.message, event.at));
           break;
         }
+        case "notification.reminder": {
+          const presentation = presentationPlanFromDesktopEvent(event);
+          if (!presentation) break;
+          if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
+            this.activePresentation = presentation;
+            this.activePlan = presentation.displayPlan;
+            this.queuePresentationStart();
+          } else if (this.petRuntime.speaking || this.petRuntime.status === "chat") {
+            this.activePresentation = presentation;
+            this.activePlan = presentation.displayPlan;
+          } else {
+            this.activePresentation = presentation;
+            this.activePlan = presentation.displayPlan;
+            this.transitionPetRuntime("speak");
+            this.syncPetRuntime({
+              emotion: "happy",
+              expressionKey: "happy",
+              motion: "notify",
+              speaking: false,
+              currentSegmentIndex: 0,
+              activePresentationId: presentation.id,
+              bubbleText: presentation.bubbleText,
+              lastEventAt: event.at,
+            });
+          }
+          this.transcript.unshift(systemTranscriptEntry(event.message, event.at));
+          break;
+        }
         case "user.message.submitted":
           this.sessionId = event.sessionId;
           this.transcript.unshift(userTranscriptEntry(event.text, event.at));
           this.enterPetChat();
           this.syncPetRuntime({
+            emotion: "thinking",
+            expressionKey: "thinking",
+            motion: "idle",
+            speaking: false,
             lastEventAt: event.at,
           });
           break;

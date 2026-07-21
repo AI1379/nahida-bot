@@ -18,6 +18,7 @@ import {
   readPersistedMotionMaps,
 } from "@/services/modelMappingStorage";
 import { readPersistedTtsSettings } from "@/services/ttsSettingsStorage";
+import { readPersistedPomodoroSettings } from "@/services/pomodoroSettingsStorage";
 import {
   readPersistedGatewayConnection,
   sanitizeGatewayConnection,
@@ -47,6 +48,7 @@ export function createDesktopState() {
     persistedMotions,
   );
   localConfig.ttsSettings = readPersistedTtsSettings();
+  localConfig.pomodoro = readPersistedPomodoroSettings();
   const gatewayConnection: GatewayConnectionSettings =
     sanitizeGatewayConnection(readPersistedGatewayConnection());
 

@@ -48,12 +48,31 @@ export interface TtsSettings {
   volume: number;
 }
 
+export interface PomodoroSettings {
+  enabled: boolean;
+  workDurationMinutes: number;
+  breakDurationMinutes: number;
+  workStartText: string;
+  breakStartText: string;
+  breakEndText: string;
+}
+
+export const pomodoroDefaults: PomodoroSettings = {
+  enabled: false,
+  workDurationMinutes: 25,
+  breakDurationMinutes: 5,
+  workStartText: "专注时间开始，加油哦～",
+  breakStartText: "休息一下吧，辛苦了～",
+  breakEndText: "休息结束，要开始下一轮吗？",
+};
+
 export interface LocalDesktopConfig {
   selectedModelId: string;
   modelConfigs: Record<string, ModelMappingConfig>;
   windowState: DesktopWindowState;
   performanceMode: PerformanceMode;
   ttsSettings: TtsSettings;
+  pomodoro: PomodoroSettings;
 }
 
 export function modelMappingConfigFromManifest(
@@ -99,6 +118,7 @@ export function createDefaultLocalDesktopConfig(
     },
     performanceMode: desktopWindowDefaults.performanceMode,
     ttsSettings: { ...ttsDefaults },
+    pomodoro: { ...pomodoroDefaults },
   };
 }
 

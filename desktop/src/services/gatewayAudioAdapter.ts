@@ -10,6 +10,7 @@
 import type {
   AudioPlaybackAdapter,
   AudioPlaybackRequest,
+  PreloadedAudioHandle,
 } from "@/services/audioPlaybackAdapter";
 import { AudioPlaybackAbortedError } from "@/services/audioPlaybackAdapter";
 import { gatewayWsUrlToHttpBase } from "@/domain/gatewayConnection";
@@ -57,6 +58,14 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     request: AudioPlaybackRequest,
     signal: AbortSignal,
   ): Promise<void> {
+    const handle = await this.fetch(request, signal);
+    await handle.play(signal);
+  }
+
+  async fetch(
+    request: AudioPlaybackRequest,
+    signal: AbortSignal,
+  ): Promise<PreloadedAudioHandle> {
     this.stop();
 
     const bearer = this.getAdminBearer();
@@ -89,11 +98,25 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     this.blobCache.set(jobResp.artifact_id, blobUrl);
 
     const audio = new Audio(blobUrl);
-    const abortController = new AbortController();
-    this.active = { audio, abortController };
+    let disposed = false;
 
-    const linkedSignal = this.linkedAbort(signal, abortController.signal);
-    await this.playAudio(audio, linkedSignal, jobResp.duration_ms);
+    return {
+      play: async (playSignal: AbortSignal) => {
+        if (disposed) throw new AudioPlaybackAbortedError();
+        if (playSignal.aborted) throw new AudioPlaybackAbortedError();
+        const abortController = new AbortController();
+        this.active = { audio, abortController };
+        const linkedSignal = this.linkedAbort(playSignal, abortController.signal);
+        await this.playAudio(audio, linkedSignal, jobResp.duration_ms);
+      },
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        audio.src = "";
+        URL.revokeObjectURL(blobUrl);
+        this.blobCache.delete(jobResp.artifact_id);
+      },
+    };
   }
 
   stop(): void {

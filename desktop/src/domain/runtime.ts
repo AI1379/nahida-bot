@@ -42,6 +42,12 @@ export type DesktopEvent =
       message: string;
     })
   | (DesktopEventBase & {
+      type: "notification.reminder";
+      message: string;
+      /** Opaque key used to deduplicate identical reminders. */
+      dedupeKey?: string;
+    })
+  | (DesktopEventBase & {
       type: "capability.invoked";
       capability: string;
       arguments: Record<string, unknown>;
@@ -61,6 +67,8 @@ export interface PresentationPlan {
   bubbleText: string;
   ttsEnabled: boolean;
   interruption: "replace" | "queue";
+  /** Collision key for deduplication — identical keys within the queue window are merged. */
+  dedupeKey?: string;
   createdAt: string;
 }
 

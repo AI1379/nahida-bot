@@ -5,6 +5,7 @@ import type { PresentationPlan } from "@/domain/runtime";
 import type {
   AudioPlaybackAdapter,
   AudioPlaybackRequest,
+  PreloadedAudioHandle,
 } from "@/services/audioPlaybackAdapter";
 import { AudioPlaybackAbortedError } from "@/services/audioPlaybackAdapter";
 import { SpeechPlaybackCoordinator } from "./speechPlaybackCoordinator";
@@ -23,9 +24,23 @@ class FakeAudioPlaybackAdapter implements AudioPlaybackAdapter {
     request: AudioPlaybackRequest,
     signal: AbortSignal,
   ): Promise<void> {
-    this.requests.push(request);
-    if (signal.aborted) throw new AudioPlaybackAbortedError();
-    if (this.fail) throw new Error("playback failed");
+    const handle = await this.fetch(request, signal);
+    await handle.play(signal);
+  }
+
+  async fetch(
+    request: AudioPlaybackRequest,
+    signal: AbortSignal,
+  ): Promise<PreloadedAudioHandle> {
+    const self = this;
+    return {
+      async play(playSignal: AbortSignal): Promise<void> {
+        self.requests.push(request);
+        if (playSignal.aborted) throw new AudioPlaybackAbortedError();
+        if (self.fail) throw new Error("playback failed");
+      },
+      dispose(): void {},
+    };
   }
 
   stop(): void {
@@ -34,20 +49,27 @@ class FakeAudioPlaybackAdapter implements AudioPlaybackAdapter {
 }
 
 class BlockingAudioPlaybackAdapter extends FakeAudioPlaybackAdapter {
-  override async play(
+  override async fetch(
     request: AudioPlaybackRequest,
     signal: AbortSignal,
-  ): Promise<void> {
-    this.requests.push(request);
-    if (request.text === "second") return;
+  ): Promise<PreloadedAudioHandle> {
+    const self = this;
+    return {
+      async play(playSignal: AbortSignal): Promise<void> {
+        self.requests.push(request);
+        if (request.text === "second") return;
+        if (playSignal.aborted) throw new AudioPlaybackAbortedError();
 
-    await new Promise<void>((_resolve, reject) => {
-      signal.addEventListener(
-        "abort",
-        () => reject(new AudioPlaybackAbortedError()),
-        { once: true },
-      );
-    });
+        await new Promise<void>((_resolve, reject) => {
+          playSignal.addEventListener(
+            "abort",
+            () => reject(new AudioPlaybackAbortedError()),
+            { once: true },
+          );
+        });
+      },
+      dispose(): void {},
+    };
   }
 }
 

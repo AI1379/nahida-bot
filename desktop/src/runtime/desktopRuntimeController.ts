@@ -19,6 +19,7 @@ import {
 import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
 import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
 import { GatewayAudioAdapter } from "@/services/gatewayAudioAdapter";
+import { PomodoroService } from "@/services/pomodoroService";
 import type { AudioPlaybackAdapter, AudioPlaybackRequest } from "@/services/audioPlaybackAdapter";
 import {
   completeGatewayPairing,
@@ -48,6 +49,10 @@ export interface DesktopRuntimeActions {
   ): Promise<PairDeviceResult>;
   submitUserMessage(text: string): void;
   submitMockLlmResult(rawOutput: string): void;
+  /** Start/restart the local pomodoro timer. */
+  startPomodoro(): void;
+  stopPomodoro(): void;
+  togglePomodoro(): void;
 }
 
 function clearTimer(timer: ReturnType<typeof setTimeout> | null) {
@@ -97,27 +102,28 @@ export function useDesktopRuntimeController(
     isAvailable(): boolean {
       const source = store.gatewayConnection.ttsSource;
       if (source === "system") return systemSpeechAdapter.isAvailable();
-      // auto / gateway: gateway is "available" only if we have the bearer.
       return gatewayTtsAdapter.isAvailable() || systemSpeechAdapter.isAvailable();
     },
     async play(request: AudioPlaybackRequest, signal: AbortSignal): Promise<void> {
+      const handle = await this.fetch(request, signal);
+      await handle.play(signal);
+    },
+    async fetch(request: AudioPlaybackRequest, signal: AbortSignal) {
       const source = store.gatewayConnection.ttsSource;
       if (source === "system") {
-        return systemSpeechAdapter.play(request, signal);
+        return systemSpeechAdapter.fetch(request, signal);
       }
       if (source === "gateway") {
-        return gatewayTtsAdapter.play(request, signal);
+        return gatewayTtsAdapter.fetch(request, signal);
       }
-      // auto: try gateway first, fallback to system.
       if (gatewayTtsAdapter.isAvailable()) {
         try {
-          return await gatewayTtsAdapter.play(request, signal);
+          return await gatewayTtsAdapter.fetch(request, signal);
         } catch {
-          await systemSpeechAdapter.play(request, signal);
-          return;
+          return systemSpeechAdapter.fetch(request, signal);
         }
       }
-      await systemSpeechAdapter.play(request, signal);
+      return systemSpeechAdapter.fetch(request, signal);
     },
     stop(): void {
       systemSpeechAdapter.stop();
@@ -314,6 +320,23 @@ export function useDesktopRuntimeController(
     eventSource?.submitMockLlmResult(trimmed);
   }
 
+  const pomodoroService = new PomodoroService({
+    getSettings: () => store.localConfig.pomodoro,
+    onTick: (event) => store.applyDesktopEvent(event),
+  });
+
+  function startPomodoro() {
+    pomodoroService.start();
+  }
+
+  function stopPomodoro() {
+    pomodoroService.stop();
+  }
+
+  function togglePomodoro() {
+    pomodoroService.toggle();
+  }
+
   function scheduleActivePresentation() {
     const presentation = store.activePresentation;
     if (!presentation) {
@@ -456,6 +479,7 @@ export function useDesktopRuntimeController(
   onBeforeUnmount(() => {
     speechPlayback.dispose();
     gatewayTtsAdapter.dispose();
+    pomodoroService.dispose();
     clearPetStateTimers();
     unlistenPetCommands?.();
     stopEventSource();
@@ -471,5 +495,8 @@ export function useDesktopRuntimeController(
     pairDevice: pairDeviceFromForm,
     submitUserMessage,
     submitMockLlmResult,
+    startPomodoro,
+    stopPomodoro,
+    togglePomodoro,
   };
 }
