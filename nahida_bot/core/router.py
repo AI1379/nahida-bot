@@ -1256,21 +1256,6 @@ class MessageRouter:
             )
             return
 
-        # Run motion planner (Desktop DisplayPlan) before event publish.
-        if self._motion_planner is not None and outbound.text.strip():
-            try:
-                plan = await self._motion_planner.plan(
-                    outbound.text, session_id=session_id
-                )
-                if plan is not None:
-                    outbound.extra["display_plan"] = plan.to_display_plan_dict()
-            except Exception:
-                logger.warning(
-                    "motion_planner.unexpected_error",
-                    session_id=session_id,
-                    exc_info=True,
-                )
-
         turn_ctx = current_session.get()
         message_payload_kwargs = {
             "conversation_id": (
@@ -1312,6 +1297,22 @@ class MessageRouter:
         # fake Channel implementation or treating a device as a chat account.
         reply_route = str(message_payload_kwargs["reply_route"])
         if reply_route.startswith("node:"):
+            # Run motion planner only on the Desktop node path so
+            # non-Desktop channels (milky, telegram, onebot) are never
+            # blocked by this LLM call.
+            if self._motion_planner is not None and outbound.text.strip():
+                try:
+                    plan = await self._motion_planner.plan(
+                        outbound.text, session_id=session_id
+                    )
+                    if plan is not None:
+                        outbound.extra["display_plan"] = plan.to_display_plan_dict()
+                except Exception:
+                    logger.warning(
+                        "motion_planner.unexpected_error",
+                        session_id=session_id,
+                        exc_info=True,
+                    )
             sent_result = await self._event_bus.publish(
                 MessageSent(
                     payload=MessagePayload(
