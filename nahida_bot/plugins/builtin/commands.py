@@ -43,6 +43,8 @@ from nahida_bot.core.runtime_settings import (
 _logger = structlog.get_logger(__name__)
 
 _MAX_EXEC_OUTPUT = 50_000
+_MAX_HISTORY_TOOL_OUTPUT = 200_000
+_MAX_HISTORY_TURN_CHARS = 8000
 _MAX_EXEC_TIMEOUT = 120
 _WEB_FETCH_TIMEOUT = 30
 _WEB_FETCH_MAX_BODY = 5 * 1024 * 1024
@@ -661,7 +663,7 @@ class BuiltinCommandsPlugin(Plugin):
                 header += f" reply_to={reply_to}"
             content = self._sanitize_turn_for_model(str(row.get("content") or ""))
             block = f"{header}\n{content}"
-            if total_chars + len(block) > 50_000:
+            if total_chars + len(block) > _MAX_HISTORY_TOOL_OUTPUT:
                 lines.append("\n[remaining history omitted due to tool output limit]")
                 break
             lines.append(block)
@@ -759,7 +761,7 @@ class BuiltinCommandsPlugin(Plugin):
             return ""
         sanitized = _BASE64_DATA_URL_RE.sub("[media omitted]", content)
         sanitized = _LONG_BASE64_RE.sub("[data omitted]", sanitized)
-        max_chars = 1500
+        max_chars = _MAX_HISTORY_TURN_CHARS
         if len(sanitized) > max_chars:
             sanitized = sanitized[:max_chars].rstrip() + "..."
         return sanitized
@@ -1968,6 +1970,11 @@ class BuiltinCommandsPlugin(Plugin):
                 created_by_user_id=ctx.user_id,
                 created_from_session_id=ctx.session_id,
                 created_from_chat_address=address.chat_key,
+                # TODO(authz): sender_account_key inherits the *current turn's*
+                # initiator.  In group chats this may be a conversation-joiner
+                # anchor rather than an explicit @-mention — the permission model
+                # for cron ownership in auto-join scenarios needs further thought.
+                sender_account_key=ctx.sender_account_key,
             )
         except Exception as e:
             return f"Error creating scheduled task: {e}"

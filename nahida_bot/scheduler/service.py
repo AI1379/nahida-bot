@@ -176,6 +176,7 @@ class SchedulerService:
         created_by_user_id: str = "",
         created_from_session_id: str = "",
         created_from_chat_address: str = "",
+        sender_account_key: str = "",
     ) -> CronJob:
         """Create and persist a new scheduled job at a typed address."""
         if not address.is_typed:
@@ -235,6 +236,7 @@ class SchedulerService:
             created_by_user_id=created_by_user_id,
             created_from_session_id=created_from_session_id,
             created_from_chat_address=created_from_chat_address,
+            sender_account_key=sender_account_key,
         )
 
         await self._repo.insert_job_with_quota(
@@ -883,6 +885,11 @@ class SchedulerService:
                 chat_address=address,
                 user_id=job.created_by_user_id,
                 sender_display_name=job.created_by_user_id or "scheduler",
+                # TODO(authz): see matching TODO in _tool_cron_create.
+                # The cron job's permission set is determined by whichever
+                # identity created it — for group-chat auto-join scenarios
+                # this may need a more deliberate owner-assignment policy.
+                sender_account_key=job.sender_account_key,
             )
         )
         try:

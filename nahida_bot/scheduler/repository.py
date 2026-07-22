@@ -52,6 +52,9 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
             if "created_from_chat_address" in keys
             else ""
         ),
+        sender_account_key=(
+            r["sender_account_key"] if "sender_account_key" in keys else ""
+        ),
     )
 
 
@@ -72,8 +75,8 @@ class CronRepository:
                     last_fired_at, workspace_id, claimed_at, failure_count,
                     last_error, session_mode, session_name, chat_type,
                     created_by_user_id, created_from_session_id,
-                    created_from_chat_address
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_from_chat_address, sender_account_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -101,6 +104,7 @@ class CronRepository:
                     job.created_by_user_id,
                     job.created_from_session_id,
                     job.created_from_chat_address,
+                    job.sender_account_key,
                 ),
             )
             await self._engine.db.commit()
@@ -401,8 +405,8 @@ class CronRepository:
                     last_fired_at, workspace_id, claimed_at, failure_count,
                     last_error, session_mode, session_name, chat_type,
                     created_by_user_id, created_from_session_id,
-                    created_from_chat_address
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_from_chat_address, sender_account_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -430,6 +434,7 @@ class CronRepository:
                     job.created_by_user_id,
                     job.created_from_session_id,
                     job.created_from_chat_address,
+                    job.sender_account_key,
                 ),
             )
             await self._engine.db.commit()

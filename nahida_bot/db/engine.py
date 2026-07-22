@@ -443,6 +443,10 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_identity_audit_target
         ON identity_audit_log(target_type, target_id, created_at DESC);
     """,
+    # Migration 022: sender_account_key on cron jobs for cron-triggered authz
+    """
+    ALTER TABLE cron_jobs ADD COLUMN sender_account_key TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 
