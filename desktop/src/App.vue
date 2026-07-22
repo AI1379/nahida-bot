@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { currentDesktopSurface } from "@/services/desktopSurface";
 import MainWindowView from "@/views/MainWindowView.vue";
 import PetWindowView from "@/views/PetWindowView.vue";
 
-const surface = currentDesktopSurface();
-document.documentElement.dataset.window = surface;
+const surface = document.documentElement.dataset.window === "pet"
+  ? "pet"
+  : "main";
 </script>
 
 <template>

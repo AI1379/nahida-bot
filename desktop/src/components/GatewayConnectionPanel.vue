@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isTauri } from "@tauri-apps/api/core";
 import { computed, ref, watch } from "vue";
 
 import type { GatewayConnectionMode, TtsSourcePreference } from "@/domain/gatewayConnection";
@@ -34,6 +35,7 @@ const pairingTokenInput = ref("");
 const showToken = ref(false);
 const showPairingToken = ref(false);
 const showAdminBearer = ref(false);
+const hasPlatformCredentialStore = isTauri();
 
 watch(
   () => store.gatewayConnection,
@@ -577,6 +579,13 @@ function resetToDefaults() {
         >
           Forget token
         </button>
+        <small class="connection-panel__hint connection-panel__hint--muted">
+          {{
+            hasPlatformCredentialStore
+              ? "Saved in the operating system credential store; never written to WebView storage."
+              : "Browser preview keeps tokens for this session only. Desktop builds use the operating system credential store."
+          }}
+        </small>
       </div>
 
       <div v-if="draft.adminBearerToken" class="connection-panel__token">

@@ -77,7 +77,11 @@ textarea {
 }
 
 input[type="search"],
-input[type="text"] {
+input[type="text"],
+input[type="password"],
+input[type="number"],
+input[type="url"] {
+  width: 100%;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -87,6 +91,8 @@ input[type="text"] {
 }
 
 select {
+  width: 100%;
+  min-width: 0;
   min-height: 36px;
   border: 1px solid #9cb6a5;
   border-radius: 8px;

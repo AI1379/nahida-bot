@@ -1,4 +1,5 @@
 mod gateway_node;
+mod secure_storage;
 
 use tauri::{Manager, WindowEvent};
 
@@ -107,6 +108,7 @@ fn polish_pet_window(window: tauri::WebviewWindow) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::new().build())
         .manage(gateway_node::GatewayNodeManager::default())
         .invoke_handler(tauri::generate_handler![
             runtime_mode,
@@ -115,6 +117,8 @@ pub fn run() {
             gateway_node::gateway_node_disconnect,
             gateway_node::gateway_node_status,
             gateway_node::gateway_node_submit_input,
+            secure_storage::secure_tokens_read,
+            secure_storage::secure_tokens_write,
         ])
         .setup(|app| {
             if let Some(pet) = app.get_webview_window("pet") {

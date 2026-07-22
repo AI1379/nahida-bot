@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 import type {
   DisplayEmotion,
   DisplayMotion,
+  DisplayPlan,
 } from "@/domain/displayPlan";
 import {
   isDisplayEmotion,
@@ -16,7 +17,7 @@ import type { LocalDesktopConfig } from "@/domain/config";
 import {
   sanitizeExpressionKeyword,
   sanitizeExpressionName,
-} from "@/domain/displayPlanPolicy";
+} from "@/domain/displayPlan";
 import type {
   DesktopEvent,
   PetRuntimeState,
@@ -35,22 +36,23 @@ import type {
   Live2DMotionOption,
   Live2DMotionTarget,
 } from "@/domain/live2d";
+import { clearPersistedModelMappings } from "@/services/modelMappingStorage";
 import {
-  writePersistedExpressionMap,
-  writePersistedMotionMap,
-} from "@/services/modelMappingStorage";
-import {
+  clearPersistedTtsSettings,
   sanitizeTtsSettings,
-  writePersistedTtsSettings,
 } from "@/services/ttsSettingsStorage";
 import {
+  clearPersistedPomodoroSettings,
   sanitizePomodoroSettings,
-  writePersistedPomodoroSettings,
 } from "@/services/pomodoroSettingsStorage";
+import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
+import { clearPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import {
-  sanitizeGatewayConnection as sanitizePersistedGatewayConnection,
-  writePersistedGatewayConnection,
-} from "@/services/gatewayConnectionStorage";
+  readDesktopSettings,
+  readSecureTokens,
+  writeDesktopSettings,
+  writeSecureTokens,
+} from "@/services/desktopSettingsStorage";
 import type { MotionMap } from "@/services/modelMappingStorage";
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
 import {
@@ -59,15 +61,23 @@ import {
   withModelConfig,
 } from "./desktop/modelConfig";
 import { createDesktopState } from "./desktop/state";
-import type { GatewayPairingState } from "./desktop/state";
-import {
-  assistantTranscriptEntry,
-  systemTranscriptEntry,
-  userTranscriptEntry,
-} from "./desktop/transcript";
-import { createEmptyPendingAfterEmerge } from "./desktop/types";
+import type { GatewayPairingState, TranscriptEntry } from "./desktop/state";
+import { createEmptyPendingAfterEmerge } from "./desktop/state";
 
-export type { TranscriptEntry } from "./desktop/types";
+export type { TranscriptEntry } from "./desktop/state";
+
+function createTranscriptEntry(
+  role: TranscriptEntry["role"],
+  text: string,
+  at: string,
+  displayPlan?: DisplayPlan,
+): TranscriptEntry {
+  return { id: crypto.randomUUID(), role, text, at, displayPlan };
+}
+
+function persistenceErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export const useDesktopStore = defineStore("desktop", {
   state: createDesktopState,
@@ -92,6 +102,86 @@ export const useDesktopStore = defineStore("desktop", {
     },
   },
   actions: {
+    async hydratePersistentState() {
+      const legacyLocalConfig = this.localConfig;
+      const legacyGatewayConnection = this.gatewayConnection;
+      let persisted = null;
+
+      this.persistenceError = null;
+      try {
+        persisted = await readDesktopSettings(
+          legacyLocalConfig,
+          legacyGatewayConnection,
+        );
+      } catch (error) {
+        this.persistenceError = `Could not read desktop settings: ${persistenceErrorMessage(error)}`;
+      }
+
+      let secureTokens = {
+        nodeToken: legacyGatewayConnection.nodeToken,
+        adminBearerToken: legacyGatewayConnection.adminBearerToken,
+      };
+      try {
+        const storedTokens = await readSecureTokens();
+        secureTokens = {
+          nodeToken: storedTokens.nodeToken || secureTokens.nodeToken,
+          adminBearerToken:
+            storedTokens.adminBearerToken || secureTokens.adminBearerToken,
+        };
+      } catch (error) {
+        this.persistenceError = `Could not read secure credentials: ${persistenceErrorMessage(error)}`;
+      }
+
+      this.localConfig = persisted?.localConfig ?? legacyLocalConfig;
+      this.gatewayConnection = sanitizeGatewayConnectionSettings({
+        ...(persisted?.gatewayConnection ?? legacyGatewayConnection),
+        ...secureTokens,
+      });
+      this.localConfigVersion += 1;
+      this.gatewayConnectionVersion += 1;
+
+      let settingsSaved = false;
+      try {
+        await writeDesktopSettings(this.localConfig, this.gatewayConnection);
+        settingsSaved = true;
+      } catch (error) {
+        this.persistenceError = `Could not save desktop settings: ${persistenceErrorMessage(error)}`;
+      }
+      let secureTokensSaved = false;
+      try {
+        await writeSecureTokens(secureTokens);
+        secureTokensSaved = true;
+      } catch (error) {
+        this.persistenceError = `Could not save secure credentials: ${persistenceErrorMessage(error)}`;
+      }
+
+      if (settingsSaved && secureTokensSaved) {
+        // Remove the old WebView copies only after both replacements are
+        // durable. A transient credential-store failure remains retryable on
+        // the next launch instead of silently losing the only token copy.
+        clearPersistedGatewayConnection();
+        clearPersistedTtsSettings();
+        clearPersistedPomodoroSettings();
+        clearPersistedModelMappings();
+      }
+    },
+    async persistDesktopSettings() {
+      try {
+        await writeDesktopSettings(this.localConfig, this.gatewayConnection);
+      } catch (error) {
+        this.persistenceError = `Could not save desktop settings: ${persistenceErrorMessage(error)}`;
+      }
+    },
+    async persistGatewayTokens() {
+      try {
+        await writeSecureTokens({
+          nodeToken: this.gatewayConnection.nodeToken,
+          adminBearerToken: this.gatewayConnection.adminBearerToken,
+        });
+      } catch (error) {
+        this.persistenceError = `Could not save secure credentials: ${persistenceErrorMessage(error)}`;
+      }
+    },
     syncPetRuntime(partial: Partial<PetRuntimeState>) {
       this.petRuntime = {
         ...this.petRuntime,
@@ -117,6 +207,8 @@ export const useDesktopStore = defineStore("desktop", {
     commitLocalConfig(localConfig: LocalDesktopConfig) {
       this.localConfig = localConfig;
       this.localConfigVersion += 1;
+      this.persistenceError = null;
+      void this.persistDesktopSettings();
     },
     clearPendingAfterEmerge() {
       this.pendingAfterEmerge = createEmptyPendingAfterEmerge();
@@ -258,7 +350,6 @@ export const useDesktopStore = defineStore("desktop", {
         ...this.localConfig,
         ttsSettings,
       });
-      writePersistedTtsSettings(ttsSettings);
     },
     updatePomodoroSettings(settings: LocalDesktopConfig["pomodoro"]) {
       const pomodoro = sanitizePomodoroSettings(settings);
@@ -266,19 +357,25 @@ export const useDesktopStore = defineStore("desktop", {
         ...this.localConfig,
         pomodoro,
       });
-      writePersistedPomodoroSettings(pomodoro);
     },
     commitGatewayConnection(settings: GatewayConnectionSettings) {
-      this.gatewayConnection = sanitizePersistedGatewayConnection(settings);
+      this.gatewayConnection = sanitizeGatewayConnectionSettings(settings);
       this.gatewayConnectionVersion += 1;
     },
     updateGatewayConnection(patch: Partial<GatewayConnectionSettings>) {
+      const tokensChanged =
+        (patch.nodeToken !== undefined &&
+          patch.nodeToken !== this.gatewayConnection.nodeToken) ||
+        (patch.adminBearerToken !== undefined &&
+          patch.adminBearerToken !== this.gatewayConnection.adminBearerToken);
       const next: GatewayConnectionSettings = {
         ...this.gatewayConnection,
         ...patch,
       };
       this.commitGatewayConnection(next);
-      writePersistedGatewayConnection(next);
+      this.persistenceError = null;
+      void this.persistDesktopSettings();
+      if (tokensChanged) void this.persistGatewayTokens();
     },
     resetGatewayConnection() {
       this.commitGatewayConnection({
@@ -291,7 +388,9 @@ export const useDesktopStore = defineStore("desktop", {
         adminBearerToken: "",
         ttsSource: "auto",
       });
-      writePersistedGatewayConnection(this.gatewayConnection);
+      this.persistenceError = null;
+      void this.persistDesktopSettings();
+      void this.persistGatewayTokens();
       this.gatewayConnectionError = null;
       this.gatewayPairing = { status: "idle" };
     },
@@ -430,7 +529,6 @@ export const useDesktopStore = defineStore("desktop", {
           expressionMap: nextExpressionMap,
         }),
       );
-      writePersistedExpressionMap(this.selectedModelId, nextExpressionMap);
       if (this.currentExpressionKey === previousKeyword) {
         this.syncPetRuntime({ expressionKey: cleanKeyword });
       }
@@ -457,7 +555,6 @@ export const useDesktopStore = defineStore("desktop", {
           expressionMap: nextExpressionMap,
         }),
       );
-      writePersistedExpressionMap(this.selectedModelId, nextExpressionMap);
       if (this.currentExpressionKey === cleanKeyword) {
         this.syncPetRuntime({ expressionKey: this.currentEmotion });
       }
@@ -501,7 +598,6 @@ export const useDesktopStore = defineStore("desktop", {
           motionMap: nextMotionMap,
         }),
       );
-      writePersistedMotionMap(this.selectedModelId, nextMotionMap);
       this.motionMapVersion += 1;
     },
     previewMotion(motion: DisplayMotion) {
@@ -536,7 +632,7 @@ export const useDesktopStore = defineStore("desktop", {
               lastEventAt: event.at,
             });
             this.transcript.unshift(
-              systemTranscriptEntry(
+              createTranscriptEntry("system",
                 event.source === "gateway"
                   ? `Gateway node connected: ${event.nodeId ?? "desktop"}`
                   : "Mock backend connected.",
@@ -588,7 +684,7 @@ export const useDesktopStore = defineStore("desktop", {
           this.activePresentation = presentation;
           this.activePlan = presentation.displayPlan;
           this.transcript.unshift(
-            assistantTranscriptEntry(
+            createTranscriptEntry("assistant",
               presentation.displayPlan.text,
               event.at,
               presentation.displayPlan,
@@ -623,7 +719,7 @@ export const useDesktopStore = defineStore("desktop", {
               lastEventAt: event.at,
             });
           }
-          this.transcript.unshift(systemTranscriptEntry(event.message, event.at));
+          this.transcript.unshift(createTranscriptEntry("system", event.message, event.at));
           break;
         }
         case "notification.reminder": {
@@ -651,12 +747,12 @@ export const useDesktopStore = defineStore("desktop", {
               lastEventAt: event.at,
             });
           }
-          this.transcript.unshift(systemTranscriptEntry(event.message, event.at));
+          this.transcript.unshift(createTranscriptEntry("system", event.message, event.at));
           break;
         }
         case "user.message.submitted":
           this.sessionId = event.sessionId;
-          this.transcript.unshift(userTranscriptEntry(event.text, event.at));
+          this.transcript.unshift(createTranscriptEntry("user", event.text, event.at));
           this.enterPetChat();
           this.syncPetRuntime({
             emotion: "thinking",
@@ -704,7 +800,7 @@ export const useDesktopStore = defineStore("desktop", {
           readStringArg(args.title);
         if (message) {
           this.transcript.unshift(
-            systemTranscriptEntry(message, new Date().toISOString()),
+            createTranscriptEntry("system", message, new Date().toISOString()),
           );
         }
       }

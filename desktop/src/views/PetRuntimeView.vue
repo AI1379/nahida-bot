@@ -15,6 +15,11 @@ const replyText = ref("");
 const activeSegment = computed(
   () => store.activePlan?.segments[store.currentSegmentIndex] ?? null,
 );
+const previewRenderMode = computed(() =>
+  store.petRuntime.renderMode === "suspended"
+    ? "idle"
+    : store.petRuntime.renderMode,
+);
 
 function submitReply() {
   const trimmed = replyText.value.trim();
@@ -30,7 +35,7 @@ function submitReply() {
       :emotion="store.currentEmotion"
       :expression-key="store.currentExpressionKey"
       :motion="store.currentMotion"
-      :render-mode="store.petRuntime.renderMode"
+      :render-mode="previewRenderMode"
       :model="store.model"
       :speaking="store.speaking"
       :caption-text="activeSegment?.text ?? ''"

@@ -20,6 +20,7 @@
     "@pixi/sprite": "6.5.10",
     "@pixi/utils": "6.5.10",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-store": "^2.4.4",
     "@vueuse/core": "^14.3.0",
     "pinia": "^3.0.4",
     "pixi-live2d-display": "0.4.0",

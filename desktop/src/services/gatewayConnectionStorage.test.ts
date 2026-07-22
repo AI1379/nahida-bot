@@ -1,56 +1,58 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  defaultGatewayConnection,
-  sanitizeGatewayConnection,
-} from "./gatewayConnectionStorage";
+  defaultGatewayConnectionSettings,
+  sanitizeGatewayConnectionSettings,
+} from "@/domain/gatewayConnection";
 
 describe("gateway connection sanitization", () => {
+  const defaultSettings = { ...defaultGatewayConnectionSettings };
+
   it("falls back to defaults on invalid input", () => {
-    expect(sanitizeGatewayConnection(null)).toEqual(defaultGatewayConnection());
-    expect(sanitizeGatewayConnection("nope")).toEqual(defaultGatewayConnection());
-    expect(sanitizeGatewayConnection({ mode: "weird" }).mode).toBe("mock");
+    expect(sanitizeGatewayConnectionSettings(null)).toEqual(defaultSettings);
+    expect(sanitizeGatewayConnectionSettings("nope")).toEqual(defaultSettings);
+    expect(sanitizeGatewayConnectionSettings({ mode: "weird" }).mode).toBe("mock");
   });
 
   it("normalizes the WebSocket URL and strips unsupported schemes", () => {
     expect(
-      sanitizeGatewayConnection({
+      sanitizeGatewayConnectionSettings({
         gatewayWsUrl: "ws://127.0.0.1:6185/api/nodes/ws/",
       }).gatewayWsUrl,
     ).toBe("ws://127.0.0.1:6185/api/nodes/ws");
 
     expect(
-      sanitizeGatewayConnection({
+      sanitizeGatewayConnectionSettings({
         gatewayWsUrl: "file:///etc/passwd",
       }).gatewayWsUrl,
-    ).toBe(defaultGatewayConnection().gatewayWsUrl);
+    ).toBe(defaultSettings.gatewayWsUrl);
 
     expect(
-      sanitizeGatewayConnection({
+      sanitizeGatewayConnectionSettings({
         gatewayWsUrl: "javascript:alert(1)",
       }).gatewayWsUrl,
-    ).toBe(defaultGatewayConnection().gatewayWsUrl);
+    ).toBe(defaultSettings.gatewayWsUrl);
   });
 
   it("rejects node ids that contain path-breaking characters", () => {
     expect(
-      sanitizeGatewayConnection({ nodeId: "desktop/local" }).nodeId,
-    ).toBe(defaultGatewayConnection().nodeId);
+      sanitizeGatewayConnectionSettings({ nodeId: "desktop/local" }).nodeId,
+    ).toBe(defaultSettings.nodeId);
     expect(
-      sanitizeGatewayConnection({ nodeId: "desktop local" }).nodeId,
-    ).toBe(defaultGatewayConnection().nodeId);
-    expect(sanitizeGatewayConnection({ nodeId: "desktop-01" }).nodeId).toBe(
+      sanitizeGatewayConnectionSettings({ nodeId: "desktop local" }).nodeId,
+    ).toBe(defaultSettings.nodeId);
+    expect(sanitizeGatewayConnectionSettings({ nodeId: "desktop-01" }).nodeId).toBe(
       "desktop-01",
     );
   });
 
   it("keeps tokens truncated and trims whitespace", () => {
     expect(
-      sanitizeGatewayConnection({ nodeToken: "  nt_abc.def  " }).nodeToken,
+      sanitizeGatewayConnectionSettings({ nodeToken: "  nt_abc.def  " }).nodeToken,
     ).toBe("nt_abc.def");
     const huge = "x".repeat(2048);
     expect(
-      sanitizeGatewayConnection({ nodeToken: huge }).nodeToken.length,
+      sanitizeGatewayConnectionSettings({ nodeToken: huge }).nodeToken.length,
     ).toBeLessThanOrEqual(512);
   });
 });

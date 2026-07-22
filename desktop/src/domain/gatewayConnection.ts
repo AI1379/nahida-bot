@@ -12,9 +12,9 @@
  *    exchanges it via `/api/nodes/pairing/complete` for a long-lived node
  *    token. The pairing token is consumed on success.
  *
- * Tokens persist to localStorage in V1 (see `services/gatewayConnectionStorage`);
- * a later Tauri build should move them to the platform keychain without
- * changing this domain shape.
+ * The domain state includes tokens while the app is running, but persistence
+ * is split deliberately: ordinary settings use the Tauri Store plugin and
+ * secrets use the platform credential store through Rust commands.
  */
 
 export type GatewayConnectionMode = "mock" | "gateway";
@@ -44,7 +44,7 @@ export interface GatewayConnectionSettings {
   /**
    * Optional admin API token (`webapi.auth_token`). Reused for REST calls
    * that require admin auth (e.g. /api/speech/jobs). Empty on no-auth
-   * gateways. Persisted alongside the node token so the desktop can keep
+   * gateways. Stored in the platform credential store so the desktop can keep
    * using TTS without re-entering it each session.
    */
   adminBearerToken: string;

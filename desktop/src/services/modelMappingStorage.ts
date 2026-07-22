@@ -2,7 +2,7 @@ import {
   displayPlanPolicy,
   sanitizeExpressionKeyword,
   sanitizeExpressionName,
-} from "@/domain/displayPlanPolicy";
+} from "@/domain/displayPlan";
 import { isDisplayMotion } from "@/domain/displayPlan";
 import type { DisplayMotion } from "@/domain/displayPlan";
 import type {
@@ -144,4 +144,11 @@ export function writePersistedMotionMap(
   const persisted = readPersistedMotionMaps();
   persisted[modelId] = sanitizeMotionMap(motionMap);
   window.localStorage.setItem(storageKeys.motionMap, JSON.stringify(persisted));
+}
+
+export function clearPersistedModelMappings(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(storageKeys.expressionMap);
+  window.localStorage.removeItem(storageKeys.legacyExpressionMap);
+  window.localStorage.removeItem(storageKeys.motionMap);
 }

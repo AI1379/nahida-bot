@@ -21,6 +21,11 @@ const store = useDesktopStore();
 const activeSegment = computed(
   () => store.activePlan?.segments[store.currentSegmentIndex] ?? null,
 );
+const previewRenderMode = computed(() =>
+  store.petRuntime.renderMode === "suspended"
+    ? "idle"
+    : store.petRuntime.renderMode,
+);
 </script>
 
 <template>
@@ -29,7 +34,7 @@ const activeSegment = computed(
       :emotion="store.currentEmotion"
       :expression-key="store.currentExpressionKey"
       :motion="store.currentMotion"
-      :render-mode="store.petRuntime.renderMode"
+      :render-mode="previewRenderMode"
       :model="store.model"
       :speaking="store.speaking"
       :caption-text="activeSegment?.text ?? ''"

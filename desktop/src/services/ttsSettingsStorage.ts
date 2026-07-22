@@ -1,7 +1,6 @@
+import { createTypedStorage } from "@/utils/storage";
 import { ttsDefaults } from "@/config/desktopRuntimeDefaults";
 import type { TtsSettings } from "@/domain/config";
-
-const storageKey = "nahida.desktop.tts.settings.v1";
 
 function finiteNumber(
   value: unknown,
@@ -38,20 +37,11 @@ export function sanitizeTtsSettings(value: unknown): TtsSettings {
   };
 }
 
-export function readPersistedTtsSettings(): TtsSettings {
-  if (typeof window === "undefined") return sanitizeTtsSettings(null);
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    return sanitizeTtsSettings(raw ? JSON.parse(raw) : null);
-  } catch {
-    return sanitizeTtsSettings(null);
-  }
-}
+const storage = createTypedStorage<TtsSettings>(
+  "nahida.desktop.tts.settings.v1",
+  sanitizeTtsSettings,
+);
 
-export function writePersistedTtsSettings(settings: TtsSettings): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(
-    storageKey,
-    JSON.stringify(sanitizeTtsSettings(settings)),
-  );
-}
+export const readPersistedTtsSettings = storage.read;
+export const writePersistedTtsSettings = storage.write;
+export const clearPersistedTtsSettings = storage.clear;

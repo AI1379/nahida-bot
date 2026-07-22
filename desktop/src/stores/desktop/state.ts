@@ -2,6 +2,7 @@ import {
   createDefaultLocalDesktopConfig,
 } from "@/domain/config";
 import type { DisplayPlan } from "@/domain/displayPlan";
+import type { DisplayMotion } from "@/domain/displayPlan";
 import { createInitialPetRuntimeState } from "@/domain/runtime";
 import type { PresentationPlan } from "@/domain/runtime";
 import type {
@@ -19,14 +20,36 @@ import {
 } from "@/services/modelMappingStorage";
 import { readPersistedTtsSettings } from "@/services/ttsSettingsStorage";
 import { readPersistedPomodoroSettings } from "@/services/pomodoroSettingsStorage";
-import {
-  readPersistedGatewayConnection,
-  sanitizeGatewayConnection,
-} from "@/services/gatewayConnectionStorage";
+import { readPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
+import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { withPersistedModelMappings } from "./modelConfig";
-import { createEmptyPendingAfterEmerge } from "./types";
-import type { TranscriptEntry } from "./types";
+
+export interface TranscriptEntry {
+  id: string;
+  role: "system" | "user" | "assistant";
+  text: string;
+  at: string;
+  displayPlan?: DisplayPlan;
+}
+
+export type PendingAfterEmergeAction =
+  | { type: "none" }
+  | { type: "presentation" }
+  | { type: "error" }
+  | { type: "motion"; motion: DisplayMotion };
+
+export interface PendingAfterEmerge {
+  enterChat: boolean;
+  action: PendingAfterEmergeAction;
+}
+
+export function createEmptyPendingAfterEmerge(): PendingAfterEmerge {
+  return {
+    enterChat: false,
+    action: { type: "none" },
+  };
+}
 
 export interface GatewayPairingState {
   status: "idle" | "exchanging" | "success" | "error";
@@ -50,7 +73,7 @@ export function createDesktopState() {
   localConfig.ttsSettings = readPersistedTtsSettings();
   localConfig.pomodoro = readPersistedPomodoroSettings();
   const gatewayConnection: GatewayConnectionSettings =
-    sanitizeGatewayConnection(readPersistedGatewayConnection());
+    sanitizeGatewayConnectionSettings(readPersistedGatewayConnection());
 
   return {
     connected: false,
@@ -73,5 +96,6 @@ export function createDesktopState() {
     gatewayConnectionVersion: 0,
     gatewayConnectionError: null as string | null,
     gatewayPairing: { status: "idle" } as GatewayPairingState,
+    persistenceError: null as string | null,
   };
 }

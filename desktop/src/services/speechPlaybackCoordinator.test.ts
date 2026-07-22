@@ -30,7 +30,7 @@ class FakeAudioPlaybackAdapter implements AudioPlaybackAdapter {
 
   async fetch(
     request: AudioPlaybackRequest,
-    signal: AbortSignal,
+    _signal: AbortSignal,
   ): Promise<PreloadedAudioHandle> {
     const self = this;
     return {
@@ -51,7 +51,7 @@ class FakeAudioPlaybackAdapter implements AudioPlaybackAdapter {
 class BlockingAudioPlaybackAdapter extends FakeAudioPlaybackAdapter {
   override async fetch(
     request: AudioPlaybackRequest,
-    signal: AbortSignal,
+    _signal: AbortSignal,
   ): Promise<PreloadedAudioHandle> {
     const self = this;
     return {

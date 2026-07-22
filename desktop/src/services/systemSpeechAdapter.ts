@@ -166,16 +166,6 @@ export class SystemSpeechAdapter implements AudioPlaybackAdapter {
     });
   }
 
-  async fetch(
-    _request: AudioPlaybackRequest,
-    _signal: AbortSignal,
-  ): Promise<PreloadedAudioHandle> {
-    return {
-      play: (playSignal) => Promise.resolve(),
-      dispose: () => {},
-    };
-  }
-
   stop(): void {
     const cancelActive = this.cancelActive;
     this.cancelActive = null;

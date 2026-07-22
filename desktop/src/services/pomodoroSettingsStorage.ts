@@ -1,7 +1,6 @@
+import { createTypedStorage } from "@/utils/storage";
 import { pomodoroDefaults } from "@/domain/config";
 import type { PomodoroSettings } from "@/domain/config";
-
-const storageKey = "nahida.desktop.pomodoro.settings.v1";
 
 function finiteDuration(
   value: unknown,
@@ -51,22 +50,11 @@ export function sanitizePomodoroSettings(value: unknown): PomodoroSettings {
   };
 }
 
-export function readPersistedPomodoroSettings(): PomodoroSettings {
-  if (typeof window === "undefined") return sanitizePomodoroSettings(null);
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    return sanitizePomodoroSettings(raw ? JSON.parse(raw) : null);
-  } catch {
-    return sanitizePomodoroSettings(null);
-  }
-}
+const storage = createTypedStorage<PomodoroSettings>(
+  "nahida.desktop.pomodoro.settings.v1",
+  sanitizePomodoroSettings,
+);
 
-export function writePersistedPomodoroSettings(
-  settings: PomodoroSettings,
-): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(
-    storageKey,
-    JSON.stringify(sanitizePomodoroSettings(settings)),
-  );
-}
+export const readPersistedPomodoroSettings = storage.read;
+export const writePersistedPomodoroSettings = storage.write;
+export const clearPersistedPomodoroSettings = storage.clear;
