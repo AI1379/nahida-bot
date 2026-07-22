@@ -253,6 +253,7 @@ def _job_to_response(job: CronJob) -> CronJobResponse:
         created_by_user_id=job.created_by_user_id,
         created_from_session_id=job.created_from_session_id,
         created_from_chat_address=job.created_from_chat_address,
+        sender_account_key=job.sender_account_key,
     )
 
 

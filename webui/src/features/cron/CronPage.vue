@@ -29,6 +29,7 @@ import {
   ArrowUp,
   ArrowDown,
   ChevronsUpDown,
+  User,
 } from "lucide-vue-next";
 
 type SortKey = "next_fire_at" | "last_fired_at" | "target" | "mode" | "session_mode" | "status";
@@ -316,6 +317,7 @@ const sortedJobs = computed(() => {
               </th>
               <th>Runs</th>
               <th>Created</th>
+              <th>Account</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -340,6 +342,7 @@ const sortedJobs = computed(() => {
               <td class="mono">{{ job.last_fired_at ? relativeTime(job.last_fired_at) : "-" }}</td>
               <td>{{ job.run_count }}{{ job.max_runs ? `/${job.max_runs}` : "" }}</td>
               <td class="mono">{{ relativeTime(job.created_at) }}</td>
+              <td class="mono account-key" :title="job.sender_account_key || '—'">{{ job.sender_account_key || '—' }}</td>
               <td>
                 <div class="action-buttons">
                   <button class="action-btn" title="Edit" @click="openEdit(job)">
@@ -408,6 +411,10 @@ const sortedJobs = computed(() => {
           <div class="meta-item">
             <Hash :size="12" />
             <span>{{ job.run_count }}{{ job.max_runs ? `/${job.max_runs}` : "" }}</span>
+          </div>
+          <div v-if="job.sender_account_key" class="meta-item">
+            <User :size="12" />
+            <span class="mono account-key" :title="job.sender_account_key">{{ job.sender_account_key }}</span>
           </div>
         </div>
 
@@ -772,6 +779,13 @@ const sortedJobs = computed(() => {
   .card-action-btn-danger:active {
     background: color-mix(in srgb, var(--color-destructive) 12%, transparent);
     color: var(--color-destructive);
+  }
+
+  .account-key {
+    max-width: 14em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 </style>

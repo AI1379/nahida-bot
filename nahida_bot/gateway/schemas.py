@@ -313,6 +313,7 @@ class CronJobResponse(BaseModel):
     created_by_user_id: str = ""
     created_from_session_id: str = ""
     created_from_chat_address: str = ""
+    sender_account_key: str = ""
 
 
 class CronListResponse(BaseModel):

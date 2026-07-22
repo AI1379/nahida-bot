@@ -122,6 +122,7 @@ export interface CronJob {
   created_by_user_id: string;
   created_from_session_id: string;
   created_from_chat_address: string;
+  sender_account_key: string;
 }
 
 export interface CronListResponse {
