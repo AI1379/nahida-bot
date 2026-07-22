@@ -127,6 +127,71 @@ workspace context would help, or when you need to check remembered preferences.
 - Do not write secrets, tokens, cookies, private keys, temporary URLs, base64,
   or raw event dumps.
 """,
+        "skills/tldr/SKILL.md": """---
+name: tldr
+description: Summarize recent conversation history when the user asks for a recap, TLDR, or catch-up.
+---
+# TLDR / Summarization
+
+Use this skill when the user asks you to summarize what happened, catch them up,
+give a TLDR, or recap recent conversation. Also use it when the user returns
+after being away and asks "what did I miss?"
+
+## Available Tools
+
+- `read_chat_history(mode, limit?, before_turn_id?, since?, until?, chat_address?)`
+  fetches raw conversation turns from the current or another chat.
+  Supports `recent`, `time_range`, `around_message`, and `search` modes.
+  Use `before_turn_id` to paginate backward through longer history.
+- `search_chat_history(query, chat_address?)` searches across sessions by text.
+
+## Workflow
+
+### 1. Determine scope
+
+Ask yourself:
+- Did the user ask for a specific time range ("last hour", "since I left")?
+- Did they ask for a specific number of messages ("last 100 messages")?
+- Do they just want a general recap from when they were last active?
+
+### 2. Fetch history
+
+- For **recent messages**, use `read_chat_history(mode="recent", limit=N)`.
+- For a **time range**, use `read_chat_history(mode="time_range", since="...", until="...")`.
+- If you need **more turns than the tool returns in one call**, paginate with
+  `before_turn_id` — the tool's output includes the cursor for the next page.
+- For very long time spans, make multiple paginated calls until you have enough
+  coverage, then synthesize.
+
+### 3. Synthesize and present
+
+Produce a concise, scannable summary. Structure it like this:
+
+```
+**Recap (since <time or reference point>):**
+
+- <key topic or event 1>
+- <key topic or event 2>
+- ...
+
+**<optional section headers for distinct topics>**
+```
+
+Rules for a good summary:
+- **Be concise.** One sentence per major point. Skip filler and repetition.
+- **Prioritize decisions, outcomes, and action items** over chatter.
+- **Group related messages** into topic clusters rather than listing chronologically.
+- **Mention who** if it matters (who asked, who decided), but stay brief.
+- **If nothing significant happened**, say so directly instead of padding.
+- **For group chats**, focus on topics the user cared about or was involved in.
+  Don't narrate every casual message.
+- For time-based requests, note the approximate timeframe covered.
+
+### 4. Offer follow-up
+
+After the summary, optionally ask if the user wants more detail on any specific
+topic or a deeper look at a particular time window.
+""",
     }
     default_memory_files: dict[str, str] = {
         "MEMORY.md": """# Memory

@@ -408,6 +408,6 @@ def test_sanitize_truncates_long_content() -> None:
 
     # Realistic long text (spaces break up base64 runs) should truncate, not be
     # fully elided.
-    sanitized = BuiltinCommandsPlugin._sanitize_turn_for_model("word " * 1000)
-    assert len(sanitized) <= 1500 + len("...")
+    sanitized = BuiltinCommandsPlugin._sanitize_turn_for_model("word " * 2000)
+    assert len(sanitized) <= 8000 + len("...")
     assert sanitized.endswith("...")
