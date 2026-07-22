@@ -45,6 +45,19 @@ config:
       max_concurrency: 1
       max_images_per_request: 1
       extra_body: {}
+    # minimax:
+    #   type: "minimax"
+    #   base_url: "https://api.minimaxi.com"
+    #   api_key: ""
+    #   model: "image-01"
+    #   aspect_ratio: "1:1"
+    #   response_format: "url"
+    #   prompt_optimizer: true
+    #   timeout_seconds: 120
+    #   download_timeout_seconds: 60
+    #   force_close_connections: true
+    #   max_concurrency: 1
+    #   max_images_per_request: 1
 config_schema:
   type: object
   properties:
@@ -86,6 +99,7 @@ config_schema:
             default: "openai-images"
             enum:
               - openai-images
+              - minimax
             description: Backend protocol type.
           base_url:
             type: string
@@ -150,3 +164,49 @@ config_schema:
             type: object
             default: {}
             description: Additional admin-controlled request fields sent to this backend.
+          aspect_ratio:
+            type: string
+            default: "1:1"
+            enum:
+              - "1:1"
+              - "16:9"
+              - "4:3"
+              - "3:2"
+              - "2:3"
+              - "3:4"
+              - "9:16"
+              - "21:9"
+            description: Image aspect ratio (minimax backend only).
+          width:
+            type: integer
+            default: 0
+            minimum: 0
+            maximum: 2048
+            description: Image width in pixels, must be multiple of 8 (minimax image-01 only). Set 0 to use aspect_ratio.
+          height:
+            type: integer
+            default: 0
+            minimum: 0
+            maximum: 2048
+            description: Image height in pixels, must be multiple of 8 (minimax image-01 only). Set 0 to use aspect_ratio.
+          style_type:
+            type: string
+            default: ""
+            description: Style type for image-01-live model (漫画, 元气, 中世纪, 水彩). MiniMax backend only.
+          style_weight:
+            type: number
+            default: 0.8
+            minimum: 0.01
+            maximum: 1.0
+            description: Style weight (0, 1] for image-01-live model. MiniMax backend only.
+          seed:
+            type: integer
+            description: Random seed for reproducible results. MiniMax backend only.
+          prompt_optimizer:
+            type: boolean
+            default: false
+            description: Enable prompt auto-optimization. MiniMax backend only.
+          aigc_watermark:
+            type: boolean
+            default: false
+            description: Add AIGC watermark to generated images. MiniMax backend only.

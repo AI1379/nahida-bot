@@ -19,9 +19,11 @@ from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage,
 from nahida_bot.plugins.image_generation.client import (
     GeneratedImage,
     ImageGenerationError,
+    MiniMaxImageGenerationClient,
     OpenAIImageGenerationClient,
 )
 from nahida_bot.plugins.image_generation.config import (
+    MiniMaxBackendConfig,
     OpenAIImagesBackendConfig,
     parse_image_generation_config,
 )
@@ -55,7 +57,9 @@ class ImageGenerationPlugin(Plugin):
     def __init__(self, api: Any, manifest: Any) -> None:
         super().__init__(api, manifest)
         self._config = parse_image_generation_config(self.manifest.config)
-        self._clients: dict[str, OpenAIImageGenerationClient] = {}
+        self._clients: dict[
+            str, OpenAIImageGenerationClient | MiniMaxImageGenerationClient
+        ] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
         # TODO: Persist this quota ledger if 24h limits need to survive restarts.
@@ -327,7 +331,9 @@ class ImageGenerationPlugin(Plugin):
         quality: str,
         model: str,
         provider: str,
-    ) -> tuple[list[SavedGeneratedImage], OpenAIImagesBackendConfig]:
+    ) -> tuple[
+        list[SavedGeneratedImage], OpenAIImagesBackendConfig | MiniMaxBackendConfig
+    ]:
         backend = self._config.backend(provider)
         output_dir, relative_dir = self._resolve_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -500,25 +506,33 @@ class ImageGenerationPlugin(Plugin):
         prompt: str,
         image: GeneratedImage,
         index: int,
-        backend: OpenAIImagesBackendConfig,
+        backend: OpenAIImagesBackendConfig | MiniMaxBackendConfig,
     ) -> str:
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         digest = hashlib.sha256(
             f"{prompt}\0{time.time_ns()}\0{index}".encode("utf-8")
         ).hexdigest()[:10]
-        ext = _extension_for_mime(image.mime_type, backend.output_format)
+        ext = _extension_for_mime(
+            image.mime_type, getattr(backend, "output_format", "")
+        )
         suffix = f"-{index}" if index > 1 else ""
         return f"image-{timestamp}-{digest}{suffix}.{ext}"
 
     def _client_for(
         self,
         provider: str,
-        backend: OpenAIImagesBackendConfig,
-    ) -> OpenAIImageGenerationClient:
+        backend: OpenAIImagesBackendConfig | MiniMaxBackendConfig,
+    ) -> OpenAIImageGenerationClient | MiniMaxImageGenerationClient:
+        if backend.type == "minimax":
+            client = self._clients.get(provider)
+            if client is None:
+                client = MiniMaxImageGenerationClient(backend)
+                self._clients[provider] = client
+            return client
         if backend.type != "openai-images":
             raise ValueError(
                 f"Unsupported image generation backend type '{backend.type}'. "
-                "Only 'openai-images' is currently implemented."
+                "Only 'openai-images' and 'minimax' are currently implemented."
             )
         client = self._clients.get(provider)
         if client is None:
@@ -529,7 +543,7 @@ class ImageGenerationPlugin(Plugin):
     def _semaphore_for(
         self,
         provider: str,
-        backend: OpenAIImagesBackendConfig,
+        backend: OpenAIImagesBackendConfig | MiniMaxBackendConfig,
     ) -> asyncio.Semaphore:
         semaphore = self._semaphores.get(provider)
         if semaphore is None:

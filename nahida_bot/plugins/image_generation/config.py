@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -12,7 +12,7 @@ class OpenAIImagesBackendConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
-    type: str = "openai-images"
+    type: Literal["openai-images"] = "openai-images"
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     require_api_key: bool = True
@@ -30,13 +30,47 @@ class OpenAIImagesBackendConfig(BaseModel):
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
+class MiniMaxBackendConfig(BaseModel):
+    """Configuration for one MiniMax Image Generation API backend."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    type: Literal["minimax"] = "minimax"
+    base_url: str = "https://api.minimaxi.com"
+    api_key: str = ""
+    require_api_key: bool = True
+    model: str = "image-01"
+    aspect_ratio: str = "1:1"
+    width: int = 0
+    height: int = 0
+    style_type: str = ""
+    style_weight: float = Field(default=0.8, ge=0.01, le=1.0)
+    response_format: str = "url"
+    seed: int | None = None
+    prompt_optimizer: bool = False
+    aigc_watermark: bool = False
+    timeout_seconds: float = Field(default=120.0, ge=0.1)
+    download_timeout_seconds: float = Field(default=60.0, ge=0.1)
+    trust_env: bool = False
+    force_close_connections: bool = True
+    max_concurrency: int = Field(default=1, ge=1, le=16)
+    max_images_per_request: int = Field(default=1, ge=1, le=9)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+
+BackendConfig = Annotated[
+    Union[OpenAIImagesBackendConfig, MiniMaxBackendConfig],
+    Field(discriminator="type"),
+]
+
+
 class ImageGenerationConfig(BaseModel):
     """Runtime configuration for image generation command/tool wrappers."""
 
     model_config = ConfigDict(frozen=True, extra="allow")
 
     provider: str = "default"
-    backends: dict[str, OpenAIImagesBackendConfig] = Field(
+    backends: dict[str, BackendConfig] = Field(
         default_factory=lambda: {"default": OpenAIImagesBackendConfig()}
     )
     output_dir: str = "generated/images"
@@ -72,6 +106,7 @@ class ImageGenerationConfig(BaseModel):
         backend = {key: data[key] for key in legacy_keys if key in data}
         if not backend:
             return data
+        backend.setdefault("type", "openai-images")
         migrated = dict(data)
         for key in legacy_keys:
             migrated.pop(key, None)
@@ -79,7 +114,9 @@ class ImageGenerationConfig(BaseModel):
         migrated["backends"] = {"default": backend}
         return migrated
 
-    def backend(self, name: str = "") -> OpenAIImagesBackendConfig:
+    def backend(
+        self, name: str = ""
+    ) -> OpenAIImagesBackendConfig | MiniMaxBackendConfig:
         """Return the selected backend config, raising for unknown providers."""
 
         provider = name.strip() or self.provider
