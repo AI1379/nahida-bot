@@ -10,6 +10,7 @@ import pytest
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.providers.anthropic import AnthropicProvider
+from nahida_bot.agent.providers.minimax import MinimaxProvider
 from nahida_bot.core.runtime_settings import (
     ReasoningRuntimeSettings,
     RuntimeSettings,
@@ -37,6 +38,30 @@ def _mock_anthropic_provider(monkeypatch, handler) -> AnthropicProvider:
         base_url="https://api.anthropic.com",
         api_key="test-key",
         model="claude-sonnet-4-20250514",
+    )
+
+
+def _mock_minimax_provider(monkeypatch, handler) -> MinimaxProvider:  # noqa: ANN001
+    """Create a MinimaxProvider with mocked HTTP transport.
+
+    Shares the same monkeypatch target as the Anthropic provider because
+    ``MinimaxProvider`` inherits ``_chat_impl`` (and thus the ``httpx``
+    reference) from ``AnthropicProvider``.
+    """
+    transport = _build_transport(handler)
+
+    class _MockClient(httpx.AsyncClient):
+        def __init__(self, *args: Any, **kwargs: Any):
+            super().__init__(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(
+        "nahida_bot.agent.providers.anthropic.httpx.AsyncClient", _MockClient
+    )
+
+    return MinimaxProvider(
+        base_url="https://api.minimaxi.com/anthropic",
+        api_key="test-key",
+        model="MiniMax-M3",
     )
 
 
@@ -164,6 +189,241 @@ async def test_anthropic_extracts_thinking_blocks(
     assert result.reasoning_content == "Let me analyze this step by step..."
     assert result.reasoning_signature == "ErUB6pWIDo9Bkx_test"
     assert result.has_redacted_thinking is False
+
+
+# ── Inline <think> tag stripping (hybrid reasoning models, e.g. MiniMax-M3) ──
+
+
+@pytest.mark.asyncio
+async def test_anthropic_strips_inline_think_tags_from_text_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inline <think> tags in a text block must not leak into ``content``.
+
+    Hybrid reasoning models (e.g. MiniMax-M3) sometimes emit their chain of
+    thought as ``<think>...</think>`` inside a ``text`` block rather than as a
+    native ``thinking`` block. The provider must route that reasoning into
+    ``reasoning_content`` and keep ``content`` clean.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "<think>\nLet me reason step by step...\n</think>\n"
+                        "The answer is 42."
+                    ),
+                }
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 40},
+        }
+        return httpx.Response(200, json=payload)
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    result = await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="test")]
+    )
+
+    assert result.content == "The answer is 42."
+    assert result.reasoning_content == "Let me reason step by step..."
+    assert "<think>" not in (result.content or "")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_streaming_strips_think_tag_split_across_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A <think> tag split across streaming text deltas must still be stripped.
+
+    Streaming accumulates all text deltas into one block before parsing, so
+    the tag stripper must see the fully-assembled text even when the tag is
+    fragmented across many ``text_delta`` events.
+    """
+    stream_body = "\n".join(
+        [
+            (
+                'data: {"type":"message_start","message":{"id":"msg_stream",'
+                '"type":"message","role":"assistant","model":"MiniMax-M3",'
+                '"content":[],"usage":{"input_tokens":10}}}'
+            ),
+            (
+                'data: {"type":"content_block_start","index":0,'
+                '"content_block":{"type":"text","text":""}}'
+            ),
+            'data: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":"<thin"}}',
+            'data: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":"k>\\nMy secret CoT\\n</think>\\n"}}',
+            'data: {"type":"content_block_delta","index":0,'
+            '"delta":{"type":"text_delta","text":"Final reply."}}',
+            (
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+                '"usage":{"output_tokens":15}}'
+            ),
+            'data: {"type":"message_stop"}',
+        ]
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=stream_body)
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.stream_responses = True
+    result = await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="test")]
+    )
+
+    assert result.content == "Final reply."
+    assert result.reasoning_content == "My secret CoT"
+    assert "<think>" not in (result.content or "")
+
+
+@pytest.mark.asyncio
+async def test_anthropic_text_block_without_think_tags_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plain text without think tags must pass through untouched."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Just a normal reply."}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 5},
+        }
+        return httpx.Response(200, json=payload)
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    result = await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert result.content == "Just a normal reply."
+    assert result.reasoning_content is None
+
+
+@pytest.mark.asyncio
+async def test_minimax_strips_inline_think_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MinimaxProvider (MiniMax-M3) must inherit the think-tag stripping."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "id": "msg_m3",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "<thinking>\nM3 reasoning here.\n</thinking>\nVisible answer."
+                    ),
+                }
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 40},
+        }
+        return httpx.Response(200, json=payload)
+
+    provider = _mock_minimax_provider(monkeypatch, handler)
+    result = await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="test")]
+    )
+
+    assert result.content == "Visible answer."
+    assert result.reasoning_content == "M3 reasoning here."
+    assert "<thinking>" not in (result.content or "")
+
+
+# ── thinking_enabled: inject ``thinking: {type: enabled}`` payload param ──
+
+
+@pytest.mark.asyncio
+async def test_anthropic_thinking_enabled_injects_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``thinking_enabled=True`` the payload must include the
+    ``thinking`` param and NOT include ``output_config``."""
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured
+        captured = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 5},
+            },
+        )
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.thinking_enabled = True
+    provider.reasoning_effort = None
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert captured.get("thinking") == {"type": "enabled"}
+    assert "output_config" not in captured
+
+
+@pytest.mark.asyncio
+async def test_anthropic_thinking_enabled_supersedes_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``thinking_enabled=True`` it must supersede ``reasoning_effort``
+    so that ``output_config`` is NOT sent alongside ``thinking``."""
+    captured: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured
+        captured = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 5},
+            },
+        )
+
+    provider = _mock_anthropic_provider(monkeypatch, handler)
+    provider.thinking_enabled = True
+    provider.reasoning_effort = "high"
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="u", content="hi")]
+    )
+
+    assert captured.get("thinking") == {"type": "enabled"}
+    assert "output_config" not in captured
+
+
+def test_minimax_provider_defaults_thinking_enabled() -> None:
+    """MinimaxProvider must default ``thinking_enabled=True`` so that
+    MiniMax-M3 (and similar reasoning models) emit native thinking blocks."""
+    provider = MinimaxProvider(
+        base_url="https://api.minimaxi.com/anthropic",
+        api_key="test-key",
+        model="MiniMax-M3",
+    )
+    assert provider.thinking_enabled is True
 
 
 # ── Redacted Thinking response ──

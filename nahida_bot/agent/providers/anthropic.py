@@ -30,6 +30,7 @@ from nahida_bot.agent.providers.errors import (
     ProviderTimeoutError,
     ProviderTransportError,
 )
+from nahida_bot.agent.providers.reasoning import extract_think_tags
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
 from nahida_bot.core.runtime_settings import current_runtime_settings
@@ -68,6 +69,13 @@ class AnthropicProvider(ChatProvider):
     # request time: runtime override (``/reasoning`` command) takes precedence
     # over this config value; ``None`` lets Claude use its model default.
     reasoning_effort: str | None = None
+    # Enable native ``thinking`` blocks in the request payload
+    # (``thinking: {type: enabled}``). When true, the model returns reasoning
+    # as a structured ``thinking`` content block instead of mixing it into the
+    # visible text. Used by Anthropic-compatible backends (e.g. MiniMax-M3)
+    # that support the Anthropic thinking extension. When set, supersedes
+    # ``reasoning_effort`` to avoid sending conflicting Claude-specific params.
+    thinking_enabled: bool = False
     # Enable local 1M context-window mode for supported Claude models. Anthropic
     # retired the old ``context-1m-2025-08-07`` beta header; modern 4.6+ models
     # expose 1M context without an opt-in request header.
@@ -338,15 +346,19 @@ class AnthropicProvider(ChatProvider):
         if self.stream_responses:
             payload["stream"] = True
 
-        # Reasoning effort — runtime override (``/reasoning`` command) takes
-        # precedence over config. Claude uses ``output_config.effort`` rather
-        # than a top-level ``reasoning_effort`` param. Only emitted when an
-        # effort is resolved, so Claude's model default ("high") is preserved
-        # when unset.
-        runtime_effort = current_runtime_settings.get().reasoning.effort
-        reasoning_effort = runtime_effort or self.reasoning_effort
-        if reasoning_effort is not None:
-            payload["output_config"] = {"effort": reasoning_effort}
+        # Reasoning / thinking configuration.
+        # ``thinking_enabled`` sends ``thinking: {type: enabled}`` for
+        # Anthropic-compatible backends (e.g. MiniMax-M3). When set, it
+        # supersedes ``output_config.effort`` to avoid sending
+        # conflicting Claude-specific parameters.
+        reasoning_effort: str | None = None
+        if self.thinking_enabled:
+            payload["thinking"] = {"type": "enabled"}
+        else:
+            runtime_effort = current_runtime_settings.get().reasoning.effort
+            reasoning_effort = runtime_effort or self.reasoning_effort
+            if reasoning_effort is not None:
+                payload["output_config"] = {"effort": reasoning_effort}
 
         timeout = timeout_seconds or 60
         endpoint = f"{self.base_url.rstrip('/')}/v1/messages"
@@ -622,7 +634,18 @@ class AnthropicProvider(ChatProvider):
             if block_type == "text":
                 text = block.get("text")
                 if isinstance(text, str):
-                    text_parts.append(text)
+                    # Hybrid reasoning models (e.g. MiniMax-M3) may emit their
+                    # chain-of-thought inline as <think>...</think> tags inside
+                    # a text block instead of as native ``thinking`` blocks.
+                    # Strip such tags so the CoT never reaches the user-facing
+                    # ``content``; the extracted reasoning is merged into the
+                    # reasoning channel below. Safe no-op for native Claude
+                    # (which uses ``thinking`` blocks) and for plain text.
+                    cleaned_text, extracted = extract_think_tags(text)
+                    if extracted:
+                        thinking_parts.append(extracted)
+                    if cleaned_text:
+                        text_parts.append(cleaned_text)
 
             elif block_type == "thinking":
                 thinking_text = block.get("thinking")

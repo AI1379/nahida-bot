@@ -25,3 +25,4 @@ class MinimaxProvider(AnthropicProvider):
     """
 
     name: str = "minimax"
+    thinking_enabled: bool = True

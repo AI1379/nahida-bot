@@ -88,6 +88,7 @@ providers:
       - name: "MiniMax-M2.5"
         tags: [cheap]
       - name: "MiniMax-M2.7"
+      - name: "MiniMax-M3"
 
   # OpenAI Responses API（可选）
   # 使用 /responses 端点，支持内置工具（web_search、image_generation 等）
