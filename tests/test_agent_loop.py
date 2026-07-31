@@ -143,6 +143,35 @@ async def test_agent_loop_returns_direct_response_without_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_passes_workspace_root_to_context_builder(tmp_path) -> None:
+    """Workspace instructions must reach the provider through AgentLoop."""
+    marker = "workspace instruction marker"
+    (tmp_path / "AGENTS.md").write_text(marker, encoding="utf-8")
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="hello", tool_calls=[])]
+    )
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+    )
+    loop = AgentLoop(provider=provider, context_builder=builder)
+
+    await loop.run(
+        user_message="hi",
+        system_prompt="sys",
+        workspace_root=tmp_path,
+    )
+
+    workspace_messages = [
+        message
+        for message in provider.observed_messages[0]
+        if message.source == "workspace_instruction:AGENTS.md"
+    ]
+    assert len(workspace_messages) == 1
+    assert marker in workspace_messages[0].content
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_passes_user_parts_to_provider() -> None:
     provider = _QueuedProvider(
         responses=[ProviderResponse(content="looks good", tool_calls=[])]

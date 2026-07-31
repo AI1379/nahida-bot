@@ -2134,6 +2134,7 @@ class SessionRunner:
         tools: list[ToolDefinition] = []
         denied = set(tool_filter or ())
         allowed = set(tool_allowlist or ())
+        restrict_to_allowlist = tool_allowlist is not None
         if self._tools is not None:
             tools.extend(
                 ToolDefinition(
@@ -2142,7 +2143,8 @@ class SessionRunner:
                     parameters=entry.parameters,
                 )
                 for entry in self._tools.all()
-                if entry.name not in denied and (not allowed or entry.name in allowed)
+                if entry.name not in denied
+                and (not restrict_to_allowlist or entry.name in allowed)
             )
 
         # Conditionally inject image_understand tool for non-vision models
@@ -2152,7 +2154,7 @@ class SessionRunner:
             and self._multimodal_config is not None
             and self._multimodal_config.image_fallback_mode == "tool"
             and "image_understand" not in denied
-            and (not allowed or "image_understand" in allowed)
+            and (not restrict_to_allowlist or "image_understand" in allowed)
             and "image_understand" not in {tool.name for tool in tools}
         ):
             tools.append(

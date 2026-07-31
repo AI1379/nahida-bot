@@ -714,6 +714,7 @@ class Application:
 
         from nahida_bot.agent.orchestration import (
             AgentOrchestrator,
+            ChannelCompletionDeliverer,
             LocalAgentRunExecutor,
             OrchestrationConfig,
             SQLiteBackgroundTaskStore,
@@ -725,6 +726,13 @@ class Application:
             task_store=task_store,
             memory_store=self.memory_store,
             config=OrchestrationConfig(system_prompt=self.settings.system_prompt),
+            # Issue #41: route subagent completion notifications back to the
+            # channel the user spoke to, so background task results are
+            # actually visible instead of only landing in parent-session
+            # memory. ``channel_registry`` is populated lazily as channel
+            # plugins register, so the deliverer resolves channels at
+            # delivery time.
+            completion_deliverer=ChannelCompletionDeliverer(self.channel_registry),
         )
 
         # Register image_understand tool when fallback mode is "tool"

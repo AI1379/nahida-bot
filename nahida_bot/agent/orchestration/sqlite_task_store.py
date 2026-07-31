@@ -49,6 +49,10 @@ def _row_to_task(row: Any) -> BackgroundTask:
         updated_at=_dt_from_str(row["updated_at"]) or utc_now(),
         ended_at=_dt_from_str(row["ended_at"]),
         error=row["error"] or "",
+        terminal_state=row["terminal_state"] or "",
+        terminal_reason=row["terminal_reason"] or "",
+        delivery_claimed_at=_dt_from_str(row["delivery_claimed_at"]),
+        delivered_at=_dt_from_str(row["delivered_at"]),
     )
 
 
@@ -70,9 +74,11 @@ class SQLiteBackgroundTaskStore(BackgroundTaskStore):
                 INSERT INTO background_tasks (
                     task_id, runtime, status, requester_session_id,
                     child_session_id, parent_task_id, title, summary,
-                    delivery_target_json, created_at, updated_at, ended_at, error
+                    delivery_target_json, created_at, updated_at, ended_at, error,
+                    terminal_state, terminal_reason, delivery_claimed_at,
+                    delivered_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.task_id,
@@ -88,6 +94,10 @@ class SQLiteBackgroundTaskStore(BackgroundTaskStore):
                     _dt_to_str(task.updated_at),
                     _dt_to_str(task.ended_at),
                     task.error,
+                    task.terminal_state,
+                    task.terminal_reason,
+                    _dt_to_str(task.delivery_claimed_at),
+                    _dt_to_str(task.delivered_at),
                 ),
             )
             await self._engine.db.commit()
@@ -121,6 +131,8 @@ class SQLiteBackgroundTaskStore(BackgroundTaskStore):
         summary: str = "",
         error: str = "",
         terminal: bool = False,
+        terminal_state: str = "",
+        terminal_reason: str = "",
     ) -> None:
         now = utc_now()
         ended_at = now if terminal else None
@@ -131,6 +143,8 @@ class SQLiteBackgroundTaskStore(BackgroundTaskStore):
                 SET status = ?,
                     summary = CASE WHEN ? != '' THEN ? ELSE summary END,
                     error = CASE WHEN ? != '' THEN ? ELSE error END,
+                    terminal_state = CASE WHEN ? != '' THEN ? ELSE terminal_state END,
+                    terminal_reason = CASE WHEN ? != '' THEN ? ELSE terminal_reason END,
                     updated_at = ?,
                     ended_at = CASE WHEN ? IS NOT NULL THEN ? ELSE ended_at END
                 WHERE task_id = ?
@@ -141,6 +155,10 @@ class SQLiteBackgroundTaskStore(BackgroundTaskStore):
                     summary,
                     error,
                     error,
+                    terminal_state,
+                    terminal_state,
+                    terminal_reason,
+                    terminal_reason,
                     _dt_to_str(now),
                     _dt_to_str(ended_at),
                     _dt_to_str(ended_at),
@@ -148,3 +166,75 @@ class SQLiteBackgroundTaskStore(BackgroundTaskStore):
                 ),
             )
             await self._engine.db.commit()
+
+    async def claim_delivery(
+        self,
+        task_id: str,
+        *,
+        claimed_at: datetime,
+        stale_before: datetime,
+    ) -> bool:
+        """Atomically acquire the right to attempt one completion delivery."""
+        claimed = _dt_to_str(claimed_at)
+        stale = _dt_to_str(stale_before)
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                """
+                UPDATE background_tasks
+                SET delivery_claimed_at = ?, updated_at = ?
+                WHERE task_id = ?
+                  AND delivered_at IS NULL
+                  AND (
+                      delivery_claimed_at IS NULL
+                      OR delivery_claimed_at < ?
+                  )
+                """,
+                (claimed, claimed, task_id, stale),
+            )
+            await self._engine.db.commit()
+            return cursor.rowcount > 0
+
+    async def release_delivery_claim(
+        self, task_id: str, *, claimed_at: datetime
+    ) -> bool:
+        """Release only the exact claim held by this delivery attempt."""
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                """
+                UPDATE background_tasks
+                SET delivery_claimed_at = NULL, updated_at = ?
+                WHERE task_id = ?
+                  AND delivered_at IS NULL
+                  AND delivery_claimed_at = ?
+                """,
+                (_dt_to_str(utc_now()), task_id, _dt_to_str(claimed_at)),
+            )
+            await self._engine.db.commit()
+            return cursor.rowcount > 0
+
+    async def mark_delivered(
+        self,
+        task_id: str,
+        *,
+        claimed_at: datetime,
+        delivered_at: datetime,
+    ) -> bool:
+        """Confirm delivery only for the exact winning claim."""
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                """
+                UPDATE background_tasks
+                SET delivered_at = ?, delivery_claimed_at = NULL, updated_at = ?
+                WHERE task_id = ?
+                  AND delivered_at IS NULL
+                  AND delivery_claimed_at = ?
+                """,
+                (
+                    _dt_to_str(delivered_at),
+                    _dt_to_str(delivered_at),
+                    task_id,
+                    _dt_to_str(claimed_at),
+                ),
+            )
+            await self._engine.db.commit()
+            return cursor.rowcount > 0

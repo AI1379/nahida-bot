@@ -1256,18 +1256,35 @@ class RealBotAPI:
 
     # ── Workspace ──────────────────────────────────────
 
+    def _session_workspace_id(self) -> str | None:
+        """Resolve the workspace id bound to the current run/session.
+
+        Issue #40: workspace tools must operate on the workspace bound to the
+        in-flight session (the subagent's delegated workspace, or the
+        channel's workspace), not on the mutable process-global active
+        workspace. Returns ``None`` when no session context is set or the
+        session did not bind a workspace; callers fall back to the active
+        workspace in that case for legacy compatibility.
+        """
+        from nahida_bot.core.context import current_session
+
+        ctx = current_session.get()
+        if ctx is None:
+            return None
+        return ctx.workspace_id
+
     async def workspace_read(self, path: str) -> str:
         self._permissions.check_filesystem_read("workspace")
         if self._workspace is None:
             return ""
-        sandbox = self._workspace.get_sandbox()
+        sandbox = self._workspace.get_sandbox(self._session_workspace_id())
         return sandbox.read_text(path)
 
     async def workspace_write(self, path: str, content: str) -> None:
         self._permissions.check_filesystem_write("workspace")
         if self._workspace is None:
             return
-        sandbox = self._workspace.get_sandbox()
+        sandbox = self._workspace.get_sandbox(self._session_workspace_id())
         sandbox.write_text(path, content)
 
     def resolve_workspace_path(self, path: str) -> str:
@@ -1275,17 +1292,24 @@ class RealBotAPI:
         self._permissions.check_filesystem_read("workspace")
         if self._workspace is None:
             return ""
-        sandbox = self._workspace.get_sandbox()
+        sandbox = self._workspace.get_sandbox(self._session_workspace_id())
         return str(sandbox.resolve_safe_path(path))
 
     def get_workspace_root(self, workspace_id: str | None = None) -> str | None:
         """Return the filesystem root path for a workspace.
 
-        When *workspace_id* is ``None``, uses the active workspace.
+        Resolution order (issue #40):
+
+        1. The explicit ``workspace_id`` argument, when provided.
+        2. The workspace bound to the current session/run, when set.
+        3. The process-global active workspace (legacy fallback).
+
         Returns ``None`` when the workspace manager is unavailable.
         """
         if self._workspace is None:
             return None
+        if workspace_id is None:
+            workspace_id = self._session_workspace_id()
         if workspace_id is None:
             metadata = self._workspace.get_active_workspace()
             workspace_id = metadata.workspace_id

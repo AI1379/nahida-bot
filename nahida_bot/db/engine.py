@@ -447,6 +447,16 @@ _SCHEMA_MIGRATIONS = [
     """
     ALTER TABLE cron_jobs ADD COLUMN sender_account_key TEXT NOT NULL DEFAULT '';
     """,
+    # Migration 023: trusted terminal state + delivery idempotency on
+    # background_tasks (issues #42, #41). terminal_state/terminal_reason
+    # propagate the agent loop's authoritative terminal classification so
+    # task ledgers cannot misclassify incomplete/failed runs as succeeded
+    # based on a non-empty fallback text. delivered_at drives at-most-once
+    # completion delivery.
+    """
+    -- Columns are added by the PRAGMA-guarded post-migration helper so a
+    -- process interrupted between ALTER statements can recover on restart.
+    """,
 ]
 
 
@@ -554,6 +564,7 @@ class DatabaseEngine:
         await self._ensure_memory_tree_columns()
         await self._ensure_memory_sensitivity_source_column()
         await self._ensure_agent_runs_transcript_column()
+        await self._ensure_background_task_delivery_columns()
 
     async def _ensure_memory_tree_columns(self) -> None:
         """Idempotently add the memory-tree columns + index to ``memory_items``.
@@ -623,4 +634,27 @@ class DatabaseEngine:
             await self.db.execute(
                 "ALTER TABLE agent_runs ADD COLUMN transcript_json TEXT"
             )
+            await self.db.commit()
+
+    async def _ensure_background_task_delivery_columns(self) -> None:
+        """Idempotently add terminal and completion-delivery task columns.
+
+        ``executescript`` commits before running a migration, so a process can
+        be interrupted after any individual ``ALTER TABLE``. Guard every
+        column with ``PRAGMA table_info`` to make that partial state recoverable.
+        """
+        rows = await self.fetch_all("PRAGMA table_info(background_tasks)")
+        existing = {str(row["name"]) for row in rows}
+        additions = [
+            ("terminal_state", "TEXT NOT NULL DEFAULT ''"),
+            ("terminal_reason", "TEXT NOT NULL DEFAULT ''"),
+            ("delivery_claimed_at", "TEXT"),
+            ("delivered_at", "TEXT"),
+        ]
+        async with self.write_lock:
+            for name, decl in additions:
+                if name not in existing:
+                    await self.db.execute(
+                        f"ALTER TABLE background_tasks ADD COLUMN {name} {decl}"
+                    )
             await self.db.commit()

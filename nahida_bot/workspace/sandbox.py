@@ -40,7 +40,9 @@ class WorkspaceSandbox:
         candidate = Path(relative_path)
         if candidate.is_absolute():
             raise WorkspacePathError(
-                f"Absolute paths are not allowed in workspace sandbox: {relative_path}"
+                "Workspace tools only accept paths relative to the workspace "
+                f"root ({self.root}). Got an absolute path: {relative_path}. "
+                "Re-issue the call with a path relative to the workspace root."
             )
 
         normalized = (self.root / candidate).resolve(strict=False)
@@ -48,7 +50,9 @@ class WorkspaceSandbox:
             normalized.relative_to(self.root)
         except ValueError as exc:
             raise WorkspacePathError(
-                f"Path escapes workspace root: {relative_path}"
+                "Workspace tools only accept paths inside the workspace root "
+                f"({self.root}). The path {relative_path} escapes the "
+                "workspace. Use a path that stays under the workspace root."
             ) from exc
 
         return normalized

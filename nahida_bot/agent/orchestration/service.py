@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, Protocol
 from uuid import uuid4
 
 import structlog
 
+from nahida_bot.agent.loop import AgentRunResult
 from nahida_bot.agent.memory.models import ConversationTurn
 from nahida_bot.agent.orchestration.executors import AgentRunExecutor
 from nahida_bot.agent.orchestration.models import (
@@ -24,7 +26,7 @@ from nahida_bot.agent.orchestration.models import (
 from nahida_bot.agent.orchestration.policy import OrchestrationPolicy
 from nahida_bot.agent.orchestration.registry import AgentRegistry
 from nahida_bot.agent.orchestration.task_store import BackgroundTaskStore
-from nahida_bot.core.context import current_agent_run, current_session
+from nahida_bot.core.context import SessionContext, current_agent_run, current_session
 from nahida_bot.core.runtime_settings import (
     RUNTIME_META_KEY,
     merge_runtime_meta,
@@ -33,15 +35,55 @@ from nahida_bot.core.runtime_settings import (
 
 logger = structlog.get_logger(__name__)
 
-_DEFAULT_CHILD_TOOL_DENYLIST = frozenset(
-    {
-        "agent_spawn",
-        "agent_yield",
-        "agent_wait",
-        "agent_stop",
-        "sessions_send",
-    }
-)
+
+def _delivery_target_from_session(
+    session_ctx: SessionContext,
+) -> dict[str, str] | None:
+    """Build a stable channel delivery target from the parent session.
+
+    Issue #41: the completion notification must be able to reach the channel
+    the user actually spoke to. We snapshot ``platform`` (channel) and
+    ``chat_id`` (target) at spawn time, because by the time the subagent
+    finishes the synthetic child session no longer carries the original
+    channel. Returns ``None`` for synthetic/internal sessions (no real
+    channel to deliver to).
+    """
+    platform = (session_ctx.platform or "").strip()
+    chat_id = (session_ctx.chat_id or "").strip()
+    # ``platform="agent"`` marks a synthetic/internal session (e.g. a nested
+    # orchestrator run or a cron fire with no chat). There is no real channel
+    # to deliver to in that case — completion stays in the parent session
+    # memory only.
+    if not platform or platform == "agent" or not chat_id:
+        return None
+    address = session_ctx.chat_address
+    if address is not None and address.is_typed:
+        return {
+            "channel": address.channel,
+            "target": address.target_id,
+            "chat_address": address.chat_key,
+        }
+    return {"channel": platform, "target": chat_id}
+
+
+class CompletionDeliverer(Protocol):
+    """Delivers a subagent completion notification to the originating channel.
+
+    Issue #41: subagent results must reach the user, not just the parent
+    session memory. Implementations look up the channel via the delivery
+    target captured at spawn time and send a concise notification. Returns
+    True only when the notification was actually dispatched, so the
+    orchestrator can confirm the matching delivery claim.
+    """
+
+    async def deliver(
+        self,
+        *,
+        task: BackgroundTask,
+        status: AgentRunStatus,
+        summary: str,
+        error: str,
+    ) -> bool: ...
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,6 +93,7 @@ class OrchestrationConfig:
     max_child_agents_per_run: int = 5
     subagent_timeout_seconds: int = 900
     subagent_concurrency: int = 4
+    delivery_claim_ttl_seconds: int = 300
     system_prompt: str = "You are a focused subagent. Complete the delegated task and return a concise result summary."
 
 
@@ -65,6 +108,7 @@ class AgentOrchestrator:
         memory_store: Any | None = None,
         policy: OrchestrationPolicy | None = None,
         config: OrchestrationConfig | None = None,
+        completion_deliverer: CompletionDeliverer | None = None,
     ) -> None:
         self._executor = executor
         self._task_store = task_store
@@ -75,6 +119,9 @@ class AgentOrchestrator:
         )
         self._registry = AgentRegistry()
         self._subagent_sem = asyncio.Semaphore(self._config.subagent_concurrency)
+        # Issue #41: optional channel delivery hook. When absent (tests,
+        # headless runs), completion only writes to the parent session memory.
+        self._deliverer = completion_deliverer
 
     async def spawn_subagent(self, spec: SubagentSpec) -> BackgroundTask:
         session_ctx = current_session.get()
@@ -109,6 +156,11 @@ class AgentOrchestrator:
             child_session_id=child_session_id,
             parent_task_id=run_ctx.task_id if run_ctx else None,
             title=title,
+            # Issue #41: capture a stable delivery target at spawn time so the
+            # completion notification can reach the channel the user actually
+            # spoke to, rather than being inferred from the synthetic child
+            # session at completion time (where the original channel is gone).
+            delivery_target=_delivery_target_from_session(session_ctx),
             created_at=utc_now(),
             updated_at=utc_now(),
         )
@@ -125,6 +177,23 @@ class AgentOrchestrator:
         )
         self._registry.register(run)
 
+        # Issue #43: the policy is the single source of truth for child tool
+        # filtering. The system denylist always wins; any tool the parent
+        # lists in ``tool_allowlist`` that is also denied is dropped, so the
+        # parent cannot widen the child's capabilities beyond the system
+        # baseline.
+        effective_allowlist, effective_denylist = (
+            self._policy.compute_child_tool_filter(spec)
+        )
+        logger.info(
+            "subagent.tool_profile",
+            task_id=task_id,
+            system_denylist_sorted=sorted(self._policy.system_tool_denylist),
+            effective_allowlist_sorted=sorted(effective_allowlist),
+            spec_denylist_sorted=sorted(spec.tool_denylist),
+            requested_allowlist_sorted=sorted(spec.tool_allowlist),
+        )
+
         payload = AgentRunPayload(
             user_message=self._build_child_user_message(spec),
             system_prompt=self._build_child_system_prompt(spec),
@@ -133,10 +202,20 @@ class AgentOrchestrator:
             provider_id=spec.provider_id,
             model=spec.model,
             reasoning_effort=spec.reasoning_effort,
-            tool_allowlist=frozenset(spec.tool_allowlist),
-            tool_filter=frozenset(spec.tool_denylist) | _DEFAULT_CHILD_TOOL_DENYLIST,
+            tool_allowlist=(effective_allowlist if spec.tool_allowlist else None),
+            tool_filter=effective_denylist,
             timeout_seconds=spec.timeout_seconds
             or self._config.subagent_timeout_seconds,
+            # Identity delegation (issue #39): inherit the parent sender's
+            # auditable account key. This never escalates capability — the
+            # child must still clear the AuthorizationGate for privileged
+            # tools — but it stops privileged tools from being rejected as
+            # "unknown sender" purely because the child session's
+            # platform is synthetic.
+            sender_account_key=session_ctx.sender_account_key,
+            # Preserve the original channel address so completion delivery
+            # targets the chat the user actually spoke to (issue #41).
+            chat_address=session_ctx.chat_address,
         )
         run.asyncio_task = asyncio.create_task(self._run_subagent(run, payload, spec))
         logger.info(
@@ -219,78 +298,67 @@ class AgentOrchestrator:
                 # the task event stream so WebUI/API callers can inspect live
                 # subagent reasoning/output/tool progress while the task is running.
                 result = await self._executor.run(run, payload)
-                summary = result.final_response.strip()
-                if result.error:
-                    error = f"Subagent run failed: {result.error}"
-                    run.status = AgentRunStatus.FAILED
-                    run.error = error
-                    run.ended_at = utc_now()
-                    await self._task_store.update_status(
-                        run.task_id or "",
-                        AgentRunStatus.FAILED,
-                        error=error,
-                        terminal=True,
-                    )
-                    if spec.notify_policy != "silent":
-                        await self._deliver_completion(
-                            run, AgentRunStatus.FAILED, "", error
-                        )
-                    return result
-                if not summary:
-                    error = "Subagent completed without a final response."
-                    run.status = AgentRunStatus.FAILED
-                    run.error = error
-                    run.ended_at = utc_now()
-                    await self._task_store.update_status(
-                        run.task_id or "",
-                        AgentRunStatus.FAILED,
-                        error=error,
-                        terminal=True,
-                    )
-                    if spec.notify_policy != "silent":
-                        await self._deliver_completion(
-                            run, AgentRunStatus.FAILED, "", error
-                        )
-                    return result
-                run.status = AgentRunStatus.SUCCEEDED
-                run.summary = summary
-                run.ended_at = utc_now()
+                status, summary, error = self._map_run_result_to_task(result)
+                self._apply_terminal(
+                    run,
+                    status=status,
+                    summary=summary,
+                    error=error,
+                    terminal_state=result.terminal_state,
+                    terminal_reason=result.terminal_reason,
+                )
                 await self._task_store.update_status(
                     run.task_id or "",
-                    AgentRunStatus.SUCCEEDED,
+                    status,
                     summary=summary,
+                    error=error,
                     terminal=True,
+                    terminal_state=result.terminal_state,
+                    terminal_reason=result.terminal_reason,
                 )
                 if spec.notify_policy != "silent":
-                    await self._deliver_completion(
-                        run, AgentRunStatus.SUCCEEDED, summary, ""
-                    )
+                    await self._deliver_completion(run, status, summary, error)
                 return result
             except asyncio.CancelledError:
-                run.status = AgentRunStatus.CANCELLED
-                run.error = "Cancelled."
-                run.ended_at = utc_now()
+                error = "Cancelled."
+                self._apply_terminal(
+                    run,
+                    status=AgentRunStatus.CANCELLED,
+                    summary="",
+                    error=error,
+                    terminal_state="cancelled",
+                    terminal_reason="cancelled",
+                )
                 await self._task_store.update_status(
                     run.task_id or "",
                     AgentRunStatus.CANCELLED,
-                    error="Cancelled.",
+                    error=error,
                     terminal=True,
+                    terminal_state="cancelled",
+                    terminal_reason="cancelled",
                 )
                 if spec.notify_policy != "silent":
                     await self._deliver_completion(
-                        run, AgentRunStatus.CANCELLED, "", "Cancelled."
+                        run, AgentRunStatus.CANCELLED, "", error
                     )
                 raise
             except TimeoutError:
                 error = "Subagent timed out."
-                run.status = AgentRunStatus.TIMED_OUT
-                run.error = error
-                run.ended_at = utc_now()
+                self._apply_terminal(
+                    run,
+                    status=AgentRunStatus.TIMED_OUT,
+                    summary="",
+                    error=error,
+                    terminal_state="failed",
+                    terminal_reason="timeout",
+                )
                 await self._task_store.update_status(
                     run.task_id or "",
                     AgentRunStatus.TIMED_OUT,
                     error=error,
                     terminal=True,
+                    terminal_state="failed",
+                    terminal_reason="timeout",
                 )
                 if spec.notify_policy != "silent":
                     await self._deliver_completion(
@@ -299,14 +367,21 @@ class AgentOrchestrator:
                 return None
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
-                run.status = AgentRunStatus.FAILED
-                run.error = error
-                run.ended_at = utc_now()
+                self._apply_terminal(
+                    run,
+                    status=AgentRunStatus.FAILED,
+                    summary="",
+                    error=error,
+                    terminal_state="failed",
+                    terminal_reason=type(exc).__name__,
+                )
                 await self._task_store.update_status(
                     run.task_id or "",
                     AgentRunStatus.FAILED,
                     error=error,
                     terminal=True,
+                    terminal_state="failed",
+                    terminal_reason=type(exc).__name__,
                 )
                 if spec.notify_policy != "silent":
                     await self._deliver_completion(
@@ -316,6 +391,74 @@ class AgentOrchestrator:
                 return None
             finally:
                 self._registry.unregister(run.run_id)
+
+    @staticmethod
+    def _map_run_result_to_task(
+        result: AgentRunResult,
+    ) -> tuple[AgentRunStatus, str, str]:
+        """Map the loop's trusted terminal state to a task-ledger status.
+
+        Per issue #42 the ledger must inherit the loop's terminal verdict
+        rather than inferring success from non-empty text. Only
+        ``completed`` maps to ``SUCCEEDED``. ``incomplete`` (max steps,
+        partial tool failures, etc.) maps to ``FAILED`` with an explicit
+        reason so the canonical ledger never claims success for a run that
+        the loop did not actually complete. An empty/unknown terminal state
+        is treated as ``unverified`` and likewise never reported as success.
+        """
+        summary = result.final_response.strip()
+        terminal = (result.terminal_state or "").strip()
+        if terminal == "completed":
+            if not summary:
+                return (
+                    AgentRunStatus.FAILED,
+                    "",
+                    "Subagent completed without a final response.",
+                )
+            return AgentRunStatus.SUCCEEDED, summary, ""
+        if terminal == "cancelled":
+            return (
+                AgentRunStatus.CANCELLED,
+                summary,
+                result.error or "Subagent run was cancelled.",
+            )
+        if terminal == "incomplete":
+            reason = result.terminal_reason or "incomplete"
+            return (
+                AgentRunStatus.FAILED,
+                summary,
+                f"Subagent did not complete ({reason}).",
+            )
+        if terminal == "failed":
+            return (
+                AgentRunStatus.FAILED,
+                summary,
+                f"Subagent run failed: {result.error or result.terminal_reason or 'unknown'}",
+            )
+        # Unverified: the executor returned without a trusted terminal state
+        # (e.g. legacy executor, unexpected early return). Fail-closed.
+        return (
+            AgentRunStatus.FAILED,
+            summary,
+            "Subagent finished with unverified terminal state.",
+        )
+
+    @staticmethod
+    def _apply_terminal(
+        run: AgentRun,
+        *,
+        status: AgentRunStatus,
+        summary: str,
+        error: str,
+        terminal_state: str,
+        terminal_reason: str,
+    ) -> None:
+        run.status = status
+        if summary:
+            run.summary = summary
+        if error:
+            run.error = error
+        run.ended_at = utc_now()
 
     def _build_child_system_prompt(self, spec: SubagentSpec) -> str:
         parts = [self._config.system_prompt]
@@ -438,26 +581,105 @@ class AgentOrchestrator:
         summary: str,
         error: str,
     ) -> None:
-        if self._memory is None or not run.requester_session_id:
+        if run.requester_session_id and self._memory is not None:
+            content = (
+                f"Subagent task {run.task_id} completed with status {status.value}."
+            )
+            if summary:
+                content += f"\nSummary:\n{summary}"
+            if error:
+                content += f"\nError:\n{error}"
+            await self._memory.append_turn(
+                run.requester_session_id,
+                ConversationTurn(
+                    role="system",
+                    content=content,
+                    source="subagent_completed",
+                    metadata={
+                        "event_type": "subagent_completed",
+                        "task_id": run.task_id,
+                        "child_session_id": run.session_id,
+                        "status": status.value,
+                        "summary": summary,
+                        "error": error,
+                    },
+                ),
+            )
+
+        # Issue #41: channel delivery so the user actually sees the result.
+        # ``notify_policy=silent`` keeps completion queryable via agent_list /
+        # the API but sends nothing to the channel. ``done_only`` (default)
+        # dispatches a concise notification through the completion deliverer
+        # when a stable target was captured at spawn. A database claim is
+        # acquired before the external side effect so concurrent callbacks do
+        # not both send. Failed attempts release their exact claim; abandoned
+        # claims become reclaimable after the configured lease timeout.
+        if self._deliverer is None or run.task_id is None:
             return
-        content = f"Subagent task {run.task_id} completed with status {status.value}."
-        if summary:
-            content += f"\nSummary:\n{summary}"
-        if error:
-            content += f"\nError:\n{error}"
-        await self._memory.append_turn(
-            run.requester_session_id,
-            ConversationTurn(
-                role="system",
-                content=content,
-                source="subagent_completed",
-                metadata={
-                    "event_type": "subagent_completed",
-                    "task_id": run.task_id,
-                    "child_session_id": run.session_id,
-                    "status": status.value,
-                    "summary": summary,
-                    "error": error,
-                },
-            ),
+        task = await self._task_store.get(run.task_id)
+        if task is None or task.delivered_at is not None:
+            return
+        if not task.delivery_target:
+            return
+        claimed_at = utc_now()
+        stale_before = claimed_at - timedelta(
+            seconds=max(1, self._config.delivery_claim_ttl_seconds)
         )
+        try:
+            claimed = await self._task_store.claim_delivery(
+                run.task_id,
+                claimed_at=claimed_at,
+                stale_before=stale_before,
+            )
+        except Exception:
+            logger.exception("subagent.delivery_claim_failed", task_id=run.task_id)
+            return
+        if not claimed:
+            return
+
+        try:
+            delivered = await self._deliverer.deliver(
+                task=task,
+                status=status,
+                summary=summary,
+                error=error,
+            )
+        except Exception:
+            logger.exception("subagent.delivery_failed", task_id=run.task_id)
+            await self._release_delivery_claim(run.task_id, claimed_at)
+            return
+        if not delivered:
+            await self._release_delivery_claim(run.task_id, claimed_at)
+            return
+
+        delivered_at = utc_now()
+        try:
+            marked = await self._task_store.mark_delivered(
+                run.task_id,
+                claimed_at=claimed_at,
+                delivered_at=delivered_at,
+            )
+        except Exception:
+            logger.exception("subagent.delivery_mark_failed", task_id=run.task_id)
+            return
+        if marked:
+            logger.info(
+                "subagent.delivered",
+                task_id=run.task_id,
+                status=status.value,
+                target=task.delivery_target,
+            )
+        else:
+            logger.warning(
+                "subagent.delivery_claim_lost",
+                task_id=run.task_id,
+                target=task.delivery_target,
+            )
+
+    async def _release_delivery_claim(self, task_id: str, claimed_at: datetime) -> None:
+        try:
+            await self._task_store.release_delivery_claim(
+                task_id, claimed_at=claimed_at
+            )
+        except Exception:
+            logger.exception("subagent.delivery_release_failed", task_id=task_id)

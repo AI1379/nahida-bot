@@ -34,6 +34,15 @@ class LocalAgentRunExecutor:
                 chat_id=run.task_id or run.run_id,
                 session_id=run.session_id,
                 workspace_id=payload.workspace_id,
+                # Identity delegation (issue #39): carry the parent sender's
+                # auditable account key into the child run so the
+                # AuthorizationGate can decide privileged-tool calls instead
+                # of rejecting every privileged tool as an unknown sender.
+                sender_account_key=payload.sender_account_key,
+                # Preserve the original delivery target so completion
+                # notifications can reach the channel the user spoke to
+                # (issue #41).
+                chat_address=payload.chat_address,
             )
         )
         run_token = current_agent_run.set(

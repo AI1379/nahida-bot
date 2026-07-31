@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
+from nahida_bot.core.chat_address import ChatAddress
+
 
 def utc_now() -> datetime:
     """Return an aware UTC timestamp."""
@@ -101,6 +103,15 @@ class BackgroundTask:
     updated_at: datetime = field(default_factory=utc_now)
     ended_at: datetime | None = None
     error: str = ""
+    # Trusted terminal state propagated from the agent loop (issue #42). One
+    # of ``completed`` / ``incomplete`` / ``failed`` / ``cancelled``. Empty
+    # until the run reaches a terminal state.
+    terminal_state: str = ""
+    terminal_reason: str = ""
+    # Idempotency marker for delivery (issue #41). Empty until the completion
+    # notification has been dispatched to the delivery channel.
+    delivery_claimed_at: datetime | None = None
+    delivered_at: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -114,6 +125,21 @@ class AgentRunPayload:
     provider_id: str | None = None
     model: str | None = None
     reasoning_effort: str | None = None
-    tool_allowlist: frozenset[str] = frozenset()
+    # ``None`` means the parent did not request an allowlist restriction.
+    # An explicit empty set means the parent requested a restrictive
+    # allowlist but every requested tool was denied by policy, so the child
+    # must receive no tools rather than falling back to an unrestricted set.
+    tool_allowlist: frozenset[str] | None = None
     tool_filter: frozenset[str] = frozenset()
     timeout_seconds: int | None = None
+    # Identity delegation (issue #39): the child run inherits the *auditable*
+    # actor account key of the parent's sender. This does NOT grant new
+    # capability on its own — the child still has to clear the
+    # ``AuthorizationGate`` for privileged tools. Empty when the parent's
+    # sender identity was unresolved (identity subsystem off or unknown
+    # account): privileged tools then fail-closed inside the child.
+    sender_account_key: str = ""
+    # The original chat address so completion delivery and reply routing can
+    # target the channel the user actually spoke to, not the synthetic child
+    # ``platform=agent`` address (issue #41).
+    chat_address: ChatAddress | None = None

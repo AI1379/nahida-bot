@@ -53,8 +53,6 @@ capabilities:
       description: Start a local background subagent task
     - name: agent_wait
       description: Wait for a subagent task result
-    - name: agent_yield
-      description: Yield to a subagent task result
     - name: agent_list
       description: List subagent tasks for the current session
     - name: agent_stop

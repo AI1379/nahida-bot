@@ -210,3 +210,68 @@ class TestWorkspaceSandbox:
         # Act / Assert
         with pytest.raises(WorkspacePathError):
             sandbox.read_text(str((temp_dir / "outside.txt").resolve()))
+
+    # --- issue #40: actionable absolute-path / escape errors ---------------
+
+    def test_sandbox_absolute_path_error_names_workspace_root(
+        self, temp_dir: Path
+    ) -> None:
+        """Issue #40: absolute-path rejection returns an actionable message.
+
+        The model frequently obtains an absolute path from exec and feeds it
+        to workspace_read/write. The error must (a) name the workspace root
+        and (b) tell the caller to re-issue a relative path — not just
+        return a bare exception type.
+        """
+        manager = WorkspaceManager(base_dir=temp_dir)
+        manager.initialize()
+        sandbox = manager.get_sandbox("default")
+        absolute = str((temp_dir / "outside.txt").resolve())
+
+        with pytest.raises(WorkspacePathError) as exc_info:
+            sandbox.read_text(absolute)
+
+        message = str(exc_info.value)
+        assert "relative to the workspace root" in message
+        assert str(sandbox.root) in message
+        assert absolute in message
+
+    def test_sandbox_escape_error_names_workspace_root(self, temp_dir: Path) -> None:
+        """Issue #40: traversal rejection returns an actionable message."""
+        manager = WorkspaceManager(base_dir=temp_dir)
+        manager.initialize()
+        sandbox = manager.get_sandbox("default")
+
+        with pytest.raises(WorkspacePathError) as exc_info:
+            sandbox.write_text("../../escape.txt", "forbidden")
+
+        message = str(exc_info.value)
+        assert "inside the workspace root" in message
+        assert str(sandbox.root) in message
+
+
+# --- issue #40: workspace_id binds to the session, not the global active ---
+
+
+class TestSessionBoundWorkspace:
+    """``workspace_read``/``workspace_write``/``get_workspace_root`` must use
+    the workspace bound to the current session, not the mutable process-global
+    active workspace (issue #40)."""
+
+    def test_get_sandbox_uses_explicit_workspace_id(self, temp_dir: Path) -> None:
+        manager = WorkspaceManager(base_dir=temp_dir)
+        manager.initialize()
+        manager.create_workspace("project-a")
+        manager.create_workspace("project-b")
+        # Switch the global active to project-a.
+        manager.switch_workspace("project-a")
+
+        sandbox_b = manager.get_sandbox("project-b")
+        sandbox_b.write_text("marker.txt", "from-b")
+
+        # Even though project-a is globally active, requesting project-b by id
+        # reaches project-b's root.
+        assert manager.get_sandbox("project-b").read_text("marker.txt") == "from-b"
+        # The globally active workspace is unaffected.
+        assert manager.get_active_workspace().workspace_id == "project-a"
+        assert manager.get_sandbox(None).root == manager.workspace_path("project-a")

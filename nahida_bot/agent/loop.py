@@ -140,6 +140,18 @@ class AgentRunResult:
     trace_id: str | None = None
     error: str | None = None
     total_usage: TokenUsage | None = None
+    # Trusted terminal state propagated from the loop's ``done`` event
+    # (issue #42). One of ``completed`` / ``incomplete`` / ``failed`` /
+    # ``cancelled``. Empty only for the legacy empty-fallback path that never
+    # emitted a real ``done`` event; callers must treat an empty value as
+    # ``unverified`` rather than success.
+    terminal_state: str = ""
+    terminal_reason: str = ""
+
+    @property
+    def is_terminal_success(self) -> bool:
+        """True only when the loop reports a clean ``completed`` terminal state."""
+        return self.terminal_state == "completed"
 
     @classmethod
     def from_done_event(cls, event: LoopEvent) -> AgentRunResult:
@@ -159,6 +171,8 @@ class AgentRunResult:
             trace_id=event.trace_id,
             error=event.error,
             total_usage=event.total_usage,
+            terminal_state=event.terminal_state or "",
+            terminal_reason=event.terminal_reason or "",
         )
 
 
@@ -179,6 +193,11 @@ class LoopEvent:
     trace_id: str | None = None
     error: str | None = None
     total_usage: TokenUsage | None = None
+    # Trusted terminal state/reason for ``done`` events (issue #42). Empty for
+    # non-``done`` events. Consumers must treat an empty ``terminal_state`` on
+    # a ``done`` event as ``unverified`` rather than as success.
+    terminal_state: str = ""
+    terminal_reason: str = ""
 
 
 class AgentLoop:
@@ -491,6 +510,8 @@ class AgentLoop:
                         steps=step,
                         trace_id=trace.trace_id if trace else None,
                         total_usage=total_usage,
+                        terminal_state="completed",
+                        terminal_reason=completion_reason,
                     )
                     return
 
@@ -593,6 +614,8 @@ class AgentLoop:
                 steps=self.config.max_steps,
                 trace_id=trace.trace_id if trace else None,
                 total_usage=total_usage,
+                terminal_state="incomplete",
+                terminal_reason="max_steps_reached",
             )
         except _StopRequested:
             # Stop fired during an in-flight provider call (the call was
@@ -677,6 +700,8 @@ class AgentLoop:
                 trace_id=trace.trace_id if trace else None,
                 error=exc.code,
                 total_usage=total_usage,
+                terminal_state="failed",
+                terminal_reason="provider_error",
             )
         finally:
             # Guarantee the ledger run is finalized even if an unexpected
@@ -729,7 +754,10 @@ class AgentLoop:
         Centralized so every cancelled exit — top-of-step, post-response, and
         mid-call (``_StopRequested``) — carries ``trace_id`` (previously
         omitted, which silently skipped transcript persistence for cancelled
-        runs) and identical field shape.
+        runs) and identical field shape. Also stamps the trusted
+        ``terminal_state="cancelled"`` (issue #42) so downstream task ledgers
+        can't misclassify a cancelled run as succeeded based on a non-empty
+        fallback text.
         """
         return LoopEvent(
             type="done",
@@ -741,6 +769,8 @@ class AgentLoop:
             trace_id=trace.trace_id if trace else None,
             error="cancelled",
             total_usage=total_usage,
+            terminal_state="cancelled",
+            terminal_reason="cancelled",
         )
 
     def _system_prompt_with_tool_guidance(

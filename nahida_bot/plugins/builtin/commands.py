@@ -175,13 +175,21 @@ class BuiltinCommandsPlugin(Plugin):
     def _register_workspace_tools(self) -> None:
         self.api.register_tool(
             "workspace_read",
-            "Read a UTF-8 text file from the active workspace.",
+            "Read a UTF-8 text file from the current workspace. The path must "
+            "be relative to the workspace root; absolute paths are rejected. "
+            "The workspace root is the same directory exec uses as its default "
+            "working directory, so reuse paths produced by exec as relative "
+            "paths, not absolute ones.",
             {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path inside the active workspace.",
+                        "description": (
+                            "Path relative to the workspace root. Absolute "
+                            "paths and paths that escape the workspace are "
+                            "rejected."
+                        ),
                     }
                 },
                 "required": ["path"],
@@ -191,13 +199,19 @@ class BuiltinCommandsPlugin(Plugin):
         )
         self.api.register_tool(
             "workspace_write",
-            "Write UTF-8 text content to a file in the active workspace.",
+            "Write UTF-8 text content to a file in the current workspace. The "
+            "path must be relative to the workspace root; absolute paths are "
+            "rejected. Same workspace root as workspace_read and exec.",
             {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path inside the active workspace.",
+                        "description": (
+                            "Path relative to the workspace root. Absolute "
+                            "paths and paths that escape the workspace are "
+                            "rejected."
+                        ),
                     },
                     "content": {
                         "type": "string",
@@ -771,7 +785,11 @@ class BuiltinCommandsPlugin(Plugin):
     def _register_exec_tool(self) -> None:
         self.api.register_tool(
             "exec",
-            "Execute a shell command and return its stdout, stderr, and exit code.",
+            "Execute a shell command and return its stdout, stderr, and exit code. "
+            "The command runs with its working directory set to the current workspace "
+            "root unless working_dir is given (also relative to the workspace root). "
+            "Do not pass absolute paths from exec into workspace_read/workspace_write: "
+            "those tools only accept workspace-relative paths.",
             {
                 "type": "object",
                 "properties": {
@@ -785,7 +803,10 @@ class BuiltinCommandsPlugin(Plugin):
                     },
                     "working_dir": {
                         "type": "string",
-                        "description": "Working directory relative to workspace root.",
+                        "description": (
+                            "Working directory relative to the workspace root. "
+                            "Defaults to the workspace root itself."
+                        ),
                     },
                 },
                 "required": ["command"],
@@ -804,12 +825,20 @@ class BuiltinCommandsPlugin(Plugin):
 
         actual_timeout = min(max(timeout, 1), _MAX_EXEC_TIMEOUT)
 
+        # Issue #40: resolve cwd against the current session's workspace so
+        # exec and workspace_read/write share the same root. An empty
+        # working_dir previously inherited the Bot process directory (often
+        # the source repo), which then produced absolute paths the workspace
+        # sandbox rejects. Fall back to the legacy behaviour only when there
+        # is no resolvable workspace root.
+        cwd = self._resolve_exec_cwd(working_dir)
+
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir or None,
+                cwd=cwd,
             )
 
             try:
@@ -838,6 +867,45 @@ class BuiltinCommandsPlugin(Plugin):
         except Exception as e:
             _logger.exception("tool.exec.error", command=command)
             return f"Failed to execute command: {e}"
+
+    def _resolve_exec_cwd(self, working_dir: str) -> str | None:
+        """Resolve the exec working directory against the current workspace.
+
+        Issue #40: ``exec`` and ``workspace_read``/``workspace_write`` must
+        share the same root. ``working_dir`` (when given) is interpreted as
+        relative to the workspace root; an empty ``working_dir`` defaults to
+        the workspace root itself rather than the Bot process directory.
+        Returns ``None`` only when no workspace can be resolved, preserving
+        the legacy "inherit process cwd" behaviour for workspace-less setups.
+        """
+        from pathlib import Path
+
+        get_workspace_root = getattr(self.api, "get_workspace_root", None)
+        if not callable(get_workspace_root):
+            return working_dir or None
+        try:
+            root_str = get_workspace_root()
+        except Exception:
+            _logger.debug("tool.exec.workspace_root_unavailable")
+            return working_dir or None
+        if not isinstance(root_str, str) or not root_str:
+            return working_dir or None
+        root = Path(root_str)
+        if not working_dir:
+            return str(root)
+        # working_dir is workspace-relative; keep it inside the workspace so
+        # exec cannot accidentally escape to an unrelated directory.
+        candidate = (root / working_dir).resolve(strict=False)
+        try:
+            candidate.relative_to(root.resolve(strict=False))
+        except ValueError:
+            _logger.warning(
+                "tool.exec.working_dir_outside_workspace",
+                working_dir=working_dir,
+                workspace_root=str(root),
+            )
+            return str(root)
+        return str(candidate)
 
     # ── web_fetch Tool ─────────────────────────────────────
 
@@ -1556,20 +1624,12 @@ class BuiltinCommandsPlugin(Plugin):
             },
             self._tool_agent_wait,
         )
-        self.api.register_tool(
-            "agent_yield",
-            "Wait for a subagent task result. Initial implementation aliases agent_wait.",
-            {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"},
-                    "timeout_seconds": {"type": "integer"},
-                },
-                "required": ["task_id"],
-                "additionalProperties": False,
-            },
-            self._tool_agent_wait,
-        )
+        # Note: ``agent_yield`` was removed (issue #41). It previously aliased
+        # ``agent_wait`` while implying a "yield current turn, continue in the
+        # background" semantic that the runtime never implemented. Real
+        # continuation remains a future feature; until then ``agent_wait`` is
+        # the only blocking-wait tool and the system denylist still pins the
+        # name so stale prompts cannot resurrect it from a child run.
         self.api.register_tool(
             "agent_list",
             "List subagent tasks created by the current session.",
@@ -2976,12 +3036,38 @@ class BuiltinCommandsPlugin(Plugin):
         return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
     async def _tool_workspace_read(self, path: str) -> str:
-        """Read a text file from the active workspace."""
-        return await self.api.workspace_read(path)
+        """Read a text file from the current workspace."""
+        from nahida_bot.workspace.exceptions import (
+            WorkspaceError,
+            WorkspacePathError,
+        )
+
+        try:
+            return await self.api.workspace_read(path)
+        except WorkspacePathError as exc:
+            return (
+                f"Error: {exc}. workspace_read only accepts paths relative to "
+                "the workspace root."
+            )
+        except WorkspaceError as exc:
+            return f"Error reading workspace file: {exc}"
 
     async def _tool_workspace_write(self, path: str, content: str) -> str:
-        """Write a text file to the active workspace."""
-        await self.api.workspace_write(path, content)
+        """Write a text file to the current workspace."""
+        from nahida_bot.workspace.exceptions import (
+            WorkspaceError,
+            WorkspacePathError,
+        )
+
+        try:
+            await self.api.workspace_write(path, content)
+        except WorkspacePathError as exc:
+            return (
+                f"Error: {exc}. workspace_write only accepts paths relative to "
+                "the workspace root."
+            )
+        except WorkspaceError as exc:
+            return f"Error writing workspace file: {exc}"
         return f"Written workspace file: {path}"
 
     async def _tool_send_local_attachment(

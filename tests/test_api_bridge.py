@@ -361,6 +361,68 @@ async def test_workspace_and_memory_methods_delegate_to_runtime(
 
 
 @pytest.mark.asyncio
+async def test_workspace_tools_bind_to_session_workspace_id(tmp_path: Path) -> None:
+    """Issue #40: workspace_read/write resolve the session-bound workspace.
+
+    With ``current_session`` bound to ``project-b`` while the process-global
+    active workspace is ``default``, the workspace tools must read/write under
+    ``project-b``. Previously they ignored the session binding and used the
+    mutable global active workspace, so concurrent subagent runs on different
+    workspaces clobbered each other's files.
+    """
+    from nahida_bot.core.context import SessionContext, current_session
+
+    api, _, _, _ = _api(tmp_path)
+    # Create a second workspace and switch the global active to default.
+    api._workspace.create_workspace("project-b")  # type: ignore[attr-defined]
+    api._workspace.switch_workspace("default")  # type: ignore[attr-defined]
+
+    token = current_session.set(
+        SessionContext(
+            platform="agent",
+            chat_id="task1",
+            session_id="agent:subagent:task1",
+            workspace_id="project-b",
+        )
+    )
+    try:
+        await api.workspace_write("report.md", "from-subagent")
+        # Global active is still default; the write must land in project-b.
+        assert (
+            api._workspace.workspace_path("project-b") / "report.md"  # type: ignore[attr-defined]
+        ).read_text(encoding="utf-8") == "from-subagent"
+        assert not (
+            api._workspace.workspace_path("default") / "report.md"  # type: ignore[attr-defined]
+        ).exists()
+        # And read resolves the same session-bound root.
+        assert await api.workspace_read("report.md") == "from-subagent"
+        assert api.get_workspace_root() == str(
+            api._workspace.workspace_path("project-b")  # type: ignore[attr-defined]
+        )
+    finally:
+        current_session.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_workspace_tools_fallback_to_active_without_session(
+    tmp_path: Path,
+) -> None:
+    """Issue #40: no session context ⇒ legacy active-workspace behaviour."""
+    from nahida_bot.core.context import current_session
+
+    api, _, _, _ = _api(tmp_path)
+    api._workspace.create_workspace("fallback-ws")  # type: ignore[attr-defined]
+    api._workspace.switch_workspace("fallback-ws")  # type: ignore[attr-defined]
+
+    # No session set.
+    assert current_session.get() is None
+    await api.workspace_write("plain.txt", "legacy")
+    assert (
+        api._workspace.workspace_path("fallback-ws") / "plain.txt"  # type: ignore[attr-defined]
+    ).read_text(encoding="utf-8") == "legacy"
+
+
+@pytest.mark.asyncio
 async def test_memory_store_defaults_to_soft_public(tmp_path: Path) -> None:
     """Plugin writes default to the soft public baseline (Piece A4)."""
     api, _, _, _ = _api(tmp_path)

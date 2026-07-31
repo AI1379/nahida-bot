@@ -37,7 +37,12 @@ async def test_migration_creates_ledger_tables_and_version() -> None:
     try:
         cur = await engine.db.execute("SELECT version FROM schema_version")
         row = await cur.fetchone()
-        assert int(row["version"]) == 21
+        # The migration count grows as schema changes land; assert against the
+        # live source rather than a hard-coded number so adding a migration
+        # does not break this test silently.
+        from nahida_bot.db.engine import _SCHEMA_MIGRATIONS
+
+        assert int(row["version"]) == len(_SCHEMA_MIGRATIONS)
         names = {
             r["name"]
             for r in await engine.fetch_all(
@@ -45,6 +50,48 @@ async def test_migration_creates_ledger_tables_and_version() -> None:
             )
         }
         assert {"agent_runs", "agent_run_events", "agent_execution_receipts"} <= names
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_background_task_migration_recovers_from_partial_alter(
+    tmp_path,
+) -> None:
+    """A crash between task-column ALTERs must not wedge the next startup."""
+    import aiosqlite
+
+    from nahida_bot.db.engine import _SCHEMA_MIGRATIONS
+
+    db_path = tmp_path / "partial-migration.sqlite3"
+    db = await aiosqlite.connect(db_path)
+    await db.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    for migration in _SCHEMA_MIGRATIONS[:22]:
+        await db.executescript(migration)
+    await db.execute("INSERT INTO schema_version (version) VALUES (22)")
+    await db.execute(
+        "ALTER TABLE background_tasks "
+        "ADD COLUMN terminal_state TEXT NOT NULL DEFAULT ''"
+    )
+    await db.commit()
+    await db.close()
+
+    engine = DatabaseEngine(db_path)
+    await engine.initialize()
+    try:
+        columns = {
+            str(row["name"])
+            for row in await engine.fetch_all("PRAGMA table_info(background_tasks)")
+        }
+        assert {
+            "terminal_state",
+            "terminal_reason",
+            "delivery_claimed_at",
+            "delivered_at",
+        } <= columns
+        row = await engine.fetch_one("SELECT version FROM schema_version")
+        assert row is not None
+        assert int(row["version"]) == len(_SCHEMA_MIGRATIONS)
     finally:
         await engine.close()
 

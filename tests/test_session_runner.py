@@ -46,6 +46,30 @@ async def test_request_stop_unknown_session_returns_false() -> None:
     assert tracker.request_stop("unknown") is False
 
 
+def test_explicit_empty_tool_allowlist_exposes_no_tools() -> None:
+    """An explicit empty allowlist is restrictive, unlike ``None``."""
+    from nahida_bot.core.session_runner import SessionRunner
+    from nahida_bot.plugins.registry import ToolEntry, ToolRegistry
+
+    async def handler() -> str:
+        return "ok"
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolEntry(
+            name="exec",
+            description="execute",
+            parameters={"type": "object"},
+            handler=handler,
+            plugin_id="test",
+        )
+    )
+    runner = SessionRunner(tool_registry=registry)
+
+    assert [tool.name for tool in runner._collect_tools(None)] == ["exec"]
+    assert runner._collect_tools(None, tool_allowlist=frozenset()) == []
+
+
 # ── Phase 5 regression: ordered_transcript forwarding ──────────────────
 
 

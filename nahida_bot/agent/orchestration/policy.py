@@ -7,12 +7,54 @@ from collections.abc import Sequence
 from nahida_bot.agent.orchestration.models import SubagentSpec
 from nahida_bot.agent.providers import ToolDefinition
 
+# Tools a child subagent may never invoke, regardless of what the parent model
+# writes into ``SubagentSpec.tool_allowlist``. These either break the
+# orchestration invariant (nested-agent spawning / cross-session writes), are
+# channel/transport tools that do not apply to the synthetic ``platform=agent``
+# child context, or are identity-administration tools that must never be
+# delegated. This is the SINGLE source of truth for the system denylist
+# (issue #43): the orchestrator service no longer keeps a parallel copy.
+SYSTEM_CHILD_TOOL_DENYLIST: frozenset[str] = frozenset(
+    {
+        "agent_spawn",
+        "agent_yield",
+        "agent_wait",
+        "agent_stop",
+        "sessions_send",
+        # Channel/transport delivery is not meaningful in the synthetic child
+        # context and was previously observed failing in production receipts
+        # (#43): keep it denied so the parent cannot enable it.
+        "message",
+        # Identity administration can never be delegated (#39 references the
+        # authz module's non-delegable rule; mirror it here so the child tool
+        # surface never includes the tool).
+        "identity_manage",
+    }
+)
+
 
 class OrchestrationPolicy:
     """Default coarse policy for the local orchestration MVP."""
 
-    def __init__(self, *, max_child_agents_per_run: int = 5) -> None:
+    def __init__(
+        self,
+        *,
+        max_child_agents_per_run: int = 5,
+        system_tool_denylist: frozenset[str] | None = None,
+    ) -> None:
         self.max_child_agents_per_run = max_child_agents_per_run
+        # The system denylist is overridable for tests but always wins over
+        # any allowlist the parent model supplies.
+        self._system_tool_denylist = (
+            system_tool_denylist
+            if system_tool_denylist is not None
+            else SYSTEM_CHILD_TOOL_DENYLIST
+        )
+
+    @property
+    def system_tool_denylist(self) -> frozenset[str]:
+        """Tools a child may never invoke, regardless of the parent allowlist."""
+        return self._system_tool_denylist
 
     async def can_spawn(
         self,
@@ -47,26 +89,47 @@ class OrchestrationPolicy:
     ) -> None:
         await self.can_read_session(requester_session_id, target_session_id)
 
+    def compute_child_tool_filter(
+        self, spec: SubagentSpec
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """Compute the effective ``(allowlist, denylist)`` for a child run.
+
+        Single source of truth for child tool filtering (issue #43). The
+        system denylist is always unioned into the per-spec denylist, and any
+        tool that appears in the resulting denylist is stripped from the
+        allowlist — so a parent cannot widen the child's capabilities by
+        listing a denied tool in ``tool_allowlist``. Returns empty sets when
+        the corresponding spec field is empty (an empty allowlist means "no
+        allowlist restriction", handled downstream by the runner).
+        """
+        denylist = self._system_tool_denylist | frozenset(spec.tool_denylist)
+        requested_allow = frozenset(spec.tool_allowlist)
+        allowlist = requested_allow - denylist
+        return allowlist, denylist
+
     async def filter_tools_for_child(
         self,
         requester_session_id: str,
         spec: SubagentSpec,
         available_tools: Sequence[ToolDefinition],
     ) -> Sequence[ToolDefinition]:
-        denied = set(spec.tool_denylist) | {
-            "agent_spawn",
-            "agent_yield",
-            "agent_wait",
-            "agent_stop",
-            "sessions_send",
-            "message",
-        }
-        allowed = set(spec.tool_allowlist)
+        """Filter concrete tool definitions for a child run.
+
+        Kept for callers that resolve the full tool registry before invoking
+        the orchestrator. The orchestrator service itself drives filtering
+        through :meth:`compute_child_tool_filter` + the runner's allow/deny
+        sets, so both paths consult the same system denylist.
+        """
+        allowlist, denylist = self.compute_child_tool_filter(spec)
+        # ``allowlist`` is empty when the spec provides no allowlist (meaning
+        # "no allowlist restriction"). Only treat it as restrictive when the
+        # parent actually supplied one.
+        restrict_to_allow = bool(spec.tool_allowlist)
         result: list[ToolDefinition] = []
         for tool in available_tools:
-            if tool.name in denied:
+            if tool.name in denylist:
                 continue
-            if allowed and tool.name not in allowed:
+            if restrict_to_allow and tool.name not in allowlist:
                 continue
             result.append(tool)
         return result
