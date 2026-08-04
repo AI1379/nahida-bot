@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sys
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +170,229 @@ async def test_polling_first_run_baselines_then_reports_new_item() -> None:
     assert "📰 News\n📌 Fresh item" in api.sent_messages[0][1].text
     assert "🔗 https://example.com/2" in api.sent_messages[0][1].text
     assert api.sent_messages[0][1].extra["chat_address"] == "milky:group:100"
+
+
+@pytest.mark.asyncio
+async def test_polling_flood_after_feed_recovery_only_notifies_recent_items() -> None:
+    api = _API()
+    plugin = RSSNotifierPlugin(
+        api=api,
+        manifest=_manifest(
+            {
+                "target_chat_addresses": ["milky:group:100"],
+                "feeds": [{"url": "https://example.com/feed.xml", "title": "News"}],
+                "polling": {
+                    "enabled": False,
+                    "interval_seconds": 10,
+                    "max_new_items_per_feed_per_poll": 3,
+                    "max_new_items_age_seconds": 10,
+                },
+            }
+        ),
+    )
+
+    now = datetime.now(UTC)
+    old = now - timedelta(minutes=30)
+
+    def _pub_date(value: datetime) -> str:
+        return value.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    baseline_items = (
+        _FeedItem(
+            key="item-0",
+            title="Known item",
+            link="https://example.com/0",
+            published=_pub_date(old),
+        ),
+    )
+
+    async def _baseline_fetch(url: str) -> _FeedFetchResult:
+        return _FeedFetchResult(title="News", items=baseline_items)
+
+    async def _flood_fetch(url: str) -> _FeedFetchResult:
+        return _FeedFetchResult(
+            title="News",
+            items=(
+                *(
+                    _FeedItem(
+                        key=f"stale-{i}",
+                        title=f"Stale item {i}",
+                        link=f"https://example.com/stale/{i}",
+                        published=_pub_date(old),
+                    )
+                    for i in range(1, 7)
+                ),
+                _FeedItem(
+                    key="item-0",
+                    title="Known item",
+                    link="https://example.com/0",
+                    published=_pub_date(old),
+                ),
+                _FeedItem(
+                    key="item-recent",
+                    title="Fresh item",
+                    link="https://example.com/recent",
+                    published=_pub_date(now),
+                ),
+            ),
+        )
+
+    plugin._fetch_feed = _baseline_fetch  # type: ignore[method-assign]
+    await plugin._poll_once()
+    assert api.sent_messages == []
+
+    plugin._fetch_feed = _flood_fetch  # type: ignore[method-assign]
+    await plugin._poll_once()
+
+    assert len(api.sent_messages) == 1
+    assert "Fresh item" in api.sent_messages[0][1].text
+    assert all("Stale item" not in sent[1].text for sent in api.sent_messages)
+
+
+@pytest.mark.asyncio
+async def test_polling_skips_new_items_published_outside_window() -> None:
+    api = _API()
+    plugin = RSSNotifierPlugin(
+        api=api,
+        manifest=_manifest(
+            {
+                "target_chat_addresses": ["milky:group:100"],
+                "feeds": [{"url": "https://example.com/feed.xml", "title": "News"}],
+                "polling": {
+                    "enabled": False,
+                    "interval_seconds": 10,
+                    "max_new_items_per_feed_per_poll": 3,
+                    "max_new_items_age_seconds": 10,
+                },
+            }
+        ),
+    )
+
+    now = datetime.now(UTC)
+    old = now - timedelta(minutes=30)
+
+    def _pub_date(value: datetime) -> str:
+        return value.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    baseline_items = (
+        _FeedItem(
+            key="item-0",
+            title="Known item",
+            link="https://example.com/0",
+            published=_pub_date(old),
+        ),
+    )
+
+    async def _baseline_fetch(url: str) -> _FeedFetchResult:
+        return _FeedFetchResult(title="News", items=baseline_items)
+
+    async def _stale_fetch(url: str) -> _FeedFetchResult:
+        return _FeedFetchResult(
+            title="News",
+            items=(
+                _FeedItem(
+                    key="stale-1",
+                    title="Stale item 1",
+                    link="https://example.com/stale/1",
+                    published=_pub_date(old),
+                ),
+                _FeedItem(
+                    key="stale-2",
+                    title="Stale item 2",
+                    link="https://example.com/stale/2",
+                    published=_pub_date(old),
+                ),
+                _FeedItem(
+                    key="item-0",
+                    title="Known item",
+                    link="https://example.com/0",
+                    published=_pub_date(old),
+                ),
+            ),
+        )
+
+    async def _fresh_fetch(url: str) -> _FeedFetchResult:
+        return _FeedFetchResult(
+            title="News",
+            items=(
+                _FeedItem(
+                    key="fresh-1",
+                    title="Fresh item",
+                    link="https://example.com/fresh/1",
+                    published=_pub_date(now),
+                ),
+                _FeedItem(
+                    key="item-0",
+                    title="Known item",
+                    link="https://example.com/0",
+                    published=_pub_date(old),
+                ),
+            ),
+        )
+
+    plugin._fetch_feed = _baseline_fetch  # type: ignore[method-assign]
+    await plugin._poll_once()
+    assert api.sent_messages == []
+
+    plugin._fetch_feed = _stale_fetch  # type: ignore[method-assign]
+    await plugin._poll_once()
+    assert api.sent_messages == []
+
+    plugin._fetch_feed = _fresh_fetch  # type: ignore[method-assign]
+    await plugin._poll_once()
+
+    assert len(api.sent_messages) == 1
+    assert "Fresh item" in api.sent_messages[0][1].text
+
+
+@pytest.mark.asyncio
+async def test_polling_keeps_items_without_published_time() -> None:
+    api = _API()
+    plugin = RSSNotifierPlugin(
+        api=api,
+        manifest=_manifest(
+            {
+                "target_chat_addresses": ["milky:group:100"],
+                "feeds": [{"url": "https://example.com/feed.xml", "title": "News"}],
+                "polling": {
+                    "enabled": False,
+                    "interval_seconds": 10,
+                    "max_new_items_per_feed_per_poll": 3,
+                    "max_new_items_age_seconds": 10,
+                },
+            }
+        ),
+    )
+
+    async def _baseline_fetch(url: str) -> _FeedFetchResult:
+        return _FeedFetchResult(
+            title="News",
+            items=(_FeedItem(key="item-0", title="Known item"),),
+        )
+
+    async def _flood_fetch(url: str) -> _FeedFetchResult:
+        return _FeedFetchResult(
+            title="News",
+            items=(
+                _FeedItem(key="no-date-1", title="No date item 1"),
+                _FeedItem(key="no-date-2", title="No date item 2"),
+                _FeedItem(key="no-date-3", title="No date item 3"),
+                _FeedItem(key="item-0", title="Known item"),
+            ),
+        )
+
+    plugin._fetch_feed = _baseline_fetch  # type: ignore[method-assign]
+    await plugin._poll_once()
+
+    plugin._fetch_feed = _flood_fetch  # type: ignore[method-assign]
+    await plugin._poll_once()
+
+    assert len(api.sent_messages) == 3
+    assert {sent[1].text.splitlines()[1] for sent in api.sent_messages} == {
+        "📌 No date item 1",
+        "📌 No date item 2",
+        "📌 No date item 3",
+    }
 
 
 @pytest.mark.asyncio

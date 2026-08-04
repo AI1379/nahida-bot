@@ -17,6 +17,7 @@ rss-notifier:
   polling:
     enabled: true
     interval_seconds: 300
+    max_new_items_age_seconds: 300
   rendering:
     mode: "standard"
     max_text_chars: 500
@@ -31,6 +32,8 @@ rss-notifier:
 feeds[].target_chat_addresses 可覆盖全局 target_chat_addresses。
 
 首次轮询只建立基线，不会把历史条目一次性刷屏；后续发现新 item 才推送。
+
+每次轮询只会推送发布时间在 `max_new_items_age_seconds`（默认取 `interval_seconds`）内的新 item，按条目的发布时间判断、与一次拉取到的新条目条数无关；源长时间不可用后恢复、一次累积大量旧条目时，旧条目只记入去重状态、不会逐个刷屏。没有可解析发布时间的条目视为最新处理。
 
 ## 轻富文本渲染
 

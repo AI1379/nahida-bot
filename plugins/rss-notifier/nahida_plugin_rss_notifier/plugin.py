@@ -13,6 +13,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from time import perf_counter
+from time import time
 from typing import Any
 from urllib.parse import urljoin
 from urllib.parse import urlparse
@@ -66,6 +67,7 @@ class RSSPollingConfig(BaseModel):
     max_items_per_feed: int = Field(default=20, ge=1)
     max_known_items_per_feed: int = Field(default=200, ge=1)
     max_new_items_per_feed_per_poll: int = Field(default=5, ge=1)
+    max_new_items_age_seconds: int | None = Field(default=None, ge=1)
     user_agent: str = "nahida-bot-rss-notifier/0.1"
 
     @field_validator("user_agent")
@@ -615,13 +617,22 @@ class RSSNotifierPlugin(Plugin):
                 )
             if initialized and new_items:
                 new_item_count += len(new_items)
+                window_seconds = (
+                    self._config.polling.max_new_items_age_seconds
+                    or self._config.polling.interval_seconds
+                )
+                recent_items = _filter_recent_items(
+                    new_items, window_seconds=window_seconds
+                )
                 limit = self._config.polling.max_new_items_per_feed_per_poll
-                notify_items = new_items[:limit]
+                notify_items = recent_items[:limit]
                 self.api.logger.info(
                     "rss_notifier.feed_new_items_detected",
                     feed_url=sub.url,
                     feed_title=sub.title or result.title,
                     new_item_count=len(new_items),
+                    recent_item_count=len(recent_items),
+                    window_seconds=window_seconds,
                     notification_item_count=len(notify_items),
                     suppressed_item_count=max(0, len(new_items) - len(notify_items)),
                     target_count=len(sub.targets),
@@ -1527,6 +1538,20 @@ def _published_timestamp(value: str) -> float | None:
 
 def _elapsed_ms(started_at: float) -> int:
     return max(0, round((perf_counter() - started_at) * 1000))
+
+
+def _filter_recent_items(
+    items: list[_FeedItem], *, window_seconds: int
+) -> list[_FeedItem]:
+    if window_seconds <= 0:
+        return items
+    cutoff = time() - window_seconds
+    return [
+        item
+        for item in items
+        if (timestamp := _published_timestamp(item.published)) is None
+        or timestamp >= cutoff
+    ]
 
 
 def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:

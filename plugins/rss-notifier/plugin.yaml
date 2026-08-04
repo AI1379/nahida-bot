@@ -26,6 +26,7 @@ config:
     max_items_per_feed: 20
     max_known_items_per_feed: 200
     max_new_items_per_feed_per_poll: 5
+    max_new_items_age_seconds: null
     user_agent: "nahida-bot-rss-notifier/0.1"
   rendering:
     mode: "standard"
@@ -87,6 +88,10 @@ config_schema:
         max_new_items_per_feed_per_poll:
           type: integer
           minimum: 1
+        max_new_items_age_seconds:
+          type: integer
+          minimum: 1
+          description: "Only notify items published within this many seconds on each poll (defaults to interval_seconds when unset)"
         user_agent:
           type: string
     rendering:
