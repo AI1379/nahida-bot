@@ -995,11 +995,15 @@ providers:
 > 注意：Lagrange.milky 的媒体部分可能会有问题，需要在收到消息的时候立刻把其中的媒体文件缓存下来，否则 URL 可能会过期。目前暂不确定这个是 milky-tea 的问题还是 Lagrange.milky 的问题，这里可能需要处理。
 >
 > 注 2：检查了一下 milky 的文档，似乎图片的预期就是一个临时的 URL ，但是 Milky 又确实提供了一个通过 resource_id 获取 temp_url 的 api 端点，这里可能需要考虑一下。
+>
+> 注 3（2026-08-03 设计决策，基于 LLOneBot Milky 协议端）：QQ 客户端无法在同一条消息中同时携带文件与文字，协议端对同一次文件发送会同时推送 `message_receive`（含 file 段）与 `friend_file_upload`/`group_file_upload` 两个事件。为避免一次文件发送触发两次 agent loop，并让 agent 在同一 turn 内看到"文件 + 后续指令"，文件上传事件不再触发 agent loop：文件到达即下载到本地媒体缓存并进入按 chat 组织的 pending 队列，下一条触发 agent 的消息会把 pending 文件注入其上下文（按 file_id 与消息自带附件合并去重，优先携带 file_hash/本地路径的上传事件数据）。私聊文件下载依赖 `friend_file_upload` 携带的 `file_hash`（`message_receive` 的 file 段没有该字段），因此该事件是私聊文件下载链路的必需入口。纯文件消息（无文字）不会单独触发 agent；图片不进入该流程，仍随消息直接触发。
 
 - [x] 注册 `get_resource_temp_url` 工具：基于 Milky `resource_id` 获取临时 URL。（当前工具名为 `milky_get_resource_temp_url`，避免与其他 channel 的工具冲突。）
 - [ ] 评估是否实现 `download_media` 工具；如果实现，下载目录沿用 Telegram 的 `media_download_dir` 思路。
 - [x] 工具返回 JSON，包含 `resource_id`、`url`、`expires_hint` 等字段；`path`、`file_size` 留待 `download_media` 工具实现。
 - [ ] 媒体工具必须处理 access token、下载失败、资源过期和文件大小限制。（临时 URL 获取已走 `MilkyClient` 鉴权；下载失败、文件大小限制留待 `download_media`。）
+
+> 后话（已注记，未实现）：当前媒体缓存（`media_download_dir`）与模型临时脚本的落盘缺少统一的定期清理机制。规划是在 workspace 中划出一块系统统一管理的位置承接这类文件缓存与模型临时脚本，周期性清理；需要长期保留的重要文件由模型显式提醒用户挪入自己的 workspace。群聊 pending 文件注入的触发语义（含 `group_context_capture` 的交互）尚未定型，待后续与上述 workspace 缓存规划一起设计。
 
 ##### Phase 4.6.10 — 测试与文档
 

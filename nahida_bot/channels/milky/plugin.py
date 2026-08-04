@@ -6,11 +6,12 @@ import asyncio
 import json
 import os
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import structlog
 
@@ -33,7 +34,11 @@ from nahida_bot.channels.milky.segment_converter import (
     split_video_segments,
     video_segment_to_file_upload,
 )
-from nahida_bot.channels.milky.segments import OutgoingTextSegment
+from nahida_bot.channels.milky.segments import (
+    OutgoingTextSegment,
+    is_file_only_segments,
+    parse_incoming_segments,
+)
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import (
     MessageObserved,
@@ -66,6 +71,21 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+class _PendingFileEntry(TypedDict):
+    """One queued file delivery awaiting injection into a triggering message."""
+
+    scene: str
+    peer_id: str
+    file_id: str
+    file_name: str
+    file_size: int
+    file_hash: str
+    path: str
+    mime_type: str
+    source: str
+    received_at: float
+
+
 class MilkyPlugin(Plugin):
     """Milky QQ channel plugin."""
 
@@ -80,6 +100,11 @@ class MilkyPlugin(Plugin):
         self._self_id = 0
         self._scene_by_peer: OrderedDict[str, str] = OrderedDict()
         self._file_context_cache: OrderedDict[str, dict[str, object]] = OrderedDict()
+        # Pending file deliveries per chat (key "scene:chat_id"), awaiting a
+        # follow-up message that triggers the agent so the file context can be
+        # injected into the same turn. Entries expire after
+        # config.pending_file_ttl_seconds.
+        self._pending_files: OrderedDict[str, list[_PendingFileEntry]] = OrderedDict()
         self._login_info_task: asyncio.Task[None] | None = None
 
     @property
@@ -198,6 +223,10 @@ class MilkyPlugin(Plugin):
             **_inbound_log_fields(inbound),
         )
 
+        scene = str(data.get("message_scene") or "")
+        if scene:
+            self._remember_scene(inbound.chat_id, scene)
+
         decision = GroupInteractionPolicy(
             mode=self.config.group_trigger_mode,
             observe_untriggered=self.config.group_context_capture,
@@ -212,6 +241,43 @@ class MilkyPlugin(Plugin):
             group_context_capture=self.config.group_context_capture,
             **_inbound_log_fields(inbound),
         )
+
+        # QQ clients cannot attach text alongside a file in the same message
+        # (a reply quote plus a file is possible, but that is a content
+        # message and goes through the normal path below), so a message whose
+        # segments are ALL file segments is a pure file delivery: register it
+        # as pending and never trigger the agent by itself. The file is
+        # injected into the next text message from the same chat (see
+        # _inject_pending_files).
+        segments = parse_incoming_segments(data.get("segments"))
+        file_only = is_file_only_segments(segments)
+        if file_only:
+            # Register pending first — subject only to the allowlist, which
+            # the converter already applied. The policy gate below only
+            # decides whether the delivery is also observed for group context.
+            await self._register_inbound_files(inbound)
+            if not decision.observe:
+                logger.debug(
+                    "milky.message_filtered",
+                    reason=decision.reason,
+                    channel=self.channel_id,
+                    message_scene=coerce_str(data.get("message_scene")),
+                    peer_id=inbound.chat_id,
+                    message_seq=inbound.message_id,
+                    mentions_bot=inbound.mentions_bot,
+                    mentioned_user_ids=list(inbound.mentioned_user_ids),
+                )
+                return
+            if not decision.respond:
+                # Group context capture: keep the file visible in observed
+                # history; private file-only messages publish nothing.
+                await self._publish_message_event(
+                    inbound,
+                    event_cls=MessageObserved,
+                    scene=scene,
+                )
+            return
+
         if not decision.observe:
             logger.debug(
                 "milky.message_filtered",
@@ -230,11 +296,48 @@ class MilkyPlugin(Plugin):
         # API calls or eager downloads.
         inbound = await self._resolve_attachment_urls(inbound)
 
-        scene = str(data.get("message_scene") or "")
-        if scene:
-            self._remember_scene(inbound.chat_id, scene)
+        # Build ChatAddress from scene (group vs private). Validate before
+        # consuming pending files so an untyped/unknown scene never swallows
+        # them.
+        chat_type = "group" if scene == "group" else "private" if scene else "unknown"
+        address = ChatAddress(
+            channel=inbound.platform,
+            target_type=chat_type,
+            target_id=inbound.chat_id,
+        )
+        if not address.is_typed:
+            logger.warning(
+                "milky.message_scene_missing",
+                peer_id=inbound.chat_id,
+                channel=self.channel_id,
+            )
+            return
 
-        # Build ChatAddress from scene (group vs private)
+        # Inject pending files from earlier uploads when this message will
+        # run the agent, so the model sees both the file and the follow-up
+        # instruction in one turn. Observed (non-triggering) messages leave
+        # the pending queue untouched.
+        if decision.respond:
+            pending = self._consume_pending_files(inbound)
+            if pending:
+                inbound = self._inject_pending_files(inbound, pending)
+
+        await self._publish_message_event(
+            inbound,
+            event_cls=MessageReceived if decision.respond else MessageObserved,
+            scene=scene,
+            decision_reason=decision.reason,
+        )
+
+    async def _publish_message_event(
+        self,
+        inbound: InboundMessage,
+        *,
+        event_cls: type[MessageReceived] | type[MessageObserved],
+        scene: str,
+        decision_reason: str = "",
+    ) -> None:
+        """Build the session id and publish a MessageReceived/MessageObserved."""
         chat_type = "group" if scene == "group" else "private" if scene else "unknown"
         address = ChatAddress(
             channel=inbound.platform,
@@ -249,17 +352,16 @@ class MilkyPlugin(Plugin):
             )
             return
         session_id = MessageRouter.make_session_id(address)
-        event_type = MessageReceived if decision.respond else MessageObserved
         logger.debug(
             "milky.message_publish_start",
             channel=self.channel_id,
-            emitted_event=event_type.__name__,
+            emitted_event=event_cls.__name__,
             session_id=session_id,
-            decision_reason=decision.reason,
+            decision_reason=decision_reason,
             **_inbound_log_fields(inbound),
         )
         await self.api.publish_event(
-            event_type(
+            event_cls(
                 payload=MessagePayload(message=inbound, session_id=session_id),
                 source="milky",
             )
@@ -267,16 +369,22 @@ class MilkyPlugin(Plugin):
         logger.debug(
             "milky.message_publish_done",
             channel=self.channel_id,
-            emitted_event=event_type.__name__,
+            emitted_event=event_cls.__name__,
             session_id=session_id,
-            decision_reason=decision.reason,
+            decision_reason=decision_reason,
             **_inbound_log_fields(inbound),
         )
 
     async def _handle_file_upload_event(
         self, event_type: str, event: dict[str, Any]
     ) -> None:
-        """Convert Milky file upload events into the normal inbound pipeline."""
+        """Register a Milky file upload event as pending file delivery.
+
+        File upload events never trigger the agent loop directly. The file is
+        downloaded immediately (URLs expire) and queued for injection into the
+        next message that triggers the agent in the same chat, so the model
+        sees the file together with the follow-up instruction.
+        """
         data = event.get("data")
         if not isinstance(data, dict):
             logger.warning(
@@ -329,62 +437,14 @@ class MilkyPlugin(Plugin):
                 )
                 return
 
-        decision = GroupInteractionPolicy(
-            mode=self.config.group_trigger_mode,
-            observe_untriggered=self.config.group_context_capture,
-        ).decide(inbound)
-        logger.debug(
-            "milky.file_upload_decision",
-            channel=self.channel_id,
-            event_type=event_type,
-            reason=decision.reason,
-            observe=decision.observe,
-            respond=decision.respond,
-            **_inbound_log_fields(inbound),
-        )
-        if not decision.observe:
-            logger.debug(
-                "milky.file_upload_filtered",
-                reason=decision.reason,
-                channel=self.channel_id,
-                peer_id=inbound.chat_id,
-                is_group=inbound.is_group,
-                message_id=inbound.message_id,
-                mentions_bot=inbound.mentions_bot,
-            )
-            return
-
-        # Resolve file download URLs only for events that pass the
-        # policy gate.
-        inbound = await self._resolve_attachment_urls(inbound)
-
         scene = "group" if inbound.is_group else "friend"
         self._remember_scene(inbound.chat_id, scene)
-        address = ChatAddress(
-            channel=inbound.platform,
-            target_type="group" if inbound.is_group else "private",
-            target_id=inbound.chat_id,
-        )
-        session_id = MessageRouter.make_session_id(address)
-        emitted_event = MessageReceived if decision.respond else MessageObserved
+        await self._register_inbound_files(inbound)
         logger.debug(
-            "milky.file_upload_publish_start",
+            "milky.file_upload_pending",
             channel=self.channel_id,
-            emitted_event=emitted_event.__name__,
-            session_id=session_id,
-            **_inbound_log_fields(inbound),
-        )
-        await self.api.publish_event(
-            emitted_event(
-                payload=MessagePayload(message=inbound, session_id=session_id),
-                source="milky",
-            )
-        )
-        logger.debug(
-            "milky.file_upload_publish_done",
-            channel=self.channel_id,
-            emitted_event=emitted_event.__name__,
-            session_id=session_id,
+            scene=scene,
+            peer_id=inbound.chat_id,
             **_inbound_log_fields(inbound),
         )
 
@@ -549,6 +609,256 @@ class MilkyPlugin(Plugin):
             group_id=group_id,
             message_seq=message_seq,
         )
+
+    _MAX_PENDING_FILES_PER_CHAT = 16
+
+    async def _register_inbound_files(self, inbound: InboundMessage) -> None:
+        """Register an inbound's file attachments as pending deliveries.
+
+        Each file is downloaded immediately when possible (temp URLs expire)
+        and queued so the next agent-triggering message from the same chat
+        can reference it. File context for ``download_media()`` is cached
+        from the merged entry so the richer file_hash (upload event) survives
+        regardless of which event arrives first.
+        """
+        scene = "group" if inbound.is_group else "friend"
+        for att in inbound.attachments:
+            if att.kind != "file" or not att.platform_id:
+                continue
+            entry = self._register_pending_file(
+                scene=scene,
+                peer_id=inbound.chat_id,
+                file_id=att.platform_id,
+                file_name=coerce_str(att.metadata.get("file_name")),
+                file_size=att.file_size or coerce_int(att.metadata.get("file_size")),
+                file_hash=coerce_str(att.metadata.get("file_hash")),
+                source=coerce_str(att.metadata.get("milky_event_type")),
+            )
+            # Cache context from the merged entry: the message_receive file
+            # segment has no file_hash, so caching the raw attachment would
+            # overwrite the upload event's hash and break download_media().
+            enriched = replace(
+                att,
+                metadata={
+                    **att.metadata,
+                    "file_hash": entry["file_hash"],
+                },
+            )
+            self._cache_file_context(enriched)
+            await self._download_pending_file(entry)
+            logger.debug(
+                "milky.file_pending",
+                channel=self.channel_id,
+                scene=scene,
+                peer_id=inbound.chat_id,
+                file_id=att.platform_id,
+                file_name=entry["file_name"],
+                downloaded=bool(entry["path"]),
+            )
+
+    def _register_pending_file(
+        self,
+        *,
+        scene: str,
+        peer_id: str,
+        file_id: str,
+        file_name: str,
+        file_size: int,
+        file_hash: str,
+        source: str = "",
+    ) -> _PendingFileEntry:
+        """Create or merge a pending file entry for (scene, peer, file_id).
+
+        Both the ``message_receive`` file segment and the separate file-upload
+        event may carry the same file; the richer one (e.g. the upload event
+        with file_hash / a completed download path) fills the gaps.
+        """
+        self._prune_pending_files()
+        key = f"{scene}:{peer_id}"
+        entries = self._pending_files.get(key)
+        if entries is None:
+            entries = []
+            self._pending_files[key] = entries
+        for entry in entries:
+            if entry["file_id"] != file_id:
+                continue
+            if file_hash and not entry["file_hash"]:
+                entry["file_hash"] = file_hash
+            if file_name:
+                entry["file_name"] = file_name
+            if file_size:
+                entry["file_size"] = file_size
+            if source and not entry["source"]:
+                entry["source"] = source
+            return entry
+        entry: _PendingFileEntry = {
+            "scene": scene,
+            "peer_id": peer_id,
+            "file_id": file_id,
+            "file_name": file_name,
+            "file_size": file_size,
+            "file_hash": file_hash,
+            "path": "",
+            "mime_type": "",
+            "source": source,
+            "received_at": time.monotonic(),
+        }
+        entries.append(entry)
+        while len(entries) > self._MAX_PENDING_FILES_PER_CHAT:
+            entries.pop(0)
+        self._pending_files.move_to_end(key)
+        return entry
+
+    async def _download_pending_file(self, entry: _PendingFileEntry) -> None:
+        """Download a pending file into the media cache when possible.
+
+        Private files need ``file_hash`` (only the upload event carries it);
+        without it the entry stays metadata-only and is completed when the
+        matching upload event arrives.
+        """
+        if entry["path"]:
+            return
+        file_id = entry["file_id"]
+        peer_id_str = entry["peer_id"]
+        scene = entry["scene"]
+        if not file_id or not peer_id_str:
+            return
+        try:
+            peer_id = int(peer_id_str)
+        except (ValueError, TypeError):
+            return
+        client = self._ensure_client()
+        try:
+            if scene == "group":
+                url = await client.get_group_file_download_url(
+                    group_id=peer_id, file_id=file_id
+                )
+            else:
+                file_hash = entry["file_hash"]
+                if not file_hash:
+                    return
+                url = await client.get_private_file_download_url(
+                    user_id=peer_id, file_id=file_id, file_hash=file_hash
+                )
+        except Exception:
+            logger.warning(
+                "milky.pending_file_url_failed",
+                file_id=file_id,
+                scene=scene,
+                peer_id=peer_id_str,
+            )
+            return
+        if not url:
+            return
+        result = await self._stream_download_url(
+            url,
+            file_name=entry["file_name"],
+            file_id=file_id,
+        )
+        if result is not None and result.path:
+            entry["path"] = result.path
+            entry["mime_type"] = result.mime_type or ""
+            if result.file_size:
+                entry["file_size"] = result.file_size
+
+    def _consume_pending_files(
+        self, inbound: InboundMessage
+    ) -> list[_PendingFileEntry]:
+        """Pop and return pending files for the inbound's chat (expiry applied)."""
+        scene = "group" if inbound.is_group else "friend"
+        self._prune_pending_files()
+        return self._pending_files.pop(f"{scene}:{inbound.chat_id}", [])
+
+    def _prune_pending_files(self) -> None:
+        """Drop pending entries older than the configured TTL."""
+        now = time.monotonic()
+        ttl = self.config.pending_file_ttl_seconds
+        expired_keys = [
+            key
+            for key, entries in self._pending_files.items()
+            if not entries or all(now - entry["received_at"] > ttl for entry in entries)
+        ]
+        for key in expired_keys:
+            del self._pending_files[key]
+        for entries in self._pending_files.values():
+            entries[:] = [
+                entry for entry in entries if now - entry["received_at"] <= ttl
+            ]
+
+    def _inject_pending_files(
+        self,
+        inbound: InboundMessage,
+        pending: list[_PendingFileEntry],
+    ) -> InboundMessage:
+        """Attach pending files to the triggering message.
+
+        The file render is appended to the message text (same representation
+        as a native file message) and merged into attachments, deduped by
+        file_id so the richer pending entry (local path / file_hash) wins.
+        """
+        if not pending:
+            return inbound
+        text_parts = [inbound.text]
+        attachments = list(inbound.attachments)
+        for entry in pending:
+            file_id = entry["file_id"]
+            file_name = entry["file_name"]
+            file_size = entry["file_size"]
+            existing = next(
+                (
+                    i
+                    for i, att in enumerate(attachments)
+                    if att.kind == "file" and att.platform_id == file_id
+                ),
+                None,
+            )
+            if existing is None:
+                text_parts.append(
+                    _render_file_upload_text(
+                        file_name=file_name,
+                        file_id=file_id,
+                        file_size=file_size,
+                    )
+                )
+                attachments.append(
+                    InboundAttachment(
+                        kind="file",
+                        platform_id=file_id,
+                        path=entry["path"],
+                        mime_type=entry["mime_type"],
+                        file_size=file_size,
+                        metadata={
+                            "file_name": file_name,
+                            "file_size": file_size,
+                            "file_hash": entry["file_hash"],
+                            "milky_event_type": entry["source"],
+                            "_milky_scene": entry["scene"],
+                            "_milky_peer_id": entry["peer_id"],
+                        },
+                    )
+                )
+            else:
+                # Backfill the existing attachment with the pending entry's
+                # richer data (file_hash from the upload event, cached path).
+                current = attachments[existing]
+                metadata = dict(current.metadata)
+                if not metadata.get("file_hash"):
+                    metadata["file_hash"] = entry["file_hash"]
+                if not metadata.get("file_name"):
+                    metadata["file_name"] = file_name
+                if not metadata.get("file_size"):
+                    metadata["file_size"] = file_size
+                if not current.path:
+                    metadata["_milky_scene"] = entry["scene"]
+                    metadata["_milky_peer_id"] = entry["peer_id"]
+                attachments[existing] = replace(
+                    current,
+                    path=entry["path"] or current.path,
+                    mime_type=entry["mime_type"] or current.mime_type,
+                    file_size=file_size or current.file_size,
+                    metadata=metadata,
+                )
+        return replace(inbound, text="".join(text_parts), attachments=attachments)
 
     def _file_upload_to_inbound(
         self,

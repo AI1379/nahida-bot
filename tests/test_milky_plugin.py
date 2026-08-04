@@ -86,6 +86,14 @@ class _FakeClient:
     async def get_resource_temp_url(self, resource_id: str) -> str:
         return f"https://example.com/{resource_id}"
 
+    async def get_private_file_download_url(
+        self, user_id: int, file_id: str, file_hash: str = ""
+    ) -> str:
+        return f"https://example.com/private/{file_id}"
+
+    async def get_group_file_download_url(self, group_id: int, file_id: str) -> str:
+        return f"https://example.com/group/{file_id}"
+
     async def close(self) -> None:
         self.closed = True
 
@@ -262,42 +270,409 @@ async def test_handle_inbound_event_observes_untriggered_group_context() -> None
     assert inbound.mentions_bot is False
 
 
-async def test_handle_friend_file_upload_publishes_message_received() -> None:
+async def test_friend_file_upload_registers_pending_without_publishing() -> None:
+    """A friend file upload queues the file and never triggers the agent."""
     api = RecordingMockBotAPI()
     plugin = MilkyPlugin(api=api, manifest=_manifest())
     plugin._client = _FakeClient()  # type: ignore[assignment]
     await plugin.on_load()
 
-    await plugin.handle_inbound_event(
-        {
-            "event_type": "friend_file_upload",
-            "data": {
-                "user_id": 10001,
-                "time": 1700000000,
-                "file_id": "file-1",
-                "file_name": "report.pdf",
-                "file_size": 1024,
-                "file_hash": "abc",
-            },
-        }
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+
+    assert api.published_events == []
+    pending = _pending_files(plugin)
+    assert len(pending) == 1
+    entry = pending[0]
+    assert entry["scene"] == "friend"
+    assert entry["peer_id"] == "10001"
+    assert entry["file_id"] == "file-1"
+    assert entry["file_name"] == "report.pdf"
+    assert entry["file_hash"] == "abc"
+
+
+async def test_friend_file_upload_downloads_immediately() -> None:
+    """The pending entry carries a local path when the download succeeds."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    from nahida_bot.plugins.base import MediaDownloadResult
+
+    downloaded = MediaDownloadResult(
+        path="C:/cache/report.pdf",
+        file_name="report.pdf",
+        mime_type="application/pdf",
+        file_size=1024,
     )
+    with patch.object(
+        plugin,
+        "_stream_download_url",
+        new=AsyncMock(return_value=downloaded),
+    ):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+
+    assert api.published_events == []
+    entry = _pending_files(plugin)[0]
+    assert entry["path"] == "C:/cache/report.pdf"
+    assert entry["mime_type"] == "application/pdf"
+
+
+async def test_file_only_message_receive_registers_pending_without_publishing() -> None:
+    """A message_receive whose only content is a file queues, never triggers."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_message_event())
+
+    assert api.published_events == []
+    pending = _pending_files(plugin)
+    assert len(pending) == 1
+    assert pending[0]["file_id"] == "file-1"
+    # The message_receive file segment carries no file_hash; the upload
+    # event is what completes the download chain.
+    assert pending[0]["file_hash"] == ""
+
+
+async def test_text_message_consumes_pending_and_injects_file() -> None:
+    """The next text message triggers once and carries the pending file."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    from nahida_bot.plugins.base import MediaDownloadResult
+
+    downloaded = MediaDownloadResult(
+        path="C:/cache/report.pdf",
+        file_name="report.pdf",
+        mime_type="application/pdf",
+        file_size=1024,
+    )
+    with patch.object(
+        plugin,
+        "_stream_download_url",
+        new=AsyncMock(return_value=downloaded),
+    ):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        await plugin.handle_inbound_event(_text_message_event())
 
     assert len(api.published_events) == 1
     event = api.published_events[0]
     assert isinstance(event, MessageReceived)
-    assert event.payload.session_id == "milky:private:10001"
     inbound = event.payload.message
-    assert inbound.text == "[File: name=report.pdf, file_id=file-1, size=1024]"
-    assert len(inbound.attachments) == 1
-    attachment = inbound.attachments[0]
-    assert attachment.kind == "file"
-    assert attachment.platform_id == "file-1"
-    assert attachment.file_size == 1024
-    assert attachment.metadata["file_name"] == "report.pdf"
-    assert attachment.metadata["file_hash"] == "abc"
+    assert "report.pdf" in inbound.text
+    assert "[File: name=report.pdf, file_id=file-1, size=1024]" in inbound.text
+    assert _pending_files(plugin) == []
+    file_attachments = [att for att in inbound.attachments if att.kind == "file"]
+    assert len(file_attachments) == 1
+    assert file_attachments[0].platform_id == "file-1"
+    assert file_attachments[0].path == "C:/cache/report.pdf"
 
 
-async def test_handle_group_file_upload_observes_when_capture_enabled() -> None:
+async def test_text_message_without_pending_triggers_normally() -> None:
+    """Plain text messages keep their normal single-trigger behavior."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(_text_message_event())
+
+    assert len(api.published_events) == 1
+    assert isinstance(api.published_events[0], MessageReceived)
+
+
+async def test_file_only_and_file_upload_same_file_register_once() -> None:
+    """Both events for one file merge into a single pending entry."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_message_event())
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+
+    assert api.published_events == []
+    pending = _pending_files(plugin)
+    assert len(pending) == 1
+    assert pending[0]["file_hash"] == "abc"
+
+
+async def test_file_context_cache_keeps_upload_hash_in_both_orders() -> None:
+    """download_media() context must keep the upload event's hash.
+
+    The message_receive file segment has no file_hash; when it is processed
+    after the upload event it must not overwrite the cached hash, or private
+    file downloads break.
+    """
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        await plugin.handle_inbound_event(_friend_file_message_event())
+    ctx = plugin._file_context_cache["file-1"]
+    assert ctx["scene"] == "friend"
+    assert ctx["peer_id"] == "10001"
+    assert ctx["file_hash"] == "abc"
+
+    # And in the reverse (LLOneBot-style) order.
+    api2 = RecordingMockBotAPI()
+    plugin2 = MilkyPlugin(api=api2, manifest=_manifest())
+    plugin2._client = _FakeClient()  # type: ignore[assignment]
+    await plugin2.on_load()
+    with _patch_downloads(plugin2):
+        await plugin2.handle_inbound_event(_friend_file_message_event())
+        await plugin2.handle_inbound_event(_friend_file_upload_event())
+    assert plugin2._file_context_cache["file-1"]["file_hash"] == "abc"
+
+
+async def test_download_failure_completed_by_upload_event() -> None:
+    """A hash-less message_receive leaves metadata only; upload event downloads."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    from nahida_bot.plugins.base import MediaDownloadResult
+
+    downloaded = MediaDownloadResult(
+        path="C:/cache/report.pdf",
+        file_name="report.pdf",
+        mime_type="application/pdf",
+        file_size=1024,
+    )
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_message_event())
+    assert _pending_files(plugin)[0]["path"] == ""
+
+    with patch.object(
+        plugin,
+        "_stream_download_url",
+        new=AsyncMock(return_value=downloaded),
+    ):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+    assert _pending_files(plugin)[0]["path"] == "C:/cache/report.pdf"
+
+
+async def test_upload_then_message_receive_does_not_redownload() -> None:
+    """The merged pending entry skips a second download for the same file."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    from nahida_bot.plugins.base import MediaDownloadResult
+
+    downloaded = MediaDownloadResult(
+        path="C:/cache/report.pdf",
+        file_name="report.pdf",
+        mime_type="application/pdf",
+        file_size=1024,
+    )
+    stream = AsyncMock(return_value=downloaded)
+    with patch.object(plugin, "_stream_download_url", new=stream):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        await plugin.handle_inbound_event(_friend_file_message_event())
+
+    assert stream.await_count == 1
+    assert _pending_files(plugin)[0]["path"] == "C:/cache/report.pdf"
+
+
+async def test_two_pending_files_injected_into_one_message() -> None:
+    """Multiple pending files all attach to the next triggering message."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        second = _friend_file_upload_event()
+        second["data"]["file_id"] = "file-2"
+        second["data"]["file_name"] = "notes.txt"
+        await plugin.handle_inbound_event(second)
+        await plugin.handle_inbound_event(_text_message_event())
+
+    assert len(api.published_events) == 1
+    inbound = api.published_events[0].payload.message
+    assert "report.pdf" in inbound.text
+    assert "notes.txt" in inbound.text
+    assert len(_pending_files(plugin)) == 0
+    file_attachments = [att for att in inbound.attachments if att.kind == "file"]
+    assert {att.platform_id for att in file_attachments} == {"file-1", "file-2"}
+
+
+async def test_pending_files_are_per_chat() -> None:
+    """Files from peer A never leak into peer B's messages."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        other_chat = _text_message_event()
+        other_chat["data"]["peer_id"] = 10002
+        await plugin.handle_inbound_event(other_chat)
+
+    assert len(api.published_events) == 1
+    inbound = api.published_events[0].payload.message
+    assert "report.pdf" not in inbound.text
+    assert len(_pending_files(plugin)) == 1
+
+
+async def test_pending_file_cap_evicts_oldest_per_chat() -> None:
+    """More than the per-chat cap of pending files evicts the oldest."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        for index in range(1, 18):
+            event = _friend_file_upload_event()
+            event["data"]["file_id"] = f"file-{index}"
+            event["data"]["file_name"] = f"f{index}.bin"
+            await plugin.handle_inbound_event(event)
+
+    pending = _pending_files(plugin)
+    assert len(pending) == 16
+    assert pending[0]["file_id"] == "file-2"
+    assert pending[-1]["file_id"] == "file-17"
+
+
+async def test_pending_pruned_on_registration() -> None:
+    """Expired entries are dropped even without a consuming message."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(pending_file_ttl_seconds=1.0))
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    import time as time_module
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        _pending_files(plugin)[0]["received_at"] = time_module.monotonic() - 10.0
+        second = _friend_file_upload_event()
+        second["data"]["file_id"] = "file-2"
+        await plugin.handle_inbound_event(second)
+
+    pending = _pending_files(plugin)
+    assert len(pending) == 1
+    assert pending[0]["file_id"] == "file-2"
+
+
+async def test_message_without_scene_does_not_consume_pending() -> None:
+    """An untyped-scene message must not swallow pending files."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        unknown_scene = _text_message_event()
+        unknown_scene["data"].pop("message_scene")
+        await plugin.handle_inbound_event(unknown_scene)
+
+    assert api.published_events == []
+    assert len(_pending_files(plugin)) == 1
+
+
+async def test_reply_with_file_triggers_without_duplicate_render() -> None:
+    """A reply+file message runs the agent once; the pending file merges."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "friend",
+                    "peer_id": 10001,
+                    "sender_id": 10001,
+                    "message_seq": 302,
+                    "time": 1700000001,
+                    "segments": [
+                        {
+                            "type": "reply",
+                            "data": {"message_seq": 100},
+                        },
+                        {
+                            "type": "file",
+                            "data": {
+                                "file_id": "file-1",
+                                "file_name": "report.pdf",
+                                "file_size": 1024,
+                            },
+                        },
+                    ],
+                },
+            }
+        )
+
+    assert len(api.published_events) == 1
+    assert isinstance(api.published_events[0], MessageReceived)
+    inbound = api.published_events[0].payload.message
+    assert inbound.text.count("[File: name=report.pdf") == 1
+    file_attachments = [att for att in inbound.attachments if att.kind == "file"]
+    assert len(file_attachments) == 1
+    assert _pending_files(plugin) == []
+
+
+async def test_pending_file_expires_after_ttl() -> None:
+    """Expired pending files are dropped and not injected."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(pending_file_ttl_seconds=1.0))
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(_friend_file_upload_event())
+        assert len(_pending_files(plugin)) == 1
+
+        import time as time_module
+
+        _pending_files(plugin)[0]["received_at"] = time_module.monotonic() - 10.0
+
+        await plugin.handle_inbound_event(_text_message_event())
+
+    assert len(api.published_events) == 1
+    inbound = api.published_events[0].payload.message
+    assert "report.pdf" not in inbound.text
+    assert _pending_files(plugin) == []
+
+
+async def test_file_upload_not_allowed_peer_is_dropped() -> None:
+    """Allowlist filtering still applies to file upload events."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(allowed_friends=["99999"]))
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.handle_inbound_event(_friend_file_upload_event())
+
+    assert api.published_events == []
+    assert _pending_files(plugin) == []
+
+
+async def test_group_file_upload_registers_pending_without_publishing() -> None:
+    """Group file uploads queue like private ones (agent runs never fire)."""
     api = RecordingMockBotAPI()
     plugin = MilkyPlugin(
         api=api,
@@ -306,51 +681,317 @@ async def test_handle_group_file_upload_observes_when_capture_enabled() -> None:
     plugin._client = _FakeClient()  # type: ignore[assignment]
     await plugin.on_load()
 
-    await plugin.handle_inbound_event(
-        {
-            "event_type": "group_file_upload",
-            "data": {
-                "group_id": 20001,
-                "user_id": 10001,
-                "time": 1700000000,
-                "file": {
-                    "file_id": "group-file-1",
-                    "file_name": "slides.pptx",
-                    "file_size": 2048,
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "group_file_upload",
+                "data": {
+                    "group_id": 20001,
+                    "user_id": 10001,
+                    "time": 1700000000,
+                    "file": {
+                        "file_id": "group-file-1",
+                        "file_name": "slides.pptx",
+                        "file_size": 2048,
+                    },
                 },
-            },
-        }
+            }
+        )
+
+    assert api.published_events == []
+    pending = _pending_files(plugin)
+    assert len(pending) == 1
+    assert pending[0]["scene"] == "group"
+    assert pending[0]["peer_id"] == "20001"
+    assert pending[0]["file_id"] == "group-file-1"
+
+
+async def test_group_file_only_message_observes_when_capture_enabled() -> None:
+    """Group context capture still records file-only messages as observed."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(group_context_capture=True, group_trigger_mode="mention"),
     )
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "group",
+                    "peer_id": 20001,
+                    "sender_id": 10001,
+                    "message_seq": 123,
+                    "time": 1700000000,
+                    "segments": [
+                        {
+                            "type": "file",
+                            "data": {
+                                "file_id": "group-file-1",
+                                "file_name": "slides.pptx",
+                                "file_size": 2048,
+                            },
+                        },
+                    ],
+                },
+            }
+        )
 
     assert len(api.published_events) == 1
-    event = api.published_events[0]
-    assert isinstance(event, MessageObserved)
-    assert event.payload.session_id == "milky:group:20001"
-    inbound = event.payload.message
-    assert inbound.is_group is True
-    assert inbound.text == "[File: name=slides.pptx, file_id=group-file-1, size=2048]"
-    assert inbound.attachments[0].metadata["group_id"] == "20001"
+    assert isinstance(api.published_events[0], MessageObserved)
+    assert len(_pending_files(plugin)) == 1
 
 
-async def test_handle_group_file_upload_responds_in_always_mode() -> None:
+async def test_group_file_only_message_registers_pending_without_capture() -> None:
+    """File-only group messages queue even when group capture is off."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(group_context_capture=False, group_trigger_mode="mention"),
+    )
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "group",
+                    "peer_id": 20001,
+                    "sender_id": 10001,
+                    "message_seq": 123,
+                    "time": 1700000000,
+                    "segments": [
+                        {
+                            "type": "file",
+                            "data": {
+                                "file_id": "group-file-1",
+                                "file_name": "slides.pptx",
+                                "file_size": 2048,
+                            },
+                        },
+                    ],
+                },
+            }
+        )
+
+    assert api.published_events == []
+    assert len(_pending_files(plugin)) == 1
+
+
+async def test_group_file_only_message_always_mode_registers_pending() -> None:
+    """Always mode never runs the agent for a bare group file."""
     api = RecordingMockBotAPI()
     plugin = MilkyPlugin(api=api, manifest=_manifest(group_trigger_mode="always"))
     plugin._client = _FakeClient()  # type: ignore[assignment]
     await plugin.on_load()
 
-    await plugin.handle_inbound_event(
-        {
-            "event_type": "group_file_upload",
-            "data": {
-                "group_id": 20001,
-                "user_id": 10001,
-                "file_id": "group-file-1",
-                "file_name": "slides.pptx",
-            },
-        }
-    )
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "group",
+                    "peer_id": 20001,
+                    "sender_id": 10001,
+                    "message_seq": 123,
+                    "time": 1700000000,
+                    "segments": [
+                        {
+                            "type": "file",
+                            "data": {
+                                "file_id": "group-file-1",
+                                "file_name": "slides.pptx",
+                                "file_size": 2048,
+                            },
+                        },
+                    ],
+                },
+            }
+        )
 
+    assert api.published_events == []
+    assert len(_pending_files(plugin)) == 1
+
+
+async def test_group_observed_message_does_not_consume_pending() -> None:
+    """Observed (non-triggering) group messages leave pending files queued."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(group_context_capture=True, group_trigger_mode="mention"),
+    )
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "group_file_upload",
+                "data": {
+                    "group_id": 20001,
+                    "user_id": 10001,
+                    "file_id": "group-file-1",
+                    "file_name": "slides.pptx",
+                },
+            }
+        )
+        # Unmentioned group text: observed, must not consume.
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "group",
+                    "peer_id": 20001,
+                    "sender_id": 10001,
+                    "message_seq": 125,
+                    "time": 1700000001,
+                    "segments": [{"type": "text", "data": {"text": "聊别的"}}],
+                },
+            }
+        )
+        # Triggering mention message: consumes and injects.
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "group",
+                    "peer_id": 20001,
+                    "sender_id": 10001,
+                    "message_seq": 126,
+                    "time": 1700000002,
+                    "segments": [
+                        {"type": "mention", "data": {"user_id": 999, "name": "bot"}},
+                        {"type": "text", "data": {"text": "总结一下"}},
+                    ],
+                },
+            }
+        )
+
+    assert len(api.published_events) == 2
+    observed, received = api.published_events
+    assert isinstance(observed, MessageObserved)
+    assert isinstance(received, MessageReceived)
+    assert "slides.pptx" in received.payload.message.text
+    assert _pending_files(plugin) == []
+
+
+async def test_group_mention_consumes_pending_file() -> None:
+    """A triggering group message injects the pending file."""
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(group_context_capture=True, group_trigger_mode="mention"),
+    )
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+
+    with _patch_downloads(plugin):
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "group_file_upload",
+                "data": {
+                    "group_id": 20001,
+                    "user_id": 10001,
+                    "file_id": "group-file-1",
+                    "file_name": "slides.pptx",
+                },
+            }
+        )
+        await plugin.handle_inbound_event(
+            {
+                "event_type": "message_receive",
+                "data": {
+                    "message_scene": "group",
+                    "peer_id": 20001,
+                    "sender_id": 10001,
+                    "message_seq": 124,
+                    "time": 1700000000,
+                    "segments": [
+                        {"type": "mention", "data": {"user_id": 999, "name": "bot"}},
+                        {"type": "text", "data": {"text": "总结一下"}},
+                    ],
+                },
+            }
+        )
+
+    assert len(api.published_events) == 1
     assert isinstance(api.published_events[0], MessageReceived)
+    inbound = api.published_events[0].payload.message
+    assert "slides.pptx" in inbound.text
+    assert _pending_files(plugin) == []
+
+
+def _friend_file_message_event() -> dict[str, Any]:
+    """A message_receive carrying a file segment (no file_hash, per protocol)."""
+    return {
+        "event_type": "message_receive",
+        "data": {
+            "message_scene": "friend",
+            "peer_id": 10001,
+            "sender_id": 10001,
+            "message_seq": 300,
+            "time": 1700000000,
+            "segments": [
+                {
+                    "type": "file",
+                    "data": {
+                        "file_id": "file-1",
+                        "file_name": "report.pdf",
+                        "file_size": 1024,
+                    },
+                },
+            ],
+        },
+    }
+
+
+def _friend_file_upload_event() -> dict[str, Any]:
+    return {
+        "event_type": "friend_file_upload",
+        "data": {
+            "user_id": 10001,
+            "time": 1700000000,
+            "file_id": "file-1",
+            "file_name": "report.pdf",
+            "file_size": 1024,
+            "file_hash": "abc",
+        },
+    }
+
+
+def _text_message_event() -> dict[str, Any]:
+    """A plain private text message from the same peer."""
+    return {
+        "event_type": "message_receive",
+        "data": {
+            "message_scene": "friend",
+            "peer_id": 10001,
+            "sender_id": 10001,
+            "message_seq": 301,
+            "time": 1700000001,
+            "segments": [{"type": "text", "data": {"text": "帮我看看"}}],
+        },
+    }
+
+
+def _pending_files(plugin: MilkyPlugin) -> list[dict[str, object]]:
+    """Flatten all pending file entries across chats."""
+    pending: list[dict[str, object]] = []
+    for entries in getattr(plugin, "_pending_files").values():
+        pending.extend(entries)
+    return pending
+
+
+def _patch_downloads(plugin: MilkyPlugin):
+    """Neutralize real HTTP downloads for tests that don't assert on them."""
+    return patch.object(
+        plugin, "_stream_download_url", new=AsyncMock(return_value=None)
+    )
 
 
 async def test_handle_inbound_ignores_non_message_event() -> None:

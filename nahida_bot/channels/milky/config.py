@@ -109,6 +109,15 @@ class MilkyPluginConfig(BaseModel):
         ge=1,
         description="Maximum peer->scene entries retained for outbound routing.",
     )
+    pending_file_ttl_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        description=(
+            "How long a received file stays in the pending-file queue before "
+            "expiring. Pending files are injected into the next message that "
+            "triggers the agent for the same chat."
+        ),
+    )
 
     @field_validator(
         "allowed_friends",

@@ -355,6 +355,18 @@ def parse_incoming_segments(raw_segments: object) -> list[IncomingSegment]:
     ]
 
 
+def is_file_only_segments(segments: list[IncomingSegment]) -> bool:
+    """Return True when every segment is a file segment (pure file delivery).
+
+    QQ clients cannot attach text alongside a file in the same message, so a
+    message whose segments are all file segments carries no user instruction
+    and is treated as a pending file delivery rather than an agent turn.
+    """
+    return bool(segments) and all(
+        isinstance(segment, IncomingFileSegment) for segment in segments
+    )
+
+
 def parse_incoming_segment(raw: dict[str, Any]) -> IncomingSegment:
     """Parse one Milky incoming segment dictionary."""
     segment_type = field_str(raw, "type")

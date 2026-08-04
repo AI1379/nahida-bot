@@ -19,6 +19,7 @@ from nahida_bot.channels.milky.segments import (
     IncomingReplySegment,
     IncomingSegment,
     IncomingVideoSegment,
+    is_file_only_segments,
     parse_incoming_segments,
     render_segments_plain_text,
 )
@@ -84,6 +85,7 @@ class MilkyMessageConverter:
             is_group
             and not self._observe_untriggered_group_messages
             and not self._should_accept_group_message(segments)
+            and not is_file_only_segments(segments)
         ):
             return None
 
