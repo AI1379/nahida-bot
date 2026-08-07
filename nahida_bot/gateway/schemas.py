@@ -445,3 +445,36 @@ class TokenEventsResponse(BaseModel):
 
 class TokenClearResponse(BaseModel):
     cleared: bool
+
+
+# -- Processes ---------------------------------------------------------------
+
+
+class ProcessInfoResponse(BaseModel):
+    name: str
+    owner: str
+    status: str
+    pid: int | None = None
+    restart_count: int = 0
+    exit_code: int | None = None
+    started_at: str | None = None
+    last_error: str | None = None
+    health: str = "unknown"
+    restart_policy: str = "on-failure"
+    command: str = ""
+
+
+class ProcessListResponse(BaseModel):
+    processes: list[ProcessInfoResponse]
+
+
+class ProcessLogsResponse(BaseModel):
+    name: str
+    stdout: list[str]
+    stderr: list[str]
+
+
+class ProcessActionResponse(BaseModel):
+    name: str
+    status: str
+    ok: bool = True

@@ -19,6 +19,9 @@ from nahida_bot.core.events import (
     MessageReceived,
     MessageSent,
     PluginErrorOccurred,
+    ProcessFailed,
+    ProcessStarted,
+    ProcessStopped,
 )
 from nahida_bot.core.logging import get_log_capture
 from nahida_bot.gateway.services.log_redaction import to_log_entry
@@ -109,6 +112,12 @@ class EventBroadcaster:
         ):
             self._subscriptions.append(
                 bus.subscribe(run_event_type, self._on_agent_run_event, priority=10)
+            )
+
+        # Supervised process lifecycle (SSH tunnels, frpc, sidecars).
+        for process_event_type in (ProcessStarted, ProcessStopped, ProcessFailed):
+            self._subscriptions.append(
+                bus.subscribe(process_event_type, self._on_process_event, priority=10)
             )
 
         # Bridge log capture
@@ -255,6 +264,27 @@ class EventBroadcaster:
                 "workspace_id": workspace_id,
                 "terminal": terminal,
                 "error": error,
+            },
+        )
+
+    async def _on_process_event(self, event: Event[Any], ctx: Any) -> None:
+        if isinstance(event, ProcessStarted):
+            event_name = "process.started"
+        elif isinstance(event, ProcessStopped):
+            event_name = "process.stopped"
+        else:
+            event_name = "process.failed"
+        payload = event.payload
+        self._push_event(
+            event_name,
+            {
+                "name": payload.name,
+                "owner": payload.owner,
+                "status": payload.status,
+                "pid": payload.pid,
+                "restart_count": payload.restart_count,
+                "exit_code": payload.exit_code,
+                "error": payload.error,
             },
         )
 

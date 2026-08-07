@@ -400,6 +400,101 @@ class MotionPlannerConfigModel(BaseModel):
     timeout_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
 
 
+RestartPolicy = Literal["no", "on-failure", "always"]
+HealthCheckType = Literal["tcp_port", "none"]
+
+
+class ProcessHealthCheckConfig(BaseModel):
+    """Health probe for a supervised process.
+
+    Phase 1 only supports ``tcp_port`` (open a TCP connection to ``host:port``
+    and treat success as healthy). ``none`` disables probing entirely.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    type: HealthCheckType = "none"
+    host: str = "127.0.0.1"
+    port: int = Field(default=0, ge=0, le=65535)
+    interval_seconds: float = Field(default=15.0, ge=0.1)
+    timeout_seconds: float = Field(default=3.0, ge=0.1)
+    unhealthy_after: int = Field(default=3, ge=1)
+    start_period_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Grace period after start during which failures are not counted.",
+    )
+
+
+class ProcessSpec(BaseModel):
+    """One supervised process declaration.
+
+    ``command`` is executed via the shell when ``shell`` is true, otherwise it
+    is treated as the executable name and ``args`` as its argv list. Processes
+    do NOT inherit the bot process environment; only a small whitelist
+    (``PATH``, ``SYSTEMROOT`` on Windows, etc.) plus the user-declared ``env``
+    is passed down.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    command: str
+    args: list[str] = Field(default_factory=list)
+    shell: bool = True
+    env: dict[str, str] = Field(default_factory=dict)
+    working_dir: str | None = None
+    restart_policy: RestartPolicy | None = None
+    health_check: ProcessHealthCheckConfig = Field(
+        default_factory=ProcessHealthCheckConfig
+    )
+    depends_on: list[str] = Field(default_factory=list)
+    shutdown_timeout_seconds: float | None = None
+    startup_wait_seconds: float | None = None
+
+
+class ProcessDefaultsConfig(BaseModel):
+    """Supervisor-level defaults applied to every spec unless overridden.
+
+    Per-spec overrides live directly on :class:`ProcessSpec`
+    (``restart_policy``, ``shutdown_timeout_seconds``, ``startup_wait_seconds``).
+    Backoff and circuit-breaker knobs have no per-spec counterpart because they
+    govern the restart *loop*, not the process itself.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    restart_policy: RestartPolicy = "on-failure"
+    backoff_initial_seconds: float = Field(default=1.0, ge=0.0)
+    backoff_max_seconds: float = Field(default=60.0, ge=0.1)
+    backoff_factor: float = Field(default=2.0, ge=1.0)
+    restart_max_attempts: int = Field(
+        default=0, ge=0, description="0 = unlimited; >0 trips circuit breaker"
+    )
+    restart_window_seconds: float = Field(
+        default=300.0,
+        ge=1.0,
+        description="Sliding window for counting restart attempts",
+    )
+    shutdown_timeout_seconds: float = Field(default=10.0, ge=1.0)
+    startup_wait_seconds: float = Field(default=0.0, ge=0.0)
+    log_buffer_lines: int = Field(default=1000, ge=10)
+
+
+class ProcessSupervisorConfig(BaseModel):
+    """Top-level ``processes:`` configuration block.
+
+    ``defaults`` apply to every spec; per-spec fields override them. Specs are
+    keyed by process name (``[a-z0-9_-]+``), which must be unique across both
+    config-declared and plugin-contributed processes.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = True
+    defaults: ProcessDefaultsConfig = Field(default_factory=ProcessDefaultsConfig)
+    specs: dict[str, ProcessSpec] = Field(default_factory=dict)
+
+
 class Settings(BaseModel):
     """Main application settings."""
 
@@ -456,6 +551,7 @@ class Settings(BaseModel):
     memory: MemoryConfig = MemoryConfig()
     kb_auto_recall: KBAutoRecallConfig = KBAutoRecallConfig()
     identity: IdentityConfig = IdentityConfig()
+    processes: ProcessSupervisorConfig = ProcessSupervisorConfig()
 
 
 def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:

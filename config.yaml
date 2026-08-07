@@ -364,6 +364,49 @@ agent_runtime:
 #     grant_ttl_seconds: 300            # approved one-use grant lifetime
 #     max_grant_ttl_seconds: 900        # hard cap for /auth approve TTL
 
+# ── Processes（附属进程监管 / SSH 隧道 / frpc / sidecar）──
+# 把需要在服务端常驻的附属进程统一交给 bot 核心监管。
+# 关键：这些进程在所有 Channel/插件启用 *之前* 就绪，在它们 *之后* 才收尾，
+# 因此适合放需要先于 Channel 建立的 SSH 隧道、frpc、cloudflared 等。
+# 进程默认 *不* 继承 bot 进程环境，只有 PATH 等少量白名单 + 你声明的 env 会传入。
+# 密钥请放 .env，通过 ${VAR} 引用，不要写明文。
+# 详见 docs/design/process-supervisor.md
+#
+# processes:
+#   enabled: true                      # 总开关；false 则不拉起任何进程
+#   defaults:                          # 所有 spec 的默认值，可被单项覆盖
+#     restart_policy: "on-failure"     # no | on-failure | always
+#     backoff_initial_seconds: 1.0     # 崩溃后首次重启等待
+#     backoff_max_seconds: 60.0        # 指数退避上限
+#     backoff_factor: 2.0
+#     restart_max_attempts: 0          # 0=不限；>0 触发熔断（停止自动重启）
+#     restart_window_seconds: 300.0    # 统计重启次数的滑动窗口
+#     shutdown_timeout_seconds: 10.0   # SIGTERM 后多久 SIGKILL
+#     startup_wait_seconds: 0.0        # 启动后等待健康检查的宽限
+#     log_buffer_lines: 1000           # stdout/stderr 各自的环形缓冲行数
+#   specs:
+#     ssh-db-tunnel:
+#       command: "ssh -N -L 3306:db.internal:3306 bastion@example.com"
+#       shell: true                    # true=走 shell；false=execve（command 是可执行文件，args 是参数列表）
+#       env:
+#         SSH_KEY_PATH: "${SSH_KEY_PATH}"
+#       restart_policy: "always"
+#       depends_on: []                 # 同段内其他 spec 名，决定启动顺序（依赖者先就绪）
+#       shutdown_timeout_seconds: 8.0
+#       health_check:
+#         type: "tcp_port"             # tcp_port | none
+#         host: "127.0.0.1"
+#         port: 3306
+#         interval_seconds: 15.0       # 探测间隔
+#         timeout_seconds: 3.0         # 单次探测超时
+#         unhealthy_after: 3           # 连续失败 N 次才判不健康并触发重启
+#         start_period_seconds: 0.0    # 启动宽限期内失败不计入
+#     # frpc:
+#     #   command: "frpc -c ./frpc.ini"
+#     #   restart_policy: "always"
+#     #   health_check:
+#     #     type: "none"
+
 # ── Scheduler ──────────────────────────────────────────
 # 控制定时任务调度行为。
 # 以下均为默认值，不写则使用默认值。

@@ -54,6 +54,10 @@ from nahida_bot_sdk.events import (  # noqa: F401
     PluginUnloaded,
     PokeEvent,
     PokePayload,
+    ProcessFailed,
+    ProcessPayload,
+    ProcessStarted,
+    ProcessStopped,
 )
 
 if TYPE_CHECKING:

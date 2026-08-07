@@ -26,7 +26,8 @@
 - **Agent Orchestration（子机协作）**：主 Agent 可 spawn 子 Agent 执行后台任务，支持 spawn / wait / stop 全生命周期~
 - **Cron & Dreaming（时之沙）**：定时任务调度 + 记忆 dreaming（LLM 驱动的周期性记忆整理与巩固）~
 - **MCP Support（外道魔术）**：Model Context Protocol 客户端集成，对接外部 MCP 工具服务器~
-- **Gateway & WebUI（世界树控制台）**：FastAPI REST API + Vue 3 SPA 运维面板 + SSE 实时事件推送；密码/OTP 登录、配置可视化管理、CRON/Session/文件/知识库/插件/Skills/用量管理~
+- **Process Supervisor（眷属守护）**：把 SSH 隧道、frpc、cloudflared 等 sidecar 统一交给核心监管——声明式配置、确定性生命周期（先于 Channel 启动 / 晚于 Channel 停止）、崩溃退避重启 + 熔断、`tcp_port` 健康检查、`/api/processes` 运维面板与 `process.*` SSE 事件~
+- **Gateway & WebUI（世界树控制台）**：FastAPI REST API + Vue 3 SPA 运维面板 + SSE 实时事件推送；密码/OTP 登录、配置可视化管理、CRON/Session/文件/知识库/插件/Skills/进程/用量管理~
 - **Ops-friendly（无忧除虫）**：可观测、可诊断、好发布，就算遇到了 Bug 也能轻松捉虫🐞！
 
 ## 📈 成长进度（项目状态）
@@ -60,15 +61,16 @@
 - [x] 群聊上下文注入：observed-only 消息记录 + 触发时注入最近群上下文
 - [x] 内置命令 12 个：`/reset`、`/new`、`/status`、`/model`、`/reasoning`、`/help`、`/memory`、`/agents`、`/agent_stop`、`/agent_wait`、`/cron`、`/stop`
 - [x] 内置工具 16+：`workspace_read/write`、`send_local_attachment`、`memory_read/write`、`exec`、`web_fetch`、`plan`、`cron_*`、`agent_*`、`image_understand`，外加知识库检索、生图等插件工具
-- [x] Gateway REST API：`/api/health`、`/api/status`、`/api/send`、`/api/sessions`、`/api/cron`（全局管理）、`/api/config`（读写/校验/备份）、`/api/files`（workspace 文件管理）、`/api/kb`（知识库导入与检索）、`/api/plugins`、`/api/skills`、`/api/tokens`（用量）、`/api/messages`、`/api/auth`（登录/登出/session）、`/api/events/stream`（SSE）
+- [x] Gateway REST API：`/api/health`、`/api/status`、`/api/send`、`/api/sessions`、`/api/cron`（全局管理）、`/api/config`（读写/校验/备份）、`/api/files`（workspace 文件管理）、`/api/kb`（知识库导入与检索）、`/api/plugins`、`/api/skills`、`/api/processes`（sidecar 进程监管）、`/api/tokens`（用量）、`/api/messages`、`/api/auth`（登录/登出/session）、`/api/events/stream`（SSE）
 - [x] WebUI 运维面板：Vue 3 + Vite + shadcn-vue + Reka UI，首页状态总览、配置页（YAML 编辑/校验/保存/备份）、CRON 管理、Session 分组浏览、文件管理、知识库导入、插件管理、Skills、用量统计、系统日志、关于页
 - [x] WebUI 登录体系：管理员密码（Argon2id）+ Session Cookie + 登录限速；Bearer Token 兼容脚本/API 调用
-- [x] SSE 实时事件：`status.updated`、`usage.recorded`、`cron.*`、`session.updated`、`config.saved`、`file.updated`
+- [x] SSE 实时事件：`status.updated`、`usage.recorded`、`cron.*`、`session.updated`、`config.saved`、`file.updated`、`process.*`
 - [x] Usage Ledger：SQLite 持久化 token 统计（input/output/cached/reasoning），支持按 provider/model/session/source_tag 聚合
 - [x] Cron Session 模式：`main`（注入主 session）、`isolated`（独立 session）、`named`（持久命名 session，跨 run 累积上下文）
 - [x] 回复信号协议：`NO_REPLY` 静默抑制 + `HEARTBEAT_OK` 心跳空转保护
+- [x] Process Supervisor：核心进程监管服务，声明式配置 SSH 隧道/frpc/cloudflared 等 sidecar，确定性生命周期、退避重启 + 熔断、`tcp_port` 健康检查、`/api/processes` 面板与 `process.*` SSE 事件
 - [x] SDK 独立成包：`nahida-bot-sdk` 作为 workspace 成员，插件作者可用稳定 API 开发与发布
-- [x] 设计文档 17 份：Agent Core、ChatAddress/SessionID、Cross-Session、Memory System/Scoping、Agent Compaction、Model Routing、Runtime Settings、WebUI、Plugin Web Panels、Cron/WebAPI、OneBot Channel、Conversation Joiner、Knowledge Base、Desktop App、Person Identity、MCP Dynamic Servers、Tool-Produced Image Media
+- [x] 设计文档 18 份：Agent Core、ChatAddress/SessionID、Cross-Session、Memory System/Scoping、Agent Compaction、Model Routing、Runtime Settings、WebUI、Plugin Web Panels、Cron/WebAPI、OneBot Channel、Conversation Joiner、Knowledge Base、Desktop App、Person Identity、MCP Dynamic Servers、Tool-Produced Image Media、Process Supervisor
 
 ### 🚧 正在进行的光合作用
 

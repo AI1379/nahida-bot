@@ -30,6 +30,7 @@ from nahida_bot.core.exceptions import ApplicationError, StartupError
 from nahida_bot.core.logging import configure_logging
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.tasks import TaskManager
+from nahida_bot.core.process_supervisor import ProcessSupervisor
 from nahida_bot.plugins.commands import CommandMatcher
 
 if TYPE_CHECKING:
@@ -130,6 +131,7 @@ class Application:
         self._metrics: MetricsCollector = MetricsCollector()
         self.temp_file_service: Any | None = None
         self.task_manager = TaskManager()
+        self.process_supervisor: ProcessSupervisor | None = None
 
         logger.debug(
             "application.instance_created",
@@ -165,6 +167,19 @@ class Application:
                 raise StartupError(
                     f"Lifecycle handler(s) failed during init: {details}"
                 )
+
+            # Start the process supervisor BEFORE any channel/plugin enables so
+            # that infrastructure (SSH tunnels, frpc, …) is up before channels
+            # that depend on it connect. It is stopped last during shutdown.
+            self.process_supervisor = ProcessSupervisor(
+                self.settings.processes, self.event_bus
+            )
+            try:
+                await self.process_supervisor.start()
+            except Exception as exc:
+                raise StartupError(
+                    f"Failed to start process supervisor: {exc}"
+                ) from exc
 
             # Initialize plugin manager early so pre-agent plugins can register
             # provider types before ProviderManager is built.
@@ -1103,6 +1118,9 @@ class Application:
                 logger.warning("application.stop_without_start")
                 if self.plugin_manager is not None:
                     await self.plugin_manager.shutdown_all()
+                # Supervisor may have started during a partially-failed init.
+                if self.process_supervisor is not None:
+                    await self.process_supervisor.shutdown(timeout=10.0)
             else:
                 logger.info(
                     "application.stopping",
@@ -1138,6 +1156,12 @@ class Application:
                 # Shut down plugins before event bus
                 if self.plugin_manager is not None:
                     await self.plugin_manager.shutdown_all()
+
+                # Shut down the process supervisor LAST (after plugins/channels
+                # disconnect), so sidecars such as SSH tunnels remain available
+                # while dependent channels are closing their connections.
+                if self.process_supervisor is not None:
+                    await self.process_supervisor.shutdown(timeout=10.0)
 
                 self._started = False
 

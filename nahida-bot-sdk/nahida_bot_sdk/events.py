@@ -268,3 +268,40 @@ class AgentRunFinished(Event[AgentRunPayload]):
     Covers natural completion, max_steps, provider error, and crashes. Exactly
     one of ``AgentRunCancelled`` / ``AgentRunFinished`` is emitted per run.
     """
+
+
+# ── Process Supervisor Events ─────────────────────────────────
+
+
+@dataclass(slots=True, frozen=True)
+class ProcessPayload:
+    """Payload for supervised-process lifecycle events.
+
+    Emitted by the core :class:`ProcessSupervisor` when a managed OS subprocess
+    changes state. The ``status`` field mirrors :class:`ProcessInfo.status`.
+    Plugins and the WebUI subscribe to these for unified observability of
+    sidecars (SSH tunnels, frpc, cloudflared, etc.).
+    """
+
+    name: str
+    owner: str
+    status: str
+    pid: int | None
+    restart_count: int
+    exit_code: int | None
+    error: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class ProcessStarted(Event[ProcessPayload]):
+    """Raised when a supervised process enters the running state."""
+
+
+@dataclass(slots=True, frozen=True)
+class ProcessStopped(Event[ProcessPayload]):
+    """Raised when a supervised process stops (clean exit or manual stop)."""
+
+
+@dataclass(slots=True, frozen=True)
+class ProcessFailed(Event[ProcessPayload]):
+    """Raised when a supervised process fails or trips the restart circuit breaker."""

@@ -160,6 +160,7 @@ class WebAPIApp:
         from nahida_bot.gateway.routes.messages import router as messages_router
         from nahida_bot.gateway.routes.memory import router as memory_router
         from nahida_bot.gateway.routes.plugins import router as plugins_router
+        from nahida_bot.gateway.routes.processes import router as processes_router
         from nahida_bot.gateway.routes.sessions import router as sessions_router
         from nahida_bot.gateway.routes.skills import router as skills_router
         from nahida_bot.gateway.routes.speech import (
@@ -224,6 +225,7 @@ class WebAPIApp:
         app.include_router(tokens_router, dependencies=[Depends(require_token)])
         app.include_router(memory_router, dependencies=[Depends(require_token)])
         app.include_router(plugins_router, dependencies=[Depends(require_token)])
+        app.include_router(processes_router, dependencies=[Depends(require_token)])
         app.include_router(skills_router, dependencies=[Depends(require_token)])
         app.include_router(kb_router, dependencies=[Depends(require_token)])
         app.include_router(identity_router, dependencies=[Depends(require_token)])
