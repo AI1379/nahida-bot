@@ -14,6 +14,9 @@ export type SseEventType =
   | "cron.failed"
   | "cron.updated"
   | "config.saved"
+  | "process.started"
+  | "process.stopped"
+  | "process.failed"
   | "ping";
 
 export type LogEntryHandler = (entry: LogEntry) => void;
@@ -54,6 +57,11 @@ function invalidateOnEvent(eventType: string) {
       break;
     case "config.saved":
       queryClient.invalidateQueries({ queryKey: ["config", "current"] });
+      break;
+    case "process.started":
+    case "process.stopped":
+    case "process.failed":
+      queryClient.invalidateQueries({ queryKey: ["processes"] });
       break;
   }
 }
@@ -118,6 +126,9 @@ async function startConnection() {
     "cron.failed",
     "cron.updated",
     "config.saved",
+    "process.started",
+    "process.stopped",
+    "process.failed",
   ] as const;
 
   for (const type of eventTypes) {

@@ -737,3 +737,49 @@ export interface KbActionResponse {
   status: string;
   detail: string;
 }
+
+// -- Processes (sidecar supervisor) --
+
+export type ProcessStatus =
+  | "pending"
+  | "starting"
+  | "running"
+  | "unhealthy"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "disabled";
+
+export type ProcessHealth = "unknown" | "healthy" | "unhealthy";
+
+export type ProcessAction = "start" | "stop" | "restart";
+
+export interface ProcessInfo {
+  name: string;
+  owner: string;
+  status: ProcessStatus;
+  pid: number | null;
+  restart_count: number;
+  exit_code: number | null;
+  started_at: string | null;
+  last_error: string | null;
+  health: ProcessHealth;
+  restart_policy: string;
+  command: string;
+}
+
+export interface ProcessListResponse {
+  processes: ProcessInfo[];
+}
+
+export interface ProcessActionResponse {
+  name: string;
+  status: string;
+  ok: boolean;
+}
+
+export interface ProcessLogsResponse {
+  name: string;
+  stdout: string[];
+  stderr: string[];
+}

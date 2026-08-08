@@ -66,6 +66,10 @@ import type {
   KbBatchImportResponse,
   KbImportResponse,
   KbActionResponse,
+  ProcessAction,
+  ProcessActionResponse,
+  ProcessListResponse,
+  ProcessLogsResponse,
 } from "./schemas";
 
 export function useBootstrap() {
@@ -932,4 +936,53 @@ export function useKbCollectionStatuses(collections: ComputedRef<string[]>) {
       ]),
     ),
   );
+}
+
+// -- Processes --
+
+export function useProcessList() {
+  return useQuery<ProcessListResponse>({
+    queryKey: ["processes"],
+    queryFn: () => api.get("/processes"),
+    refetchInterval: 5000,
+  });
+}
+
+export function useProcessLogs(
+  name: Ref<string>,
+  enabled: Ref<boolean>,
+  limit = 200,
+) {
+  return useQuery<ProcessLogsResponse>({
+    queryKey: ["processes", "logs", name],
+    queryFn: () =>
+      api.get<ProcessLogsResponse>(
+        `/processes/${encodeURIComponent(name.value)}/logs?limit=${limit}`,
+      ),
+    enabled,
+    refetchInterval: 3000,
+  });
+}
+
+export function useProcessAction() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+
+  return useMutation<
+    ProcessActionResponse,
+    Error,
+    { name: string; action: ProcessAction }
+  >({
+    mutationFn: ({ name, action }) =>
+      api.post<ProcessActionResponse>(
+        `/processes/${encodeURIComponent(name)}/${action}`,
+      ),
+    onSuccess(data, vars) {
+      qc.invalidateQueries({ queryKey: ["processes"] });
+      toast.add(`Process ${data.name}: ${vars.action} done.`, "success");
+    },
+    onError(err) {
+      toast.add(`Process action failed: ${toApiError(err).detail}`, "error");
+    },
+  });
 }

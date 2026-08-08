@@ -92,6 +92,12 @@ const routes: RouteRecordRaw[] = [
         meta: { label: "Plugins", icon: "Plug" },
       },
       {
+        path: "processes",
+        name: "processes",
+        component: () => import("@/features/processes/ProcessesPage.vue"),
+        meta: { label: "Processes", icon: "Boxes" },
+      },
+      {
         path: "kb",
         name: "kb",
         component: () => import("@/features/kb/KbPage.vue"),
