@@ -457,6 +457,21 @@ _SCHEMA_MIGRATIONS = [
     -- Columns are added by the PRAGMA-guarded post-migration helper so a
     -- process interrupted between ALTER statements can recover on restart.
     """,
+    # Migration 024: ChatGPT Codex OAuth token storage. One row per
+    # configured codex provider (keyed by the providers.<id> string used in
+    # config.yaml). Refresh tokens are long-lived secrets — keep them here
+    # rather than in env/config so rotation does not require a restart.
+    """
+    CREATE TABLE IF NOT EXISTS codex_tokens (
+        provider_id    TEXT    PRIMARY KEY,
+        refresh_token  TEXT    NOT NULL,
+        access_token   TEXT    NOT NULL DEFAULT '',
+        expires_at     INTEGER NOT NULL DEFAULT 0,
+        account_id     TEXT    NOT NULL DEFAULT '',
+        created_at     TEXT    NOT NULL,
+        updated_at     TEXT    NOT NULL
+    );
+    """,
 ]
 
 
