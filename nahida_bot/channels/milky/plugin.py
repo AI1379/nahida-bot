@@ -56,6 +56,7 @@ from nahida_bot.core.message_context import (
     sender_context_from_values,
 )
 from nahida_bot.core.router import MessageRouter
+from nahida_bot.agent.media.store import MediaPayload, MediaStore
 from nahida_bot.plugins.base import (
     InboundAttachment,
     InboundMessage,
@@ -1523,13 +1524,17 @@ class MilkyPlugin(Plugin):
     async def _stream_download_url(
         self, url: str, *, file_name: str, file_id: str
     ) -> MediaDownloadResult | None:
-        """Download *url* with SSRF protection, size limit, and atomic write."""
+        """Download *url* with SSRF protection, a hard size limit, and caching.
+
+        Writes through the shared MediaCache when available (so the file is
+        TTL-cleaned and deduplicated across receives / the agent resolver),
+        and falls back to a direct write into ``media_download_dir`` only
+        when no shared cache is configured (e.g. running without a database).
+        """
         import hashlib
         import ipaddress
         import socket
-        import tempfile
 
-        import httpx
         from urllib.parse import urlparse
 
         # --- SSRF / host validation ---------------------------------------
@@ -1560,10 +1565,110 @@ class MilkyPlugin(Plugin):
                 except ValueError:
                     continue
 
-        # --- Build unique destination path --------------------------------
+        store = self._media_store()
+        cache_key = (
+            f"milky:{self.channel_id}:{file_id}"
+            if file_id
+            else (
+                f"milky:{self.channel_id}:url:"
+                f"{hashlib.sha256(url.encode()).hexdigest()}"
+            )
+        )
+        if store is not None:
+            return await self._download_via_cache(
+                store,
+                cache_key,
+                url,
+                file_name=file_name,
+                file_id=file_id,
+            )
+        return await self._download_via_legacy_dir(
+            url, file_name=file_name, file_id=file_id
+        )
+
+    def _media_store(self) -> MediaStore | None:
+        """Return the shared MediaStore, or None when unavailable."""
+        getter = getattr(self.api, "get_media_store", None)
+        if not callable(getter):
+            return None
+        try:
+            store = getter()
+            return store if isinstance(store, MediaStore) else None
+        except Exception:  # noqa: BLE001 - cache access must never break download
+            return None
+
+    async def _download_via_cache(
+        self,
+        store: MediaStore,
+        cache_key: str,
+        url: str,
+        *,
+        file_name: str,
+        file_id: str,
+    ) -> MediaDownloadResult | None:
+        """Download *url* into the shared MediaCache and return a result."""
+        import httpx
+
+        safe_name = file_name or _extract_filename_from_url(url) or "download"
+        try:
+
+            async def loader() -> MediaPayload:
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    async with http_client.stream(
+                        "GET", url, follow_redirects=False
+                    ) as response:
+                        response.raise_for_status()
+                        if not self._check_content_length(response, file_id=file_id):
+                            raise RuntimeError("download exceeds size limit")
+                        data = await self._read_streamed_body(response, file_id=file_id)
+                        if data is None:
+                            raise RuntimeError("download exceeds size limit")
+                        return MediaPayload(
+                            data=data,
+                            suffix=_suffix_for(file_name, url),
+                            mime_type=response.headers.get("content-type", ""),
+                            file_name=safe_name,
+                            file_size=len(data),
+                        )
+
+            entry = await store.get_or_create(cache_key, loader)
+        except Exception as exc:
+            logger.warning(
+                "milky.download_media_failed",
+                file_id=file_id,
+                error=str(exc),
+            )
+            return None
+
+        logger.info(
+            "milky.file_downloaded",
+            file_id=file_id,
+            path=entry.path,
+            file_size=entry.file_size,
+        )
+        return MediaDownloadResult(
+            path=entry.path,
+            file_name=entry.file_name or safe_name,
+            mime_type=entry.mime_type,
+            file_size=entry.file_size,
+        )
+
+    async def _download_via_legacy_dir(
+        self, url: str, *, file_name: str, file_id: str
+    ) -> MediaDownloadResult | None:
+        """Fallback download into ``media_download_dir`` (no shared cache).
+
+        Only used when the application has no MediaCache (e.g. running without
+        a database). This path exists only for standalone plugin tests or
+        integrations that do not provide the application media store.
+        """
+        import hashlib
+        import tempfile
+
+        import httpx
+
         media_dir = Path(self._config.media_download_dir)
         media_dir.mkdir(parents=True, exist_ok=True)
-
         hash_prefix = hashlib.sha256((file_id or url).encode()).hexdigest()[:16]
         safe_name = (
             _safe_filename(file_name, fallback="download")
@@ -1575,61 +1680,33 @@ class MilkyPlugin(Plugin):
         )
         dest_path = media_dir / f"{hash_prefix}_{safe_name}"
 
-        # --- Stream to temp file, then atomically rename ------------------
         try:
             async with httpx.AsyncClient(timeout=30.0) as http_client:
                 async with http_client.stream(
                     "GET", url, follow_redirects=False
                 ) as response:
                     response.raise_for_status()
-
-                    content_length = response.headers.get("content-length")
-                    if content_length:
-                        try:
-                            if int(content_length) > self._MAX_DOWNLOAD_BYTES:
-                                logger.warning(
-                                    "milky.download_too_large",
-                                    file_id=file_id,
-                                    content_length=int(content_length),
-                                    max_bytes=self._MAX_DOWNLOAD_BYTES,
-                                )
-                                return None
-                        except ValueError:
-                            pass
-
+                    if not self._check_content_length(response, file_id=file_id):
+                        return None
                     tmp_fd, tmp_path = tempfile.mkstemp(
                         suffix=".tmp", dir=str(media_dir)
                     )
-                    download_ok = False
+                    ok = False
                     try:
-                        written = 0
-                        async for chunk in response.aiter_bytes():
-                            written += len(chunk)
-                            if written > self._MAX_DOWNLOAD_BYTES:
-                                break
-                            os.write(tmp_fd, chunk)
-                        else:
-                            download_ok = True
+                        ok = await self._write_streamed_body(
+                            response, tmp_fd, file_id=file_id
+                        )
                     finally:
                         os.close(tmp_fd)
-                        if not download_ok:
-                            try:
-                                os.unlink(tmp_path)
-                            except OSError:
-                                pass
-
-                    if not download_ok:
-                        logger.warning(
-                            "milky.download_too_large",
-                            file_id=file_id,
-                            max_bytes=self._MAX_DOWNLOAD_BYTES,
-                        )
+                    if not ok:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
                         return None
-
+                    mime_type = response.headers.get("content-type", "")
             os.replace(tmp_path, str(dest_path))
             file_size = dest_path.stat().st_size
-            mime_type = response.headers.get("content-type", "")
-
             logger.info(
                 "milky.file_downloaded",
                 file_id=file_id,
@@ -1649,6 +1726,56 @@ class MilkyPlugin(Plugin):
                 error=str(exc),
             )
             return None
+
+    def _check_content_length(self, response: Any, *, file_id: str) -> bool:
+        """Return False (and log) if the announced size exceeds the limit."""
+        content_length = response.headers.get("content-length")
+        if not content_length:
+            return True
+        try:
+            size = int(content_length)
+        except ValueError:
+            return True
+        if size > self._MAX_DOWNLOAD_BYTES:
+            logger.warning(
+                "milky.download_too_large",
+                file_id=file_id,
+                content_length=size,
+                max_bytes=self._MAX_DOWNLOAD_BYTES,
+            )
+            return False
+        return True
+
+    async def _read_streamed_body(self, response: Any, *, file_id: str) -> bytes | None:
+        """Read a streamed response into memory, enforcing the size limit."""
+        data = bytearray()
+        async for chunk in response.aiter_bytes():
+            data.extend(chunk)
+            if len(data) > self._MAX_DOWNLOAD_BYTES:
+                logger.warning(
+                    "milky.download_too_large",
+                    file_id=file_id,
+                    max_bytes=self._MAX_DOWNLOAD_BYTES,
+                )
+                return None
+        return bytes(data)
+
+    async def _write_streamed_body(
+        self, response: Any, fd: int, *, file_id: str
+    ) -> bool:
+        """Stream a response to an open file descriptor with a size limit."""
+        written = 0
+        async for chunk in response.aiter_bytes():
+            written += len(chunk)
+            if written > self._MAX_DOWNLOAD_BYTES:
+                logger.warning(
+                    "milky.download_too_large",
+                    file_id=file_id,
+                    max_bytes=self._MAX_DOWNLOAD_BYTES,
+                )
+                return False
+            os.write(fd, chunk)
+        return True
 
     def _register_file_download_tool(self) -> None:
         """Register ``milky_download_file`` tool for the agent."""
@@ -1811,3 +1938,15 @@ def _safe_filename(name: str, *, fallback: str) -> str:
     if candidate in {"", ".", ".."}:
         candidate = fallback
     return candidate
+
+
+def _suffix_for(file_name: str, url: str) -> str:
+    """Derive a lowercase file extension (with leading dot) for a cache entry."""
+    for candidate in (file_name, _extract_filename_from_url(url)):
+        name = candidate.replace("\\", "/").rsplit("/", 1)[-1]
+        if "." not in name:
+            continue
+        ext = re.sub(r"[^A-Za-z0-9]", "", name.rsplit(".", 1)[1])[:8]
+        if ext:
+            return f".{ext.lower()}"
+    return ""

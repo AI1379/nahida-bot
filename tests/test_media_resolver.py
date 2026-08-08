@@ -27,14 +27,12 @@ def policy() -> MediaPolicy:
         max_image_bytes=1024 * 1024,
         supported_mime_types=("image/jpeg", "image/png", "image/webp"),
         max_images_per_turn=4,
-        cache_ttl_seconds=3600,
-        cache_dir="",
     )
 
 
 @pytest.fixture
 def resolver(cache_dir: Path, policy: MediaPolicy) -> MediaResolver:
-    cache = MediaCache(cache_dir, ttl_seconds=policy.cache_ttl_seconds)
+    cache = MediaCache(cache_dir, ttl_seconds=3600)
     return MediaResolver(cache=cache, policy=policy)
 
 
@@ -135,8 +133,6 @@ class TestMediaResolver:
             max_image_bytes=1024 * 1024,
             supported_mime_types=("image/jpeg", "image/png", "image/webp"),
             max_images_per_turn=1,
-            cache_ttl_seconds=3600,
-            cache_dir="",
         )
         cache = MediaCache(cache_dir, ttl_seconds=3600)
         resolver = MediaResolver(cache=cache, policy=policy)

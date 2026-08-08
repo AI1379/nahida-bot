@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -516,6 +517,45 @@ class TestTelegramDownloadMedia:
 
             assert result is not None
             assert result.path == dest
+
+    async def test_download_media_cache_hit_skips_platform_lookup(
+        self, tmp_path: Path
+    ) -> None:
+        from nahida_bot.agent.media.cache import MediaCache
+        from nahida_bot.agent.media.store import MediaStore
+
+        cache = MediaCache(tmp_path / "media_cache", ttl_seconds=3600)
+        api = RecordingMockBotAPI()
+        api.get_media_store = lambda: MediaStore(cache)  # type: ignore[attr-defined]
+        plugin = TelegramPlugin(api=api, manifest=_make_manifest())
+
+        mock_bot = AsyncMock()
+        mock_file = MagicMock()
+        mock_file.file_path = "documents/file.pdf"
+        mock_bot.get_file.return_value = mock_file
+
+        async def _fake_download(fp: str, destination: object = None) -> None:
+            assert destination is not None
+            destination.write(b"cached data")  # type: ignore[union-attr]
+
+        mock_bot.download_file.side_effect = _fake_download
+        plugin._bot = mock_bot
+
+        first = await plugin.download_media(
+            "file-id", destination=str(tmp_path / "requested.pdf")
+        )
+        assert first is not None
+        assert first.file_name == "requested.pdf"
+        assert str(tmp_path / "media_cache") in first.path
+
+        mock_bot.get_file.side_effect = RuntimeError("platform unavailable")
+        second = await plugin.download_media(
+            "file-id", destination=str(tmp_path / "renamed.pdf")
+        )
+        assert second is not None
+        assert second.path == first.path
+        assert second.file_name == "renamed.pdf"
+        mock_bot.get_file.assert_awaited_once_with("file-id")
 
     async def test_download_media_returns_none_without_bot(self) -> None:
         api = RecordingMockBotAPI()

@@ -22,6 +22,7 @@ from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
 from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.router import MessageRouter
+from nahida_bot.agent.media.store import MediaPayload, MediaStore
 from nahida_bot.plugins.base import (
     Attachment,
     MediaDownloadResult,
@@ -535,7 +536,32 @@ class TelegramPlugin(Plugin):
     async def download_media(
         self, file_id: str, destination: str | None = None
     ) -> MediaDownloadResult | None:
-        """Download a file from Telegram by file_id."""
+        """Download a file from Telegram by file_id.
+
+        Writes through the shared MediaCache when available (deduplicating
+        repeated downloads of the same ``file_id``), and falls back to a
+        direct write into ``media_download_dir`` only when no cache is
+        configured (e.g. running without a database).
+        """
+        requested_name = _basename(destination) if destination else ""
+        store = self._media_store()
+        cache_key = f"telegram:{self.channel_id}:{file_id}"
+        if store is not None:
+            existing = await store.get_entry(cache_key)
+            if existing is not None and existing.path:
+                size = existing.file_size
+                try:
+                    if not size:
+                        size = Path(existing.path).stat().st_size
+                except OSError:
+                    size = 0
+                return MediaDownloadResult(
+                    path=existing.path,
+                    file_name=requested_name or existing.file_name or file_id,
+                    mime_type=existing.mime_type,
+                    file_size=size,
+                )
+
         if self._bot is None:
             return None
 
@@ -548,12 +574,88 @@ class TelegramPlugin(Plugin):
         if not file.file_path:
             return None
 
+        if store is not None:
+            return await self._download_via_cache(
+                store,
+                cache_key,
+                file.file_path,
+                file_id=file_id,
+                requested_name=requested_name,
+            )
+        return await self._download_via_legacy_dir(
+            file.file_path, file_id=file_id, destination=destination
+        )
+
+    def _media_store(self) -> MediaStore | None:
+        """Return the shared MediaStore, or None when unavailable."""
+        getter = getattr(self.api, "get_media_store", None)
+        if not callable(getter):
+            return None
+        try:
+            store = getter()
+            return store if isinstance(store, MediaStore) else None
+        except Exception:  # noqa: BLE001 - cache access must never break download
+            return None
+
+    async def _download_via_cache(
+        self,
+        store: MediaStore,
+        cache_key: str,
+        file_path: str,
+        *,
+        file_id: str,
+        requested_name: str = "",
+    ) -> MediaDownloadResult | None:
+        """Download a Telegram file into the shared MediaCache."""
+        display_name = requested_name or _basename(file_path) or f"{file_id}.dat"
+        try:
+
+            async def loader() -> MediaPayload:
+                import io
+
+                buf = io.BytesIO()
+                await self._bot.download_file(  # type: ignore[union-attr]
+                    file_path, destination=buf
+                )
+                data = buf.getvalue()
+                return MediaPayload(
+                    data=data,
+                    suffix=_suffix_from_name(file_path),
+                    file_name=display_name,
+                    file_size=len(data),
+                )
+
+            entry = await store.get_or_create(cache_key, loader)
+        except Exception:  # noqa: BLE001
+            logger.exception("telegram.download_failed", file_id=file_id)
+            return None
+        logger.info(
+            "telegram.file_downloaded",
+            file_id=file_id,
+            path=entry.path,
+            file_size=entry.file_size,
+        )
+        return MediaDownloadResult(
+            path=entry.path,
+            file_name=requested_name or entry.file_name or display_name,
+            mime_type=entry.mime_type,
+            file_size=entry.file_size,
+        )
+
+    async def _download_via_legacy_dir(
+        self,
+        file_path: str,
+        *,
+        file_id: str,
+        destination: str | None,
+    ) -> MediaDownloadResult | None:
+        """Fallback download into ``media_download_dir`` (no shared cache)."""
         media_dir = self.config.media_download_dir
         dest = Path(destination) if destination else Path(media_dir) / f"{file_id}.dat"
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            await self._bot.download_file(file.file_path, destination=str(dest))
+            await self._bot.download_file(file_path, destination=str(dest))  # type: ignore[union-attr]
         except Exception:  # noqa: BLE001
             logger.exception("telegram.download_failed", file_id=file_id)
             return None
@@ -676,3 +778,18 @@ def _outbound_log_fields(message: OutboundMessage) -> dict[str, object]:
         "reply_to": message.reply_to,
         "extra_keys": sorted(message.extra.keys()),
     }
+
+
+def _basename(value: str) -> str:
+    """Return the final path component of *value*."""
+    return value.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _suffix_from_name(name: str) -> str:
+    """Derive a lowercase extension (with leading dot) from a file name/path."""
+    candidate = _basename(name)
+    if "." not in candidate:
+        return ""
+    ext = candidate.rsplit(".", 1)[1]
+    ext = "".join(ch for ch in ext if ch.isalnum())[:8]
+    return f".{ext.lower()}" if ext else ""

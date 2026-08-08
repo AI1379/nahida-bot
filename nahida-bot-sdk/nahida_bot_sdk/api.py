@@ -41,6 +41,24 @@ class LLMUsage:
     reasoning_tokens: int = 0
 
 
+class MediaStorePort(Protocol):
+    """Small media-store surface exposed to channel plugins."""
+
+    async def get_entry(self, cache_key: str) -> Any | None:
+        """Return a live cached entry for ``cache_key``."""
+        ...
+
+    async def get_or_create(
+        self, cache_key: str, loader: Callable[[], Awaitable[Any]]
+    ) -> Any:
+        """Run the loader once for a cache key and return its entry."""
+        ...
+
+    async def invalidate(self, cache_key: str) -> None:
+        """Remove a cache entry."""
+        ...
+
+
 @dataclass(slots=True)
 class LLMResponse:
     """Normalized response from a single-turn LLM chat call."""
@@ -441,6 +459,14 @@ class BotAPI(Protocol):
         force_refresh: bool = False,
     ) -> list[dict[str, Any]]:
         """Query provider-reported balances or subscription quotas."""
+        ...
+
+    def get_media_store(self) -> MediaStorePort | None:
+        """Access the shared media store (None if unavailable).
+
+        Channel plugins use this so eager media downloads flow through the
+        same key locks, TTL, and cleanup as the agent resolver.
+        """
         ...
 
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:

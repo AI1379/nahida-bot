@@ -15,6 +15,7 @@ import httpx
 import structlog
 
 from nahida_bot.agent.media.cache import MediaCache
+from nahida_bot.agent.media.store import MediaPayload, MediaStore
 from nahida_bot.plugins.base import InboundAttachment
 
 logger = structlog.get_logger(__name__)
@@ -37,14 +38,16 @@ class ResolvedMedia:
 
 @dataclass(slots=True, frozen=True)
 class MediaPolicy:
-    """Configuration for media validation and caching."""
+    """Configuration for media validation and representation."""
 
     max_image_bytes: int = 10 * 1024 * 1024
     max_file_bytes: int = 50 * 1024 * 1024
     supported_mime_types: tuple[str, ...] = ("image/jpeg", "image/png", "image/webp")
     max_images_per_turn: int = 4
-    cache_ttl_seconds: int = 3600
-    cache_dir: str = ""
+
+
+class _MediaRejected(Exception):
+    """Raised by a cache loader when downloaded media fails policy checks."""
 
 
 class MediaResolver:
@@ -59,12 +62,12 @@ class MediaResolver:
 
     def __init__(
         self,
-        cache: MediaCache,
+        cache: MediaCache | MediaStore,
         policy: MediaPolicy,
         *,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._cache = cache
+        self._store = cache if isinstance(cache, MediaStore) else MediaStore(cache)
         self._policy = policy
         self._client = http_client
 
@@ -174,14 +177,18 @@ class MediaResolver:
         cache_key = self.cache_key(attachment)
 
         # Check cache first
-        cached = await self._cache.get(cache_key)
-        if cached is not None:
+        cached_entry = await self._store.get_entry(cache_key)
+        if cached_entry is not None:
             try:
-                data = await self._read_file(Path(cached))
-                mime = attachment.mime_type or self._detect_mime(data)
+                data = await self._read_file(Path(cached_entry.path))
+                mime = (
+                    attachment.mime_type
+                    or cached_entry.mime_type
+                    or self._detect_mime(data)
+                )
                 size = len(data)
                 if not self._validate(data, mime):
-                    await self._cache.invalidate(cache_key)
+                    await self._store.invalidate(cache_key)
                     return ResolvedMedia(
                         media_id=attachment.platform_id,
                         source="description_only",
@@ -196,7 +203,7 @@ class MediaResolver:
                     else ""
                 )
                 return ResolvedMedia(
-                    local_path=cached,
+                    local_path=cached_entry.path,
                     base64_data=b64,
                     mime_type=mime,
                     file_size=size,
@@ -206,14 +213,34 @@ class MediaResolver:
                     source="cache_hit",
                 )
             except OSError:
-                pass  # fall through to download
+                await self._store.invalidate(cache_key)
 
-        # Download
         try:
-            allow_private = bool(attachment.metadata.get("trusted_url"))
-            data, mime = await self._download(
-                attachment.url,
-                allow_private_network=allow_private,
+
+            async def loader() -> MediaPayload:
+                allow_private = bool(attachment.metadata.get("trusted_url"))
+                data, mime = await self._download(
+                    attachment.url,
+                    allow_private_network=allow_private,
+                )
+                if not self._validate(data, mime):
+                    raise _MediaRejected
+                return MediaPayload(
+                    data=data,
+                    suffix=self._mime_to_suffix(mime),
+                    mime_type=mime,
+                    file_size=len(data),
+                )
+
+            entry = await self._store.get_or_create(cache_key, loader)
+            data = await self._read_file(Path(entry.path))
+            mime = attachment.mime_type or entry.mime_type or self._detect_mime(data)
+        except _MediaRejected:
+            return ResolvedMedia(
+                media_id=attachment.platform_id,
+                source="description_only",
+                description=attachment.alt_text,
+                mime_type=attachment.mime_type,
             )
         except (httpx.HTTPError, OSError) as exc:
             logger.warning(
@@ -228,24 +255,12 @@ class MediaResolver:
                 mime_type=attachment.mime_type,
             )
 
-        if not self._validate(data, mime):
-            return ResolvedMedia(
-                media_id=attachment.platform_id,
-                source="description_only",
-                description=attachment.alt_text,
-                mime_type=mime,
-            )
-
-        # Cache the download
-        suffix = self._mime_to_suffix(mime)
-        cached_path = await self._cache.put(cache_key, data, suffix=suffix)
-
         size = len(data)
         width, height = self._read_image_dimensions(data, mime)
         b64 = self.encode_base64(data) if mime and mime.startswith("image/") else ""
 
         return ResolvedMedia(
-            local_path=cached_path,
+            local_path=entry.path,
             base64_data=b64,
             mime_type=mime,
             file_size=size,

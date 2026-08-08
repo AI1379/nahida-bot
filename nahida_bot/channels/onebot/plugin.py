@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +20,9 @@ from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
 from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.router import MessageRouter
+from nahida_bot.agent.media.store import MediaPayload, MediaStore
 from nahida_bot.plugins.base import (
+    InboundAttachment,
     MediaDownloadResult,
     OutboundMessage,
     Plugin,
@@ -34,6 +37,7 @@ logger = structlog.get_logger(__name__)
 # Max base64 size to inline in a segment (~20 MB). Larger files should
 # be uploaded via a separate mechanism. NapCat's default limit is ~30 MB.
 _MAX_BASE64_BYTES = 20 * 1024 * 1024
+_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 
 class OneBotPlugin(Plugin):
@@ -159,10 +163,6 @@ class OneBotPlugin(Plugin):
             **_inbound_log_fields(inbound),
         )
 
-        # Cache media attachments on receive
-        if self._config.cache_media_on_receive and inbound.attachments:
-            await self._cache_inbound_media(inbound.attachments)
-
         decision = GroupInteractionPolicy(
             mode=self._config.group_trigger_mode,
             observe_untriggered=self._config.group_context_capture,
@@ -189,6 +189,13 @@ class OneBotPlugin(Plugin):
                 mentioned_user_ids=list(inbound.mentioned_user_ids),
             )
             return
+
+        # Do not download media for messages filtered by group policy.
+        if self._config.cache_media_on_receive and inbound.attachments:
+            inbound = replace(
+                inbound,
+                attachments=await self._cache_inbound_media(inbound.attachments),
+            )
 
         address = ChatAddress(
             channel=inbound.platform,
@@ -355,11 +362,36 @@ class OneBotPlugin(Plugin):
     ) -> MediaDownloadResult | None:
         """Download a media file from the OneBot implementation by file_id or URL.
 
-        Uses ``get_file_url`` to obtain a download URL, then fetches the content
-        and stores it in ``media_download_dir``.
+        Uses ``get_file_url`` to obtain a download URL, then stores the content
+        in the shared MediaCache when available (falling back to
+        ``media_download_dir`` only when no cache is configured).
         """
+        is_url = file_id.startswith(("http://", "https://"))
+        store = self._media_store()
+        cache_key = file_id if is_url else f"onebot:{self.channel_id}:file:{file_id}"
+        safe_name = (
+            file_name
+            or _extract_filename_from_url(file_id)
+            or f"{_hash_text(file_id)}.dat"
+        )
+        if store is not None:
+            existing = await store.get_entry(cache_key)
+            if existing is not None and existing.path:
+                size = existing.file_size
+                try:
+                    if not size:
+                        size = Path(existing.path).stat().st_size
+                except OSError:
+                    size = 0
+                return MediaDownloadResult(
+                    path=existing.path,
+                    file_name=file_name or existing.file_name or safe_name,
+                    mime_type=existing.mime_type,
+                    file_size=size,
+                )
+
         url = ""
-        if file_id.startswith(("http://", "https://")):
+        if is_url:
             url = file_id
         else:
             file_info = await self.get_file_url(file_id)
@@ -372,27 +404,55 @@ class OneBotPlugin(Plugin):
                 )
                 return None
 
-        try:
-            import httpx
+        if store is not None:
 
+            async def loader() -> MediaPayload:
+                fetched = await self._fetch_url_bytes(url, timeout=30.0)
+                if fetched is None:
+                    raise RuntimeError("OneBot media download failed")
+                data, mime_type = fetched
+                return MediaPayload(
+                    data=data,
+                    suffix=_suffix_for(safe_name, url),
+                    mime_type=mime_type,
+                    file_name=safe_name,
+                    file_size=len(data),
+                )
+
+            try:
+                entry = await store.get_or_create(cache_key, loader)
+            except Exception as exc:
+                logger.error(
+                    "onebot.media_download_failed",
+                    file_id=file_id,
+                    url=url,
+                    error=str(exc),
+                )
+                return None
+            logger.info(
+                "onebot.media_downloaded",
+                file_id=file_id,
+                path=entry.path,
+                size=entry.file_size,
+            )
+            return MediaDownloadResult(
+                path=entry.path,
+                file_name=entry.file_name or safe_name,
+                mime_type=entry.mime_type,
+                file_size=entry.file_size,
+            )
+
+        try:
             media_dir = Path(self._config.media_download_dir)
             media_dir.mkdir(parents=True, exist_ok=True)
-
-            fallback_name = f"{_hash_text(file_id or url)}.dat"
-            dest_name = _safe_filename(
-                file_name or _extract_filename_from_url(url),
-                fallback=fallback_name,
-            )
+            dest_name = _safe_filename(safe_name, fallback=f"{_hash_text(url)}.dat")
             dest_path = media_dir / dest_name
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                dest_path.write_bytes(response.content)
-
-            file_size = dest_path.stat().st_size
-            mime_type = response.headers.get("content-type", "")
-
+            fetched = await self._fetch_url_bytes(url, timeout=30.0)
+            if fetched is None:
+                return None
+            data, mime_type = fetched
+            dest_path.write_bytes(data)
+            file_size = len(data)
             logger.info(
                 "onebot.media_downloaded",
                 file_id=file_id,
@@ -409,6 +469,60 @@ class OneBotPlugin(Plugin):
             logger.error(
                 "onebot.media_download_failed",
                 file_id=file_id,
+                url=url,
+                error=str(exc),
+            )
+            return None
+
+    def _media_store(self) -> MediaStore | None:
+        """Return the shared MediaStore, or None when unavailable."""
+        getter = getattr(self.api, "get_media_store", None)
+        if not callable(getter):
+            return None
+        try:
+            store = getter()
+            return store if isinstance(store, MediaStore) else None
+        except Exception:  # noqa: BLE001 - cache access must never break download
+            return None
+
+    async def _fetch_url_bytes(
+        self, url: str, *, timeout: float
+    ) -> tuple[bytes, str] | None:
+        """Download *url* with a hard size limit."""
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            if int(content_length) > _MAX_DOWNLOAD_BYTES:
+                                logger.warning(
+                                    "onebot.download_too_large",
+                                    url=url,
+                                    max_bytes=_MAX_DOWNLOAD_BYTES,
+                                )
+                                return None
+                        except ValueError:
+                            pass
+
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > _MAX_DOWNLOAD_BYTES:
+                            logger.warning(
+                                "onebot.download_too_large",
+                                url=url,
+                                max_bytes=_MAX_DOWNLOAD_BYTES,
+                            )
+                            return None
+                    mime_type = response.headers.get("content-type", "")
+                    return bytes(data), mime_type
+        except Exception as exc:
+            logger.error(
+                "onebot.media_download_failed",
                 url=url,
                 error=str(exc),
             )
@@ -453,36 +567,100 @@ class OneBotPlugin(Plugin):
             self._converter.self_id = str(sid)
             logger.info("onebot.self_id_updated", self_id=self._self_id)
 
-    async def _cache_inbound_media(self, attachments: list[Any]) -> None:
-        """Eagerly download media attachments on receive to cache them locally."""
+    async def _cache_inbound_media(
+        self, attachments: list[InboundAttachment]
+    ) -> list[InboundAttachment]:
+        """Eagerly download media and attach local paths to the message."""
+        store = self._media_store()
+        resolved: list[InboundAttachment] = []
         for att in attachments:
-            url = getattr(att, "url", "")
-            platform_id = getattr(att, "platform_id", "")
+            url = att.url
+            platform_id = att.platform_id
             if not url or not url.startswith(("http://", "https://")):
+                resolved.append(att)
                 continue
             try:
-                import httpx
+                cache_key = (
+                    f"onebot:{self.channel_id}:file:{platform_id}"
+                    if platform_id
+                    else url
+                )
+                if store is not None:
+                    existing = await store.get_entry(cache_key)
+                    if existing is not None and existing.path:
+                        resolved.append(
+                            replace(
+                                att,
+                                path=existing.path,
+                                mime_type=existing.mime_type or att.mime_type,
+                                file_size=existing.file_size or att.file_size,
+                            )
+                        )
+                        continue
+
+                    async def loader() -> MediaPayload:
+                        fetched = await self._fetch_url_bytes(url, timeout=15.0)
+                        if fetched is None:
+                            raise RuntimeError("OneBot media download failed")
+                        data, mime_type = fetched
+                        return MediaPayload(
+                            data=data,
+                            suffix=_suffix_for(platform_id or url, url),
+                            mime_type=mime_type,
+                            file_name=platform_id or _extract_filename_from_url(url),
+                            file_size=len(data),
+                        )
+
+                    entry = await store.get_or_create(cache_key, loader)
+                    resolved.append(
+                        replace(
+                            att,
+                            path=entry.path,
+                            mime_type=entry.mime_type or att.mime_type,
+                            file_size=entry.file_size or att.file_size,
+                        )
+                    )
+                    logger.debug(
+                        "onebot.media_cached",
+                        platform_id=platform_id,
+                        via="media_cache",
+                    )
+                    continue
 
                 media_dir = Path(self._config.media_download_dir)
                 media_dir.mkdir(parents=True, exist_ok=True)
-
                 dest_name = _safe_filename(
                     platform_id or _extract_filename_from_url(url),
                     fallback=_hash_text(url),
                 )
                 dest_path = media_dir / f"{dest_name}.cache"
-
                 if dest_path.exists():
+                    resolved.append(
+                        replace(
+                            att,
+                            path=str(dest_path),
+                            file_size=dest_path.stat().st_size,
+                        )
+                    )
                     continue
-
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    response = await client.get(url)
-                    response.raise_for_status()
-                    dest_path.write_bytes(response.content)
+                fetched = await self._fetch_url_bytes(url, timeout=15.0)
+                if fetched is None:
+                    resolved.append(att)
+                    continue
+                data, mime_type = fetched
+                dest_path.write_bytes(data)
                 logger.debug(
                     "onebot.media_cached",
                     platform_id=platform_id,
                     path=str(dest_path),
+                )
+                resolved.append(
+                    replace(
+                        att,
+                        path=str(dest_path),
+                        mime_type=mime_type or att.mime_type,
+                        file_size=len(data),
+                    )
                 )
             except Exception:
                 logger.debug(
@@ -490,6 +668,8 @@ class OneBotPlugin(Plugin):
                     platform_id=platform_id,
                     url=url,
                 )
+                resolved.append(att)
+        return resolved
 
     def _ensure_connection(self) -> OneBotV11Connection:
         if self._connection is None:
@@ -658,3 +838,15 @@ def _safe_filename(name: str, *, fallback: str) -> str:
 
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _suffix_for(file_name: str, url: str) -> str:
+    """Derive a lowercase file extension (with leading dot) for a cache entry."""
+    for candidate in (file_name, _extract_filename_from_url(url)):
+        name = candidate.replace("\\", "/").rsplit("/", 1)[-1]
+        if "." not in name:
+            continue
+        ext = re.sub(r"[^A-Za-z0-9]", "", name.rsplit(".", 1)[1])[:8]
+        if ext:
+            return f".{ext.lower()}"
+    return ""

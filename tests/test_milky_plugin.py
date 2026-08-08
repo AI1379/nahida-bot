@@ -1573,3 +1573,121 @@ async def test_image_eager_download_materializes_local_path(
     assert attachment.url == "https://cdn.example.com/img-4"
     assert attachment.path == str(tmp_path / "img.png")
     assert attachment.mime_type == "image/png"
+
+
+class _FakeStreamResponse:
+    def __init__(self, data: bytes, headers: dict[str, str]) -> None:
+        self._data = data
+        self.headers = headers
+
+    async def __aenter__(self) -> "_FakeStreamResponse":
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    def raise_for_status(self) -> None:
+        pass
+
+    async def aiter_bytes(self):
+        yield self._data
+
+
+class _RecordingHttpClient:
+    instances: list["_RecordingHttpClient"] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.stream_calls = 0
+        _RecordingHttpClient.instances.append(self)
+
+    async def __aenter__(self) -> "_RecordingHttpClient":
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    def stream(self, method: str, url: str, **kwargs: object) -> _FakeStreamResponse:
+        self.stream_calls += 1
+        return _FakeStreamResponse(
+            b"milky-bytes",
+            {"content-length": "11", "content-type": "image/png"},
+        )
+
+
+async def test_stream_download_uses_shared_cache_and_dedups(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Downloads route through the shared MediaCache and dedup on repeat (#45)."""
+    import httpx
+
+    from nahida_bot.agent.media.cache import MediaCache
+    from nahida_bot.agent.media.store import MediaStore
+
+    _RecordingHttpClient.instances = []
+    monkeypatch.setattr(httpx, "AsyncClient", _RecordingHttpClient)
+
+    cache = MediaCache(tmp_path / "media_cache", ttl_seconds=3600)
+    store = MediaStore(cache)
+    await cache.ensure_dir()
+    api = RecordingMockBotAPI()
+    api.get_media_store = lambda: store  # type: ignore[attr-defined]
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    await plugin.on_load()
+    # on_load fires a login-info check that also constructs an httpx client;
+    # reset the counter so it only reflects downloads below.
+    _RecordingHttpClient.instances = []
+
+    first = await plugin._download_via_cache(  # type: ignore[reportPrivateFunction]
+        store,
+        "milky:F1",
+        "https://cdn.example.com/f",
+        file_name="f.png",
+        file_id="F1",
+    )
+    assert first is not None
+    assert str(tmp_path / "media_cache") in first.path
+    from pathlib import Path
+
+    assert Path(first.path).read_bytes() == b"milky-bytes"
+    assert first.mime_type == "image/png"
+    assert first.file_name == "f.png"
+    assert len(_RecordingHttpClient.instances) == 1
+
+    # Second call for the same key is a cache hit: no new HTTP client.
+    second = await plugin._download_via_cache(  # type: ignore[reportPrivateFunction]
+        store,
+        "milky:F1",
+        "https://cdn.example.com/f",
+        file_name="f.png",
+        file_id="F1",
+    )
+    assert second is not None
+    assert second.path == first.path
+    assert len(_RecordingHttpClient.instances) == 1
+
+
+async def test_stream_download_falls_back_to_legacy_dir_without_cache(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When no shared cache is configured, downloads still work via legacy dir."""
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _RecordingHttpClient)
+    _RecordingHttpClient.instances = []
+
+    api = RecordingMockBotAPI()  # get_media_store absent -> None
+    plugin = MilkyPlugin(
+        api=api, manifest=_manifest(media_download_dir=str(tmp_path / "legacy"))
+    )
+    await plugin.on_load()
+
+    result = await plugin._download_via_legacy_dir(  # type: ignore[reportPrivateFunction]
+        "https://cdn.example.com/f", file_name="f.png", file_id="F1"
+    )
+    assert result is not None
+    assert str(tmp_path / "legacy") in result.path
+    from pathlib import Path
+
+    assert Path(result.path).read_bytes() == b"milky-bytes"

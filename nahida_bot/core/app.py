@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import structlog
 
 from nahida_bot.agent.media.cache import MediaCache
+from nahida_bot.agent.media.store import MediaStore
 from nahida_bot.agent.metrics import MetricsCollector
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.config import Settings, load_settings
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from nahida_bot.gateway.services.webhost import WebHostService
 
 logger = structlog.get_logger(__name__)
+
 
 ShutdownMode = Literal["drain", "abort"]
 
@@ -123,7 +125,13 @@ class Application:
 
         self.webhost_service: WebHostService = WebHostService()
         self._usage_ledger: UsageRecorder | None = None
-        self._media_cache: MediaCache | None = None
+        cache_dir = Path(self.settings.db_path).parent / "media_cache"
+        self._media_store: MediaStore | None = MediaStore(
+            MediaCache(
+                cache_dir,
+                ttl_seconds=self.settings.multimodal.media_cache_ttl_seconds,
+            )
+        )
         self.speech_service: Any | None = None
         self.speech_artifact_store: Any | None = None
         # Agent-loop observability. Wired into AgentLoop so every run gets a
@@ -647,8 +655,6 @@ class Application:
 
     def _init_scheduler(self) -> None:
         """Create the SessionRunner and SchedulerService."""
-        from pathlib import Path
-
         from nahida_bot.agent.media.resolver import MediaPolicy, MediaResolver
         from nahida_bot.core.session_runner import SessionRunner
         from nahida_bot.scheduler.repository import CronRepository
@@ -670,18 +676,13 @@ class Application:
 
         # Build media infrastructure from multimodal config
         multimodal = self.settings.multimodal
-        cache_dir = str(Path(self.settings.db_path).parent / "media_cache")
-        self._media_cache = MediaCache(
-            cache_dir, ttl_seconds=multimodal.media_cache_ttl_seconds
-        )
+        assert self._media_store is not None
         media_policy = MediaPolicy(
             max_image_bytes=multimodal.max_image_bytes,
             supported_mime_types=("image/jpeg", "image/png", "image/webp"),
             max_images_per_turn=multimodal.max_images_per_turn,
-            cache_ttl_seconds=multimodal.media_cache_ttl_seconds,
-            cache_dir=cache_dir,
         )
-        media_resolver = MediaResolver(cache=self._media_cache, policy=media_policy)
+        media_resolver = MediaResolver(cache=self._media_store, policy=media_policy)
 
         # Phase 5 transcript replay projector. Built only when the flag is on
         # and the canonical-run store is available; SessionRunner falls back to
@@ -1042,12 +1043,12 @@ class Application:
                 await self.scheduler_service.start()
 
             # Start periodic media cache cleanup
-            if self._media_cache is not None:
+            if self._media_store is not None:
                 self.task_manager.spawn_interval(
                     "media-cache-cleanup",
                     self._media_cache_cleanup_once,
                     owner="core.media",
-                    interval_seconds=max(self._media_cache._ttl, 300),
+                    interval_seconds=max(self._media_store.ttl_seconds, 300),
                 )
 
             if self.temp_file_service is not None:
@@ -1093,15 +1094,24 @@ class Application:
 
     async def _media_cache_cleanup_once(self) -> None:
         """Purge expired entries from the media cache (single pass)."""
-        cache = self._media_cache
-        if cache is None:
+        store = self._media_store
+        if store is None:
             return
         try:
-            removed = await cache.cleanup_expired()
+            removed = await store.cleanup_expired()
             if removed:
                 logger.debug("media_cache.cleanup", removed=removed)
         except Exception:
             logger.warning("media_cache.cleanup_failed", exc_info=True)
+
+    @property
+    def media_store(self) -> MediaStore | None:
+        """Shared media store (None until scheduler initialization).
+
+        Channel plugins resolve this via ``api.get_media_store()`` so eager
+        downloads share the resolver's key locks, TTL, and cleanup.
+        """
+        return self._media_store
 
     async def _plugin_temp_cleanup_once(self) -> None:
         """Purge expired plugin-managed temporary files."""

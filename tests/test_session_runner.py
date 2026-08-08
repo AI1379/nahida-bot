@@ -46,6 +46,26 @@ async def test_request_stop_unknown_session_returns_false() -> None:
     assert tracker.request_stop("unknown") is False
 
 
+@pytest.mark.asyncio
+async def test_expired_cached_path_does_not_block_url_resolution(tmp_path) -> None:
+    """A removed cache file must fall back to its still-valid URL."""
+    from nahida_bot.plugins.base import InboundAttachment
+    from nahida_bot.core.session_runner import SessionRunner
+
+    runner = SessionRunner()
+    attachment = InboundAttachment(
+        kind="image",
+        platform_id="image-1",
+        url="https://example.test/image.png",
+        path=str(tmp_path / "expired.png"),
+    )
+
+    result = await runner._download_platform_attachment_if_needed(attachment)
+
+    assert result.path == ""
+    assert result.url == attachment.url
+
+
 def test_explicit_empty_tool_allowlist_exposes_no_tools() -> None:
     """An explicit empty allowlist is restrictive, unlike ``None``."""
     from nahida_bot.core.session_runner import SessionRunner

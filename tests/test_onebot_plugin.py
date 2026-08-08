@@ -10,7 +10,7 @@ import pytest
 
 from nahida_bot.channels.onebot.plugin import OneBotPlugin
 from nahida_bot.core.events import MessageReceived
-from nahida_bot.plugins.base import OutboundMessage
+from nahida_bot.plugins.base import InboundAttachment, OutboundMessage
 from nahida_bot.plugins.manifest import PluginManifest
 
 from .helpers import RecordingMockBotAPI
@@ -144,11 +144,19 @@ async def test_download_media_sanitizes_file_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeResponse:
-        content = b"content"
         headers = {"content-type": "text/plain"}
+
+        async def __aenter__(self) -> "_FakeResponse":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
 
         def raise_for_status(self) -> None:
             pass
+
+        async def aiter_bytes(self):
+            yield b"content"
 
     class _FakeClient:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -160,7 +168,7 @@ async def test_download_media_sanitizes_file_name(
         async def __aexit__(self, *args: object) -> None:
             pass
 
-        async def get(self, url: str) -> _FakeResponse:
+        def stream(self, method: str, url: str) -> _FakeResponse:
             return _FakeResponse()
 
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
@@ -179,3 +187,136 @@ async def test_download_media_sanitizes_file_name(
     assert Path(result.path) == tmp_path / "escape.txt"
     assert (tmp_path / "escape.txt").read_bytes() == b"content"
     assert not (tmp_path.parent / "escape.txt").exists()
+
+
+async def test_download_media_uses_shared_cache_and_dedups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Downloads route through the shared MediaCache and dedup on repeat (#45)."""
+    from nahida_bot.agent.media.cache import MediaCache
+    from nahida_bot.agent.media.store import MediaStore
+
+    fetch_count = 0
+
+    class _FakeResponse:
+        def __init__(self) -> None:
+            self.headers = {"content-type": "image/png"}
+
+        async def __aenter__(self) -> "_FakeResponse":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        def raise_for_status(self) -> None:
+            pass
+
+        async def aiter_bytes(self):
+            yield b"onebot-bytes"
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        def stream(self, method: str, url: str) -> _FakeResponse:
+            nonlocal fetch_count
+            fetch_count += 1
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+    cache = MediaCache(tmp_path / "media_cache", ttl_seconds=3600)
+    await cache.ensure_dir()
+    api = RecordingMockBotAPI()
+    api.get_media_store = lambda: MediaStore(cache)  # type: ignore[attr-defined]
+    plugin = OneBotPlugin(
+        api=api,
+        manifest=_manifest(media_download_dir=str(tmp_path / "legacy")),
+    )
+
+    first = await plugin.download_media(
+        "https://example.test/file.png", file_name="file.png"
+    )
+    assert first is not None
+    assert str(tmp_path / "media_cache") in first.path
+    assert Path(first.path).read_bytes() == b"onebot-bytes"
+    assert first.mime_type == "image/png"
+    assert fetch_count == 1
+
+    # Second call is a cache hit: no second network fetch.
+    second = await plugin.download_media(
+        "https://example.test/file.png", file_name="file.png"
+    )
+    assert second is not None
+    assert second.path == first.path
+    assert fetch_count == 1
+    # Legacy dir is untouched because the cache is configured.
+    assert not (tmp_path / "legacy").exists() or not any(
+        (tmp_path / "legacy").iterdir()
+    )
+
+
+async def test_inbound_media_attaches_shared_cache_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nahida_bot.agent.media.cache import MediaCache
+    from nahida_bot.agent.media.store import MediaStore
+
+    fetch_count = 0
+
+    class _FakeResponse:
+        headers = {"content-length": "12", "content-type": "image/png"}
+
+        async def __aenter__(self) -> "_FakeResponse":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        def raise_for_status(self) -> None:
+            pass
+
+        async def aiter_bytes(self):
+            yield b"inbound-data"
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        def stream(self, method: str, url: str) -> _FakeResponse:
+            nonlocal fetch_count
+            fetch_count += 1
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    cache = MediaCache(tmp_path / "media_cache", ttl_seconds=3600)
+    api = RecordingMockBotAPI()
+    api.get_media_store = lambda: MediaStore(cache)  # type: ignore[attr-defined]
+    plugin = OneBotPlugin(api=api, manifest=_manifest())
+    attachment = InboundAttachment(
+        kind="image",
+        platform_id="file-1",
+        url="https://example.test/image.png",
+    )
+
+    first = await plugin._cache_inbound_media([attachment])
+    second = await plugin._cache_inbound_media([attachment])
+
+    assert first[0].path
+    assert first[0].path == second[0].path
+    assert Path(first[0].path).read_bytes() == b"inbound-data"
+    assert fetch_count == 1

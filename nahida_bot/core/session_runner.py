@@ -7,6 +7,7 @@ import json
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, AbstractSet, Any, cast
 
 import structlog
@@ -2559,14 +2560,24 @@ class SessionRunner:
         self, attachment: InboundAttachment
     ) -> InboundAttachment:
         """Use the current channel service to materialize opaque platform media IDs."""
-        if attachment.path or attachment.url or not attachment.platform_id:
+        if attachment.path and Path(attachment.path).is_file():
             logger.debug(
                 "session_runner.platform_media_download_skipped",
-                reason=(
-                    "already_resolved"
-                    if attachment.path or attachment.url
-                    else "missing_platform_id"
-                ),
+                reason="already_resolved",
+                media_id=attachment.platform_id,
+            )
+            return attachment
+        if attachment.path:
+            logger.debug(
+                "session_runner.platform_media_path_expired",
+                media_id=attachment.platform_id,
+                path=attachment.path,
+            )
+            attachment = replace(attachment, path="")
+        if attachment.url or not attachment.platform_id:
+            logger.debug(
+                "session_runner.platform_media_download_skipped",
+                reason="already_resolved" if attachment.url else "missing_platform_id",
                 media_id=attachment.platform_id,
             )
             return attachment

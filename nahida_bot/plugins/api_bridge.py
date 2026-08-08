@@ -35,6 +35,7 @@ from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 if TYPE_CHECKING:
     from nahida_bot.agent.context import ContextMessage
+    from nahida_bot.agent.media.store import MediaStore
     from nahida_bot.agent.providers.base import ChatProvider, ProviderResponse
     from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
     from nahida_bot.core.temp_files import ManagedTempFileService
@@ -1654,6 +1655,15 @@ class RealBotAPI:
     def get_provider_manager(self) -> Any:
         """Access the ProviderManager (if configured)."""
         return self._provider_manager
+
+    def get_media_store(self) -> MediaStore | None:
+        """Access the shared MediaStore (if configured).
+
+        Channel plugins use this so eager media downloads flow through the
+        same key locks, TTL, and cleanup as the agent resolver.
+        """
+        app = self._event_bus.context.app
+        return getattr(app, "media_store", None)
 
     async def query_provider_quota(
         self,
