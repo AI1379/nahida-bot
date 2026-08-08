@@ -58,8 +58,42 @@ class MiniMaxBackendConfig(BaseModel):
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
+class CodexImagesBackendConfig(BaseModel):
+    """Configuration for the ChatGPT Codex subscription image backend.
+
+    Reuses the OAuth token of a configured ``type: codex`` LLM provider
+    (matched by ``provider_id``) to call the standard Images API at
+    ``{base_url}/images/generations`` through the Codex backend. Mirrors
+    the official Codex CLI's built-in ``image_gen`` tool, which uses the
+    same Images API + subscription token + ``gpt-image-2``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    type: Literal["codex-images"] = "codex-images"
+    provider_id: str = "codex"
+    base_url: str = "https://chatgpt.com/backend-api/codex"
+    model: str = "gpt-image-2"
+    size: str = "auto"
+    quality: str = "auto"
+    background: str = "auto"
+    response_format: str = ""
+    output_format: str = ""
+    timeout_seconds: float = Field(default=180.0, ge=0.1)
+    download_timeout_seconds: float = Field(default=60.0, ge=0.1)
+    trust_env: bool = False
+    force_close_connections: bool = True
+    max_concurrency: int = Field(default=1, ge=1, le=16)
+    max_images_per_request: int = Field(default=1, ge=1, le=10)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
+
+
 BackendConfig = Annotated[
-    Union[OpenAIImagesBackendConfig, MiniMaxBackendConfig],
+    Union[
+        OpenAIImagesBackendConfig,
+        MiniMaxBackendConfig,
+        CodexImagesBackendConfig,
+    ],
     Field(discriminator="type"),
 ]
 
@@ -116,7 +150,7 @@ class ImageGenerationConfig(BaseModel):
 
     def backend(
         self, name: str = ""
-    ) -> OpenAIImagesBackendConfig | MiniMaxBackendConfig:
+    ) -> OpenAIImagesBackendConfig | MiniMaxBackendConfig | CodexImagesBackendConfig:
         """Return the selected backend config, raising for unknown providers."""
 
         provider = name.strip() or self.provider

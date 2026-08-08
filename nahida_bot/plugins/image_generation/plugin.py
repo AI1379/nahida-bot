@@ -8,6 +8,7 @@ import json
 import mimetypes
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,12 +18,14 @@ from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage, Plugin
 from nahida_bot.plugins.image_generation.client import (
+    CodexImageGenerationClient,
     GeneratedImage,
     ImageGenerationError,
     MiniMaxImageGenerationClient,
     OpenAIImageGenerationClient,
 )
 from nahida_bot.plugins.image_generation.config import (
+    CodexImagesBackendConfig,
     MiniMaxBackendConfig,
     OpenAIImagesBackendConfig,
     parse_image_generation_config,
@@ -58,7 +61,10 @@ class ImageGenerationPlugin(Plugin):
         super().__init__(api, manifest)
         self._config = parse_image_generation_config(self.manifest.config)
         self._clients: dict[
-            str, OpenAIImageGenerationClient | MiniMaxImageGenerationClient
+            str,
+            OpenAIImageGenerationClient
+            | MiniMaxImageGenerationClient
+            | CodexImageGenerationClient,
         ] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
@@ -332,7 +338,8 @@ class ImageGenerationPlugin(Plugin):
         model: str,
         provider: str,
     ) -> tuple[
-        list[SavedGeneratedImage], OpenAIImagesBackendConfig | MiniMaxBackendConfig
+        list[SavedGeneratedImage],
+        OpenAIImagesBackendConfig | MiniMaxBackendConfig | CodexImagesBackendConfig,
     ]:
         backend = self._config.backend(provider)
         output_dir, relative_dir = self._resolve_output_dir()
@@ -506,7 +513,9 @@ class ImageGenerationPlugin(Plugin):
         prompt: str,
         image: GeneratedImage,
         index: int,
-        backend: OpenAIImagesBackendConfig | MiniMaxBackendConfig,
+        backend: OpenAIImagesBackendConfig
+        | MiniMaxBackendConfig
+        | CodexImagesBackendConfig,
     ) -> str:
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         digest = hashlib.sha256(
@@ -521,29 +530,80 @@ class ImageGenerationPlugin(Plugin):
     def _client_for(
         self,
         provider: str,
-        backend: OpenAIImagesBackendConfig | MiniMaxBackendConfig,
-    ) -> OpenAIImageGenerationClient | MiniMaxImageGenerationClient:
+        backend: OpenAIImagesBackendConfig
+        | MiniMaxBackendConfig
+        | CodexImagesBackendConfig,
+    ) -> (
+        OpenAIImageGenerationClient
+        | MiniMaxImageGenerationClient
+        | CodexImageGenerationClient
+    ):
+        existing = self._clients.get(provider)
+        if existing is not None:
+            return existing
         if backend.type == "minimax":
-            client = self._clients.get(provider)
-            if client is None:
-                client = MiniMaxImageGenerationClient(backend)
-                self._clients[provider] = client
-            return client
-        if backend.type != "openai-images":
+            client: (
+                OpenAIImageGenerationClient
+                | MiniMaxImageGenerationClient
+                | CodexImageGenerationClient
+            ) = MiniMaxImageGenerationClient(backend)
+        elif backend.type == "codex-images":
+            resolver = self._build_codex_token_resolver(backend)
+            client = CodexImageGenerationClient(backend, resolver)
+        elif backend.type == "openai-images":
+            client = OpenAIImageGenerationClient(backend)
+        else:
             raise ValueError(
                 f"Unsupported image generation backend type '{backend.type}'. "
-                "Only 'openai-images' and 'minimax' are currently implemented."
+                "Supported: 'openai-images', 'minimax', 'codex-images'."
             )
-        client = self._clients.get(provider)
-        if client is None:
-            client = OpenAIImageGenerationClient(backend)
-            self._clients[provider] = client
+        self._clients[provider] = client
         return client
+
+    def _build_codex_token_resolver(
+        self, backend: CodexImagesBackendConfig
+    ) -> Callable[[], Awaitable[Any]]:
+        """Return an async callable that resolves a fresh Codex OAuth token.
+
+        Looks up the configured ``type: codex`` LLM provider via the
+        ProviderManager and delegates to its ``_resolve_token()`` so refresh
+        stays centralized there.
+        """
+
+        async def resolver() -> Any:
+            get_manager = getattr(self.api, "get_provider_manager", None)
+            manager: Any = get_manager() if callable(get_manager) else None
+            if manager is None:
+                raise ImageGenerationError(
+                    "image_generation_not_configured",
+                    "Provider manager is not available; cannot resolve Codex token.",
+                )
+            slot = manager.get(backend.provider_id)  # type: ignore[union-attr]
+            if slot is None:
+                raise ImageGenerationError(
+                    "image_generation_not_configured",
+                    f"Codex provider '{backend.provider_id}' is not configured. "
+                    "Add a 'type: codex' provider entry and run "
+                    f"`nahida-bot codex login --provider {backend.provider_id}`.",
+                )
+            provider = slot.provider
+            resolve_token = getattr(provider, "_resolve_token", None)
+            if not callable(resolve_token):
+                raise ImageGenerationError(
+                    "image_generation_not_configured",
+                    f"Provider '{backend.provider_id}' is not a Codex provider "
+                    "(missing OAuth token resolver).",
+                )
+            return await resolve_token()  # type: ignore[no-any-return]
+
+        return resolver
 
     def _semaphore_for(
         self,
         provider: str,
-        backend: OpenAIImagesBackendConfig | MiniMaxBackendConfig,
+        backend: OpenAIImagesBackendConfig
+        | MiniMaxBackendConfig
+        | CodexImagesBackendConfig,
     ) -> asyncio.Semaphore:
         semaphore = self._semaphores.get(provider)
         if semaphore is None:
