@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Protocol
@@ -354,7 +355,7 @@ class MilkyMessageConverter:
     ) -> list[InboundAttachment]:
         """Extract first-class InboundAttachment objects from media segments."""
         attachments: list[InboundAttachment] = []
-        for segment in segments:
+        for segment in _iter_content_segments(segments):
             if isinstance(segment, IncomingImageSegment):
                 attachments.append(
                     InboundAttachment(
@@ -404,6 +405,16 @@ class MilkyMessageConverter:
                     )
                 )
         return attachments
+
+
+def _iter_content_segments(
+    segments: list[IncomingSegment],
+) -> Iterator[IncomingSegment]:
+    for segment in segments:
+        yield segment
+        if isinstance(segment, IncomingForwardSegment):
+            for message in segment.messages:
+                yield from _iter_content_segments(message.segments)
 
 
 def _normalize_milky_timestamp(

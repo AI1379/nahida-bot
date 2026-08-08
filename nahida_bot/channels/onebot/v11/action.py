@@ -42,6 +42,7 @@ def get_v11_echo(raw: dict[str, Any]) -> str | None:
 _ACTION_MAP: dict[str, str] = {
     "send_message": "send_msg",
     "get_message": "get_msg",
+    "get_forwarded_messages": "get_forward_msg",
     "get_self_info": "get_login_info",
     "get_group_info": "get_group_info",
     "get_group_list": "get_group_list",

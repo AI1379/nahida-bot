@@ -52,6 +52,9 @@ class OneBotPluginConfig(BaseModel):
     # --- Messaging ---
     max_text_length: int = Field(default=4000, ge=1)
     split_long_text: bool = True
+    max_forward_depth: int = Field(default=3, ge=0, le=10)
+    max_forward_messages: int = Field(default=80, ge=1, le=500)
+    forward_render_max_chars: int = Field(default=12000, ge=256)
 
     # --- Media ---
     media_download_dir: str = "./data/temp/onebot"

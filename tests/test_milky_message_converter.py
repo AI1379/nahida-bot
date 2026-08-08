@@ -11,6 +11,7 @@ from nahida_bot.channels.milky.message_converter import (
 )
 from nahida_bot.channels.milky.segments import (
     IncomingForwardedMessage,
+    IncomingImageSegment,
     IncomingTextSegment,
 )
 
@@ -327,6 +328,39 @@ async def test_resolves_forward_messages() -> None:
 
     assert inbound is not None
     assert "- Alice: inside" in inbound.text
+
+
+async def test_extracts_media_from_resolved_forward_messages() -> None:
+    class Client:
+        async def get_forwarded_messages(
+            self, forward_id: str
+        ) -> list[IncomingForwardedMessage]:
+            return [
+                IncomingForwardedMessage(
+                    message_seq=1,
+                    sender_name="Alice",
+                    segments=[
+                        IncomingImageSegment(
+                            resource_id="img-1",
+                            temp_url="https://example.test/image.png",
+                        )
+                    ],
+                )
+            ]
+
+    converter = MilkyMessageConverter(
+        parse_milky_config({"max_forward_depth": 2}),
+        forward_client=Client(),
+    )
+
+    inbound = await converter.to_inbound(
+        _message(segments=[{"type": "forward", "data": {"forward_id": "forward-1"}}])
+    )
+
+    assert inbound is not None
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].platform_id == "img-1"
+    assert inbound.attachments[0].url == "https://example.test/image.png"
 
 
 async def test_forward_resolution_failure_keeps_reference_text() -> None:

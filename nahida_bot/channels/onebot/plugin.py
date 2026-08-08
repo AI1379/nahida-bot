@@ -48,7 +48,11 @@ class OneBotPlugin(Plugin):
         self._channel_id = manifest.id
         self._config = parse_onebot_config(manifest.config)
         self._adapter = OneBotAdapter(self._config)
-        self._converter = OneBotMessageConverter(self._config)
+        self._converter = OneBotMessageConverter(
+            self._config,
+            forward_client=self,
+            logger_warning=logger.warning,
+        )
         self._connection: OneBotV11Connection | None = None
         self._self_id = ""
 
@@ -142,7 +146,7 @@ class OneBotPlugin(Plugin):
         chat_type = "group" if is_group else "private"
 
         converter = self._ensure_converter()
-        inbound = converter.to_inbound(
+        inbound = await converter.to_inbound(
             _event_for_converter(normalized),
             is_group=is_group,
             chat_type=chat_type,
@@ -342,6 +346,20 @@ class OneBotPlugin(Plugin):
         conn = self._ensure_connection()
         result = await conn.call_action("get_group_info", {"group_id": int(group_id)})
         return result.get("data", {})
+
+    async def get_forwarded_messages(self, forward_id: str) -> list[dict[str, Any]]:
+        """Fetch the message nodes in a OneBot v11 merged forward."""
+        conn = self._ensure_connection()
+        result = await conn.call_action("get_forwarded_messages", {"id": forward_id})
+        data = result.get("data", {})
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if not isinstance(data, dict):
+            return []
+        messages = data.get("messages", data.get("message", []))
+        if not isinstance(messages, list):
+            return []
+        return [item for item in messages if isinstance(item, dict)]
 
     async def get_file_url(self, file_id: str) -> dict[str, Any]:
         """Get a downloadable URL for a file by its platform file_id.
@@ -576,7 +594,27 @@ class OneBotPlugin(Plugin):
         for att in attachments:
             url = att.url
             platform_id = att.platform_id
-            if not url or not url.startswith(("http://", "https://")):
+            if not url.startswith(("http://", "https://")) and platform_id:
+                try:
+                    file_name = str(
+                        att.metadata.get("file_name") or att.metadata.get("name") or ""
+                    )
+                    downloaded = await self.download_media(
+                        platform_id, file_name=file_name
+                    )
+                except Exception:  # noqa: BLE001 - media failures are non-fatal
+                    downloaded = None
+                if downloaded is not None:
+                    resolved.append(
+                        replace(
+                            att,
+                            path=downloaded.path,
+                            mime_type=downloaded.mime_type or att.mime_type,
+                            file_size=downloaded.file_size or att.file_size,
+                        )
+                    )
+                    continue
+            if not url.startswith(("http://", "https://")):
                 resolved.append(att)
                 continue
             try:

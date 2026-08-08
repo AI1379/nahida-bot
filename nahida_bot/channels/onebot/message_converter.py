@@ -4,21 +4,24 @@ from __future__ import annotations
 
 import base64
 import os
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
+from nahida_bot.channels.onebot.cq_code import parse_cq_code
 from nahida_bot.channels.onebot.config import OneBotPluginConfig
 from nahida_bot.channels.onebot.segment_models import (
     FileSegment,
     ImageSegment,
+    OneBotSegment,
     RecordSegment,
     ReplySegment,
     TextSegment,
     VideoSegment,
     find_segments,
     parse_segments,
-    render_segments_plain_text,
+    render_segments_with_forwards,
     segments_to_array,
 )
 from nahida_bot.core.message_context import (
@@ -34,12 +37,33 @@ from nahida_bot.plugins.base import (
 )
 
 
+class ForwardMessageClient(Protocol):
+    """Small client surface needed for resolving merged forwards."""
+
+    async def get_forwarded_messages(self, forward_id: str) -> list[dict[str, Any]]: ...
+
+
+class WarningLogger(Protocol):
+    """Logger callable compatible with structlog warning methods."""
+
+    def __call__(self, event: str, **kwargs: object) -> object: ...
+
+
 class OneBotMessageConverter:
     """Convert between OneBot message segments and nahida-bot message types."""
 
-    def __init__(self, config: OneBotPluginConfig, *, self_id: str = "") -> None:
+    def __init__(
+        self,
+        config: OneBotPluginConfig,
+        *,
+        self_id: str = "",
+        forward_client: ForwardMessageClient | None = None,
+        logger_warning: WarningLogger | None = None,
+    ) -> None:
         self._config = config
         self._self_id = self_id
+        self._forward_client = forward_client
+        self._logger_warning = logger_warning
 
     @property
     def self_id(self) -> str:
@@ -51,7 +75,7 @@ class OneBotMessageConverter:
 
     # ── Inbound ──────────────────────────────────────────
 
-    def to_inbound(
+    async def to_inbound(
         self,
         raw_event: dict[str, Any],
         *,
@@ -60,9 +84,13 @@ class OneBotMessageConverter:
     ) -> InboundMessage | None:
         """Convert a v11 or v12 event dict to an InboundMessage."""
         segments = parse_segments(raw_event.get("message"))
-        text = render_segments_plain_text(segments).strip() or str(
-            raw_event.get("alt_message", "")
-        )
+        if self._forward_client is not None and self._config.max_forward_depth > 0:
+            segments = await self._resolve_forward_segments(segments, depth=0)
+        text = render_segments_with_forwards(
+            segments, max_forward_depth=self._config.max_forward_depth
+        ).strip() or str(raw_event.get("alt_message", ""))
+        if len(text) > self._config.forward_render_max_chars:
+            text = text[: self._config.forward_render_max_chars] + "\n[Truncated]"
         if not text:
             return None
 
@@ -206,6 +234,63 @@ class OneBotMessageConverter:
 
     # ── Inbound helpers ──────────────────────────────────
 
+    async def _resolve_forward_segments(
+        self, segments: list[OneBotSegment], *, depth: int
+    ) -> list[OneBotSegment]:
+        resolved: list[OneBotSegment] = []
+        for segment in segments:
+            if (
+                segment.type == "forward"
+                and depth < self._config.max_forward_depth
+                and self._forward_client is not None
+            ):
+                forward_id = str(
+                    segment.data.get("id") or segment.data.get("resid") or ""
+                )
+                if forward_id:
+                    try:
+                        raw_messages = (
+                            await self._forward_client.get_forwarded_messages(
+                                forward_id
+                            )
+                        )
+                        messages: list[dict[str, Any]] = []
+                        for raw in raw_messages[: self._config.max_forward_messages]:
+                            children = _parse_message_segments(
+                                raw.get("content") or raw.get("message")
+                            )
+                            children = await self._resolve_forward_segments(
+                                children, depth=depth + 1
+                            )
+                            sender = raw.get("sender")
+                            if not isinstance(sender, dict):
+                                sender = {}
+                            messages.append(
+                                {
+                                    "sender_name": str(
+                                        raw.get("sender_name")
+                                        or sender.get("card")
+                                        or sender.get("nickname")
+                                        or sender.get("user_id")
+                                        or ""
+                                    ),
+                                    "segments": children,
+                                }
+                            )
+                        data = dict(segment.data)
+                        data["messages"] = messages
+                        resolved.append(OneBotSegment(type="forward", data=data))
+                        continue
+                    except Exception as exc:  # noqa: BLE001
+                        if self._logger_warning is not None:
+                            self._logger_warning(
+                                "onebot.forward_resolve_failed",
+                                forward_id=forward_id,
+                                error=str(exc),
+                            )
+            resolved.append(segment)
+        return resolved
+
     def _is_allowed(self, chat_type: str, chat_id: str) -> bool:
         if chat_type == "private" and self._config.allowed_friends:
             return chat_id in self._config.allowed_friends
@@ -263,7 +348,9 @@ class OneBotMessageConverter:
         """Extract first-class InboundAttachment objects from media segments."""
         attachments: list[InboundAttachment] = []
 
-        for seg in find_segments(segments, "image"):
+        nested_segments = list(_iter_content_segments(segments))
+
+        for seg in find_segments(nested_segments, "image"):
             data = _seg_data(seg)
             attachments.append(
                 InboundAttachment(
@@ -278,7 +365,7 @@ class OneBotMessageConverter:
                 )
             )
 
-        for seg in find_segments(segments, "record"):
+        for seg in find_segments(nested_segments, "record"):
             data = _seg_data(seg)
             attachments.append(
                 InboundAttachment(
@@ -289,7 +376,7 @@ class OneBotMessageConverter:
                 )
             )
 
-        for seg in find_segments(segments, "voice"):
+        for seg in find_segments(nested_segments, "voice"):
             data = _seg_data(seg)
             attachments.append(
                 InboundAttachment(
@@ -300,7 +387,7 @@ class OneBotMessageConverter:
                 )
             )
 
-        for seg in find_segments(segments, "video"):
+        for seg in find_segments(nested_segments, "video"):
             data = _seg_data(seg)
             attachments.append(
                 InboundAttachment(
@@ -313,7 +400,7 @@ class OneBotMessageConverter:
                 )
             )
 
-        for seg in find_segments(segments, "file"):
+        for seg in find_segments(nested_segments, "file"):
             data = _seg_data(seg)
             attachments.append(
                 InboundAttachment(
@@ -372,6 +459,28 @@ def _seg_data(seg: Any) -> dict[str, Any]:
         if isinstance(data, dict):
             return data
     return {}
+
+
+def _parse_message_segments(raw: object) -> list[OneBotSegment]:
+    if isinstance(raw, str):
+        return parse_cq_code(raw)
+    return parse_segments(raw)
+
+
+def _iter_content_segments(segments: list[Any]) -> Iterator[Any]:
+    for segment in segments:
+        yield segment
+        if getattr(segment, "type", "") != "forward":
+            continue
+        messages = _seg_data(segment).get("messages")
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            children = message.get("segments")
+            if isinstance(children, list):
+                yield from _iter_content_segments(children)
 
 
 def _guess_mime(path: str) -> str:

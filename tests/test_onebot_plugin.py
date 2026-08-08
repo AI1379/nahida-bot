@@ -10,7 +10,11 @@ import pytest
 
 from nahida_bot.channels.onebot.plugin import OneBotPlugin
 from nahida_bot.core.events import MessageReceived
-from nahida_bot.plugins.base import InboundAttachment, OutboundMessage
+from nahida_bot.plugins.base import (
+    InboundAttachment,
+    MediaDownloadResult,
+    OutboundMessage,
+)
 from nahida_bot.plugins.manifest import PluginManifest
 
 from .helpers import RecordingMockBotAPI
@@ -95,6 +99,63 @@ async def test_handle_v11_message_string_group_mention_publishes_received() -> N
     assert inbound.text == "ping"
     assert inbound.mentions_bot is True
     assert inbound.mentioned_user_ids == ("999",)
+
+
+async def test_handle_v11_resolves_forward_and_extracts_nested_media() -> None:
+    class _ForwardConnection(_FakeConnection):
+        async def call_action(
+            self, action: str, params: dict[str, Any]
+        ) -> dict[str, Any]:
+            self.calls.append((action, params))
+            return {
+                "status": "ok",
+                "retcode": 0,
+                "data": {
+                    "messages": [
+                        {
+                            "sender": {"nickname": "Alice"},
+                            "content": [
+                                {"type": "text", "data": {"text": "inside "}},
+                                {
+                                    "type": "image",
+                                    "data": {
+                                        "file": "img-1",
+                                        "url": "https://example.test/image.png",
+                                    },
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+
+    api = RecordingMockBotAPI()
+    plugin = OneBotPlugin(
+        api=api,
+        manifest=_manifest(cache_media_on_receive=False),
+    )
+    conn = _ForwardConnection()
+    plugin._connection = conn  # type: ignore[assignment]
+
+    await plugin.handle_inbound_event(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "message_id": 123,
+            "user_id": 10001,
+            "self_id": 999,
+            "time": 1700000000,
+            "message": [{"type": "forward", "data": {"id": "forward-1"}}],
+            "sender": {"nickname": "Bob"},
+        }
+    )
+
+    assert conn.calls == [("get_forwarded_messages", {"id": "forward-1"})]
+    inbound = api.published_events[0].payload.message
+    assert "- Alice: inside [Image: https://example.test/image.png]" in inbound.text
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].kind == "image"
+    assert inbound.attachments[0].platform_id == "img-1"
 
 
 async def test_send_message_uses_chat_address_for_group_target() -> None:
@@ -320,3 +381,32 @@ async def test_inbound_media_attaches_shared_cache_path(
     assert first[0].path == second[0].path
     assert Path(first[0].path).read_bytes() == b"inbound-data"
     assert fetch_count == 1
+
+
+async def test_inbound_media_without_url_resolves_file_id() -> None:
+    api = RecordingMockBotAPI()
+    plugin = OneBotPlugin(api=api, manifest=_manifest())
+    calls: list[tuple[str, str]] = []
+
+    async def _download(file_id: str, file_name: str = "") -> MediaDownloadResult:
+        calls.append((file_id, file_name))
+        return MediaDownloadResult(
+            path="C:/cache/voice.amr",
+            file_name="voice.amr",
+            mime_type="audio/amr",
+            file_size=42,
+        )
+
+    plugin.download_media = _download  # type: ignore[method-assign]
+    attachment = InboundAttachment(
+        kind="audio",
+        platform_id="voice-1",
+        metadata={"file_name": "voice.amr"},
+    )
+
+    resolved = await plugin._cache_inbound_media([attachment])
+
+    assert calls == [("voice-1", "voice.amr")]
+    assert resolved[0].path == "C:/cache/voice.amr"
+    assert resolved[0].mime_type == "audio/amr"
+    assert resolved[0].file_size == 42

@@ -273,6 +273,21 @@ def find_segments(segments: list[Any], seg_type: str) -> list[Any]:
 
 def render_segments_plain_text(segments: list[Any]) -> str:
     """Render segments to plain text for LLM consumption."""
+    return _render_segments_plain_text(segments, max_forward_depth=3, depth=0)
+
+
+def render_segments_with_forwards(
+    segments: list[Any], *, max_forward_depth: int
+) -> str:
+    """Render segments, including resolved merged-forward contents."""
+    return _render_segments_plain_text(
+        segments, max_forward_depth=max_forward_depth, depth=0
+    )
+
+
+def _render_segments_plain_text(
+    segments: list[Any], *, max_forward_depth: int, depth: int
+) -> str:
     parts: list[str] = []
     for seg in segments:
         seg_type = _extract_type(seg)
@@ -333,8 +348,30 @@ def render_segments_plain_text(segments: list[Any]) -> str:
             face_id = str(data.get("id", ""))
             parts.append(f"[Face: {face_id}]")
         elif seg_type == "forward":
-            forward_id = str(data.get("id", ""))
-            parts.append(f"[Forward: {forward_id}]")
+            forward_id = str(data.get("id") or data.get("resid") or "")
+            messages = data.get("messages")
+            if not isinstance(messages, list) or not messages:
+                parts.append(f"[Forward: {forward_id}]")
+            elif depth >= max_forward_depth:
+                parts.append(
+                    f"[Forward: {forward_id}, messages={len(messages)}, truncated=true]"
+                )
+            else:
+                lines = [f"[Forward: {forward_id}]"]
+                for message in messages:
+                    if not isinstance(message, dict):
+                        continue
+                    children = message.get("segments")
+                    if not isinstance(children, list):
+                        children = []
+                    content = _render_segments_plain_text(
+                        children,
+                        max_forward_depth=max_forward_depth,
+                        depth=depth + 1,
+                    )
+                    sender_name = str(message.get("sender_name", "")) or "Unknown"
+                    lines.append(f"- {sender_name}: {content}")
+                parts.append("\n".join(lines))
         elif seg_type == "location":
             lat = data.get("lat", "")
             lon = data.get("lon", "")

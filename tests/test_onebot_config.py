@@ -13,6 +13,8 @@ def test_onebot_config_accepts_v11_forward_ws() -> None:
 
     assert config.protocol_version == "v11"
     assert config.ws_url == "ws://127.0.0.1:3001"
+    assert config.max_forward_depth == 3
+    assert config.max_forward_messages == 80
 
 
 def test_onebot_config_accepts_none_group_trigger_mode() -> None:
