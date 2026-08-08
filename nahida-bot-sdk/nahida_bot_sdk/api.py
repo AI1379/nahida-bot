@@ -434,6 +434,15 @@ class BotAPI(Protocol):
         """List available provider/model pairs."""
         ...
 
+    async def query_provider_quota(
+        self,
+        provider_id: str = "",
+        *,
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Query provider-reported balances or subscription quotas."""
+        ...
+
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:
         """Switch the session to a model and return provider id if found."""
         ...

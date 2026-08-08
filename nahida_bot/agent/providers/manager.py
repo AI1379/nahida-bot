@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
+from time import monotonic
+from typing import cast
 
 from nahida_bot.agent.context import ContextBuilder
 from nahida_bot.agent.providers.base import ChatProvider, ModelCapabilities
+from nahida_bot.agent.providers.quota import (
+    QuotaErrorKind,
+    QuotaQueryError,
+    QuotaReport,
+)
 
 
 @dataclass(slots=True)
@@ -39,6 +47,8 @@ class ProviderManager:
 
     def __init__(self, slots: list[ProviderSlot], default_id: str = "") -> None:
         self._slots: dict[str, ProviderSlot] = {s.id: s for s in slots}
+        self._quota_cache: dict[str, tuple[float, QuotaReport]] = {}
+        self._quota_locks: dict[str, asyncio.Lock] = {}
         if default_id:
             self._default_id = default_id
         elif slots:
@@ -110,3 +120,104 @@ class ProviderManager:
     def slot_ids(self) -> list[str]:
         """Return all registered provider slot ids."""
         return list(self._slots.keys())
+
+    async def query_quotas(
+        self,
+        provider_id: str = "",
+        *,
+        force_refresh: bool = False,
+        cache_ttl_seconds: float = 60.0,
+    ) -> list[QuotaReport]:
+        """Query one or all providers, retaining a short-lived last result."""
+        ids = [provider_id] if provider_id else self.slot_ids
+        reports = list(
+            await asyncio.gather(
+                *(
+                    self._query_one(
+                        item,
+                        force_refresh=force_refresh,
+                        cache_ttl_seconds=cache_ttl_seconds,
+                    )
+                    for item in ids
+                )
+            )
+        )
+        if provider_id:
+            return reports
+        # /quota all should not list every ordinary Anthropic/OpenAI provider as
+        # an error merely because it has no quota adapter configured.
+        return [report for report in reports if report.error_kind != "unsupported"]
+
+    async def _query_one(
+        self,
+        provider_id: str,
+        *,
+        force_refresh: bool,
+        cache_ttl_seconds: float,
+    ) -> QuotaReport:
+        slot = self._slots.get(provider_id)
+        if slot is None:
+            return QuotaReport(
+                provider_id=provider_id,
+                error="Unknown provider",
+                error_kind="request",
+            )
+        cached = self._quota_cache.get(provider_id)
+        now = monotonic()
+        if (
+            not force_refresh
+            and cached is not None
+            and now - cached[0] < cache_ttl_seconds
+        ):
+            return QuotaReport(
+                provider_id=provider_id,
+                snapshot=cached[1].snapshot,
+                error=cached[1].error,
+                error_kind=cached[1].error_kind,
+                cached=True,
+            )
+
+        lock = self._quota_locks.setdefault(provider_id, asyncio.Lock())
+        async with lock:
+            cached = self._quota_cache.get(provider_id)
+            now = monotonic()
+            if (
+                not force_refresh
+                and cached is not None
+                and now - cached[0] < cache_ttl_seconds
+            ):
+                return QuotaReport(
+                    provider_id=provider_id,
+                    snapshot=cached[1].snapshot,
+                    error=cached[1].error,
+                    error_kind=cached[1].error_kind,
+                    cached=True,
+                )
+            try:
+                snapshot = await slot.provider.query_quota(provider_id=provider_id)
+            except QuotaQueryError as exc:
+                error_kind = cast(QuotaErrorKind, exc.kind)
+                report = QuotaReport(
+                    provider_id=provider_id,
+                    error=str(exc),
+                    error_kind=error_kind,
+                )
+                # Keep the last successful snapshot for transient outages.
+                if exc.kind == "transient" and cached and cached[1].snapshot:
+                    report = QuotaReport(
+                        provider_id=provider_id,
+                        snapshot=cached[1].snapshot,
+                        error=str(exc),
+                        error_kind=error_kind,
+                        cached=True,
+                    )
+            except Exception:  # noqa: BLE001 - provider failures must not break /quota
+                report = QuotaReport(
+                    provider_id=provider_id,
+                    error="Provider quota query failed",
+                    error_kind="request",
+                )
+            else:
+                report = QuotaReport(provider_id=provider_id, snapshot=snapshot)
+                self._quota_cache[provider_id] = (monotonic(), report)
+            return report

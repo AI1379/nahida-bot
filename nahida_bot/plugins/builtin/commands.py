@@ -115,6 +115,11 @@ class BuiltinCommandsPlugin(Plugin):
             aliases=["info"],
         )
         self.api.register_command(
+            "quota",
+            self._cmd_quota,
+            description="Show provider-reported balances and subscription quotas",
+        )
+        self.api.register_command(
             "model", self._cmd_model, description="List or switch model (/model [name])"
         )
         self.api.register_command(
@@ -2365,6 +2370,67 @@ class BuiltinCommandsPlugin(Plugin):
         for block in provider_blocks:
             lines.append("")
             lines.append(block)
+
+        return "\n".join(lines)
+
+    async def _cmd_quota(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        """Show provider-owned quota data; this is intentionally public."""
+        del inbound, session_id
+        parts = args.strip().split()
+        force_refresh = any(part.lower() in {"refresh", "force"} for part in parts)
+        provider_id = next(
+            (part for part in parts if part.lower() not in {"refresh", "force", "all"}),
+            "",
+        )
+        reports = await self.api.query_provider_quota(
+            provider_id,
+            force_refresh=force_refresh,
+        )
+        if not reports:
+            return "No configured providers are available."
+
+        lines = ["Provider quota"]
+        for report in reports:
+            report_id = str(report.get("provider_id") or "unknown")
+            snapshot = report.get("snapshot")
+            if not isinstance(snapshot, dict):
+                error = str(report.get("error") or "Quota unavailable")
+                lines.append(f"\n{report_id}: {error}")
+                continue
+
+            label = str(snapshot.get("provider_label") or report_id)
+            plan_name = snapshot.get("plan_name")
+            title = f"\n{report_id} ({label})"
+            if plan_name:
+                title += f" - {plan_name}"
+            lines.append(title)
+            windows = snapshot.get("windows")
+            if isinstance(windows, list):
+                for window in windows:
+                    if not isinstance(window, dict):
+                        continue
+                    name = str(window.get("name") or "Quota")
+                    remaining = window.get("percent_remaining")
+                    used = window.get("used")
+                    limit = window.get("limit")
+                    unit = str(window.get("unit") or "")
+                    if used is not None and limit is not None:
+                        value = f"{used:g}/{limit:g} {unit}".strip()
+                    elif limit is not None:
+                        value = f"{limit:g} {unit}".strip()
+                    elif remaining is not None:
+                        value = f"{remaining:g}% remaining"
+                    else:
+                        value = "available"
+                    reset_at = window.get("reset_at")
+                    if reset_at:
+                        value += f"; reset at {reset_at}"
+                    lines.append(f"  {name}: {value}")
+            error = report.get("error")
+            if error:
+                lines.append(f"  Note: {error} (showing last successful result)")
 
         return "\n".join(lines)
 

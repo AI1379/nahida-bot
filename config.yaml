@@ -82,6 +82,10 @@ providers:
     type: minimax
     api_key: "${MINIMAX_LLM_API_KEY:}"
     base_url: "https://api.minimaxi.com/anthropic"
+    # Provider-owned Coding Plan quota query; this is separate from the
+    # Anthropic-compatible chat endpoint above.
+    quota:
+      adapter: minimax-coding-plan
     max_tokens: 16000
     stream_responses: true
     models:
@@ -112,6 +116,36 @@ providers:
           web_search: true
           tool_calling: true
           reasoning: true
+
+  # ChatGPT Codex（可选）— 通过 ChatGPT Plus/Pro 订阅使用 Codex 模型。
+  # 无需 api_key：运行 `nahida-bot codex login` 完成 OAuth 设备码登录后，
+  # refresh token 会写入 SQLite，bot 启动时会自动加载并按需刷新。
+  # 非官方用法，仅面向 Plus/Pro 订阅者；账号有被 OpenAI 风控的风险。
+  # 高级覆盖项（均为可选环境变量）：
+  #   NAHIDA_OPENAI_ORIGINATOR  归因字符串（默认 "nahida-bot"，诚实标识）
+  #   NAHIDA_OPENAI_CLIENT_ID   OAuth client id（默认内置，仅作逃生阀）
+  # codex:
+  #   type: codex
+  #   stream_responses: true
+  #   reasoning_effort: "medium"
+  #   models:
+  #     - name: "gpt-5.5"
+  #     - name: "gpt-5.4-mini"
+
+  # A relay may speak Anthropic while its quota belongs to another backend.
+  # Configure that ownership explicitly instead of inferring it from base_url:
+  # relay:
+  #   type: anthropic
+  #   api_key: "${RELAY_API_KEY:}"
+  #   base_url: "https://relay.example/anthropic"
+  #   quota:
+  #     adapter: json-v1
+  #     url: "https://relay.example/quota"
+  #     windows:
+  #       - name: "5h"
+  #         used_path: [data, five_hour, used]
+  #         limit_path: [data, five_hour, limit]
+  #         reset_path: [data, five_hour, reset_at]
 
 default_provider: deepseek-main   # 可选，默认使用 providers 中的第一个 key
 
@@ -161,6 +195,23 @@ builtin-commands:
 #       download_timeout_seconds: 120
 #       trust_env: false
 #       force_close_connections: true
+#   output_dir: "generated/images"
+
+# ChatGPT Codex 订阅图片生成（可选）— 复用上面 codex provider 的 OAuth token，
+# 调用 chatgpt.com/backend-api/codex/images/generations 走 Plus/Pro 订阅额度。
+# 内置 image_gen 工具机制（model 默认 gpt-image-2，size/quality 默认 auto）。
+# image_generation:
+#   enabled: true
+#   provider: codex
+#   backends:
+#     codex:
+#       type: codex-images
+#       provider_id: codex          # 必须匹配 providers 中 type: codex 的那个 key
+#       model: "gpt-image-2"
+#       size: "auto"
+#       quality: "auto"
+#       background: "auto"
+#       timeout_seconds: 180
 #   output_dir: "generated/images"
 #   auto_send: true
 #   max_images_per_24h: 20

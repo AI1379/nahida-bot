@@ -379,7 +379,10 @@ class Application:
 
         for pid, cfg in providers_cfg.items():
             model_entries = _provider_model_entries(cfg.models)
-            if not cfg.api_key or not model_entries:
+            # Codex providers authenticate via OAuth tokens stored in SQLite,
+            # not via an api_key in config — so skip the api_key gate for them.
+            requires_api_key = cfg.type != "codex"
+            if (requires_api_key and not cfg.api_key) or not model_entries:
                 logger.warning(
                     "application.provider_skipped",
                     provider_id=pid,
@@ -425,7 +428,14 @@ class Application:
                 value = getattr(cfg, extra_field, None)
                 if value is not None:
                     provider_kwargs[extra_field] = value
+            if cfg.type == "codex" and self._db_engine is not None:
+                provider_kwargs["db_engine"] = self._db_engine
+            if cfg.type == "codex":
+                provider_kwargs["name"] = pid
             provider = create_provider(cfg.type, **provider_kwargs)
+            provider.set_quota_config(
+                cfg.quota.model_dump() if cfg.quota is not None else None
+            )
             cb = ContextBuilder(
                 budget=build_context_budget(self.settings.context),
                 provider=provider,

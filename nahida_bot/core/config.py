@@ -24,6 +24,20 @@ class ProviderModelConfig(BaseModel):
 ProviderModelEntry = str | ProviderModelConfig
 
 
+class ProviderQuotaConfig(BaseModel):
+    """Optional provider-owned balance or subscription quota settings."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    adapter: str = ""
+    url: str = ""
+    api_key: str = ""
+    team: bool = False
+    organization_id: str = ""
+    project_id: str = ""
+    windows: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ProviderEntryConfig(BaseModel):
     """One provider entry in the multi-provider dict."""
 
@@ -33,6 +47,7 @@ class ProviderEntryConfig(BaseModel):
     api_key: str = ""
     base_url: str = ""
     models: list[ProviderModelEntry] = Field(default_factory=list)
+    quota: ProviderQuotaConfig | None = None
 
 
 class MultimodalConfig(BaseModel):

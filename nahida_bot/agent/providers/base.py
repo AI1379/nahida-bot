@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.tokenization import Tokenizer
@@ -162,6 +162,18 @@ class ChatProvider(ABC):
     # Injected by the application after provider creation.
     # When set, :meth:`chat` will automatically record usage after every call.
     usage_recorder: UsageRecorder | None = None
+
+    def set_quota_config(self, config: dict[str, Any] | None) -> None:
+        """Attach provider-specific quota configuration after construction."""
+        self._quota_config = config or {}
+
+    async def query_quota(self, *, provider_id: str, force_refresh: bool = False):
+        """Query this provider's reported balance or subscription quota."""
+        del force_refresh  # ProviderManager owns caching and request coalescing.
+        from nahida_bot.agent.providers.quota import query_configured_quota
+
+        config = getattr(self, "_quota_config", {})
+        return await query_configured_quota(provider_id, self, config)
 
     @property
     @abstractmethod

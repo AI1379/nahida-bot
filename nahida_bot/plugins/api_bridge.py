@@ -1655,6 +1655,21 @@ class RealBotAPI:
         """Access the ProviderManager (if configured)."""
         return self._provider_manager
 
+    async def query_provider_quota(
+        self,
+        provider_id: str = "",
+        *,
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return provider-owned quota reports for commands and plugins."""
+        if self._provider_manager is None:
+            return []
+        reports = await self._provider_manager.query_quotas(
+            provider_id,
+            force_refresh=force_refresh,
+        )
+        return [report.to_dict() for report in reports]
+
     def get_model_router(self) -> Any:
         """Access the unified ModelRouter (if configured)."""
         return self._model_router
