@@ -43,6 +43,7 @@ import nahida_bot.agent.providers.groq as _groq  # noqa: F401  # pyright: ignore
 import nahida_bot.agent.providers.minimax as _minimax  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import nahida_bot.agent.providers.anthropic as _anthropic  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import nahida_bot.agent.providers.openai_responses as _openai_responses  # noqa: F401  # pyright: ignore[reportUnusedImport]
+import nahida_bot.agent.providers.codex as _codex  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 __all__ = [
     "AnthropicProvider",

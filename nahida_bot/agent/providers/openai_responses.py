@@ -450,13 +450,7 @@ class OpenAIResponsesProvider(ChatProvider):
             payload["stream"] = True
 
         timeout = timeout_seconds or 60
-        endpoint = f"{self.base_url.rstrip('/')}/responses"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        if self.stream_responses:
-            headers["Accept"] = "text/event-stream"
+        endpoint, headers = self._resolve_endpoint_and_headers(payload)
 
         try:
             logger.debug(
@@ -512,6 +506,24 @@ class OpenAIResponsesProvider(ChatProvider):
         )
 
         return self._parse_response(body)
+
+    def _resolve_endpoint_and_headers(
+        self, payload: dict[str, object]
+    ) -> tuple[str, dict[str, str]]:
+        """Build the request URL and headers for a ``/responses`` call.
+
+        Subclasses with non-trivial auth (e.g. OAuth with token refresh) or
+        custom endpoint rewriting override this hook instead of duplicating
+        the whole ``_chat_impl`` body.
+        """
+        endpoint = f"{self.base_url.rstrip('/')}/responses"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.stream_responses:
+            headers["Accept"] = "text/event-stream"
+        return endpoint, headers
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         if response.status_code in (401, 403):
