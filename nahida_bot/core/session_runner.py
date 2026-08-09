@@ -41,6 +41,7 @@ from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
     HEARTBEAT_INSTRUCTION,
+    CRON_DESKTOP_ANNOUNCEMENT_INSTRUCTION,
     PROACTIVE_JOIN_INSTRUCTION,
     SILENT_REPLY_INSTRUCTION,
     assistant_context,
@@ -647,8 +648,11 @@ class SessionRunner:
                     relevant_kb_chars=len(relevant_kb.content),
                     history_count=len(history),
                 )
+            effective_tool_filter = set(tool_filter or ())
+            if source_tag != "cron_trigger":
+                effective_tool_filter.add("desktop_announce")
             tools = self._collect_tools(
-                tool_filter,
+                effective_tool_filter,
                 tool_allowlist=tool_allowlist,
                 capabilities=capabilities,
             )
@@ -659,7 +663,7 @@ class SessionRunner:
                 effective_model=effective_model,
                 tool_count=len(tools),
                 tool_names=[tool.name for tool in tools[:50]],
-                tool_denylist=sorted(tool_filter) if tool_filter is not None else [],
+                tool_denylist=sorted(effective_tool_filter),
                 tool_allowlist=(
                     sorted(tool_allowlist) if tool_allowlist is not None else []
                 ),
@@ -2700,6 +2704,7 @@ class SessionRunner:
             parts.append(SILENT_REPLY_INSTRUCTION)
         if source_tag == "cron_trigger":
             parts.append(HEARTBEAT_INSTRUCTION)
+            parts.append(CRON_DESKTOP_ANNOUNCEMENT_INSTRUCTION)
         if source_tag == "proactive_join":
             parts.append(PROACTIVE_JOIN_INSTRUCTION)
             instruction = agent_instruction.strip()

@@ -58,6 +58,8 @@ from nahida_bot_sdk.events import (  # noqa: F401
     ProcessPayload,
     ProcessStarted,
     ProcessStopped,
+    SchedulerNotification,
+    SchedulerNotificationPayload,
 )
 
 if TYPE_CHECKING:

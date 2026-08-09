@@ -202,7 +202,7 @@ async def node_websocket(websocket: WebSocket) -> None:
             websocket.headers.get("sec-websocket-protocol", "").split(", ")
         )
     )
-    decision = evaluate_token(auth_service, token)
+    decision = await evaluate_token(auth_service, token)
 
     if not decision.accepted:
         logger.warning("node_protocol.auth_rejected", reason=decision.reason)

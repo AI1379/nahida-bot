@@ -129,7 +129,7 @@ async def pairing_start(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(exc),
             ) from exc
-    pairing_token, token_id = auth.issue_pairing_token(
+    pairing_token, token_id = await auth.issue_pairing_token(
         node_id=body.node_id,
         display_name=body.display_name,
         scope=tuple(body.scope),
@@ -157,7 +157,7 @@ async def pairing_complete(
     after an admin hands them a pairing token out-of-band.
     """
     _registry, auth, _invoker = _get_services(request)
-    result = auth.exchange_pairing_for_node_token(body.pairing_token)
+    result = await auth.exchange_pairing_for_node_token(body.pairing_token)
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -165,7 +165,7 @@ async def pairing_complete(
         )
     node_token, token_id = result
     # node_id recovered from the (now-consumed) pairing principal.
-    record = auth.store.get(token_id)
+    record = await auth.store.get(token_id)
     node_id = record.node_id if record is not None else ""
     return PairingCompleteResponse(
         node_token=node_token,
@@ -181,7 +181,7 @@ async def revoke_node(
     node_id: str, request: Request, app=Depends(get_application)
 ) -> RevokeResponse:
     _registry, auth, _invoker = _get_services(request)
-    count = auth.revoke_all_for_node(node_id)
+    count = await auth.revoke_all_for_node(node_id)
     disconnected = await _registry.disconnect_node(
         node_id,
         reason="node token revoked",

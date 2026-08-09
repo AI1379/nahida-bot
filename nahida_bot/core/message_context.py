@@ -107,6 +107,16 @@ HEARTBEAT_INSTRUCTION = (
     '- You may also use {"action": "HEARTBEAT_OK"} JSON format.'
 )
 
+CRON_DESKTOP_ANNOUNCEMENT_INSTRUCTION = (
+    "## Optional Desktop Announcement\n"
+    "The desktop_announce tool can speak one short, useful alert on the owner's "
+    "currently online Desktop. Call it only when the scheduled result is "
+    "time-sensitive or benefits from immediate attention. Summarize the key point "
+    "in natural spoken language (at most 300 characters); never copy a long report. "
+    "Do not call it for routine successful checks or HEARTBEAT_OK. After calling it, "
+    "still provide the normal final response for the configured chat channel."
+)
+
 PROACTIVE_JOIN_INSTRUCTION = (
     "## Proactive Conversation Join\n"
     "This run was requested by a conversation joiner, not by a user directly "

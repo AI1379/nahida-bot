@@ -104,8 +104,8 @@ def _bound_port(server: uvicorn.Server) -> int | None:
 
 
 @pytest.fixture
-def node_token(gateway_app: FastAPI) -> str:
-    full_token, _ = gateway_app.state.node_auth.issue_node_token(
+async def node_token(gateway_app: FastAPI) -> str:
+    full_token, _ = await gateway_app.state.node_auth.issue_node_token(
         node_id="test-node",
         actor_account_key="desktop:user:owner",
         conversation_id="conversation:private:owner-desktop",

@@ -24,6 +24,7 @@ from nahida_bot.scheduler.repository import CronRepository
 
 if TYPE_CHECKING:
     from nahida_bot.core.channel_registry import ChannelRegistry
+    from nahida_bot.core.events import EventBus
     from nahida_bot.core.router import MessageRouter
     from nahida_bot.core.session_runner import SessionRunner
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
@@ -52,6 +53,7 @@ class SchedulerService:
         channel_registry: ChannelRegistry | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         message_router: MessageRouter | None = None,
+        event_bus: EventBus | None = None,
         system_prompt: str = "You are a helpful assistant.",
         app_name: str = "the assistant",
         config: SchedulerConfig | None = None,
@@ -62,6 +64,7 @@ class SchedulerService:
         self._channels = channel_registry
         self._message_delivery_store = message_delivery_store
         self._router = message_router
+        self._event_bus = event_bus
         self._system_prompt = system_prompt
         self._app_name = app_name
         self._config = config or SchedulerConfig()
@@ -890,6 +893,8 @@ class SchedulerService:
                 # identity created it — for group-chat auto-join scenarios
                 # this may need a more deliberate owner-assignment policy.
                 sender_account_key=job.sender_account_key,
+                conversation_id=job.created_from_session_id or job.session_key,
+                origin="cron_trigger",
             )
         )
         try:
@@ -978,6 +983,13 @@ class SchedulerService:
 
     async def _send_error(self, job: CronJob, message: str) -> None:
         """Send a brief error message to the originating chat."""
+        text = f"[Scheduler] {message}"
+        await self._publish_notification(
+            job,
+            session_id=job.created_from_session_id,
+            text=text,
+            level="error",
+        )
         if self._channels is None:
             return
         address = ChatAddress.from_inbound(
@@ -988,7 +1000,6 @@ class SchedulerService:
         channel = self._channels.get(job.platform)
         if channel is not None:
             try:
-                text = f"[Scheduler] {message}"
                 message_id = await channel.send_message(
                     address.target_id,
                     OutboundMessage(
@@ -1012,6 +1023,34 @@ class SchedulerService:
                 )
             except Exception:
                 logger.exception("scheduler.send_error_failed", job_id=job.job_id)
+
+    async def _publish_notification(
+        self,
+        job: CronJob,
+        *,
+        session_id: str,
+        text: str,
+        level: Literal["reminder", "error"],
+    ) -> None:
+        if self._event_bus is None or not job.created_from_session_id or not text:
+            return
+        from nahida_bot.core.events import (
+            SchedulerNotification,
+            SchedulerNotificationPayload,
+        )
+
+        await self._event_bus.publish(
+            SchedulerNotification(
+                payload=SchedulerNotificationPayload(
+                    job_id=job.job_id,
+                    session_id=session_id,
+                    conversation_id=job.created_from_session_id,
+                    text=text,
+                    level=level,
+                ),
+                source="scheduler",
+            )
+        )
 
     async def _record_delivery(
         self,

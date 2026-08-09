@@ -1,7 +1,11 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { DesktopEvent } from "@/domain/runtime";
+import type {
+  CapabilityExecutionResult,
+  DesktopEvent,
+} from "@/domain/runtime";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
+import { isGatewayAuthError } from "@/domain/gatewayConnection";
 import {
   gatewayNodeEventAdapter,
   mockGatewayEventAdapter,
@@ -10,7 +14,9 @@ import {
 } from "@/services/gatewayEventAdapter";
 import { mockBackend } from "@/services/mockBackend";
 
-export type DesktopEventHandler = (event: DesktopEvent) => void;
+export type DesktopEventHandler = (
+  event: DesktopEvent,
+) => unknown;
 const gatewayNodeEventName = "nahida://gateway-node/event";
 
 export interface DesktopEventSourceOptions {
@@ -81,6 +87,7 @@ export class TauriGatewayNodeEventSource implements DesktopEventSource {
   private unlisten: UnlistenFn | null = null;
   private handler: DesktopEventHandler | null = null;
   private status: GatewayNodeStatus | null = null;
+  private generation = 0;
 
   start(
     handler: DesktopEventHandler,
@@ -88,10 +95,12 @@ export class TauriGatewayNodeEventSource implements DesktopEventSource {
   ): void {
     if (this.handler) return;
     this.handler = handler;
-    void this.startGatewayNode(options?.connection);
+    const generation = ++this.generation;
+    void this.startGatewayNode(options?.connection, generation);
   }
 
   stop(): void {
+    this.generation += 1;
     void invoke("gateway_node_disconnect");
     this.emitConnection(false);
     this.unlisten?.();
@@ -124,41 +133,116 @@ export class TauriGatewayNodeEventSource implements DesktopEventSource {
 
   private async startGatewayNode(
     connection?: GatewayConnectionSettings,
+    generation = this.generation,
   ) {
     try {
-      this.unlisten = await listen<GatewayNodeRawEvent>(
+      const unlisten = await listen<GatewayNodeRawEvent>(
         gatewayNodeEventName,
         (event) => this.handleGatewayNodeEvent(event.payload),
       );
+      if (generation !== this.generation || !this.handler) {
+        unlisten();
+        return;
+      }
+      this.unlisten = unlisten;
       this.status = await invoke<GatewayNodeStatus>("gateway_node_connect", {
         config: buildConnectPayload(connection),
       });
+      if (generation !== this.generation || !this.handler) {
+        void invoke("gateway_node_disconnect");
+      }
     } catch (error) {
-      this.emitLocalError(`Gateway node connection failed: ${String(error)}`);
-      this.emitConnection(false, String(error));
+      if (generation !== this.generation || !this.handler) return;
+      const reason = String(error);
+      this.emitLocalError(`Gateway node connection failed: ${reason}`);
+      this.emitConnection(false, reason, isGatewayAuthError(reason));
+      if (isGatewayAuthError(reason)) this.stopAfterAuthFailure();
     }
   }
 
   private handleGatewayNodeEvent(rawEvent: GatewayNodeRawEvent) {
+    if (
+      rawEvent.type === "status_changed" &&
+      !rawEvent.status.registered &&
+      isGatewayAuthError(rawEvent.status.lastError)
+    ) {
+      this.status = rawEvent.status;
+      const desktopEvent = gatewayNodeEventAdapter.toDesktopEvent(rawEvent);
+      if (desktopEvent) this.handler?.(desktopEvent);
+      this.stopAfterAuthFailure();
+      return;
+    }
     if (rawEvent.type === "status_changed") {
       this.status = rawEvent.status;
     }
     const desktopEvent = gatewayNodeEventAdapter.toDesktopEvent(rawEvent);
     if (desktopEvent) {
-      this.handler?.(desktopEvent);
+      if (desktopEvent.type === "capability.invoked") {
+        this.executeCapability(desktopEvent);
+      } else {
+        this.handler?.(desktopEvent);
+      }
     }
   }
 
-  private emitConnection(connected: boolean, reason?: string) {
+  private executeCapability(event: Extract<DesktopEvent, { type: "capability.invoked" }>) {
+    let execution: CapabilityExecutionResult;
+    try {
+      const reported = this.handler?.(event);
+      execution = isCapabilityExecutionResult(reported)
+        ? reported
+        : {
+            ok: false,
+            error: {
+              code: "renderer_unavailable",
+              message: "main renderer has no capability handler",
+              retryable: true,
+            },
+          };
+    } catch (error) {
+      execution = {
+        ok: false,
+        error: {
+          code: "capability_failed",
+          message: `renderer capability execution failed: ${String(error)}`,
+          retryable: false,
+        },
+      };
+    }
+
+    void invoke("gateway_node_complete_capability", {
+      result: {
+        invokeId: event.invocationId,
+        ...execution,
+      },
+    }).catch((error: unknown) => {
+      this.emitLocalError(`Failed to report capability result: ${String(error)}`);
+    });
+  }
+
+  private emitConnection(
+    connected: boolean,
+    reason?: string,
+    authRequired = false,
+  ) {
     this.handler?.({
       type: "connection.changed",
       source: "gateway",
       at: new Date().toISOString(),
       connected,
       reason,
+      authRequired,
       gatewayUrl: this.status?.gatewayUrl,
       nodeId: this.status?.nodeId,
     });
+  }
+
+  private stopAfterAuthFailure() {
+    this.generation += 1;
+    this.unlisten?.();
+    this.unlisten = null;
+    this.handler = null;
+    void invoke("gateway_node_disconnect");
   }
 
   private emitLocalError(message: string) {
@@ -169,6 +253,24 @@ export class TauriGatewayNodeEventSource implements DesktopEventSource {
       message,
     });
   }
+}
+
+function isCapabilityExecutionResult(
+  value: unknown,
+): value is CapabilityExecutionResult {
+  if (!value || typeof value !== "object" || !("ok" in value)) return false;
+  if (value.ok === true) {
+    return "result" in value && value.result !== null && typeof value.result === "object";
+  }
+  if (value.ok !== false || !("error" in value) || !value.error || typeof value.error !== "object") {
+    return false;
+  }
+  const error = value.error as Record<string, unknown>;
+  return (
+    typeof error.code === "string" &&
+    typeof error.message === "string" &&
+    typeof error.retryable === "boolean"
+  );
 }
 
 /**

@@ -40,6 +40,9 @@ class SessionContext:
     conversation_id: str = ""
     reply_route: str = ""
     credential_id: str = ""
+    # Trusted runtime origin such as ``cron_trigger``. Tool arguments cannot
+    # override this field.
+    origin: str = ""
 
     @property
     def effective_conversation_id(self) -> str:

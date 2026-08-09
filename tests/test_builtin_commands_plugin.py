@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -72,6 +73,7 @@ class _FakeAPI:
         self.chat_history_rows: list[dict[str, Any]] = []
         self.chat_history_calls: list[dict[str, Any]] = []
         self.authorization_calls: list[tuple[str, dict[str, Any]]] = []
+        self.desktop_announcement_service: Any | None = None
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -297,6 +299,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "cron_list",
         "cron_cancel",
         "cron_delete",
+        "desktop_announce",
     } <= set(api.tools)
     assert api.tools["workspace_read"]["parameters"]["required"] == ["path"]
     assert api.tools["workspace_write"]["parameters"]["required"] == [
@@ -320,6 +323,63 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert "cron_expression" in create_params["properties"]
     assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
     assert "cron_expression" in update_params["properties"]
+
+
+@pytest.mark.asyncio
+async def test_desktop_announce_uses_trusted_cron_context() -> None:
+    api = _FakeAPI()
+    calls: list[dict[str, Any]] = []
+
+    class _AnnouncementService:
+        async def announce(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return SimpleNamespace(ok=True, node_id="desktop-owner")
+
+    api.desktop_announcement_service = _AnnouncementService()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky",
+            chat_id="owner",
+            session_id="milky:private:owner:cron:job-1",
+            conversation_id="milky:private:owner",
+            sender_account_key="milky:user:owner",
+            origin="cron_trigger",
+        )
+    )
+    try:
+        result = await plugin._tool_desktop_announce("该休息一下了。")
+    finally:
+        current_session.reset(token)
+
+    assert result == "Desktop announcement queued on desktop-owner."
+    assert calls == [
+        {
+            "message": "该休息一下了。",
+            "conversation_id": "milky:private:owner",
+            "actor_account_key": "milky:user:owner",
+            "caller": "agent:cron:milky:private:owner:cron:job-1",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_desktop_announce_rejects_non_cron_context() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky",
+            chat_id="owner",
+            session_id="milky:private:owner",
+        )
+    )
+    try:
+        result = await plugin._tool_desktop_announce("unexpected")
+    finally:
+        current_session.reset(token)
+
+    assert result == "Error: desktop_announce is only available during CRON runs."
 
 
 @pytest.mark.asyncio

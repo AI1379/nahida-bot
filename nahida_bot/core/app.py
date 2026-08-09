@@ -121,6 +121,7 @@ class Application:
         self.scheduler_service: SchedulerService | None = None
         self.orchestration_service: AgentOrchestrator | None = None
         self.webapi_service: WebAPIApp | None = None
+        self.desktop_announcement_service: Any | None = None
         from nahida_bot.gateway.services.webhost import WebHostService
 
         self.webhost_service: WebHostService = WebHostService()
@@ -808,6 +809,7 @@ class Application:
             runner=self.session_runner,
             channel_registry=self.channel_registry,
             message_delivery_store=self.message_delivery_store,
+            event_bus=self.event_bus,
             system_prompt=self.settings.system_prompt,
             app_name=self.settings.app_name,
             config=SchedulerConfig(

@@ -99,6 +99,8 @@ from nahida_bot_sdk.events import (  # noqa: F401
     PluginUnloaded,
     PokeEvent,
     PokePayload,
+    SchedulerNotification,
+    SchedulerNotificationPayload,
 )
 
 # Commands
@@ -202,6 +204,8 @@ __all__ = [
     "PluginUnloaded",
     "PokeEvent",
     "PokePayload",
+    "SchedulerNotification",
+    "SchedulerNotificationPayload",
     # Commands
     "CommandHandlerResult",
     "CommandInfo",

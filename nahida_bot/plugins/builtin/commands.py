@@ -93,6 +93,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_cron_tools()
         self._register_agent_tools()
         self._register_message_tool()
+        self._register_desktop_announce_tool()
         self._register_skill_tool()
         self._register_identity_tool()
 
@@ -1772,6 +1773,49 @@ class BuiltinCommandsPlugin(Plugin):
         return "\n".join(lines)
 
     # ── Cross-Session Message Tool ───────────────────────
+
+    def _register_desktop_announce_tool(self) -> None:
+        self.api.register_tool(
+            "desktop_announce",
+            (
+                "Speak a short announcement on the current owner's Desktop. "
+                "This is only available during scheduled CRON runs. Use it for "
+                "time-sensitive or important alerts, not routine checks. Keep the "
+                "message concise and spoken-language friendly. The normal final "
+                "response must still be returned for the configured chat channel."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 300,
+                        "description": "Short spoken announcement, at most 300 characters.",
+                    }
+                },
+                "required": ["message"],
+                "additionalProperties": False,
+            },
+            self._tool_desktop_announce,
+        )
+
+    async def _tool_desktop_announce(self, message: str) -> str:
+        ctx = current_session.get()
+        if ctx is None or ctx.origin != "cron_trigger":
+            return "Error: desktop_announce is only available during CRON runs."
+        service = getattr(self.api, "desktop_announcement_service", None)
+        if service is None:
+            return "Error: Desktop announcement service is unavailable."
+        result = await service.announce(
+            message=message,
+            conversation_id=ctx.effective_conversation_id,
+            actor_account_key=ctx.actor_account_key,
+            caller=f"agent:cron:{ctx.session_id}",
+        )
+        if not result.ok:
+            return f"Error: Desktop announcement failed ({result.error_code}): {result.error_message}"
+        return f"Desktop announcement queued on {result.node_id}."
 
     def _register_message_tool(self) -> None:
         self.api.register_tool(

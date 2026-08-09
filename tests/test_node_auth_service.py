@@ -11,132 +11,134 @@ from nahida_bot.gateway.services.node_auth import (
 )
 
 
-def test_issue_and_verify_node_token() -> None:
+async def test_issue_and_verify_node_token() -> None:
     svc = NodeAuthService()
-    full_token, token_id = svc.issue_node_token(node_id="desktop-1")
+    full_token, token_id = await svc.issue_node_token(node_id="desktop-1")
 
-    principal = svc.verify(full_token)
+    principal = await svc.verify(full_token)
     assert principal is not None
     assert principal.node_id == "desktop-1"
     assert principal.token_id == token_id
     assert principal.token_type == "node"
 
 
-def test_verify_rejects_garbage_token() -> None:
+async def test_verify_rejects_garbage_token() -> None:
     svc = NodeAuthService()
-    assert svc.verify("not-a-token") is None
-    assert svc.verify("") is None
-    assert svc.verify("nt_x.secret") is None  # unknown token_id
+    assert await svc.verify("not-a-token") is None
+    assert await svc.verify("") is None
+    assert await svc.verify("nt_x.secret") is None  # unknown token_id
 
 
-def test_verify_rejects_revoked_token() -> None:
+async def test_verify_rejects_revoked_token() -> None:
     svc = NodeAuthService()
-    full_token, token_id = svc.issue_node_token(node_id="n1")
-    assert svc.revoke(token_id) is True
+    full_token, token_id = await svc.issue_node_token(node_id="n1")
+    assert await svc.revoke(token_id) is True
 
-    assert svc.verify(full_token) is None
+    assert await svc.verify(full_token) is None
 
 
-def test_revoke_unknown_token_returns_false() -> None:
+async def test_revoke_unknown_token_returns_false() -> None:
     svc = NodeAuthService()
-    assert svc.revoke("does-not-exist") is False
+    assert await svc.revoke("does-not-exist") is False
 
 
-def test_revoke_all_for_node() -> None:
+async def test_revoke_all_for_node() -> None:
     svc = NodeAuthService()
-    svc.issue_node_token(node_id="n1")
-    svc.issue_node_token(node_id="n1")
-    svc.issue_node_token(node_id="n2")
+    await svc.issue_node_token(node_id="n1")
+    await svc.issue_node_token(node_id="n1")
+    await svc.issue_node_token(node_id="n2")
 
-    assert svc.revoke_all_for_node("n1") == 2
-    assert all(rec.revoked for rec in svc.list_tokens("n1"))
+    assert await svc.revoke_all_for_node("n1") == 2
+    assert all(rec.revoked for rec in await svc.list_tokens("n1"))
     # n2 untouched
-    assert not svc.list_tokens("n2")[0].revoked
+    assert not (await svc.list_tokens("n2"))[0].revoked
 
 
-def test_pairing_token_is_single_use() -> None:
+async def test_pairing_token_is_single_use() -> None:
     svc = NodeAuthService()
-    full_token, _ = svc.issue_pairing_token(node_id="n1")
+    full_token, _ = await svc.issue_pairing_token(node_id="n1")
 
-    principal = svc.verify(full_token)
+    principal = await svc.verify(full_token)
     assert principal is not None
     assert principal.token_type == "pairing"
 
     # Second use fails.
-    assert svc.verify(full_token) is None
+    assert await svc.verify(full_token) is None
 
 
-def test_pairing_token_exchanges_for_node_token() -> None:
+async def test_pairing_token_exchanges_for_node_token() -> None:
     svc = NodeAuthService()
-    pairing_token, _ = svc.issue_pairing_token(node_id="desktop-1", scope=("live2d",))
+    pairing_token, _ = await svc.issue_pairing_token(
+        node_id="desktop-1", scope=("live2d",)
+    )
 
-    result = svc.exchange_pairing_for_node_token(pairing_token)
+    result = await svc.exchange_pairing_for_node_token(pairing_token)
     assert result is not None
     node_full_token, node_token_id = result
 
-    principal = svc.verify(node_full_token)
+    principal = await svc.verify(node_full_token)
     assert principal is not None
     assert principal.node_id == "desktop-1"
     assert principal.token_type == "node"
     assert "live2d" in principal.scope
 
     # Pairing token cannot be exchanged again.
-    assert svc.exchange_pairing_for_node_token(pairing_token) is None
+    assert await svc.exchange_pairing_for_node_token(pairing_token) is None
 
 
-def test_pairing_exchange_rejects_node_token_input() -> None:
+async def test_pairing_exchange_rejects_node_token_input() -> None:
     svc = NodeAuthService()
-    node_token, _ = svc.issue_node_token(node_id="n1")
-    assert svc.exchange_pairing_for_node_token(node_token) is None
+    node_token, _ = await svc.issue_node_token(node_id="n1")
+    assert await svc.exchange_pairing_for_node_token(node_token) is None
 
 
-def test_pairing_preserves_actor_and_conversation_binding() -> None:
+async def test_pairing_preserves_actor_and_conversation_binding() -> None:
     svc = NodeAuthService()
-    pairing_token, _ = svc.issue_pairing_token(
+    pairing_token, _ = await svc.issue_pairing_token(
         node_id="desktop-local",
         actor_account_key="desktop:user:owner",
         conversation_id="conversation:private:owner-desktop",
     )
 
-    exchanged = svc.exchange_pairing_for_node_token(pairing_token)
+    exchanged = await svc.exchange_pairing_for_node_token(pairing_token)
 
     assert exchanged is not None
     node_token, _ = exchanged
-    principal = svc.verify(node_token)
+    principal = await svc.verify(node_token)
     assert principal is not None
     assert principal.node_id == "desktop-local"
     assert principal.actor_account_key == "desktop:user:owner"
     assert principal.conversation_id == "conversation:private:owner-desktop"
 
 
-def test_node_token_expiry() -> None:
+async def test_node_token_expiry() -> None:
     svc = NodeAuthService(default_ttl_seconds=0)  # no global expiry
-    full_token, _ = svc.issue_node_token(node_id="n1", ttl_seconds=1)
+    full_token, _ = await svc.issue_node_token(node_id="n1", ttl_seconds=1)
 
-    assert svc.verify(full_token) is not None
+    assert await svc.verify(full_token) is not None
     # Force expiry.
-    record = list(svc.store.list_by_node("n1"))[0]
+    record = list(await svc.store.list_by_node("n1"))[0]
     record.expires_at = time.time() - 1
-    assert svc.verify(full_token) is None
+    assert await svc.verify(full_token) is None
 
 
-def test_in_memory_store_put_get_delete() -> None:
+async def test_in_memory_store_put_get_delete() -> None:
     store = InMemoryNodeTokenStore()
     from nahida_bot.gateway.services.node_auth import NodeTokenRecord
 
     rec = NodeTokenRecord(token_id="t1", node_id="n1", token_digest="d")
-    store.put("t1", rec)
-    assert store.get("t1") is rec
-    assert len(store.list_by_node("n1")) == 1
-    assert store.delete("t1") is True
-    assert store.get("t1") is None
-    assert store.delete("t1") is False
+    await store.put("t1", rec)
+    assert await store.get("t1") is rec
+    assert len(await store.list_by_node("n1")) == 1
+    assert await store.delete("t1") is True
+    assert await store.get("t1") is None
+    assert await store.delete("t1") is False
 
 
-def test_token_digest_not_stored_in_plaintext() -> None:
+async def test_token_digest_not_stored_in_plaintext() -> None:
     svc = NodeAuthService()
-    full_token, _ = svc.issue_node_token(node_id="n1")
-    record = list(svc.store.list_by_node("n1"))[0]
+    full_token, _ = await svc.issue_node_token(node_id="n1")
+    record = list(await svc.store.list_by_node("n1"))[0]
     # The stored digest must not be the raw token or its secret half.
     assert record.token_digest != full_token
     assert "." not in record.token_digest  # digest is a hex sha256

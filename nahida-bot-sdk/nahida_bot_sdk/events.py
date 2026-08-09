@@ -166,6 +166,25 @@ class MessageSent(Event[MessagePayload]):
     """Raised after a message has been successfully sent."""
 
 
+# ── Scheduler Events ──────────────────────────────────────────
+
+
+@dataclass(slots=True, frozen=True)
+class SchedulerNotificationPayload:
+    """User-visible result produced by a scheduled job."""
+
+    job_id: str
+    session_id: str
+    conversation_id: str
+    text: str
+    level: Literal["reminder", "error"] = "reminder"
+
+
+@dataclass(slots=True, frozen=True)
+class SchedulerNotification(Event[SchedulerNotificationPayload]):
+    """Raised when a scheduled job has a result suitable for delivery."""
+
+
 # ── Interaction Events ────────────────────────────────────────
 
 

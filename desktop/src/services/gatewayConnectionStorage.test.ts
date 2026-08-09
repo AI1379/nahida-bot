@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   defaultGatewayConnectionSettings,
+  isGatewayAuthError,
+  isGatewayConnectionConfigured,
   sanitizeGatewayConnectionSettings,
 } from "@/domain/gatewayConnection";
 
@@ -54,5 +56,28 @@ describe("gateway connection sanitization", () => {
     expect(
       sanitizeGatewayConnectionSettings({ nodeToken: huge }).nodeToken.length,
     ).toBeLessThanOrEqual(512);
+  });
+
+  it("only auto-connects a complete gateway configuration", () => {
+    const configured = {
+      ...defaultGatewayConnectionSettings,
+      mode: "gateway" as const,
+      nodeToken: "nt_abc.def",
+    };
+
+    expect(isGatewayConnectionConfigured(configured)).toBe(true);
+    expect(
+      isGatewayConnectionConfigured({ ...configured, nodeToken: "" }),
+    ).toBe(false);
+    expect(
+      isGatewayConnectionConfigured({ ...configured, nodeToken: "not-a-token" }),
+    ).toBe(false);
+  });
+
+  it("distinguishes terminal authentication failures from network failures", () => {
+    expect(isGatewayAuthError("HTTP error: 401 Unauthorized")).toBe(true);
+    expect(isGatewayAuthError("node token has expired")).toBe(true);
+    expect(isGatewayAuthError("gateway heartbeat timed out")).toBe(false);
+    expect(isGatewayAuthError("connection refused")).toBe(false);
   });
 });

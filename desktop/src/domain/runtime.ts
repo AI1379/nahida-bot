@@ -14,6 +14,17 @@ export type PetRuntimeStatus =
   | "retreating"
   | "error";
 
+export interface CapabilityExecutionError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, unknown>;
+}
+
+export type CapabilityExecutionResult =
+  | { ok: true; result: Record<string, unknown> }
+  | { ok: false; error: CapabilityExecutionError };
+
 interface DesktopEventBase {
   source: DesktopEventSource;
   at: string;
@@ -25,6 +36,7 @@ export type DesktopEvent =
       type: "connection.changed";
       connected: boolean;
       reason?: string;
+      authRequired?: boolean;
       gatewayUrl?: string;
       nodeId?: string;
     })
@@ -44,11 +56,14 @@ export type DesktopEvent =
   | (DesktopEventBase & {
       type: "notification.reminder";
       message: string;
+      /** Requests spoken playback in addition to the normal queued reminder. */
+      ttsEnabled?: boolean;
       /** Opaque key used to deduplicate identical reminders. */
       dedupeKey?: string;
     })
   | (DesktopEventBase & {
       type: "capability.invoked";
+      invocationId: string;
       capability: string;
       arguments: Record<string, unknown>;
     })

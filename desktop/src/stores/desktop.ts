@@ -391,12 +391,17 @@ export const useDesktopStore = defineStore("desktop", {
       this.persistenceError = null;
       void this.persistDesktopSettings();
       void this.persistGatewayTokens();
+      this.gatewayConnectionStatus = "disconnected";
       this.gatewayConnectionError = null;
       this.gatewayPairing = { status: "idle" };
     },
     clearGatewayNodeToken() {
       this.updateGatewayConnection({ nodeToken: "" });
+      this.gatewayConnectionStatus = "auth-required";
       this.gatewayPairing = { status: "idle" };
+    },
+    setGatewayConnectionStatus(status: typeof this.gatewayConnectionStatus) {
+      this.gatewayConnectionStatus = status;
     },
     setGatewayConnectionError(message: string | null) {
       this.gatewayConnectionError = message;
@@ -612,6 +617,13 @@ export const useDesktopStore = defineStore("desktop", {
       switch (event.type) {
         case "connection.changed":
           this.connected = event.connected;
+          if (event.source === "gateway") {
+            this.gatewayConnectionStatus = event.connected
+              ? "connected"
+              : event.authRequired
+                ? "auth-required"
+                : "disconnected";
+          }
           if (event.gatewayUrl) {
             this.gatewayUrl = event.gatewayUrl;
           }
@@ -763,8 +775,7 @@ export const useDesktopStore = defineStore("desktop", {
           });
           break;
         case "capability.invoked":
-          this.applyCapabilityInvoke(event.capability, event.arguments);
-          break;
+          return this.applyCapabilityInvoke(event.capability, event.arguments);
       }
     },
     applyCapabilityInvoke(
@@ -776,10 +787,14 @@ export const useDesktopStore = defineStore("desktop", {
           readStringArg(args.expression) ??
           readStringArg(args.expressionId) ??
           readStringArg(args.expression_id);
-        if (expression) {
-          this.previewExpressionKeyword(expression);
+        if (!expression) {
+          return invalidCapabilityArguments(
+            capability,
+            "expression must be a non-empty string",
+          );
         }
-        return;
+        this.previewExpressionKeyword(expression);
+        return capabilityApplied();
       }
 
       if (capability === "desktop.live2d.play_motion") {
@@ -787,10 +802,14 @@ export const useDesktopStore = defineStore("desktop", {
           readStringArg(args.motion) ??
           readStringArg(args.motionId) ??
           readStringArg(args.motion_id);
-        if (isDisplayMotion(motion)) {
-          this.previewMotion(motion);
+        if (!isDisplayMotion(motion)) {
+          return invalidCapabilityArguments(
+            capability,
+            "motion must be a supported display motion",
+          );
         }
-        return;
+        this.previewMotion(motion);
+        return capabilityApplied();
       }
 
       if (capability === "desktop.notification.show") {
@@ -798,16 +817,65 @@ export const useDesktopStore = defineStore("desktop", {
           readStringArg(args.message) ??
           readStringArg(args.body) ??
           readStringArg(args.title);
-        if (message) {
-          this.transcript.unshift(
-            createTranscriptEntry("system", message, new Date().toISOString()),
+        if (!message) {
+          return invalidCapabilityArguments(
+            capability,
+            "message must be a non-empty string",
           );
         }
+        this.transcript.unshift(
+          createTranscriptEntry("system", message, new Date().toISOString()),
+        );
+        return capabilityApplied();
       }
+
+      if (capability === "desktop.notification.announce") {
+        const message = readStringArg(args.message);
+        if (!message || message.length > maximumAnnouncementLength) {
+          return invalidCapabilityArguments(
+            capability,
+            `message must be a non-empty string of at most ${maximumAnnouncementLength} characters`,
+          );
+        }
+        this.applyDesktopEvent({
+          type: "notification.reminder",
+          source: "gateway",
+          at: new Date().toISOString(),
+          message,
+          ttsEnabled: true,
+        });
+        return capabilityApplied();
+      }
+
+      return {
+        ok: false as const,
+        error: {
+          code: "capability_not_found",
+          message: `Capability ${capability} is not supported by the renderer`,
+          retryable: false,
+        },
+      };
     },
   },
 });
 
 function readStringArg(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+const maximumAnnouncementLength = 300;
+
+function capabilityApplied() {
+  return { ok: true as const, result: { applied: true } };
+}
+
+function invalidCapabilityArguments(capability: string, message: string) {
+  return {
+    ok: false as const,
+    error: {
+      code: "invalid_arguments",
+      message: `${capability}: ${message}`,
+      retryable: false,
+    },
+  };
 }

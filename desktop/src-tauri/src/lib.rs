@@ -117,6 +117,7 @@ pub fn run() {
             gateway_node::gateway_node_disconnect,
             gateway_node::gateway_node_status,
             gateway_node::gateway_node_submit_input,
+            gateway_node::gateway_node_complete_capability,
             secure_storage::secure_tokens_read,
             secure_storage::secure_tokens_write,
         ])

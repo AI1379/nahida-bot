@@ -38,13 +38,18 @@ export function presentationPlanFromDesktopEvent(
 
   if (event.type === "notification.reminder") {
     const displayPlan = planFromText(event.message, "neutral");
+    if (event.ttsEnabled) {
+      for (const segment of displayPlan.segments) {
+        segment.voice = { style: "neutral" };
+      }
+    }
     return {
       id: nextPresentationId(),
       source: event.source,
       targetSessionId: event.sessionId,
       displayPlan,
       bubbleText: displayPlan.text,
-      ttsEnabled: false,
+      ttsEnabled: event.ttsEnabled === true,
       interruption: "queue",
       dedupeKey: event.dedupeKey,
       createdAt: event.at,

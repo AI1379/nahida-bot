@@ -34,7 +34,7 @@ class NodeTokenVerifier(Protocol):
     to accept the connection and which ``node_id`` it belongs to.
     """
 
-    def verify(self, token: str) -> NodePrincipal | None:
+    async def verify(self, token: str) -> NodePrincipal | None:
         """Return the principal for a valid token, or ``None`` if invalid."""
         ...
 
@@ -48,7 +48,7 @@ class AuthDecision:
     reason: str = ""
 
 
-def evaluate_token(
+async def evaluate_token(
     verifier: NodeTokenVerifier | None, token: str | None
 ) -> AuthDecision:
     """Evaluate a token extracted from the WebSocket handshake.
@@ -60,7 +60,7 @@ def evaluate_token(
         return AuthDecision(accepted=False, reason="node auth not configured")
     if not token:
         return AuthDecision(accepted=False, reason="missing token")
-    principal = verifier.verify(token)
+    principal = await verifier.verify(token)
     if principal is None:
         return AuthDecision(accepted=False, reason="invalid token")
     return AuthDecision(accepted=True, principal=principal)

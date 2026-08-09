@@ -25,6 +25,7 @@ SYSTEM_CHILD_TOOL_DENYLIST: frozenset[str] = frozenset(
         # context and was previously observed failing in production receipts
         # (#43): keep it denied so the parent cannot enable it.
         "message",
+        "desktop_announce",
         # Identity administration can never be delegated (#39 references the
         # authz module's non-delegable rule; mirror it here so the child tool
         # surface never includes the tool).

@@ -113,6 +113,11 @@ pub struct CapabilityInvokePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CapabilityCancelPayload {
+    pub invoke_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HeartbeatPayload {
     #[serde(rename = "type")]
     pub heartbeat_type: String,
@@ -227,6 +232,14 @@ pub fn desktop_capabilities() -> Vec<NodeCapability> {
             description: "Show a native desktop notification".to_string(),
             requires_user_approval: false,
         },
+        NodeCapability {
+            name: "desktop.notification.announce".to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::Low,
+            description: "Queue and speak a desktop reminder".to_string(),
+            requires_user_approval: false,
+        },
     ]
 }
 
@@ -310,5 +323,17 @@ mod tests {
             let dumped = serde_json::to_value(envelope).expect("envelope serializes");
             assert_eq!(dumped, source, "{}", path.display());
         }
+    }
+
+    #[test]
+    fn registers_notification_announce_capability() {
+        let capability = desktop_capabilities()
+            .into_iter()
+            .find(|capability| capability.name == "desktop.notification.announce")
+            .expect("announce capability is registered");
+
+        assert_eq!(capability.direction, CapabilityDirection::GatewayToNode);
+        assert_eq!(capability.risk, CapabilityRisk::Low);
+        assert!(!capability.requires_user_approval);
     }
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -21,6 +22,12 @@ from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
 from nahida_bot.agent.providers.router import ModelRouter
 from nahida_bot.agent.tokenization import Tokenizer
 from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.events import (
+    EventBus,
+    EventContext,
+    SchedulerNotification,
+    SchedulerNotificationPayload,
+)
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.plugins.base import OutboundMessage
@@ -159,6 +166,7 @@ def _make_service(
     channel: _Channel | None = None,
     config: SchedulerConfig | None = None,
     message_delivery_store: Any = None,
+    event_bus: EventBus | None = None,
 ) -> SchedulerService:
     runner = SessionRunner(agent_loop=cast(Any, agent))
     return SchedulerService(
@@ -166,8 +174,41 @@ def _make_service(
         runner=runner,
         channel_registry=cast(Any, _Channels(channel)) if channel else None,
         message_delivery_store=message_delivery_store,
+        event_bus=event_bus,
         config=config,
     )
+
+
+@pytest.mark.asyncio
+async def test_fire_job_does_not_automatically_notify_desktop() -> None:
+    engine, repo = await _repo()
+    app = cast(Any, object())
+    event_bus = EventBus(
+        EventContext(app=app, settings=None, logger=cast(Any, MagicMock()))
+    )
+    notifications: list[SchedulerNotificationPayload] = []
+
+    async def capture(event: SchedulerNotification, ctx: Any) -> None:
+        notifications.append(event.payload)
+
+    event_bus.subscribe(SchedulerNotification, capture)
+    service = _make_service(
+        engine,
+        repo,
+        agent=_Agent(),
+        event_bus=event_bus,
+    )
+    job = replace(
+        _job(),
+        created_from_session_id="telegram:private:c1",
+    )
+    await repo.insert_job(job)
+    try:
+        await service._fire_job(job)
+    finally:
+        await engine.close()
+
+    assert notifications == []
 
 
 @pytest.mark.asyncio

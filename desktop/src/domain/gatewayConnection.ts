@@ -19,6 +19,11 @@
 
 export type GatewayConnectionMode = "mock" | "gateway";
 export type TtsSourcePreference = "system" | "gateway" | "auto";
+export type GatewayConnectionStatus =
+  | "disconnected"
+  | "connecting"
+  | "connected"
+  | "auth-required";
 
 export const gatewayConnectionPolicy = {
   maximumUrlLength: 512,
@@ -178,4 +183,23 @@ export function isNodeToken(value: unknown): boolean {
     return false;
   }
   return /^nt[\w.-]*\.[\w.-]+$/.test(trimmed);
+}
+
+export function isGatewayConnectionConfigured(
+  settings: GatewayConnectionSettings,
+): boolean {
+  return (
+    settings.mode === "gateway" &&
+    Boolean(sanitizeGatewayWsUrl(settings.gatewayWsUrl)) &&
+    Boolean(settings.nodeId.trim()) &&
+    Boolean(settings.displayName.trim()) &&
+    isNodeToken(settings.nodeToken)
+  );
+}
+
+export function isGatewayAuthError(reason: unknown): boolean {
+  if (typeof reason !== "string") return false;
+  return /(?:\b(?:401|403|unauthori[sz]ed|forbidden|authentication failed)\b|invalid[^\n]*token|token[^\n]*(?:invalid|expired|required)|expired[^\n]*token|missing[^\n]*token)/i.test(
+    reason,
+  );
 }

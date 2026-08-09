@@ -5,8 +5,8 @@ use futures_util::{SinkExt, StreamExt};
 pub use protocol::NodeEnvelope;
 use protocol::{
     build_heartbeat, build_request, build_response, desktop_capabilities, next_request_id,
-    protocol_error, unix_millis, CapabilityInvokePayload, EnvelopeKind, HeartbeatPayload,
-    RegisterOkPayload, RegisterPayload,
+    protocol_error, unix_millis, CapabilityCancelPayload, CapabilityInvokePayload, EnvelopeKind,
+    HeartbeatPayload, NodeErrorObject, RegisterOkPayload, RegisterPayload,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -15,7 +15,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::net::TcpStream;
@@ -29,9 +29,11 @@ pub const FRONTEND_EVENT: &str = "nahida://gateway-node/event";
 const DEFAULT_GATEWAY_WS_URL: &str = "ws://127.0.0.1:6185/api/nodes/ws";
 const DEFAULT_NODE_ID: &str = "desktop-local";
 const DEFAULT_DISPLAY_NAME: &str = "Nahida Desktop";
+const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
 
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsWrite = SplitSink<WsStream, Message>;
+type CapabilityWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<CapabilityExecutionResult>>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +95,41 @@ pub enum GatewayNodeFrontendEvent {
     },
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityExecutionResult {
+    invoke_id: String,
+    ok: bool,
+    result: Option<Value>,
+    error: Option<NodeErrorObject>,
+}
+
+impl CapabilityExecutionResult {
+    fn into_response(self, request_id: String) -> NodeEnvelope {
+        if self.ok {
+            build_response(
+                request_id,
+                true,
+                Some(self.result.unwrap_or_else(|| json!({ "applied": true }))),
+                None,
+            )
+        } else {
+            build_response(
+                request_id,
+                false,
+                None,
+                Some(self.error.unwrap_or_else(|| {
+                    protocol_error(
+                        "capability_failed",
+                        "renderer reported a capability failure without an error",
+                        false,
+                    )
+                })),
+            )
+        }
+    }
+}
+
 enum ClientCommand {
     SubmitInput {
         session_id: String,
@@ -111,6 +148,7 @@ struct ManagerInner {
 pub struct GatewayNodeManager {
     inner: Mutex<ManagerInner>,
     status: Arc<Mutex<GatewayNodeStatus>>,
+    capability_waiters: CapabilityWaiters,
 }
 
 impl Default for GatewayNodeManager {
@@ -126,6 +164,7 @@ impl Default for GatewayNodeManager {
                 default_session_id: env::var("NAHIDA_DESKTOP_SESSION_ID").ok(),
                 last_error: None,
             })),
+            capability_waiters: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -138,6 +177,7 @@ impl GatewayNodeManager {
     ) -> Result<GatewayNodeStatus, String> {
         let resolved = resolve_config(config)?;
         let (tx, rx) = mpsc::channel(32);
+        self.capability_waiters.lock().await.clear();
         let initial_status = update_status(&self.status, &app, |status| {
             status.connected = false;
             status.registered = false;
@@ -161,9 +201,10 @@ impl GatewayNodeManager {
             let status = self.status.clone();
             let task_app = app.clone();
             let task_config = resolved.clone();
+            let capability_waiters = self.capability_waiters.clone();
             inner.tx = Some(tx);
             inner.handle = Some(tauri::async_runtime::spawn(async move {
-                client_loop(task_app, task_config, rx, status).await;
+                client_loop(task_app, task_config, rx, status, capability_waiters).await;
             }));
         }
 
@@ -182,6 +223,7 @@ impl GatewayNodeManager {
         if let Some(handle) = handle {
             handle.abort();
         }
+        self.capability_waiters.lock().await.clear();
 
         update_status(&self.status, &app, |status| {
             status.connected = false;
@@ -219,6 +261,17 @@ impl GatewayNodeManager {
             .map_err(|_| "node.input.submit timed out".to_string())?
             .map_err(|_| "node.input.submit response channel closed".to_string())?
     }
+
+    async fn complete_capability(&self, result: CapabilityExecutionResult) -> Result<(), String> {
+        let invoke_id = result.invoke_id.clone();
+        let waiter = self.capability_waiters.lock().await.remove(&invoke_id);
+        waiter
+            .ok_or_else(|| format!("capability invocation {invoke_id} is not pending"))?
+            .send(result)
+            .map_err(|_| {
+                format!("capability invocation {invoke_id} is no longer awaiting a result")
+            })
+    }
 }
 
 #[tauri::command]
@@ -253,16 +306,27 @@ pub async fn gateway_node_submit_input(
     state.submit_input(input).await
 }
 
+#[tauri::command]
+pub async fn gateway_node_complete_capability(
+    state: State<'_, GatewayNodeManager>,
+    result: CapabilityExecutionResult,
+) -> Result<(), String> {
+    state.complete_capability(result).await
+}
+
 async fn client_loop(
     app: AppHandle,
     config: ResolvedConnectConfig,
     mut rx: mpsc::Receiver<ClientCommand>,
     status: Arc<Mutex<GatewayNodeStatus>>,
+    capability_waiters: CapabilityWaiters,
 ) {
     let mut delay = Duration::from_secs(1);
 
     loop {
-        match run_once(&app, &config, &mut rx, &status).await {
+        let result = run_once(&app, &config, &mut rx, &status, &capability_waiters).await;
+        capability_waiters.lock().await.clear();
+        match result {
             Ok(RunExit::Stopped) => break,
             Ok(RunExit::Disconnected) => {
                 update_status(&status, &app, |status| {
@@ -317,6 +381,7 @@ async fn run_once(
     config: &ResolvedConnectConfig,
     rx: &mut mpsc::Receiver<ClientCommand>,
     status: &Arc<Mutex<GatewayNodeStatus>>,
+    capability_waiters: &CapabilityWaiters,
 ) -> Result<RunExit, String> {
     let connect_url = with_query_token(&config.url, &config.token)?;
     let (ws, _) = connect_async(connect_url)
@@ -368,6 +433,7 @@ async fn run_once(
     let mut last_seen = Instant::now();
     let mut pending: HashMap<String, oneshot::Sender<Result<NodeEnvelope, String>>> =
         HashMap::new();
+    let (capability_response_tx, mut capability_response_rx) = mpsc::channel(32);
 
     loop {
         tokio::select! {
@@ -383,7 +449,14 @@ async fn run_once(
                 last_seen = Instant::now();
                 let displaced = envelope.kind == EnvelopeKind::Event
                     && envelope.event.as_deref() == Some("node.duplicate_connection");
-                handle_envelope(app, &mut write, &mut pending, envelope).await?;
+                handle_envelope(
+                    app,
+                    &mut write,
+                    &mut pending,
+                    capability_waiters,
+                    &capability_response_tx,
+                    envelope,
+                ).await?;
                 if displaced {
                     let _ = write.close().await;
                     return Ok(RunExit::Stopped);
@@ -410,6 +483,11 @@ async fn run_once(
                             return Err(error);
                         }
                     }
+                }
+            }
+            response = capability_response_rx.recv() => {
+                if let Some(response) = response {
+                    send_envelope(&mut write, &response).await?;
                 }
             }
             _ = heartbeat.tick() => {
@@ -494,6 +572,8 @@ async fn handle_envelope(
     app: &AppHandle,
     write: &mut WsWrite,
     pending: &mut HashMap<String, oneshot::Sender<Result<NodeEnvelope, String>>>,
+    capability_waiters: &CapabilityWaiters,
+    capability_response_tx: &mpsc::Sender<NodeEnvelope>,
     envelope: NodeEnvelope,
 ) -> Result<(), String> {
     match envelope.kind {
@@ -516,13 +596,24 @@ async fn handle_envelope(
             }
             Ok(())
         }
-        EnvelopeKind::Request => handle_request(app, write, envelope).await,
+        EnvelopeKind::Request => {
+            handle_request(
+                app,
+                write,
+                capability_waiters,
+                capability_response_tx,
+                envelope,
+            )
+            .await
+        }
     }
 }
 
 async fn handle_request(
     app: &AppHandle,
     write: &mut WsWrite,
+    capability_waiters: &CapabilityWaiters,
+    capability_response_tx: &mpsc::Sender<NodeEnvelope>,
     envelope: NodeEnvelope,
 ) -> Result<(), String> {
     let request_id = envelope.id.clone().unwrap_or_default();
@@ -546,22 +637,74 @@ async fn handle_request(
     }
 
     if method == "capability.cancel" {
+        let payload = match serde_json::from_value::<CapabilityCancelPayload>(
+            envelope.payload.clone().unwrap_or(Value::Null),
+        ) {
+            Ok(payload) if !payload.invoke_id.trim().is_empty() => payload,
+            Ok(_) => {
+                return send_invalid_arguments(write, request_id, "invoke_id must not be empty")
+                    .await;
+            }
+            Err(err) => {
+                return send_invalid_arguments(
+                    write,
+                    request_id,
+                    format!("capability.cancel payload is invalid: {err}"),
+                )
+                .await;
+            }
+        };
+        let waiter = capability_waiters.lock().await.remove(&payload.invoke_id);
+        let acknowledged = waiter.is_some();
+        if let Some(waiter) = waiter {
+            let _ = waiter.send(CapabilityExecutionResult {
+                invoke_id: payload.invoke_id,
+                ok: false,
+                result: None,
+                error: Some(protocol_error(
+                    "capability_cancelled",
+                    "capability invocation was cancelled",
+                    false,
+                )),
+            });
+        }
         return send_envelope(
             write,
             &build_response(
                 request_id,
                 true,
-                Some(json!({ "acknowledged": true })),
+                Some(json!({ "acknowledged": acknowledged })),
                 None,
             ),
         )
         .await;
     }
 
-    let payload: CapabilityInvokePayload =
-        serde_json::from_value(envelope.payload.clone().unwrap_or(Value::Null)).map_err(|err| {
-            format!("capability.invoke payload is invalid and cannot be acknowledged: {err}")
-        })?;
+    let payload = match serde_json::from_value::<CapabilityInvokePayload>(
+        envelope.payload.clone().unwrap_or(Value::Null),
+    ) {
+        Ok(payload)
+            if !payload.invoke_id.trim().is_empty() && !payload.capability.trim().is_empty() =>
+        {
+            payload
+        }
+        Ok(_) => {
+            return send_invalid_arguments(
+                write,
+                request_id,
+                "invoke_id and capability must not be empty",
+            )
+            .await;
+        }
+        Err(err) => {
+            return send_invalid_arguments(
+                write,
+                request_id,
+                format!("capability.invoke payload is invalid: {err}"),
+            )
+            .await;
+        }
+    };
 
     let known = desktop_capabilities()
         .iter()
@@ -584,19 +727,100 @@ async fn handle_request(
         .await;
     }
 
-    emit_frontend_event(
-        app,
-        GatewayNodeFrontendEvent::CapabilityInvoke {
-            at: now_rfc3339(),
-            invoke_id: payload.invoke_id,
-            capability: payload.capability,
-            arguments: payload.arguments,
-        },
-    );
+    let invoke_id = payload.invoke_id.clone();
+    let (respond_to, response) = oneshot::channel();
+    let duplicate = {
+        let mut waiters = capability_waiters.lock().await;
+        if waiters.contains_key(&invoke_id) {
+            true
+        } else {
+            waiters.insert(invoke_id.clone(), respond_to);
+            false
+        }
+    };
+    if duplicate {
+        return send_invalid_arguments(
+            write,
+            request_id,
+            format!("capability invocation {invoke_id} is already pending"),
+        )
+        .await;
+    }
 
+    let event = GatewayNodeFrontendEvent::CapabilityInvoke {
+        at: now_rfc3339(),
+        invoke_id: invoke_id.clone(),
+        capability: payload.capability,
+        arguments: payload.arguments,
+    };
+    let emit_result = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main renderer window is unavailable".to_string())
+        .and_then(|main| {
+            main.emit(FRONTEND_EVENT, event)
+                .map_err(|err| err.to_string())
+        });
+    if let Err(message) = emit_result {
+        capability_waiters.lock().await.remove(&invoke_id);
+        return send_envelope(
+            write,
+            &build_response(
+                request_id,
+                false,
+                None,
+                Some(protocol_error("renderer_unavailable", message, true)),
+            ),
+        )
+        .await;
+    }
+
+    let response_tx = capability_response_tx.clone();
+    let waiters = capability_waiters.clone();
+    tauri::async_runtime::spawn(async move {
+        let response_envelope = match timeout(CAPABILITY_TIMEOUT, response).await {
+            Ok(Ok(result)) => result.into_response(request_id.clone()),
+            Ok(Err(_)) => build_response(
+                request_id.clone(),
+                false,
+                None,
+                Some(protocol_error(
+                    "renderer_unavailable",
+                    "renderer stopped before reporting capability result",
+                    true,
+                )),
+            ),
+            Err(_) => {
+                waiters.lock().await.remove(&invoke_id);
+                let mut error = protocol_error(
+                    "capability_timeout",
+                    "renderer did not report capability result within timeout",
+                    true,
+                );
+                error.details.insert(
+                    "timeout_ms".to_string(),
+                    Value::from(CAPABILITY_TIMEOUT.as_millis() as u64),
+                );
+                build_response(request_id, false, None, Some(error))
+            }
+        };
+        let _ = response_tx.send(response_envelope).await;
+    });
+    Ok(())
+}
+
+async fn send_invalid_arguments(
+    write: &mut WsWrite,
+    request_id: String,
+    message: impl Into<String>,
+) -> Result<(), String> {
     send_envelope(
         write,
-        &build_response(request_id, true, Some(json!({ "applied": true })), None),
+        &build_response(
+            request_id,
+            false,
+            None,
+            Some(protocol_error("invalid_arguments", message, false)),
+        ),
     )
     .await
 }

@@ -22,6 +22,7 @@ import { readPersistedTtsSettings } from "@/services/ttsSettingsStorage";
 import { readPersistedPomodoroSettings } from "@/services/pomodoroSettingsStorage";
 import { readPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
+import type { GatewayConnectionStatus } from "@/domain/gatewayConnection";
 import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { withPersistedModelMappings } from "./modelConfig";
 
@@ -94,6 +95,7 @@ export function createDesktopState() {
     pendingAfterEmerge: createEmptyPendingAfterEmerge(),
     gatewayConnection,
     gatewayConnectionVersion: 0,
+    gatewayConnectionStatus: "disconnected" as GatewayConnectionStatus,
     gatewayConnectionError: null as string | null,
     gatewayPairing: { status: "idle" } as GatewayPairingState,
     persistenceError: null as string | null,

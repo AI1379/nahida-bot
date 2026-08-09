@@ -472,6 +472,27 @@ _SCHEMA_MIGRATIONS = [
         updated_at     TEXT    NOT NULL
     );
     """,
+    # Migration 025: Gateway-Node credentials. Only the token digest is stored;
+    # plaintext credentials are returned once at issuance time.
+    """
+    CREATE TABLE IF NOT EXISTS node_tokens (
+        token_id          TEXT PRIMARY KEY,
+        node_id           TEXT NOT NULL,
+        token_digest      TEXT NOT NULL,
+        token_type        TEXT NOT NULL,
+        created_at        REAL NOT NULL,
+        expires_at        REAL NOT NULL DEFAULT 0,
+        revoked           INTEGER NOT NULL DEFAULT 0,
+        used              INTEGER NOT NULL DEFAULT 0,
+        display_name      TEXT NOT NULL DEFAULT '',
+        scope_json        TEXT NOT NULL DEFAULT '[]',
+        actor_account_key TEXT NOT NULL DEFAULT '',
+        conversation_id   TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_node_tokens_node
+        ON node_tokens(node_id, created_at);
+    """,
 ]
 
 

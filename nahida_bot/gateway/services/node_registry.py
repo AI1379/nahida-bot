@@ -176,6 +176,41 @@ class NodeRegistry:
                 return session
         return None
 
+    def find_bound_capability_owners(
+        self,
+        *,
+        capability: str,
+        conversation_id: str = "",
+        actor_account_key: str = "",
+    ) -> list[NodeSession]:
+        """Find capability owners bound to a conversation, then its actor.
+
+        Exact conversation bindings take precedence. Actor fallback lets a CRON
+        created from QQ reach the owner's independently-scoped Desktop lane.
+        Callers must reject multiple matches rather than choosing arbitrarily.
+        """
+        candidates = [
+            session
+            for session in self._by_session.values()
+            if session.state == NodeSessionState.ONLINE
+            and session.get_capability(capability) is not None
+        ]
+        if conversation_id:
+            exact = [
+                session
+                for session in candidates
+                if session.conversation_id == conversation_id
+            ]
+            if exact:
+                return exact
+        if actor_account_key:
+            return [
+                session
+                for session in candidates
+                if session.actor_account_key == actor_account_key
+            ]
+        return []
+
     def list_online_nodes(self) -> list[dict[str, object]]:
         return [
             session.to_summary()

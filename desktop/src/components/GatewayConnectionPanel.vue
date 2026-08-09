@@ -149,6 +149,18 @@ const connectionStatusLabel = computed(() => {
   if (store.gatewayPairing.status === "exchanging") {
     return "Pairing…";
   }
+  if (
+    draft.value.mode === "gateway" &&
+    store.gatewayConnectionStatus === "auth-required"
+  ) {
+    return "Authentication required";
+  }
+  if (
+    draft.value.mode === "gateway" &&
+    store.gatewayConnectionStatus === "connecting"
+  ) {
+    return "Connecting…";
+  }
   if (store.gatewayConnectionError) {
     return "Error";
   }

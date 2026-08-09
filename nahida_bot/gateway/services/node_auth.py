@@ -2,11 +2,10 @@
 
 This service owns the persistence-backed token store and implements the
 ``NodeTokenVerifier`` protocol consumed by the WebSocket endpoint. Tokens are
-stored as HMAC digests (never plaintext) keyed by ``token_id``.
+stored as SHA-256 digests (never plaintext) keyed by ``token_id``.
 
-V1 keeps everything process-local (single-process deployment model), matching
-the existing ``WebUIAuthService`` approach. A future multi-process Gateway can
-swap the store for a shared backend without changing the protocol layer.
+The Gateway injects a SQLite store while isolated consumers may use the
+in-memory implementation.
 """
 
 from __future__ import annotations
@@ -33,10 +32,13 @@ _DEFAULT_TTL_SECONDS = 0  # 0 = no expiry
 class NodeTokenStore(Protocol):
     """Persistence interface for issued node tokens."""
 
-    def put(self, token_id: str, record: NodeTokenRecord) -> None: ...
-    def get(self, token_id: str) -> NodeTokenRecord | None: ...
-    def delete(self, token_id: str) -> bool: ...
-    def list_by_node(self, node_id: str) -> list[NodeTokenRecord]: ...
+    async def put(self, token_id: str, record: NodeTokenRecord) -> None: ...
+    async def get(self, token_id: str) -> NodeTokenRecord | None: ...
+    async def delete(self, token_id: str) -> bool: ...
+    async def list_by_node(self, node_id: str) -> list[NodeTokenRecord]: ...
+    async def mark_used(self, token_id: str) -> bool: ...
+    async def revoke(self, token_id: str) -> bool: ...
+    async def revoke_all_for_node(self, node_id: str) -> int: ...
 
 
 @dataclass
@@ -62,14 +64,14 @@ class InMemoryNodeTokenStore:
     _records: dict[str, NodeTokenRecord] = field(default_factory=dict)
     _by_node: dict[str, set[str]] = field(default_factory=dict)
 
-    def put(self, token_id: str, record: NodeTokenRecord) -> None:
+    async def put(self, token_id: str, record: NodeTokenRecord) -> None:
         self._records[token_id] = record
         self._by_node.setdefault(record.node_id, set()).add(token_id)
 
-    def get(self, token_id: str) -> NodeTokenRecord | None:
+    async def get(self, token_id: str) -> NodeTokenRecord | None:
         return self._records.get(token_id)
 
-    def delete(self, token_id: str) -> bool:
+    async def delete(self, token_id: str) -> bool:
         rec = self._records.pop(token_id, None)
         if rec is None:
             return False
@@ -80,9 +82,31 @@ class InMemoryNodeTokenStore:
                 self._by_node.pop(rec.node_id, None)
         return True
 
-    def list_by_node(self, node_id: str) -> list[NodeTokenRecord]:
+    async def list_by_node(self, node_id: str) -> list[NodeTokenRecord]:
         ids = self._by_node.get(node_id, set())
         return [self._records[t] for t in ids if t in self._records]
+
+    async def mark_used(self, token_id: str) -> bool:
+        record = self._records.get(token_id)
+        if record is None or record.used or record.revoked:
+            return False
+        record.used = True
+        return True
+
+    async def revoke(self, token_id: str) -> bool:
+        record = self._records.get(token_id)
+        if record is None:
+            return False
+        record.revoked = True
+        return True
+
+    async def revoke_all_for_node(self, node_id: str) -> int:
+        count = 0
+        for record in await self.list_by_node(node_id):
+            if not record.revoked:
+                record.revoked = True
+                count += 1
+        return count
 
 
 def _digest(secret: str) -> str:
@@ -113,12 +137,12 @@ class NodeAuthService:
 
     # -- NodeTokenVerifier protocol ---------------------------------------
 
-    def verify(self, token: str) -> NodePrincipal | None:
+    async def verify(self, token: str) -> NodePrincipal | None:
         """Verify a presented token and return the principal, or ``None``."""
         token_id = self._extract_token_id(token)
         if token_id is None:
             return None
-        record = self._store.get(token_id)
+        record = await self._store.get(token_id)
         if record is None:
             return None
         if record.revoked:
@@ -133,7 +157,9 @@ class NodeAuthService:
             if record.used:
                 logger.warning("node_auth.pairing_token_reused", token_id=token_id)
                 return None
-            record.used = True
+            if not await self._store.mark_used(token_id):
+                logger.warning("node_auth.pairing_token_reused", token_id=token_id)
+                return None
         return NodePrincipal(
             node_id=record.node_id,
             token_id=record.token_id,
@@ -146,7 +172,7 @@ class NodeAuthService:
 
     # -- Issuance ----------------------------------------------------------
 
-    def issue_node_token(
+    async def issue_node_token(
         self,
         *,
         node_id: str,
@@ -174,11 +200,11 @@ class NodeAuthService:
             actor_account_key=actor_account_key,
             conversation_id=conversation_id,
         )
-        self._store.put(token_id, record)
+        await self._store.put(token_id, record)
         logger.info("node_auth.node_token_issued", node_id=node_id, token_id=token_id)
         return full_token, token_id
 
-    def issue_pairing_token(
+    async def issue_pairing_token(
         self,
         *,
         node_id: str,
@@ -200,13 +226,13 @@ class NodeAuthService:
             actor_account_key=actor_account_key,
             conversation_id=conversation_id,
         )
-        self._store.put(token_id, record)
+        await self._store.put(token_id, record)
         logger.info(
             "node_auth.pairing_token_issued", node_id=node_id, token_id=token_id
         )
         return full_token, token_id
 
-    def exchange_pairing_for_node_token(
+    async def exchange_pairing_for_node_token(
         self, pairing_full_token: str
     ) -> tuple[str, str] | None:
         """Validate a pairing token and issue a long-lived node token.
@@ -214,10 +240,10 @@ class NodeAuthService:
         Returns ``(node_full_token, node_token_id)`` or ``None`` if the pairing
         token is invalid/used/expired. The pairing token is consumed on success.
         """
-        principal = self.verify(pairing_full_token)
+        principal = await self.verify(pairing_full_token)
         if principal is None or principal.token_type != "pairing":
             return None
-        return self.issue_node_token(
+        return await self.issue_node_token(
             node_id=principal.node_id,
             scope=principal.scope,
             actor_account_key=principal.actor_account_key,
@@ -226,29 +252,25 @@ class NodeAuthService:
 
     # -- Management --------------------------------------------------------
 
-    def revoke(self, token_id: str) -> bool:
-        record = self._store.get(token_id)
+    async def revoke(self, token_id: str) -> bool:
+        record = await self._store.get(token_id)
         if record is None:
             return False
-        record.revoked = True
+        if not await self._store.revoke(token_id):
+            return False
         logger.info(
             "node_auth.token_revoked", token_id=token_id, node_id=record.node_id
         )
         return True
 
-    def revoke_all_for_node(self, node_id: str) -> int:
-        records = self._store.list_by_node(node_id)
-        count = 0
-        for rec in records:
-            if not rec.revoked:
-                rec.revoked = True
-                count += 1
+    async def revoke_all_for_node(self, node_id: str) -> int:
+        count = await self._store.revoke_all_for_node(node_id)
         if count:
             logger.info("node_auth.node_revoked", node_id=node_id, count=count)
         return count
 
-    def list_tokens(self, node_id: str) -> list[NodeTokenRecord]:
-        return list(self._store.list_by_node(node_id))
+    async def list_tokens(self, node_id: str) -> list[NodeTokenRecord]:
+        return list(await self._store.list_by_node(node_id))
 
     @property
     def store(self) -> NodeTokenStore:

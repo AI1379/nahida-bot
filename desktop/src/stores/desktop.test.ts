@@ -210,4 +210,106 @@ describe("desktop store pet transitions", () => {
     expect(store.gatewayConnectionError).toBe("handshake rejected");
     expect(store.petRuntime.emotion).toBe("offline");
   });
+
+  it("enters an explicit auth-required state for rejected credentials", () => {
+    const store = useDesktopStore();
+
+    store.applyDesktopEvent({
+      type: "connection.changed",
+      source: "gateway",
+      at: "2026-07-19T00:00:00.000Z",
+      connected: false,
+      authRequired: true,
+      reason: "node token expired",
+    });
+
+    expect(store.gatewayConnectionStatus).toBe("auth-required");
+    expect(store.gatewayConnectionError).toBe("node token expired");
+  });
+
+  it("reports capability success only after applying it", () => {
+    const store = useDesktopStore();
+
+    const result = store.applyDesktopEvent({
+      type: "capability.invoked",
+      source: "gateway",
+      at: "2026-08-08T00:00:00.000Z",
+      invocationId: "inv_notification",
+      capability: "desktop.notification.show",
+      arguments: { message: "Renderer applied this" },
+    });
+
+    expect(result).toEqual({ ok: true, result: { applied: true } });
+    expect(store.transcript[0]?.text).toBe("Renderer applied this");
+  });
+
+  it("queues notification announcements with spoken playback", () => {
+    const store = useDesktopStore();
+
+    const result = store.applyCapabilityInvoke(
+      "desktop.notification.announce",
+      { message: "Stand up and stretch" },
+    );
+
+    expect(result).toEqual({ ok: true, result: { applied: true } });
+    expect(store.activePresentation).toMatchObject({
+      bubbleText: "Stand up and stretch",
+      interruption: "queue",
+      ttsEnabled: true,
+      displayPlan: {
+        segments: [
+          {
+            text: "Stand up and stretch",
+            voice: { style: "neutral" },
+          },
+        ],
+      },
+    });
+    expect(store.transcript[0]?.text).toBe("Stand up and stretch");
+  });
+
+  it("rejects empty and oversized notification announcements", () => {
+    const store = useDesktopStore();
+
+    for (const message of ["   ", "x".repeat(301)]) {
+      expect(
+        store.applyCapabilityInvoke("desktop.notification.announce", {
+          message,
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "invalid_arguments", retryable: false },
+      });
+    }
+    expect(store.activePresentation).toBeNull();
+    expect(store.transcript).toHaveLength(0);
+  });
+
+  it("keeps notification show as transcript-only output", () => {
+    const store = useDesktopStore();
+
+    store.applyCapabilityInvoke("desktop.notification.show", {
+      message: "Visible only",
+    });
+
+    expect(store.transcript[0]?.text).toBe("Visible only");
+    expect(store.activePresentation).toBeNull();
+  });
+
+  it("returns structured errors for invalid and unsupported capabilities", () => {
+    const store = useDesktopStore();
+
+    expect(
+      store.applyCapabilityInvoke("desktop.live2d.play_motion", {
+        motion: "not-a-motion",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_arguments", retryable: false },
+    });
+    expect(store.applyCapabilityInvoke("desktop.unsupported", {})).toMatchObject({
+      ok: false,
+      error: { code: "capability_not_found", retryable: false },
+    });
+  });
 });

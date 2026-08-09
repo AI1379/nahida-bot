@@ -1699,6 +1699,13 @@ class RealBotAPI:
         """Access the MessageRouter for /stop command support."""
         return self._event_bus.context.app.message_router
 
+    @property
+    def desktop_announcement_service(self) -> Any | None:
+        """Access the restricted Desktop announcement service."""
+        return getattr(
+            self._event_bus.context.app, "desktop_announcement_service", None
+        )
+
     def get_session_run_status(self, session_id: str) -> dict[str, Any]:
         """Return the current agent run status for a session."""
         router = self.message_router

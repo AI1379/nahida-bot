@@ -89,7 +89,13 @@ function selectModel(event: Event) {
           </select>
         </label>
         <div class="connection-pill" :data-connected="store.connected">
-          {{ store.connected ? store.petRuntime.status : "Disconnected" }}
+          {{
+            store.connected
+              ? store.petRuntime.status
+              : store.gatewayConnectionStatus === "auth-required"
+                ? "Authentication required"
+                : "Disconnected"
+          }}
         </div>
       </div>
     </section>

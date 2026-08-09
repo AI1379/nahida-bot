@@ -106,7 +106,7 @@ async def test_pairing_complete_is_public_for_valid_token(
     client: AsyncClient, webapi_app: WebAPIApp
 ) -> None:
     auth: NodeAuthService = webapi_app.node_auth  # type: ignore[assignment]
-    pairing_token, _ = auth.issue_pairing_token(
+    pairing_token, _ = await auth.issue_pairing_token(
         node_id="desktop-local",
         display_name="Nahida Desktop",
     )
@@ -121,7 +121,7 @@ async def test_pairing_complete_is_public_for_valid_token(
     assert body["node_id"] == "desktop-local"
     assert body["node_token"].startswith("nt_")
     # Issued node token must verify against the same service.
-    principal = auth.verify(body["node_token"])
+    principal = await auth.verify(body["node_token"])
     assert principal is not None
     assert principal.node_id == "desktop-local"
     assert principal.token_type == "node"
@@ -131,7 +131,7 @@ async def test_pairing_complete_rejects_consumed_token(
     client: AsyncClient, webapi_app: WebAPIApp
 ) -> None:
     auth: NodeAuthService = webapi_app.node_auth  # type: ignore[assignment]
-    pairing_token, _ = auth.issue_pairing_token(node_id="desktop-local")
+    pairing_token, _ = await auth.issue_pairing_token(node_id="desktop-local")
 
     first = await client.post(
         "/api/nodes/pairing/complete",
@@ -196,7 +196,7 @@ async def test_node_management_routes_still_require_auth(
         assert unauth_start.status_code == 401
 
         # Public pairing/complete still works without admin auth.
-        pairing_token, _ = secured.node_auth.issue_pairing_token(  # type: ignore[attr-defined]
+        pairing_token, _ = await secured.node_auth.issue_pairing_token(  # type: ignore[attr-defined]
             node_id="desktop-local"
         )
         complete = await c.post(
@@ -242,7 +242,7 @@ async def test_full_pairing_dance_matches_desktop_flow(
         assert node_token.startswith("nt_")
 
         auth: NodeAuthService = webapi_app.node_auth  # type: ignore[assignment]
-        principal = auth.verify(node_token)
+        principal = await auth.verify(node_token)
         assert principal is not None
         assert principal.token_type == "node"
 
@@ -341,7 +341,7 @@ async def test_pairing_binds_actor_account_and_conversation(
         assert body["conversation_id"] == "desktop:private:desktop-local"
 
         auth: NodeAuthService = webapi_app.node_auth  # type: ignore[assignment]
-        principal = auth.verify(body["node_token"])
+        principal = await auth.verify(body["node_token"])
         assert principal is not None
         assert principal.token_type == "node"
         assert principal.actor_account_key == "telegram:user:12345"

@@ -33,6 +33,7 @@ import {
   type DesktopEventSourceOptions,
 } from "@/runtime/desktopEventSource";
 import type { useDesktopStore } from "@/stores/desktop";
+import { isGatewayConnectionConfigured } from "@/domain/gatewayConnection";
 
 type DesktopStore = ReturnType<typeof useDesktopStore>;
 
@@ -176,6 +177,8 @@ export function useDesktopRuntimeController(
 
   function connectMockBackend() {
     store.updateGatewayConnection({ mode: "mock" });
+    store.setGatewayConnectionStatus("disconnected");
+    store.setGatewayConnectionError(null);
     swapEventSource(createDesktopEventSource(store.gatewayConnection));
     startEventSource(eventSource);
   }
@@ -194,11 +197,13 @@ export function useDesktopRuntimeController(
     }
     swapEventSource(createDesktopEventSource(store.gatewayConnection));
     store.setGatewayConnectionError(null);
+    store.setGatewayConnectionStatus("connecting");
     startEventSource(eventSource, { connection: store.gatewayConnection });
   }
 
   function disconnectGateway() {
     stopEventSource();
+    store.setGatewayConnectionStatus("disconnected");
     store.activePlan = null;
     store.activePresentation = null;
     store.clearPendingAfterEmerge();
@@ -208,6 +213,7 @@ export function useDesktopRuntimeController(
     stopEventSource();
     swapEventSource(createDesktopEventSource(store.gatewayConnection));
     store.setGatewayConnectionError(null);
+    store.setGatewayConnectionStatus("connecting");
     startEventSource(eventSource, { connection: store.gatewayConnection });
   }
 
@@ -473,6 +479,14 @@ export function useDesktopRuntimeController(
     unlistenPetCommands = await listenForPetCommands(handlePetCommand);
     if (store.gatewayConnection.mode === "mock") {
       startEventSource(eventSource);
+    } else if (isGatewayConnectionConfigured(store.gatewayConnection)) {
+      store.setGatewayConnectionStatus("connecting");
+      startEventSource(eventSource, { connection: store.gatewayConnection });
+    } else {
+      store.setGatewayConnectionStatus("auth-required");
+      store.setGatewayConnectionError(
+        "Gateway authentication is required. Pair this desktop or provide a valid node token.",
+      );
     }
   });
 

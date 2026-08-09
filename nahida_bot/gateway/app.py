@@ -83,12 +83,23 @@ class WebAPIApp:
         layer is enabled by default; set ``webapi.nodes.enabled: false`` to
         disable the WebSocket endpoint entirely.
         """
+        from nahida_bot.db.engine import DatabaseEngine
+        from nahida_bot.db.repositories.sqlite_node_token_repo import (
+            SQLiteNodeTokenStore,
+        )
         from nahida_bot.gateway.services.node_auth import NodeAuthService
+        from nahida_bot.gateway.services.desktop_announcement import (
+            DesktopAnnouncementService,
+        )
         from nahida_bot.gateway.services.node_input_sink import ApplicationNodeInputSink
         from nahida_bot.gateway.services.node_invoker import NodeInvoker
         from nahida_bot.gateway.services.node_registry import NodeRegistry
 
         cfg = application.settings.webapi.nodes
+        engine = getattr(application, "_db_engine", None)
+        token_store = (
+            SQLiteNodeTokenStore(engine) if isinstance(engine, DatabaseEngine) else None
+        )
         self.node_registry = (
             NodeRegistry(
                 heartbeat_interval_ms=cfg.heartbeat_interval_ms,
@@ -99,6 +110,7 @@ class WebAPIApp:
         )
         self.node_auth = (
             NodeAuthService(
+                store=token_store,
                 pairing_ttl_seconds=cfg.pairing_ttl_seconds,
                 default_ttl_seconds=cfg.node_token_ttl_seconds,
             )
@@ -113,6 +125,12 @@ class WebAPIApp:
             if cfg.enabled
             else None
         )
+        self.desktop_announcement_service = (
+            DesktopAnnouncementService(self.node_registry, self.node_invoker)
+            if self.node_registry is not None and self.node_invoker is not None
+            else None
+        )
+        application.desktop_announcement_service = self.desktop_announcement_service
 
     @property
     def fastapi_app(self) -> FastAPI:

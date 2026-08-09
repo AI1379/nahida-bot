@@ -3,6 +3,7 @@ import {
   planFromText,
 } from "@/domain/displayPlan";
 import type { DesktopEvent } from "@/domain/runtime";
+import { isGatewayAuthError } from "@/domain/gatewayConnection";
 import type { MockGatewayEvent } from "@/services/mockBackend";
 
 export interface GatewayEventAdapter<RawEvent = unknown> {
@@ -118,6 +119,7 @@ export class GatewayNodeEventAdapter
           at: rawEvent.at,
           connected: rawEvent.status.registered,
           reason: rawEvent.status.lastError ?? undefined,
+          authRequired: isGatewayAuthError(rawEvent.status.lastError),
           gatewayUrl: rawEvent.status.gatewayUrl,
           nodeId: rawEvent.status.nodeId,
         };
@@ -128,6 +130,7 @@ export class GatewayNodeEventAdapter
           type: "capability.invoked",
           source: "gateway",
           at: rawEvent.at,
+          invocationId: rawEvent.invokeId,
           capability: rawEvent.capability,
           arguments: rawEvent.arguments,
         };
@@ -170,6 +173,36 @@ function gatewayEnvelopeToDesktopEvent(
         displayPlan,
       };
     }
+    case "agent.message.error":
+      return {
+        type: "notification.error",
+        source: "gateway",
+        at,
+        sessionId: readString(payload.session_id ?? payload.sessionId) ?? undefined,
+        message:
+          readString(payload.error) ??
+          readString(payload.message) ??
+          "Gateway agent run failed.",
+      };
+    case "notification.reminder":
+      return {
+        type: "notification.reminder",
+        source: "gateway",
+        at,
+        sessionId: readString(payload.session_id ?? payload.sessionId) ?? undefined,
+        message:
+          readString(payload.message) ?? "A scheduled reminder is ready.",
+        dedupeKey: readString(payload.job_id ?? payload.jobId) ?? undefined,
+      };
+    case "notification.error":
+      return {
+        type: "notification.error",
+        source: "gateway",
+        at,
+        sessionId: readString(payload.session_id ?? payload.sessionId) ?? undefined,
+        message:
+          readString(payload.message) ?? "A scheduled task failed.",
+      };
     case "plugin.error":
       return {
         type: "notification.error",

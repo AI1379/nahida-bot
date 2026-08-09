@@ -65,6 +65,42 @@ def test_find_capability_owner_returns_online_session() -> None:
     assert registry.find_capability_owner("missing.cap") is None
 
 
+def test_find_bound_capability_owners_prefers_conversation_then_actor() -> None:
+    registry = NodeRegistry()
+    exact = NodeSession(
+        session_id="t",
+        node_id="exact",
+        conversation_id="desktop:private:owner",
+        actor_account_key="milky:user:owner",
+    )
+    actor = NodeSession(
+        session_id="t",
+        node_id="actor",
+        conversation_id="desktop:private:other",
+        actor_account_key="milky:user:owner",
+    )
+    for session in (exact, actor):
+        registry.register_session(
+            session,
+            node_id=session.node_id,
+            display_name=session.node_id,
+            node_type="desktop",
+            capabilities=_caps("desktop.notification.announce"),
+            metadata={},
+        )
+
+    assert registry.find_bound_capability_owners(
+        capability="desktop.notification.announce",
+        conversation_id="desktop:private:owner",
+        actor_account_key="milky:user:owner",
+    ) == [exact]
+    assert registry.find_bound_capability_owners(
+        capability="desktop.notification.announce",
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+    ) == [exact, actor]
+
+
 def test_duplicate_node_id_displaces_old_session() -> None:
     registry = NodeRegistry()
     old = NodeSession(session_id="t", node_id="desktop-1")

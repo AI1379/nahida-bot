@@ -90,6 +90,55 @@ def test_explicit_empty_tool_allowlist_exposes_no_tools() -> None:
     assert runner._collect_tools(None, tool_allowlist=frozenset()) == []
 
 
+@pytest.mark.asyncio
+async def test_desktop_announce_tool_is_visible_only_to_cron_runs() -> None:
+    from nahida_bot.agent.loop import LoopEvent
+    from nahida_bot.core.session_runner import SessionRunner
+    from nahida_bot.plugins.registry import ToolEntry, ToolRegistry
+
+    async def handler() -> str:
+        return "ok"
+
+    class _CapturingAgent:
+        def __init__(self) -> None:
+            self.tool_names: list[list[str]] = []
+
+        async def run_stream(self, **kwargs):
+            self.tool_names.append([tool.name for tool in kwargs["tools"]])
+            yield LoopEvent(type="done", final_response="done")
+
+    registry = ToolRegistry()
+    for name in ("desktop_announce", "workspace_read"):
+        registry.register(
+            ToolEntry(
+                name=name,
+                description=name,
+                parameters={"type": "object"},
+                handler=handler,
+                plugin_id="test",
+            )
+        )
+    agent = _CapturingAgent()
+    runner = SessionRunner(agent_loop=agent, tool_registry=registry)
+
+    await runner.run(
+        user_message="normal",
+        session_id="normal",
+        system_prompt="test",
+    )
+    await runner.run(
+        user_message="scheduled",
+        session_id="cron",
+        system_prompt="test",
+        source_tag="cron_trigger",
+    )
+
+    assert agent.tool_names == [
+        ["workspace_read"],
+        ["desktop_announce", "workspace_read"],
+    ]
+
+
 # ── Phase 5 regression: ordered_transcript forwarding ──────────────────
 
 
