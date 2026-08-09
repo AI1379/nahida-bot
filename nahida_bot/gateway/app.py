@@ -91,6 +91,7 @@ class WebAPIApp:
         from nahida_bot.gateway.services.desktop_announcement import (
             DesktopAnnouncementService,
         )
+        from nahida_bot.gateway.services.desktop_control import DesktopControlService
         from nahida_bot.gateway.services.node_input_sink import ApplicationNodeInputSink
         from nahida_bot.gateway.services.node_invoker import NodeInvoker
         from nahida_bot.gateway.services.node_registry import NodeRegistry
@@ -130,7 +131,13 @@ class WebAPIApp:
             if self.node_registry is not None and self.node_invoker is not None
             else None
         )
+        self.desktop_control_service = (
+            DesktopControlService(self.node_registry, self.node_invoker)
+            if self.node_registry is not None and self.node_invoker is not None
+            else None
+        )
         application.desktop_announcement_service = self.desktop_announcement_service
+        application.desktop_control_service = self.desktop_control_service
 
     @property
     def fastapi_app(self) -> FastAPI:

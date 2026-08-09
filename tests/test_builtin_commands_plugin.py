@@ -74,6 +74,7 @@ class _FakeAPI:
         self.chat_history_calls: list[dict[str, Any]] = []
         self.authorization_calls: list[tuple[str, dict[str, Any]]] = []
         self.desktop_announcement_service: Any | None = None
+        self.desktop_control_service: Any | None = None
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -300,6 +301,8 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "cron_cancel",
         "cron_delete",
         "desktop_announce",
+        "desktop_exec",
+        "desktop_file_read",
     } <= set(api.tools)
     assert api.tools["workspace_read"]["parameters"]["required"] == ["path"]
     assert api.tools["workspace_write"]["parameters"]["required"] == [
@@ -323,6 +326,17 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert "cron_expression" in create_params["properties"]
     assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
     assert "cron_expression" in update_params["properties"]
+    assert set(api.tools["desktop_exec"]["parameters"]["properties"]) == {
+        "profile_id",
+        "args",
+        "cwd_relative",
+    }
+    assert set(api.tools["desktop_file_read"]["parameters"]["properties"]) == {
+        "root_id",
+        "relative_path",
+        "offset",
+        "max_bytes",
+    }
 
 
 @pytest.mark.asyncio
@@ -380,6 +394,64 @@ async def test_desktop_announce_rejects_non_cron_context() -> None:
         current_session.reset(token)
 
     assert result == "Error: desktop_announce is only available during CRON runs."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["", "cron_trigger"])
+async def test_desktop_exec_uses_trusted_context_in_chat_and_cron(origin: str) -> None:
+    api = _FakeAPI()
+    calls: list[dict[str, Any]] = []
+
+    class _ControlService:
+        async def exec(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return SimpleNamespace(ok=True, payload={"stdout": "ok", "exit_code": 0})
+
+    api.desktop_control_service = _ControlService()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky",
+            chat_id="owner",
+            session_id="milky:private:owner",
+            conversation_id="milky:private:owner",
+            sender_account_key="milky:user:owner",
+            origin=origin,
+        )
+    )
+    try:
+        result = await plugin._tool_desktop_exec("git", ["status"], "repo")
+    finally:
+        current_session.reset(token)
+
+    assert '"ok": true' in result
+    assert calls == [
+        {
+            "profile_id": "git",
+            "args": ["status"],
+            "cwd_relative": "repo",
+            "conversation_id": "milky:private:owner",
+            "actor_account_key": "milky:user:owner",
+            "caller": f"agent:{origin or 'chat'}:milky:private:owner",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_desktop_control_tool_rejects_missing_actor() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky", chat_id="owner", session_id="milky:private:owner"
+        )
+    )
+    try:
+        result = await plugin._tool_desktop_file_read("docs", "a.txt", 0, 100)
+    finally:
+        current_session.reset(token)
+
+    assert '"code": "actor_unavailable"' in result
 
 
 @pytest.mark.asyncio

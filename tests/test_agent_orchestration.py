@@ -607,6 +607,9 @@ def test_system_denylist_covers_nested_agent_and_delivery_tools() -> None:
     assert "sessions_send" in denied
     # Channel delivery is meaningless in the synthetic child context.
     assert "message" in denied
+    # Local Desktop control is never delegated to synthetic child runs.
+    assert "desktop_exec" in denied
+    assert "desktop_file_read" in denied
     # Identity administration can never be delegated.
     assert "identity_manage" in denied
 

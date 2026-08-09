@@ -508,6 +508,65 @@
   overflow-y: auto;
 }
 
+.remote-control__body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.remote-control__body > label {
+  display: grid;
+  gap: 6px;
+}
+
+.remote-control__body > label > span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.remote-control__body textarea {
+  min-height: 320px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.remote-control__warning,
+.remote-control__note,
+.remote-control__message {
+  margin: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.remote-control__warning {
+  color: #6b421d;
+  background: #fff4e8;
+}
+
+.remote-control__note {
+  color: var(--text-muted);
+  background: var(--surface-muted);
+}
+
+.remote-control__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.remote-control__message {
+  color: #1f6b41;
+  background: #eaf7ee;
+}
+
+.remote-control__message--error {
+  color: #6b2a32;
+  background: #faecef;
+}
+
 .settings-view__error {
   margin: 0;
   border: 1px solid #d8a8af;

@@ -182,6 +182,7 @@ class NodeRegistry:
         capability: str,
         conversation_id: str = "",
         actor_account_key: str = "",
+        node_type: str = "",
     ) -> list[NodeSession]:
         """Find capability owners bound to a conversation, then its actor.
 
@@ -194,6 +195,10 @@ class NodeRegistry:
             for session in self._by_session.values()
             if session.state == NodeSessionState.ONLINE
             and session.get_capability(capability) is not None
+            and (not node_type or session.node_type == node_type)
+            and (
+                not actor_account_key or session.actor_account_key == actor_account_key
+            )
         ]
         if conversation_id:
             exact = [
@@ -203,13 +208,7 @@ class NodeRegistry:
             ]
             if exact:
                 return exact
-        if actor_account_key:
-            return [
-                session
-                for session in candidates
-                if session.actor_account_key == actor_account_key
-            ]
-        return []
+        return candidates if actor_account_key else []
 
     def list_online_nodes(self) -> list[dict[str, object]]:
         return [

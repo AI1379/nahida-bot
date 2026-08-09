@@ -25,6 +25,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
+use crate::remote_control;
+
 pub const FRONTEND_EVENT: &str = "nahida://gateway-node/event";
 const DEFAULT_GATEWAY_WS_URL: &str = "ws://127.0.0.1:6185/api/nodes/ws";
 const DEFAULT_NODE_ID: &str = "desktop-local";
@@ -725,6 +727,29 @@ async fn handle_request(
             ),
         )
         .await;
+    }
+
+    if matches!(
+        payload.capability.as_str(),
+        remote_control::PROCESS_CAPABILITY | remote_control::READ_TEXT_CAPABILITY
+    ) {
+        let response_tx = capability_response_tx.clone();
+        let direct_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let response =
+                match remote_control::execute(&direct_app, &payload.capability, payload.arguments)
+                    .await
+                {
+                    Ok(result) => build_response(request_id, true, Some(result), None),
+                    Err(error) => {
+                        let mut protocol = protocol_error(error.code, error.message, false);
+                        protocol.details = error.details;
+                        build_response(request_id, false, None, Some(protocol))
+                    }
+                };
+            let _ = response_tx.send(response).await;
+        });
+        return Ok(());
     }
 
     let invoke_id = payload.invoke_id.clone();

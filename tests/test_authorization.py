@@ -27,6 +27,8 @@ def test_privileged_set_covers_system_tools_not_memory_write() -> None:
     assert "exec" in PRIVILEGED_TOOLS
     assert "message" in PRIVILEGED_TOOLS
     assert "workspace_write" in PRIVILEGED_TOOLS
+    assert "desktop_exec" in PRIVILEGED_TOOLS
+    assert "desktop_file_read" in PRIVILEGED_TOOLS
     # memory_write is memory-side (writes own scope); gating it would couple
     # authorization into memory, violating §2.5.
     assert "memory_write" not in PRIVILEGED_TOOLS

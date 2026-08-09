@@ -33,11 +33,17 @@ from nahida_bot.core.chat_address import (
     SessionKey,
     classify_session_key,
 )
-from nahida_bot.core.context import current_session
+from nahida_bot.core.context import current_agent_run, current_session
 from nahida_bot.core.events import AgentStopPayload, AgentStopRequested
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     runtime_settings_from_meta,
+)
+from nahida_bot.gateway.services.desktop_control import (
+    MAX_DESKTOP_EXEC_ARGS,
+    MAX_DESKTOP_EXEC_ARG_CHARS,
+    MAX_DESKTOP_FILE_READ_BYTES,
+    MAX_DESKTOP_PATH_CHARS,
 )
 
 _logger = structlog.get_logger(__name__)
@@ -46,6 +52,7 @@ _MAX_EXEC_OUTPUT = 50_000
 _MAX_HISTORY_TOOL_OUTPUT = 200_000
 _MAX_HISTORY_TURN_CHARS = 8000
 _MAX_EXEC_TIMEOUT = 120
+_MAX_DESKTOP_TOOL_RESULT_CHARS = 70_000
 _WEB_FETCH_TIMEOUT = 30
 _WEB_FETCH_MAX_BODY = 5 * 1024 * 1024
 _PRIVATE_NETWORKS = [
@@ -78,6 +85,50 @@ def _parse_history_datetime(value: str) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _desktop_tool_error(code: str, message: str) -> str:
+    return _bounded_desktop_tool_json(
+        {"ok": False, "error": {"code": code or "failed", "message": message}}
+    )
+
+
+def _bounded_desktop_tool_json(value: dict[str, Any]) -> str:
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        serialized = json.dumps(
+            {
+                "ok": False,
+                "error": {
+                    "code": "invalid_desktop_response",
+                    "message": "Desktop returned a non-serializable response",
+                },
+            },
+            sort_keys=True,
+        )
+    if len(serialized) <= _MAX_DESKTOP_TOOL_RESULT_CHARS:
+        return serialized
+
+    preview_chars = _MAX_DESKTOP_TOOL_RESULT_CHARS // 2
+    while preview_chars > 0:
+        bounded = json.dumps(
+            {
+                "ok": bool(value.get("ok")),
+                "result": {
+                    "truncated": True,
+                    "preview": serialized[:preview_chars],
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if len(bounded) <= _MAX_DESKTOP_TOOL_RESULT_CHARS:
+            return bounded
+        preview_chars //= 2
+    return _desktop_tool_error(
+        "response_too_large", "Desktop response exceeded the output limit"
+    )
+
+
 class BuiltinCommandsPlugin(Plugin):
     """Registers core commands and built-in tools."""
 
@@ -94,6 +145,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_agent_tools()
         self._register_message_tool()
         self._register_desktop_announce_tool()
+        self._register_desktop_control_tools()
         self._register_skill_tool()
         self._register_identity_tool()
 
@@ -1816,6 +1868,132 @@ class BuiltinCommandsPlugin(Plugin):
         if not result.ok:
             return f"Error: Desktop announcement failed ({result.error_code}): {result.error_message}"
         return f"Desktop announcement queued on {result.node_id}."
+
+    def _register_desktop_control_tools(self) -> None:
+        self.api.register_tool(
+            "desktop_exec",
+            (
+                "Run a pre-approved program profile on the current actor's Desktop. "
+                "The Desktop controls the executable and allowed working root; this "
+                "tool cannot select a node or arbitrary program. Available in normal "
+                "chat and scheduled CRON runs."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "profile_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Desktop-configured executable profile id.",
+                    },
+                    "args": {
+                        "type": "array",
+                        "maxItems": MAX_DESKTOP_EXEC_ARGS,
+                        "items": {
+                            "type": "string",
+                            "maxLength": MAX_DESKTOP_EXEC_ARG_CHARS,
+                        },
+                        "description": "Arguments passed to the approved profile.",
+                    },
+                    "cwd_relative": {
+                        "type": "string",
+                        "maxLength": MAX_DESKTOP_PATH_CHARS,
+                        "description": "Optional working directory under the profile root.",
+                    },
+                },
+                "required": ["profile_id", "args"],
+                "additionalProperties": False,
+            },
+            self._tool_desktop_exec,
+        )
+        self.api.register_tool(
+            "desktop_file_read",
+            (
+                "Read a bounded byte range from a pre-approved root on the current "
+                "actor's Desktop. The path must be relative; this tool cannot select "
+                "a node or provide an absolute root. Available in normal chat and "
+                "scheduled CRON runs."
+            ),
+            {
+                "type": "object",
+                "properties": {
+                    "root_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "Desktop-configured readable root id.",
+                    },
+                    "relative_path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_DESKTOP_PATH_CHARS,
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Zero-based byte offset.",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_DESKTOP_FILE_READ_BYTES,
+                    },
+                },
+                "required": ["root_id", "relative_path", "offset", "max_bytes"],
+                "additionalProperties": False,
+            },
+            self._tool_desktop_file_read,
+        )
+
+    async def _tool_desktop_exec(
+        self, profile_id: str, args: list[str], cwd_relative: str = ""
+    ) -> str:
+        return await self._invoke_desktop_control(
+            "exec",
+            profile_id=profile_id,
+            args=args,
+            cwd_relative=cwd_relative,
+        )
+
+    async def _tool_desktop_file_read(
+        self, root_id: str, relative_path: str, offset: int, max_bytes: int
+    ) -> str:
+        return await self._invoke_desktop_control(
+            "file_read",
+            root_id=root_id,
+            relative_path=relative_path,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+
+    async def _invoke_desktop_control(self, operation: str, **arguments: Any) -> str:
+        run_ctx = current_agent_run.get()
+        if run_ctx is not None and run_ctx.depth > 0:
+            return _desktop_tool_error(
+                "subagent_denied", "Desktop control is unavailable to subagents"
+            )
+        ctx = current_session.get()
+        if ctx is None or not ctx.actor_account_key.strip():
+            return _desktop_tool_error(
+                "actor_unavailable", "trusted actor identity is unavailable"
+            )
+        service = getattr(self.api, "desktop_control_service", None)
+        if service is None:
+            return _desktop_tool_error(
+                "service_unavailable", "Desktop control service is unavailable"
+            )
+
+        method = service.exec if operation == "exec" else service.file_read
+        result = await method(
+            **arguments,
+            conversation_id=ctx.effective_conversation_id,
+            actor_account_key=ctx.actor_account_key,
+            caller=f"agent:{ctx.origin or 'chat'}:{ctx.session_id}",
+        )
+        if not result.ok:
+            return _desktop_tool_error(result.error_code, result.error_message)
+        return _bounded_desktop_tool_json({"ok": True, "result": result.payload})
 
     def _register_message_tool(self) -> None:
         self.api.register_tool(

@@ -1,4 +1,5 @@
 mod gateway_node;
+mod remote_control;
 mod secure_storage;
 
 use tauri::{Manager, WindowEvent};
@@ -118,10 +119,15 @@ pub fn run() {
             gateway_node::gateway_node_status,
             gateway_node::gateway_node_submit_input,
             gateway_node::gateway_node_complete_capability,
+            remote_control::remote_control_policy_read,
+            remote_control::remote_control_policy_save,
             secure_storage::secure_tokens_read,
             secure_storage::secure_tokens_write,
         ])
         .setup(|app| {
+            let remote_control = remote_control::RemoteControlManager::load(app.handle())
+                .map_err(std::io::Error::other)?;
+            app.manage(remote_control);
             if let Some(pet) = app.get_webview_window("pet") {
                 suppress_nc_paint(&pet);
                 strip_window_chrome(&pet);

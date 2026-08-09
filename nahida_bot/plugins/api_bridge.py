@@ -1706,6 +1706,11 @@ class RealBotAPI:
             self._event_bus.context.app, "desktop_announcement_service", None
         )
 
+    @property
+    def desktop_control_service(self) -> Any | None:
+        """Access the actor-bound Desktop control service."""
+        return getattr(self._event_bus.context.app, "desktop_control_service", None)
+
     def get_session_run_status(self, session_id: str) -> dict[str, Any]:
         """Return the current agent run status for a session."""
         router = self.message_router

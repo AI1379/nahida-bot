@@ -240,6 +240,22 @@ pub fn desktop_capabilities() -> Vec<NodeCapability> {
             description: "Queue and speak a desktop reminder".to_string(),
             requires_user_approval: false,
         },
+        NodeCapability {
+            name: super::super::remote_control::PROCESS_CAPABILITY.to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::High,
+            description: "Run a locally pre-authorized executable profile".to_string(),
+            requires_user_approval: true,
+        },
+        NodeCapability {
+            name: super::super::remote_control::READ_TEXT_CAPABILITY.to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::High,
+            description: "Read UTF-8 text from a locally pre-authorized root".to_string(),
+            requires_user_approval: true,
+        },
     ]
 }
 
@@ -335,5 +351,20 @@ mod tests {
         assert_eq!(capability.direction, CapabilityDirection::GatewayToNode);
         assert_eq!(capability.risk, CapabilityRisk::Low);
         assert!(!capability.requires_user_approval);
+    }
+
+    #[test]
+    fn registers_remote_control_as_high_risk_and_approval_required() {
+        for name in [
+            super::super::super::remote_control::PROCESS_CAPABILITY,
+            super::super::super::remote_control::READ_TEXT_CAPABILITY,
+        ] {
+            let capability = desktop_capabilities()
+                .into_iter()
+                .find(|capability| capability.name == name)
+                .expect("remote capability is registered");
+            assert_eq!(capability.risk, CapabilityRisk::High);
+            assert!(capability.requires_user_approval);
+        }
     }
 }

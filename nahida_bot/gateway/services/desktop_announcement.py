@@ -55,6 +55,7 @@ class DesktopAnnouncementService:
             capability=DESKTOP_ANNOUNCE_CAPABILITY,
             conversation_id=conversation_id,
             actor_account_key=actor_account_key,
+            node_type="desktop",
         )
         if not candidates:
             return DesktopAnnouncementResult(

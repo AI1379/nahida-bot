@@ -34,7 +34,14 @@ from typing import Any, Mapping, TypedDict
 # the sender's own memory scope and is a memory concern, not an authorization
 # one (gating it would violate the auth/memory decoupling).
 PRIVILEGED_TOOLS: frozenset[str] = frozenset(
-    {"exec", "message", "workspace_write", "identity_manage"}
+    {
+        "exec",
+        "message",
+        "workspace_write",
+        "identity_manage",
+        "desktop_exec",
+        "desktop_file_read",
+    }
 )
 
 # Identity administration can never be delegated.  A ticket may authorize one
