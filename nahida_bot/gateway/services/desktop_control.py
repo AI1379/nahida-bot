@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 from nahida_bot.gateway.services.node_invoker import NodeInvoker
 from nahida_bot.gateway.services.node_registry import NodeRegistry
 
-DESKTOP_EXEC_CAPABILITY = "desktop.process.run_profile"
+DESKTOP_EXEC_CAPABILITY = "desktop.process.exec"
 DESKTOP_FILE_READ_CAPABILITY = "desktop.fs.read_text"
 
-MAX_DESKTOP_PROFILE_ID_CHARS = 128
+MAX_DESKTOP_PROGRAM_CHARS = 1024
 MAX_DESKTOP_ROOT_ID_CHARS = 128
 MAX_DESKTOP_EXEC_ARGS = 64
 MAX_DESKTOP_EXEC_ARG_CHARS = 4096
@@ -41,19 +40,19 @@ class DesktopControlService:
     async def exec(
         self,
         *,
-        profile_id: str,
+        program: str,
         args: list[str],
-        cwd_relative: str,
+        cwd: str,
         conversation_id: str,
         actor_account_key: str,
         caller: str,
     ) -> DesktopControlResult:
-        error = _validate_id("profile_id", profile_id, MAX_DESKTOP_PROFILE_ID_CHARS)
+        error = _validate_string("program", program, MAX_DESKTOP_PROGRAM_CHARS)
         if error is None:
             error = _validate_exec_args(args)
         if error is None:
-            error = _validate_relative_path(
-                "cwd_relative", cwd_relative, allow_empty=True
+            error = _validate_string(
+                "cwd", cwd, MAX_DESKTOP_PATH_CHARS, allow_empty=True
             )
         if error is not None:
             return _invalid(error)
@@ -61,9 +60,9 @@ class DesktopControlService:
         return await self._invoke(
             capability=DESKTOP_EXEC_CAPABILITY,
             arguments={
-                "profileId": profile_id.strip(),
+                "program": program,
                 "args": list(args),
-                "cwdRelative": cwd_relative,
+                "cwd": cwd,
                 "actorAccountKey": actor_account_key,
             },
             conversation_id=conversation_id,
@@ -74,17 +73,19 @@ class DesktopControlService:
     async def file_read(
         self,
         *,
+        path: str,
         root_id: str,
-        relative_path: str,
         offset: int,
         max_bytes: int,
         conversation_id: str,
         actor_account_key: str,
         caller: str,
     ) -> DesktopControlResult:
-        error = _validate_id("root_id", root_id, MAX_DESKTOP_ROOT_ID_CHARS)
+        error = _validate_string("path", path, MAX_DESKTOP_PATH_CHARS)
         if error is None:
-            error = _validate_relative_path("relative_path", relative_path)
+            error = _validate_string(
+                "root_id", root_id, MAX_DESKTOP_ROOT_ID_CHARS, allow_empty=True
+            )
         if error is None and (
             not isinstance(offset, int)
             or isinstance(offset, bool)
@@ -104,8 +105,8 @@ class DesktopControlService:
         return await self._invoke(
             capability=DESKTOP_FILE_READ_CAPABILITY,
             arguments={
-                "rootId": root_id.strip(),
-                "relativePath": relative_path,
+                "path": path,
+                "rootId": root_id,
                 "offset": offset,
                 "maxBytes": max_bytes,
                 "actorAccountKey": actor_account_key,
@@ -177,11 +178,17 @@ class DesktopControlService:
         )
 
 
-def _validate_id(name: str, value: object, max_chars: int) -> str | None:
-    if not isinstance(value, str) or not value.strip():
-        return f"{name} must be a non-empty string"
+def _validate_string(
+    name: str, value: object, max_chars: int, *, allow_empty: bool = False
+) -> str | None:
+    if not isinstance(value, str):
+        return f"{name} must be a string"
+    if not value and not allow_empty:
+        return f"{name} must not be empty"
     if len(value) > max_chars:
         return f"{name} exceeds {max_chars} characters"
+    if "\x00" in value:
+        return f"{name} contains a NUL character"
     return None
 
 
@@ -196,31 +203,11 @@ def _validate_exec_args(args: object) -> str | None:
             return "args must contain only strings"
         if len(value) > MAX_DESKTOP_EXEC_ARG_CHARS:
             return f"an arg exceeds {MAX_DESKTOP_EXEC_ARG_CHARS} characters"
+        if "\x00" in value:
+            return "an arg contains a NUL character"
         total += len(value)
     if total > MAX_DESKTOP_EXEC_ARGS_CHARS:
         return f"args exceeds {MAX_DESKTOP_EXEC_ARGS_CHARS} total characters"
-    return None
-
-
-def _validate_relative_path(
-    name: str, value: object, *, allow_empty: bool = False
-) -> str | None:
-    if not isinstance(value, str):
-        return f"{name} must be a string"
-    if not value:
-        return None if allow_empty else f"{name} must not be empty"
-    if len(value) > MAX_DESKTOP_PATH_CHARS:
-        return f"{name} exceeds {MAX_DESKTOP_PATH_CHARS} characters"
-    if "\x00" in value:
-        return f"{name} contains a NUL character"
-
-    windows_path = PureWindowsPath(value)
-    posix_path = PurePosixPath(value)
-    if windows_path.is_absolute() or windows_path.drive or posix_path.is_absolute():
-        return f"{name} must be relative"
-    parts = tuple(windows_path.parts) + tuple(posix_path.parts)
-    if ".." in parts:
-        return f"{name} must not escape its configured root"
     return None
 
 
@@ -237,6 +224,7 @@ __all__ = [
     "MAX_DESKTOP_EXEC_ARG_CHARS",
     "MAX_DESKTOP_FILE_READ_BYTES",
     "MAX_DESKTOP_PATH_CHARS",
+    "MAX_DESKTOP_PROGRAM_CHARS",
     "DesktopControlResult",
     "DesktopControlService",
 ]

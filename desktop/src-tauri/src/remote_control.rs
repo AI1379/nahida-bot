@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
@@ -9,7 +9,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
-pub const PROCESS_CAPABILITY: &str = "desktop.process.run_profile";
+pub const PROCESS_CAPABILITY: &str = "desktop.process.exec";
 pub const READ_TEXT_CAPABILITY: &str = "desktop.fs.read_text";
 
 const POLICY_FILE: &str = "remote-control-policy.json";
@@ -68,11 +68,19 @@ impl Default for RemoteControlLimits {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteControlMode {
+    #[default]
+    Disabled,
+    Scoped,
+    FullAccess,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoteControlPolicy {
-    #[serde(default)]
-    pub enabled: bool,
+    pub mode: RemoteControlMode,
     #[serde(default)]
     pub allowed_actor_account_keys: Vec<String>,
     #[serde(default)]
@@ -81,6 +89,59 @@ pub struct RemoteControlPolicy {
     pub exec_profiles: Vec<ExecProfile>,
     #[serde(default)]
     pub limits: RemoteControlLimits,
+}
+
+impl Default for RemoteControlPolicy {
+    fn default() -> Self {
+        Self {
+            mode: RemoteControlMode::Disabled,
+            allowed_actor_account_keys: Vec::new(),
+            read_roots: Vec::new(),
+            exec_profiles: Vec::new(),
+            limits: RemoteControlLimits::default(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RemoteControlPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct StoredPolicy {
+            #[serde(default)]
+            mode: Option<RemoteControlMode>,
+            #[serde(default)]
+            enabled: Option<bool>,
+            #[serde(default)]
+            allowed_actor_account_keys: Vec<String>,
+            #[serde(default)]
+            read_roots: Vec<ReadRoot>,
+            #[serde(default)]
+            exec_profiles: Vec<ExecProfile>,
+            #[serde(default)]
+            limits: RemoteControlLimits,
+        }
+
+        let stored = StoredPolicy::deserialize(deserializer)?;
+        if stored.mode.is_some() && stored.enabled.is_some() {
+            return Err(serde::de::Error::custom(
+                "policy may contain mode or legacy enabled, not both",
+            ));
+        }
+        Ok(Self {
+            mode: stored.mode.unwrap_or(match stored.enabled {
+                Some(true) => RemoteControlMode::Scoped,
+                _ => RemoteControlMode::Disabled,
+            }),
+            allowed_actor_account_keys: stored.allowed_actor_account_keys,
+            read_roots: stored.read_roots,
+            exec_profiles: stored.exec_profiles,
+            limits: stored.limits,
+        })
+    }
 }
 
 pub struct RemoteControlManager {
@@ -212,19 +273,20 @@ impl RemoteControlError {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RunProfileArguments {
     actor_account_key: String,
-    profile_id: String,
+    program: String,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
-    cwd_relative: String,
+    cwd: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReadTextArguments {
     actor_account_key: String,
-    root_id: String,
-    relative_path: String,
+    path: String,
+    #[serde(default)]
+    root_id: Option<String>,
     #[serde(default)]
     offset: u64,
     max_bytes: u64,
@@ -267,28 +329,77 @@ async fn run_profile(
     arguments: RunProfileArguments,
 ) -> Result<Value, RemoteControlError> {
     authorize(policy, &arguments.actor_account_key)?;
-    let profile = policy
-        .exec_profiles
-        .iter()
-        .find(|profile| profile.id == arguments.profile_id)
-        .ok_or_else(|| {
-            RemoteControlError::new("profile_not_found", "execution profile is not allowed")
-        })?;
-    if !profile.allow_additional_args && !arguments.args.is_empty() {
-        return Err(RemoteControlError::new(
-            "additional_args_denied",
-            "this profile does not allow additional arguments",
-        ));
-    }
+    let (program, fixed_args, cwd, clear_environment) = match policy.mode {
+        RemoteControlMode::Disabled => unreachable!("authorize rejects disabled mode"),
+        RemoteControlMode::Scoped => {
+            let profile = policy
+                .exec_profiles
+                .iter()
+                .find(|profile| profile.id == arguments.program)
+                .ok_or_else(|| {
+                    RemoteControlError::new(
+                        "profile_not_found",
+                        "program is not an allowed local profile id",
+                    )
+                })?;
+            if !profile.allow_additional_args && !arguments.args.is_empty() {
+                return Err(RemoteControlError::new(
+                    "additional_args_denied",
+                    "this profile does not allow additional arguments",
+                ));
+            }
+            let root = resolve_root(policy, &profile.cwd_root_id)?;
+            let cwd = resolve_within_root(&root, &arguments.cwd, true)?;
+            let program = std::fs::canonicalize(&profile.program).map_err(|error| {
+                RemoteControlError::new(
+                    "program_unavailable",
+                    format!("could not resolve profile program: {error}"),
+                )
+            })?;
+            if !program.is_file() {
+                return Err(RemoteControlError::new(
+                    "program_unavailable",
+                    "profile program is not a regular file",
+                ));
+            }
+            (program, profile.fixed_args.as_slice(), Some(cwd), true)
+        }
+        RemoteControlMode::FullAccess => {
+            if arguments.program.trim().is_empty() || arguments.program.contains('\0') {
+                return Err(RemoteControlError::new(
+                    "invalid_arguments",
+                    "program must be non-empty and may not contain NUL",
+                ));
+            }
+            let cwd = if arguments.cwd.is_empty() {
+                None
+            } else {
+                let cwd = std::fs::canonicalize(&arguments.cwd).map_err(|error| {
+                    RemoteControlError::new(
+                        "path_unavailable",
+                        format!("could not resolve working directory: {error}"),
+                    )
+                })?;
+                if !cwd.is_dir() {
+                    return Err(RemoteControlError::new(
+                        "invalid_directory",
+                        "working directory is not a directory",
+                    ));
+                }
+                Some(cwd)
+            };
+            (PathBuf::from(&arguments.program), &[][..], cwd, false)
+        }
+    };
     if arguments.args.len() > policy.limits.max_additional_args as usize
-        || profile.fixed_args.len() + arguments.args.len() > HARD_MAX_TOTAL_ARGS
+        || fixed_args.len() + arguments.args.len() > HARD_MAX_TOTAL_ARGS
     {
         return Err(RemoteControlError::new(
             "argument_limit_exceeded",
-            "too many additional arguments",
+            "too many arguments",
         ));
     }
-    for argument in profile.fixed_args.iter().chain(arguments.args.iter()) {
+    for argument in fixed_args.iter().chain(arguments.args.iter()) {
         if argument.len() as u64 > policy.limits.max_arg_bytes || argument.contains('\0') {
             return Err(RemoteControlError::new(
                 "argument_limit_exceeded",
@@ -297,30 +408,20 @@ async fn run_profile(
         }
     }
 
-    let root = resolve_root(policy, &profile.cwd_root_id)?;
-    let cwd = resolve_within_root(&root, &arguments.cwd_relative, true)?;
-    let program = std::fs::canonicalize(&profile.program).map_err(|error| {
-        RemoteControlError::new(
-            "program_unavailable",
-            format!("could not resolve profile program: {error}"),
-        )
-    })?;
-    if !program.is_file() {
-        return Err(RemoteControlError::new(
-            "program_unavailable",
-            "profile program is not a regular file",
-        ));
-    }
     let mut command = Command::new(program);
     command
-        .args(&profile.fixed_args)
+        .args(fixed_args)
         .args(&arguments.args)
-        .current_dir(&cwd)
-        .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    if clear_environment {
+        command.env_clear();
+    }
     let mut child = command.spawn().map_err(|error| {
         RemoteControlError::new(
             "process_start_failed",
@@ -378,7 +479,7 @@ async fn run_profile(
     }
 
     Ok(json!({
-        "profileId": profile.id,
+        "program": arguments.program,
         "exitCode": status.code(),
         "success": status.success(),
         "stdout": String::from_utf8_lossy(&stdout),
@@ -406,8 +507,24 @@ async fn read_text(
             "maxBytes must be positive and no greater than the configured file limit",
         ));
     }
-    let root = resolve_root(policy, &arguments.root_id)?;
-    let path = resolve_within_root(&root, &arguments.relative_path, false)?;
+    let path = match policy.mode {
+        RemoteControlMode::Disabled => unreachable!("authorize rejects disabled mode"),
+        RemoteControlMode::Scoped => {
+            let root_id = arguments.root_id.as_deref().ok_or_else(|| {
+                RemoteControlError::new("invalid_arguments", "rootId is required in scoped mode")
+            })?;
+            let root = resolve_root(policy, root_id)?;
+            resolve_within_root(&root, &arguments.path, false)?
+        }
+        RemoteControlMode::FullAccess => {
+            std::fs::canonicalize(&arguments.path).map_err(|error| {
+                RemoteControlError::new(
+                    "path_unavailable",
+                    format!("could not resolve file path: {error}"),
+                )
+            })?
+        }
+    };
     let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
         RemoteControlError::new(
             "file_read_failed",
@@ -448,7 +565,7 @@ async fn read_text(
     }
     Ok(json!({
         "rootId": arguments.root_id,
-        "relativePath": arguments.relative_path,
+        "path": arguments.path,
         "content": &text[offset..end],
         "offset": arguments.offset,
         "bytesRead": end - offset,
@@ -458,7 +575,7 @@ async fn read_text(
 }
 
 fn authorize(policy: &RemoteControlPolicy, actor: &str) -> Result<(), RemoteControlError> {
-    if !policy.enabled {
+    if policy.mode == RemoteControlMode::Disabled {
         return Err(RemoteControlError::new(
             "remote_control_disabled",
             "local remote control is disabled",
@@ -738,7 +855,7 @@ mod tests {
         let directory = temporary_directory("policy");
         let path = directory.join(POLICY_FILE);
         let manager = RemoteControlManager::load_from(path.clone()).unwrap();
-        assert!(!manager.snapshot().enabled);
+        assert_eq!(manager.snapshot().mode, RemoteControlMode::Disabled);
         let mut policy = manager.snapshot();
         policy
             .allowed_actor_account_keys
@@ -749,6 +866,23 @@ mod tests {
             policy
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn migrates_legacy_enabled_policy_to_scoped() {
+        let policy: RemoteControlPolicy = serde_json::from_value(json!({
+            "enabled": true,
+            "allowedActorAccountKeys": [],
+            "readRoots": [],
+            "execProfiles": [],
+            "limits": RemoteControlLimits::default(),
+        }))
+        .unwrap();
+        assert_eq!(policy.mode, RemoteControlMode::Scoped);
+        assert!(serde_json::to_value(policy)
+            .unwrap()
+            .get("enabled")
+            .is_none());
     }
 
     #[test]
@@ -789,7 +923,7 @@ mod tests {
         let directory = temporary_directory("read");
         std::fs::write(directory.join("hello.txt"), "草 hello").unwrap();
         let mut policy = RemoteControlPolicy {
-            enabled: true,
+            mode: RemoteControlMode::Scoped,
             ..RemoteControlPolicy::default()
         };
         policy
@@ -803,8 +937,8 @@ mod tests {
             &policy,
             ReadTextArguments {
                 actor_account_key: "telegram:user:1".to_string(),
-                root_id: "notes".to_string(),
-                relative_path: "hello.txt".to_string(),
+                path: "hello.txt".to_string(),
+                root_id: Some("notes".to_string()),
                 offset: 0,
                 max_bytes: 4,
             },
@@ -820,7 +954,7 @@ mod tests {
     async fn runs_only_a_locally_authorized_profile_without_a_shell() {
         let directory = temporary_directory("process");
         let mut policy = RemoteControlPolicy {
-            enabled: true,
+            mode: RemoteControlMode::Scoped,
             ..RemoteControlPolicy::default()
         };
         policy
@@ -845,9 +979,9 @@ mod tests {
             &policy,
             RunProfileArguments {
                 actor_account_key: "telegram:user:1".to_string(),
-                profile_id: "rust-version".to_string(),
+                program: "rust-version".to_string(),
                 args: vec![],
-                cwd_relative: String::new(),
+                cwd: String::new(),
             },
         )
         .await
@@ -856,5 +990,67 @@ mod tests {
         assert!(result["success"].as_bool().unwrap());
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn full_access_reads_without_root_and_runs_arbitrary_program() {
+        let directory = temporary_directory("full-access");
+        let file = directory.join("hello.txt");
+        std::fs::write(&file, "hello").unwrap();
+        let mut policy = RemoteControlPolicy {
+            mode: RemoteControlMode::FullAccess,
+            ..RemoteControlPolicy::default()
+        };
+        policy
+            .allowed_actor_account_keys
+            .push("telegram:user:1".to_string());
+
+        let read = read_text(
+            &policy,
+            ReadTextArguments {
+                actor_account_key: "telegram:user:1".to_string(),
+                path: file.to_string_lossy().into_owned(),
+                root_id: None,
+                offset: 0,
+                max_bytes: 5,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(read["content"], "hello");
+
+        let run = run_profile(
+            &policy,
+            RunProfileArguments {
+                actor_account_key: "telegram:user:1".to_string(),
+                program: std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                args: vec!["--help".to_string()],
+                cwd: directory.to_string_lossy().into_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(run["success"], true);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn disabled_mode_rejects_remote_control() {
+        let error = read_text(
+            &RemoteControlPolicy::default(),
+            ReadTextArguments {
+                actor_account_key: "telegram:user:1".to_string(),
+                path: "anything".to_string(),
+                root_id: None,
+                offset: 0,
+                max_bytes: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "remote_control_disabled");
     }
 }

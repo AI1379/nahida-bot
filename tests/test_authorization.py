@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from nahida_bot.identity.authorization import (
+    DELEGABLE_TOOLS,
     PRIVILEGED_TOOLS,
     AuthorizationGate,
     NotAuthorized,
@@ -29,6 +30,8 @@ def test_privileged_set_covers_system_tools_not_memory_write() -> None:
     assert "workspace_write" in PRIVILEGED_TOOLS
     assert "desktop_exec" in PRIVILEGED_TOOLS
     assert "desktop_file_read" in PRIVILEGED_TOOLS
+    assert "desktop_exec" in DELEGABLE_TOOLS
+    assert "desktop_file_read" in DELEGABLE_TOOLS
     # memory_write is memory-side (writes own scope); gating it would couple
     # authorization into memory, violating §2.5.
     assert "memory_write" not in PRIVILEGED_TOOLS

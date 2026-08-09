@@ -245,7 +245,7 @@ pub fn desktop_capabilities() -> Vec<NodeCapability> {
             version: PROTOCOL_VERSION.to_string(),
             direction: CapabilityDirection::GatewayToNode,
             risk: CapabilityRisk::High,
-            description: "Run a locally pre-authorized executable profile".to_string(),
+            description: "Run an executable under the local remote-control mode".to_string(),
             requires_user_approval: true,
         },
         NodeCapability {
@@ -253,7 +253,7 @@ pub fn desktop_capabilities() -> Vec<NodeCapability> {
             version: PROTOCOL_VERSION.to_string(),
             direction: CapabilityDirection::GatewayToNode,
             risk: CapabilityRisk::High,
-            description: "Read UTF-8 text from a locally pre-authorized root".to_string(),
+            description: "Read UTF-8 text under the local remote-control mode".to_string(),
             requires_user_approval: true,
         },
     ]

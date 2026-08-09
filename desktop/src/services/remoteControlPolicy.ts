@@ -11,8 +11,10 @@ export interface RemoteControlExecProfile {
   allowAdditionalArgs: boolean;
 }
 
+export type RemoteControlMode = "disabled" | "scoped" | "full_access";
+
 export interface RemoteControlPolicy {
-  enabled: boolean;
+  mode: RemoteControlMode;
   allowedActorAccountKeys: string[];
   readRoots: RemoteControlReadRoot[];
   execProfiles: RemoteControlExecProfile[];
@@ -28,7 +30,7 @@ export interface RemoteControlPolicy {
 }
 
 export const defaultRemoteControlPolicy: RemoteControlPolicy = {
-  enabled: false,
+  mode: "disabled",
   allowedActorAccountKeys: [],
   readRoots: [],
   execProfiles: [],
@@ -46,14 +48,23 @@ export const defaultRemoteControlPolicy: RemoteControlPolicy = {
 export function parseRemoteControlPolicy(source: string): RemoteControlPolicy {
   const value: unknown = JSON.parse(source);
   if (!isRecord(value)) throw new Error("Policy must be a JSON object.");
+  const usesLegacyEnabled = "enabled" in value && !("mode" in value);
   requireExactKeys(value, [
-    "enabled",
+    usesLegacyEnabled ? "enabled" : "mode",
     "allowedActorAccountKeys",
     "readRoots",
     "execProfiles",
     "limits",
   ], "policy");
-  if (typeof value.enabled !== "boolean") throw new Error("enabled must be boolean.");
+  const mode = usesLegacyEnabled
+    ? value.enabled === true ? "scoped" : "disabled"
+    : value.mode;
+  if (!usesLegacyEnabled && !isRemoteControlMode(mode)) {
+    throw new Error("mode must be disabled, scoped, or full_access.");
+  }
+  if (usesLegacyEnabled && typeof value.enabled !== "boolean") {
+    throw new Error("legacy enabled must be boolean.");
+  }
   if (!isStringArray(value.allowedActorAccountKeys)) {
     throw new Error("allowedActorAccountKeys must be a string array.");
   }
@@ -64,7 +75,12 @@ export function parseRemoteControlPolicy(source: string): RemoteControlPolicy {
     throw new Error("Each execution profile is invalid.");
   }
   if (!isLimits(value.limits)) throw new Error("limits is invalid.");
-  return value as unknown as RemoteControlPolicy;
+  const { enabled: _legacyEnabled, ...policy } = value;
+  return { ...policy, mode } as unknown as RemoteControlPolicy;
+}
+
+function isRemoteControlMode(value: unknown): value is RemoteControlMode {
+  return value === "disabled" || value === "scoped" || value === "full_access";
 }
 
 function isReadRoot(value: unknown): boolean {

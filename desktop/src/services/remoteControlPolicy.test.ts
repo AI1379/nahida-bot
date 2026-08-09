@@ -10,8 +10,26 @@ describe("remoteControlPolicy", () => {
     const parsed = parseRemoteControlPolicy(
       JSON.stringify(defaultRemoteControlPolicy),
     );
-    expect(parsed.enabled).toBe(false);
+    expect(parsed.mode).toBe("disabled");
     expect(parsed.limits.timeoutMs).toBe(10_000);
+  });
+
+  it.each(["disabled", "scoped", "full_access"] as const)(
+    "accepts %s mode",
+    (mode) => {
+      expect(parseRemoteControlPolicy(JSON.stringify({
+        ...defaultRemoteControlPolicy,
+        mode,
+      })).mode).toBe(mode);
+    },
+  );
+
+  it("migrates the legacy enabled policy to scoped", () => {
+    const { mode: _mode, ...legacy } = defaultRemoteControlPolicy;
+    expect(parseRemoteControlPolicy(JSON.stringify({
+      ...legacy,
+      enabled: true,
+    })).mode).toBe("scoped");
   });
 
   it("rejects unknown fields and malformed profiles", () => {

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import {
   defaultRemoteControlPolicy,
   parseRemoteControlPolicy,
+  type RemoteControlMode,
   type RemoteControlPolicy,
 } from "@/services/remoteControlPolicy";
 
@@ -14,6 +15,15 @@ const loading = ref(false);
 const saving = ref(false);
 const message = ref(available ? "" : "Policy editing is available in the Tauri desktop app.");
 const failed = ref(false);
+const loadedMode = ref<RemoteControlMode>("disabled");
+const editedMode = computed<RemoteControlMode | null>(() => {
+  try {
+    return parseRemoteControlPolicy(source.value).mode;
+  } catch {
+    return null;
+  }
+});
+const isFullAccess = computed(() => editedMode.value === "full_access");
 
 onMounted(() => {
   if (available) void loadPolicy();
@@ -25,6 +35,7 @@ async function loadPolicy() {
   try {
     const policy = await invoke<RemoteControlPolicy>("remote_control_policy_read");
     source.value = JSON.stringify(policy, null, 2);
+    loadedMode.value = policy.mode;
     message.value = "Policy loaded from Rust-owned local storage.";
   } catch (error) {
     failed.value = true;
@@ -44,10 +55,21 @@ async function savePolicy() {
     message.value = error instanceof Error ? error.message : String(error);
     return;
   }
+  if (
+    policy.mode === "full_access" &&
+    loadedMode.value !== "full_access" &&
+    !window.confirm(
+      "Enable full access? Authorized remote actors will be able to run arbitrary programs and read arbitrary text files on this computer.",
+    )
+  ) {
+    message.value = "Full access was not enabled.";
+    return;
+  }
   saving.value = true;
   try {
     await invoke("remote_control_policy_save", { policy });
     source.value = JSON.stringify(policy, null, 2);
+    loadedMode.value = policy.mode;
     message.value = "Local pre-authorization policy saved.";
   } catch (error) {
     failed.value = true;
@@ -56,24 +78,59 @@ async function savePolicy() {
     saving.value = false;
   }
 }
+
+function setMode(event: Event) {
+  const mode = (event.target as HTMLSelectElement).value as RemoteControlMode;
+  try {
+    const policy = parseRemoteControlPolicy(source.value);
+    source.value = JSON.stringify({ ...policy, mode }, null, 2);
+    failed.value = false;
+    message.value = mode === "full_access"
+      ? "Full access is staged. Saving it requires explicit confirmation."
+      : "Mode change is staged; save the policy to apply it.";
+  } catch (error) {
+    failed.value = true;
+    message.value = error instanceof Error ? error.message : String(error);
+  }
+}
 </script>
 
 <template>
-  <section class="panel remote-control" aria-label="Remote control policy settings">
+  <section
+    class="panel remote-control"
+    :class="{ 'remote-control--danger': isFullAccess }"
+    aria-label="Remote control policy settings"
+  >
     <header class="panel__header">
       <h2>Controlled Remote Access</h2>
-      <span>Local pre-authorization</span>
+      <span>{{ isFullAccess ? "DANGER: FULL ACCESS" : "Local pre-authorization" }}</span>
     </header>
 
     <div class="remote-control__body">
-      <p class="remote-control__warning">
-        Disabled by default. Enabling this policy allows only listed Gateway
-        actor account keys to read configured roots or run fixed executable
-        profiles. Commands execute in Rust and are never sent to the renderer.
-        Profile programs must use absolute executable paths. Enabling additional
-        arguments grants the agent the full argument surface of that executable;
-        leave it disabled unless that program is safe with arbitrary arguments.
+      <p class="remote-control__warning" :class="{ 'remote-control__warning--danger': isFullAccess }">
+        <template v-if="isFullAccess">
+          Full access lets authorized remote actors run arbitrary executables,
+          shells, and interpreters with inherited environment variables, and read
+          arbitrary UTF-8 files. Treat this as equivalent to local account access.
+        </template>
+        <template v-else>
+          Scoped mode allows listed Gateway actors to read configured roots or run
+          fixed executable profiles. Commands execute in Rust and are never sent
+          to the renderer. Profile programs must use absolute executable paths.
+        </template>
       </p>
+      <label>
+        <span>Mode</span>
+        <select
+          :value="editedMode ?? ''"
+          :disabled="!available || loading || saving || editedMode === null"
+          @change="setMode"
+        >
+          <option value="disabled">Disabled</option>
+          <option value="scoped">Scoped</option>
+          <option value="full_access">Full access (dangerous)</option>
+        </select>
+      </label>
       <label>
         <span>Policy JSON</span>
         <textarea
@@ -84,10 +141,11 @@ async function savePolicy() {
         />
       </label>
       <p class="remote-control__note">
-        Profiles accept only <code>profileId</code>, optional additional
-        <code>args</code>, and <code>cwdRelative</code>. File reads accept
-        <code>rootId</code>, <code>relativePath</code>, <code>offset</code>, and
-        <code>maxBytes</code>. The Gateway must inject
+        Exec requests use <code>program</code>, <code>args</code>, and
+        <code>cwd</code>. In scoped mode, program is a local profile id and cwd is
+        relative to its root. File requests use <code>path</code>, optional
+        <code>rootId</code>, <code>offset</code>, and <code>maxBytes</code>;
+        scoped mode requires a root id and relative path. The Gateway must inject
         <code>actorAccountKey</code> for both capabilities.
       </p>
       <div class="remote-control__actions">

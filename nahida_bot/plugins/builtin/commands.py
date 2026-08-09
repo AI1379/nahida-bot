@@ -44,6 +44,7 @@ from nahida_bot.gateway.services.desktop_control import (
     MAX_DESKTOP_EXEC_ARG_CHARS,
     MAX_DESKTOP_FILE_READ_BYTES,
     MAX_DESKTOP_PATH_CHARS,
+    MAX_DESKTOP_PROGRAM_CHARS,
 )
 
 _logger = structlog.get_logger(__name__)
@@ -1873,19 +1874,20 @@ class BuiltinCommandsPlugin(Plugin):
         self.api.register_tool(
             "desktop_exec",
             (
-                "Run a pre-approved program profile on the current actor's Desktop. "
-                "The Desktop controls the executable and allowed working root; this "
-                "tool cannot select a node or arbitrary program. Available in normal "
-                "chat and scheduled CRON runs."
+                "Run a program on the current actor's Desktop. The same call is "
+                "adjudicated locally by Desktop mode: scoped mode interprets program "
+                "and cwd within its configured policy, while Full Access mode permits "
+                "full paths. This tool cannot select a node or capability. Available "
+                "in normal chat and scheduled CRON runs."
             ),
             {
                 "type": "object",
                 "properties": {
-                    "profile_id": {
+                    "program": {
                         "type": "string",
                         "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Desktop-configured executable profile id.",
+                        "maxLength": MAX_DESKTOP_PROGRAM_CHARS,
+                        "description": "Program identifier or path, interpreted by Desktop mode.",
                     },
                     "args": {
                         "type": "array",
@@ -1894,15 +1896,17 @@ class BuiltinCommandsPlugin(Plugin):
                             "type": "string",
                             "maxLength": MAX_DESKTOP_EXEC_ARG_CHARS,
                         },
+                        "default": [],
                         "description": "Arguments passed to the approved profile.",
                     },
-                    "cwd_relative": {
+                    "cwd": {
                         "type": "string",
                         "maxLength": MAX_DESKTOP_PATH_CHARS,
-                        "description": "Optional working directory under the profile root.",
+                        "default": "",
+                        "description": "Optional working directory interpreted by Desktop mode.",
                     },
                 },
-                "required": ["profile_id", "args"],
+                "required": ["program"],
                 "additionalProperties": False,
             },
             self._tool_desktop_exec,
@@ -1910,59 +1914,67 @@ class BuiltinCommandsPlugin(Plugin):
         self.api.register_tool(
             "desktop_file_read",
             (
-                "Read a bounded byte range from a pre-approved root on the current "
-                "actor's Desktop. The path must be relative; this tool cannot select "
-                "a node or provide an absolute root. Available in normal chat and "
-                "scheduled CRON runs."
+                "Read a bounded byte range on the current actor's Desktop. The same "
+                "call is adjudicated locally by Desktop mode: scoped mode applies its "
+                "configured roots, while Full Access mode permits full paths. This "
+                "tool cannot select a node or capability. Available in normal chat "
+                "and scheduled CRON runs."
             ),
             {
                 "type": "object",
                 "properties": {
-                    "root_id": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 128,
-                        "description": "Desktop-configured readable root id.",
-                    },
-                    "relative_path": {
+                    "path": {
                         "type": "string",
                         "minLength": 1,
                         "maxLength": MAX_DESKTOP_PATH_CHARS,
+                        "description": "File path interpreted by Desktop mode.",
+                    },
+                    "root_id": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "default": "",
+                        "description": "Optional Desktop-configured root identifier.",
                     },
                     "offset": {
                         "type": "integer",
                         "minimum": 0,
+                        "default": 0,
                         "description": "Zero-based byte offset.",
                     },
                     "max_bytes": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": MAX_DESKTOP_FILE_READ_BYTES,
+                        "default": 65536,
                     },
                 },
-                "required": ["root_id", "relative_path", "offset", "max_bytes"],
+                "required": ["path"],
                 "additionalProperties": False,
             },
             self._tool_desktop_file_read,
         )
 
     async def _tool_desktop_exec(
-        self, profile_id: str, args: list[str], cwd_relative: str = ""
+        self, program: str, args: list[str] | None = None, cwd: str = ""
     ) -> str:
         return await self._invoke_desktop_control(
             "exec",
-            profile_id=profile_id,
-            args=args,
-            cwd_relative=cwd_relative,
+            program=program,
+            args=args or [],
+            cwd=cwd,
         )
 
     async def _tool_desktop_file_read(
-        self, root_id: str, relative_path: str, offset: int, max_bytes: int
+        self,
+        path: str,
+        root_id: str = "",
+        offset: int = 0,
+        max_bytes: int = 65536,
     ) -> str:
         return await self._invoke_desktop_control(
             "file_read",
+            path=path,
             root_id=root_id,
-            relative_path=relative_path,
             offset=offset,
             max_bytes=max_bytes,
         )

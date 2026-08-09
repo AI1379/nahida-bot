@@ -327,16 +327,34 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
     assert "cron_expression" in update_params["properties"]
     assert set(api.tools["desktop_exec"]["parameters"]["properties"]) == {
-        "profile_id",
+        "program",
         "args",
-        "cwd_relative",
+        "cwd",
     }
     assert set(api.tools["desktop_file_read"]["parameters"]["properties"]) == {
+        "path",
         "root_id",
-        "relative_path",
         "offset",
         "max_bytes",
     }
+    exec_params = api.tools["desktop_exec"]["parameters"]
+    read_params = api.tools["desktop_file_read"]["parameters"]
+    assert exec_params["required"] == ["program"]
+    assert exec_params["properties"]["args"]["default"] == []
+    assert exec_params["properties"]["cwd"]["default"] == ""
+    assert read_params["required"] == ["path"]
+    assert read_params["properties"]["root_id"]["default"] == ""
+    assert read_params["properties"]["offset"]["default"] == 0
+    assert read_params["properties"]["max_bytes"]["default"] == 65536
+    for parameters in (exec_params, read_params):
+        assert parameters["additionalProperties"] is False
+        assert {
+            "actor",
+            "actor_account_key",
+            "node",
+            "node_id",
+            "capability",
+        }.isdisjoint(parameters["properties"])
 
 
 @pytest.mark.asyncio
@@ -427,9 +445,9 @@ async def test_desktop_exec_uses_trusted_context_in_chat_and_cron(origin: str) -
     assert '"ok": true' in result
     assert calls == [
         {
-            "profile_id": "git",
+            "program": "git",
             "args": ["status"],
-            "cwd_relative": "repo",
+            "cwd": "repo",
             "conversation_id": "milky:private:owner",
             "actor_account_key": "milky:user:owner",
             "caller": f"agent:{origin or 'chat'}:milky:private:owner",
@@ -447,7 +465,7 @@ async def test_desktop_control_tool_rejects_missing_actor() -> None:
         )
     )
     try:
-        result = await plugin._tool_desktop_file_read("docs", "a.txt", 0, 100)
+        result = await plugin._tool_desktop_file_read("a.txt", "docs", 0, 100)
     finally:
         current_session.reset(token)
 

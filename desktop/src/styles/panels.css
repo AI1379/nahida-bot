@@ -514,6 +514,16 @@
   padding: 14px;
 }
 
+.remote-control--danger {
+  border-color: #b42318;
+  box-shadow: 0 0 0 2px rgb(180 35 24 / 16%);
+}
+
+.remote-control--danger .panel__header {
+  color: #7a271a;
+  background: #fef3f2;
+}
+
 .remote-control__body > label {
   display: grid;
   gap: 6px;
@@ -545,6 +555,13 @@
 .remote-control__warning {
   color: #6b421d;
   background: #fff4e8;
+}
+
+.remote-control__warning--danger {
+  border: 1px solid #f04438;
+  color: #7a271a;
+  background: #fee4e2;
+  font-weight: 700;
 }
 
 .remote-control__note {
