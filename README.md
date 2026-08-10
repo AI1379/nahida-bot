@@ -18,7 +18,7 @@
 - **Workspace-native（专属花盆）**：文件就是上下文，工作空间（Workspace）作为一等公民被温柔对待。
 - **Plugin-driven（百变衣橱）**：不需要在核心代码里硬编码，想要什么新能力？装个插件就好啦！
 - **Multi-Provider（万叶一心）**：支持 OpenAI Compatible（含 Responses API）、DeepSeek、Anthropic Claude、GLM、Groq、Minimax 等多种 LLM 后端，运行时随心切换~
-- **Multi-Channel（千风引路）**：Telegram Bot + Milky QQ（Lagrange.Milky）+ OneBot v11/v12（NapCat/Lagrange/LLOneBot），统一的消息标准化与 ChannelService 协议~
+- **Multi-Channel（千风引路）**：Telegram Bot + Milky QQ（Lagrange.Milky）+ OneBot v11（NapCat/Lagrange/LLOneBot），统一的消息标准化与 ChannelService 协议~
 - **Desktop Pet（梦中之相）**：Tauri + Rust + Vue 3 + Live2D（PixiJS）打造的边缘隐藏式桌宠，鼠标靠近 / Gateway 推送 / CRON 到点时从屏幕角落唤出，还能本地 TTS 发声~
 - **Multimodal（万象识图）**：原生 vision 图片理解 or 自动 fallback 描述 or image_understand 工具，三种模式自适应~
 - **Memory & Retrieval（梦境刻录）**：SQLite 会话记忆 + FTS 关键词检索 + 向量检索 + 混合检索 + LLM 记忆巩固；独立的 Document Store 让知识库与记忆各自安家~
@@ -46,7 +46,7 @@
 - [x] 插件系统：Manifest 声明、Loader 发现加载、权限检查、生命周期隔离、命令与工具注册（Phase 3.1-3.6）
 - [x] 接引通道 Telegram：长轮询、消息标准化、HTML/Markdown 转换、群聊 @mention、媒体降级（Phase 4.1-4.5）
 - [x] 接引通道 Milky QQ：Lagrange.Milky WebSocket 事件流、消息段建模、群聊触发策略、合并转发解析（Phase 4.6）
-- [x] 接引通道 OneBot：v11/v12 双版本统一抽象、正向 WebSocket + WebHook、CQ 码与 array segment 归一化
+- [x] 接引通道 OneBot：v11 正向 WebSocket + WebHook、CQ 码与 array segment 归一化（v12 为预留模块，尚未实现）
 - [x] Multi-Provider：per-request model override、Provider 类型运行时注册、pre/post-agent 分阶段加载、OpenAI Responses API
 - [x] MCP 集成：Model Context Protocol 客户端、工具适配、连接管理
 - [x] 知识库插件：文档导入（MarkItDown 富文档转换）、分块、FTS/向量/混合检索、可选 embedding、SQLite Document Store
@@ -143,18 +143,21 @@ uv sync --extra document-import
 uv sync --group telegram
 
 # WebUI 前端（可选，但推荐）
-cd webui
-pnpm install
-pnpm build    # 输出到 webui/dist/，Gateway 启动时自动挂载
-cd ..
+pnpm install          # 安装 workspace 依赖（含 webui / desktop / docs）
+pnpm webui:build      # 输出到 webui/dist/，Gateway 启动时自动挂载
 
 # 类型检查与单元测试，可选
 uv run pyright
 uv run pytest
 
-# 编辑 config.yaml 配置 LLM Provider 和 Channel 后启动
+# 交互式生成最小配置（推荐），或手动编辑 config.yaml
+uv run nahida-bot bootstrap
 uv run nahida-bot start
 ```
+
+> 配置与 `.env` 会按以下顺序自动发现，无需手动指定路径：
+> `--config-yaml` / `--env` 参数 > `NAHIDA_CONFIG` / `ENV_PATH` 环境变量 > `./config.yaml` / `./.env`。
+> 部署前可跑 `nahida-bot doctor` 做一次完整体检。
 
 #### Desktop 桌宠（可选）
 
@@ -195,13 +198,20 @@ Markdown，再进入现有的分块和检索流程。WebUI 支持一次选择或
 
 ```bash
 nahida-bot version                # 显示版本信息
+nahida-bot bootstrap              # 交互式生成最小 config.yaml + .env（首次部署）
+nahida-bot bootstrap --fix-missing  # 只补缺，不覆盖已有配置
+nahida-bot bootstrap --non-interactive  # 脚本/Docker 静默生成
 nahida-bot start [--debug]        # 启动应用（含 Gateway + WebUI）
-nahida-bot config                 # 显示当前配置
+nahida-bot doctor                 # 运行诊断检查（配置/数据库/就绪度）
 nahida-bot config schema          # 显示配置 schema（含插件 schema）
 nahida-bot config validate        # 校验配置文件
-nahida-bot doctor                 # 运行诊断检查
-nahida-bot gateway                # 仅启动 Gateway（WebAPI + WebUI）
+nahida-bot codex login            # ChatGPT Codex OAuth 登录
+nahida-bot tokens                 # Token 用量统计
 ```
+
+### 配置生成（bootstrap）
+
+`nahida-bot bootstrap` 会以问答方式引导你完成 LLM Provider（DeepSeek / SiliconFlow / OpenAI / Claude / GLM / 通用 OpenAI 兼容）和消息 Channel（Telegram / Milky QQ / OneBot）的最小配置，密钥写入 `.env`、其余写入 `config.yaml`。可重入：已有配置只补缺不覆盖（`--fix-missing`），也支持 `--non-interactive` 配合环境变量用于脚本化部署。
 
 ### 最小配置示例
 
@@ -281,7 +291,7 @@ telegram:
 | `knowledge_base` | 知识库文档导入与 FTS/向量/混合检索 |
 | `image_generation` | OpenAI 兼容 Images API 生图，含配额管理 |
 | `conversation_joiner` | 群聊上下文观察 + 主动接入决策 |
-| `onebot` | OneBot v11/v12 Channel（NapCat/Lagrange/LLOneBot） |
+| `onebot` | OneBot v11 Channel（NapCat/Lagrange/LLOneBot） |
 | [plugins/echo](plugins/echo) · [plugins/github-notifier](plugins/github-notifier) · [plugins/rss-notifier](plugins/rss-notifier) | 可独立安装的示例插件（含独立 pyproject） |
 
 插件作者可基于 [`nahida-bot-sdk`](nahida-bot-sdk) 在独立仓库开发并通过 `plugin.yaml` 声明能力、权限与配置 schema。

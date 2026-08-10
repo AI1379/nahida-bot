@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from nahida_bot.agent.usage import UsageRecorder
-from nahida_bot.core.config import load_settings
+from nahida_bot.core.config import load_settings_auto
 from nahida_bot.db.engine import DatabaseEngine
 
 token_app = typer.Typer(help="Token usage statistics and management")
@@ -59,7 +59,7 @@ def _format_cost(cost: float | None) -> str:
 
 async def _load_recorder(config_yaml: str | None = None) -> UsageRecorder | None:
     """Create a UsageRecorder and load data from the configured database."""
-    settings = load_settings(config_yaml=config_yaml)
+    settings = load_settings_auto(config_yaml=config_yaml)
     db_path = settings.db_path
     if not db_path:
         console.print("[red]No database path configured.[/red]")

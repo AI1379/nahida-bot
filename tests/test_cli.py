@@ -43,17 +43,19 @@ class TestCLIConfig:
 class TestCLIDoctor:
     """Test doctor command."""
 
-    def test_doctor_command(self) -> None:
-        """Test doctor diagnostics."""
+    def test_doctor_command(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """Test doctor diagnostics in an isolated working directory."""
+        monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == 0
         assert "Diagnostic Report" in result.stdout
-        assert "✓" in result.stdout or "Pass" in result.stdout
+        assert "PASS" in result.stdout
 
-    def test_doctor_passes_checks(self) -> None:
-        """Test that all checks pass in doctor."""
+    def test_doctor_passes_checks(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        """Test that doctor reports no blocking issues in a clean cwd."""
+        monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["doctor"])
-        assert "All checks passed" in result.stdout
+        assert "No blocking issues found" in result.stdout
 
 
 class TestCLIHelp:

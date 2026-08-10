@@ -536,9 +536,13 @@ milky:
 | `GITHUB_WEBHOOK_SECRET` | GitHub notifier 插件 | GitHub webhook 签名密钥 |
 | `GITHUB_TOKEN` | GitHub notifier 插件 | GitHub API token |
 | `MILKY_ACCESS_TOKEN` | Milky 频道 | 访问令牌 |
+| `NAHIDA_CONFIG` | 配置加载器 | 覆盖 `config.yaml` 路径 |
 | `ENV_PATH` | 配置加载器 | 覆盖 `.env` 文件路径 |
 
-变量通常存放在项目根目录的 `.env` 文件中。
+变量通常存放在项目根目录的 `.env` 文件中。CLI 命令（`start`、`doctor`、
+`config` 等）会自动发现 `./config.yaml` 与 `./.env`，解析顺序见
+[快速开始](./getting-started.md#配置文件自动发现)。也可用 `nahida-bot bootstrap`
+交互式生成最小配置。
 
 ---
 

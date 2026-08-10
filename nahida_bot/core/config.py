@@ -1,6 +1,7 @@
 """Application configuration."""
 
 import os
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
@@ -587,12 +588,55 @@ def _interpolate_env(value: Any, env_map: dict[str, str | None]) -> Any:
     return value
 
 
+DEFAULT_CONFIG_YAML = "config.yaml"
+DEFAULT_ENV_PATH = ".env"
+
+
+def find_config_yaml(explicit: str | None = None) -> str | None:
+    """Resolve the YAML config path for a CLI run.
+
+    Priority: explicit argument > ``NAHIDA_CONFIG`` env var > ``./config.yaml``
+    if present in the current working directory. Returns None when nothing is
+    found so callers can fall back to pure defaults.
+    """
+    if explicit:
+        return explicit
+    env_cfg = os.environ.get("NAHIDA_CONFIG")
+    if env_cfg:
+        return env_cfg
+    if Path(DEFAULT_CONFIG_YAML).is_file():
+        return DEFAULT_CONFIG_YAML
+    return None
+
+
+def find_env_path(explicit: str | None = None) -> str | None:
+    """Resolve the ``.env`` path for a CLI run.
+
+    Priority: explicit argument > ``ENV_PATH`` env var > ``./.env`` if present.
+    Returns None when nothing is found.
+    """
+    if explicit:
+        return explicit
+    env_path = os.environ.get("ENV_PATH")
+    if env_path:
+        return env_path
+    if Path(DEFAULT_ENV_PATH).is_file():
+        return DEFAULT_ENV_PATH
+    return None
+
+
 def load_settings(
     config_yaml: str | None = None,
     env_path: str | None = None,
     **kwargs: Any,
 ) -> Settings:
-    """Load application settings."""
+    """Load application settings.
+
+    Note: this function is *pure* — it does not auto-discover files. CLI
+    entry points should resolve paths via :func:`find_config_yaml` and
+    :func:`find_env_path` first so that ``./config.yaml`` and ``./.env`` are
+    picked up automatically while keeping programmatic callers hermetic.
+    """
     if config_yaml:
         with open(config_yaml, "r", encoding="utf-8") as f:
             yaml_config = yaml.safe_load(f)
@@ -620,3 +664,22 @@ def load_settings(
         full_config["log_level"] = "DEBUG"
 
     return Settings(**full_config)
+
+
+def load_settings_auto(
+    config_yaml: str | None = None,
+    env_path: str | None = None,
+    **kwargs: Any,
+) -> Settings:
+    """Load settings with CLI-style auto-discovery of config.yaml and .env.
+
+    Thin wrapper around :func:`load_settings` that resolves paths via
+    :func:`find_config_yaml` and :func:`find_env_path` first. Intended for CLI
+    entry points; programmatic callers should use :func:`load_settings` directly
+    to stay hermetic.
+    """
+    return load_settings(
+        config_yaml=find_config_yaml(config_yaml),
+        env_path=find_env_path(env_path),
+        **kwargs,
+    )

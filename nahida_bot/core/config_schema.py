@@ -24,7 +24,7 @@ from nahida_bot.core.config import (
     RouterConfigModel,
     SchedulerConfigModel,
     Settings,
-    load_settings,
+    load_settings_auto,
 )
 
 # -- Data models ---------------------------------------------------------------
@@ -272,7 +272,7 @@ def _build_plugin_schema(
 ) -> list[SchemaEntry]:
     """Build schema entries for discovered plugin configuration sections."""
     try:
-        settings = load_settings(config_yaml=config_yaml)
+        settings = load_settings_auto(config_yaml=config_yaml)
     except Exception:
         settings = Settings()
 

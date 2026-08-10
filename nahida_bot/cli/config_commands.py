@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from nahida_bot.core.config import load_settings
+from nahida_bot.core.config import load_settings_auto
 from nahida_bot.core.config_schema import build_config_schema
 from nahida_bot.core.config_validation import validate_settings
 
@@ -116,7 +116,7 @@ def validate_cmd(
     - multimodal fallback model is set when fallback mode is enabled
     """
     try:
-        settings = load_settings(config_yaml=config_yaml)
+        settings = load_settings_auto(config_yaml=config_yaml)
     except Exception as exc:
         from pydantic import ValidationError
 

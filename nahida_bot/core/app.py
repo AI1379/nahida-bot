@@ -17,7 +17,7 @@ from nahida_bot.agent.media.cache import MediaCache
 from nahida_bot.agent.media.store import MediaStore
 from nahida_bot.agent.metrics import MetricsCollector
 from nahida_bot.core.channel_registry import ChannelRegistry
-from nahida_bot.core.config import Settings, load_settings
+from nahida_bot.core.config import Settings, load_settings_auto
 from nahida_bot.core.events import (
     AppInitializing,
     AppLifecyclePayload,
@@ -75,7 +75,7 @@ class Application:
             config_yaml_path: Path to the YAML config file the settings were loaded
                 from. Used by the config service to read/write the correct file.
         """
-        self.settings = settings or load_settings()
+        self.settings = settings or load_settings_auto()
         self._config_yaml_path = config_yaml_path
         configure_logging(
             debug=self.settings.debug,

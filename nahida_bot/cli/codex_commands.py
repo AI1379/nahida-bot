@@ -30,7 +30,7 @@ from nahida_bot.auth import (
     to_codex_token,
     user_agent,
 )
-from nahida_bot.core.config import load_settings
+from nahida_bot.core.config import load_settings_auto
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.db.repositories.sqlite_codex_token_repo import (
     SQLiteCodexTokenRepository,
@@ -70,7 +70,7 @@ def _get_config_yaml(ctx: typer.Context) -> str | None:
 
 
 async def _run_login(provider_id: str, config_yaml: str | None) -> int:
-    settings = load_settings(config_yaml=config_yaml)
+    settings = load_settings_auto(config_yaml=config_yaml)
     engine = DatabaseEngine(settings.db_path)
     await engine.initialize()
     try:
@@ -120,7 +120,7 @@ async def _run_login(provider_id: str, config_yaml: str | None) -> int:
 
 
 async def _run_logout(provider_id: str, config_yaml: str | None) -> int:
-    settings = load_settings(config_yaml=config_yaml)
+    settings = load_settings_auto(config_yaml=config_yaml)
     engine = DatabaseEngine(settings.db_path)
     await engine.initialize()
     try:
@@ -142,7 +142,7 @@ async def _run_logout(provider_id: str, config_yaml: str | None) -> int:
 
 
 async def _run_status(config_yaml: str | None) -> int:
-    settings = load_settings(config_yaml=config_yaml)
+    settings = load_settings_auto(config_yaml=config_yaml)
     engine = DatabaseEngine(settings.db_path)
     await engine.initialize()
     try:

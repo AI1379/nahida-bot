@@ -23,7 +23,8 @@ uv sync --extra document-import
 uv sync --group telegram
 
 # WebUI 前端（可选，但推荐）
-pnpm webui:build    # 输出到 webui/dist/，Gateway 启动时自动挂载
+pnpm install          # 安装 workspace 依赖
+pnpm webui:build      # 输出到 webui/dist/，Gateway 启动时自动挂载
 ```
 
 ### 可选：完整知识库文档导入
@@ -45,9 +46,69 @@ uv sync --extra document-import
 扫描 PDF 和以图片为主的文档可能提取不到正文；当前默认集成不启用第三方
 OCR 插件或付费云端文档分析服务。
 
-## 最小配置
+## 配置（推荐：交互式 bootstrap）
 
-复制 `config.yaml` 并填入你的 API 信息：
+最快的方式是运行引导命令，它会以问答方式生成最小可用的 `config.yaml` 和
+`.env`：
+
+```bash
+uv run nahida-bot bootstrap
+```
+
+向导会依次询问：LLM Provider（DeepSeek / SiliconFlow / OpenAI / Claude /
+GLM / 通用 OpenAI 兼容）的 API Key、base_url、默认模型，以及要接入的消息
+Channel（Telegram / Milky QQ / OneBot，可跳过或选多个）。密钥写入 `.env`，
+其余写入 `config.yaml`。
+
+- **已有配置**：再次运行会进入补充模式，`--fix-missing` 保证只补缺不覆盖。
+- **脚本/Docker**：`--non-interactive` 配合环境变量静默生成，例如：
+  ```bash
+  NAHIDA_BOOTSTRAP_PROVIDER=siliconflow \
+  NAHIDA_BOOTSTRAP_CHANNELS=telegram \
+  uv run nahida-bot bootstrap --non-interactive
+  ```
+
+> bootstrap 生成的只是「最小可用」配置。完整能力（记忆检索、知识库向量、
+> 定时任务、附属进程监管等）请参考 [配置参考](./configuration.md)。
+
+### 配置文件自动发现
+
+`start` / `doctor` / `config` 等命令按以下顺序解析配置文件，无需手动指定：
+
+| 文件 | 解析顺序 |
+| ---- | ---- |
+| `config.yaml` | `--config-yaml` / `-c` 参数 > `$NAHIDA_CONFIG` > `./config.yaml` |
+| `.env` | `--env` 参数 > `$ENV_PATH` > `./.env` |
+
+配置支持 `${VAR}` 和 `${VAR:default}` 环境变量插值。
+
+## 启动
+
+```bash
+uv run nahida-bot doctor    # 部署前体检（可选但推荐）
+uv run nahida-bot start
+```
+
+`start` 会在启动前做就绪检查；若没有任何可用的 provider，会打印醒目提示并
+建议运行 `bootstrap`，但不会阻止启动（Gateway-only 部署仍可工作）。启动后
+可通过 WebUI 访问 `http://127.0.0.1:6185` 管理面板。
+
+## CLI 命令
+
+```bash
+nahida-bot version                # 显示版本信息
+nahida-bot bootstrap              # 交互式生成最小 config.yaml + .env
+nahida-bot start [--debug]        # 启动应用（含 Gateway + WebUI）
+nahida-bot doctor                 # 诊断检查（配置/数据库/就绪度）
+nahida-bot config schema          # 显示配置 schema（含插件 schema）
+nahida-bot config validate        # 校验配置文件
+nahida-bot codex login            # ChatGPT Codex OAuth 登录
+nahida-bot tokens                 # Token 用量统计
+```
+
+## 手动配置（可选）
+
+如果你不想用 bootstrap，也可以直接编辑 `config.yaml`。最小示例如下：
 
 ```yaml
 # config.yaml
@@ -64,44 +125,13 @@ providers:
       - name: "deepseek-v4-pro"
         tags: [primary]
 
-  siliconflow:
-    type: "openai-compatible"
-    api_key: "${SILICONFLOW_LLM_API_KEY:}"
-    base_url: "${SILICONFLOW_LLM_BASE_URL:https://api.siliconflow.cn/v1}"
-    stream_responses: true
-    models:
-      - name: "Qwen/Qwen3.6-35B-A3B"
-        tags: [vision]
-        capabilities:
-          image_input: true
-
 default_provider: deepseek-main
 
 telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN:}"
 ```
 
-配置支持 `${VAR}` 和 `${VAR:default}` 环境变量插值，可选 `.env` 文件加载。完整配置参考请参阅 [配置参考](./configuration.md)。
-
-## 启动
-
-```bash
-uv run nahida-bot start
-```
-
-启动后可以通过 WebUI 访问 `http://127.0.0.1:6185` 管理面板。
-
-## CLI 命令
-
-```bash
-nahida-bot version                # 显示版本信息
-nahida-bot start [--debug]        # 启动应用（含 Gateway + WebUI）
-nahida-bot config                 # 显示当前配置
-nahida-bot config schema          # 显示配置 schema（含插件 schema）
-nahida-bot config validate        # 校验配置文件
-nahida-bot doctor                 # 运行诊断检查
-nahida-bot gateway                # 仅启动 Gateway（WebAPI + WebUI）
-```
+完整配置项请参阅 [配置参考](./configuration.md)。
 
 ## 下一步
 
