@@ -1,7 +1,8 @@
 # OneBot Channel 设计
 
-> 状态：设计草案
+> 状态：✅ OneBot **v11 已实现**（正向 WebSocket + WebHook、CQ 码与 array segment 归一化）。v12 为预留空模块（`channels/onebot/v12/` 仅有占位 `__init__.py`），**尚未实现**；下文涉及"双版本"的内容为原始设计意图，v12 部分以实际代码为准。
 > 日期：2026-05-28
+> 最近更新：2026-08-10
 > 目标：为 nahida-bot 增加 OneBot 协议支持，统一对接 NapCat、Lagrange、LLOneBot 等 QQ 端实现，以及可能的非 QQ OneBot 实现。
 > 相关文档：
 >

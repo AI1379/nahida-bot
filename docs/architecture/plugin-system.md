@@ -63,26 +63,22 @@
 - CI 中跑插件测试需要安装整个 bot。
 - 版本耦合严重——bot 的内部重构会破坏插件编译。
 
-**解决方案**：将插件所需的全部接口抽入独立包 `nahida-bot-sdk`。
+**解决方案**：将插件所需的全部接口抽入独立包 `nahida-bot-sdk`（扁平模块结构）。
 
 ```text
-nahida-bot-sdk/
-  __init__.py
-  types.py              # Event, Payload, ToolDefinition 等核心类型
-  plugin_base.py        # Plugin 基类与 ChannelService 协议
-  manifest.py           # PluginManifest 数据模型 (Pydantic)
-  permissions.py        # Permission 声明类型
-  hooks.py              # 钩子注册装饰器
-  api/
-    __init__.py
-    interfaces.py       # BotAPI 协议定义 (插件可调用的 bot 能力)
-    messaging.py        # InboundMessage, OutboundMessage
-    session.py          # Session 相关接口
-    memory.py           # Memory 相关接口
+nahida-bot-sdk/nahida_bot_sdk/
+  __init__.py            # 公共 re-export 入口
+  plugin.py              # Plugin 基类、ChannelService 协议、SessionInfo/MemoryRef
+  api.py                 # BotAPI 协议（插件可调用的 bot 能力）
+  messaging.py           # InboundMessage, OutboundMessage, 消息段类型
+  events.py              # Event / Payload 类型、EventT、MessageReceived 等
+  manifest.py            # PluginManifest 数据模型 (Pydantic)
+  commands.py            # 命令注册相关类型
+  chat_address.py        # ChatAddress / SessionKey
+  scaffold.py            # 插件脚手架（nahida-bot-plugin init）
   testing/
-    __init__.py
-    mocks.py            # MockBotAPI, MockEventBus 等
-    fixtures.py         # pytest 插件和常用 fixture
+    _mocks.py            # MockBotAPI, MockEventBus
+    console.py           # 控制台测试驱动
 ```
 
 **依赖要求**：`nahida-bot-sdk` 只允许依赖 `pydantic >= 2.0` 和 `typing_extensions`，不引入任何运行时框架。
@@ -90,7 +86,7 @@ nahida-bot-sdk/
 ### 3.2 Plugin 基类
 
 ```python
-# nahida_bot_sdk/plugin_base.py
+# nahida_bot_sdk/plugin.py
 
 from __future__ import annotations
 
@@ -98,7 +94,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from nahida_bot_sdk.api.interfaces import BotAPI
+    from nahida_bot_sdk.api import BotAPI
     from nahida_bot_sdk.manifest import PluginManifest
 
 
@@ -148,7 +144,7 @@ class Plugin(ABC):
 这是解决「测试困难」的关键：插件只依赖这个协议接口，不依赖 bot 内部的具体类。
 
 ```python
-# nahida_bot_sdk/api/interfaces.py
+# nahida_bot_sdk/api.py
 
 from __future__ import annotations
 
@@ -157,10 +153,9 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable
 
-    from nahida_bot_sdk.api.messaging import InboundMessage, OutboundMessage
-    from nahida_bot_sdk.api.session import SessionInfo
-    from nahida_bot_sdk.api.memory import MemoryRef
-    from nahida_bot_sdk.types import EventT
+    from nahida_bot_sdk.messaging import InboundMessage, OutboundMessage
+    from nahida_bot_sdk.plugin import SessionInfo, MemoryRef
+    from nahida_bot_sdk.events import EventT
 
 
 @runtime_checkable
@@ -320,7 +315,7 @@ CommandHandlerResult = str | OutboundMessage | CommandResult | None
 ### 3.4 消息类型
 
 ```python
-# nahida_bot_sdk/api/messaging.py
+# nahida_bot_sdk/messaging.py
 
 from __future__ import annotations
 
@@ -357,7 +352,7 @@ class OutboundMessage:
 这是解决「插件测试困难」的核心：
 
 ```python
-# nahida_bot_sdk/testing/mocks.py
+# nahida_bot_sdk/testing/_mocks.py
 
 from __future__ import annotations
 
@@ -365,8 +360,8 @@ from collections import defaultdict
 from typing import Any, Callable, Awaitable
 from unittest.mock import AsyncMock
 
-from nahida_bot_sdk.api.interfaces import BotAPI, SubscriptionHandle
-from nahida_bot_sdk.api.messaging import OutboundMessage
+from nahida_bot_sdk.api import BotAPI, SubscriptionHandle
+from nahida_bot_sdk.messaging import OutboundMessage
 from nahida_bot_sdk.testing import load_plugin_for_test
 
 
@@ -515,7 +510,7 @@ class _MockLogger:
 
 import pytest
 from nahida_bot_sdk.testing import MockBotAPI, load_plugin_for_test
-from nahida_bot_sdk.types import MessageReceived
+from nahida_bot_sdk.events import MessageReceived
 from my_plugin import MyPlugin, MANIFEST
 
 
@@ -792,18 +787,25 @@ Plugin Host 按拓扑排序加载插件。循环依赖视为加载错误。
 
 ## 6. 事件系统集成
 
-### 6.1 当前状态与问题
+### 6.1 当前状态
 
-当前 `core/events.py` 实现了 Core API（subscribe/unsubscribe/publish/publish_nowait/shutdown），但存在以下不足：
+事件系统已在 `nahida_bot/core/events.py`（`EventBus`）+ `nahida-bot-sdk/nahida_bot_sdk/events.py`
+（事件类型）落地，具备两阶段优先级派发：
 
-1. **事件类型不足**：只有 4 个生命周期事件（AppInitializing/AppStarted/AppStopping/AppStopped），缺少消息事件、工具事件、插件事件等。
-2. **Handler 执行模型**：当前是同类型内严格串行，一个慢 handler 会阻塞后续所有 handler。
-3. **无优先级**：无法保证核心 handler 先于插件 handler 执行。
-4. **Facade API 未实现**：`event-system.md` 中规划的装饰器式注册和 Depends 注入尚未落地。
+- **事件类型已覆盖**：应用生命周期（`AppInitializing/Started/Stopping/Stopped`）、
+  插件（`PluginLoaded/Enabled/Disabled/Unloaded/ErrorOccurred`）、消息
+  （`MessageReceived/Observed/Sending/Sent`、`MessageReactionEvent`、`PokeEvent`）、
+  Agent 运行（`AgentRunStarted/Cancelled/Finished`、`AgentStopRequested`、
+  `AgentResponseRequested`）、调度（`SchedulerNotification`）、附属进程
+  （`ProcessStarted/Stopped/Failed`）等，共约 25 个事件类型。
+- **Handler 执行模型**：`EventBus.publish()` 已实现两阶段、按优先级派发；核心
+  handler 可先于插件 handler 执行。
+- 插件通过 `@subscribe(EventType)` 装饰器或 `self.api.subscribe(...)` 注册。
 
-### 6.2 需要新增的事件类型
+### 6.2 事件类型参考
 
-插件系统需要以下事件类型（定义在 `core/events.py` 或拆分后的 `core/events/types.py`）：
+事件类型统一定义在 `nahida_bot_sdk/events.py`（经 `nahida_bot/core/events.py` 再导出）。
+以下示意几个常用事件的形状（完整定义见源码）：
 
 ```python
 # ── 消息事件 ──

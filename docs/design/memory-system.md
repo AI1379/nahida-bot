@@ -1,8 +1,8 @@
 # Nahida Bot 记忆系统设计草案
 
 > 记录时间：2026-05-11
-> 最近审计：2026-05-15
-> 状态：大部分已实现；Phase 4 agent run/event 和 Phase 5 轻量图谱仍待实现
+> 最近审计：2026-08-10
+> 状态：大部分已实现；**Phase 4（agent run/event）写入侧已落地**于 `nahida_bot/agent/runtime/`（`RunRecorder`/`AgentRunStore`，详见 [agent-loop-repair-plan.md](agent-loop-repair-plan.md)）。Phase 5 轻量图谱仍待实现。
 > 相关文档：
 >
 > - [ROADMAP.md](../ROADMAP.md#phase-25---记忆模型与持久化)

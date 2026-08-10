@@ -699,7 +699,7 @@ permissions:
 
 > 记录时间：2026-06-29
 > 来源：GitHub Issue #15（戳一戳事件）。#15 的 M1（通道接收 → 解析 → 类型化 `PokeEvent` → EventBus 派发）已完成；本节设计「订阅方如何消费」，即接入 conversation joiner 的响应策略。
-> 相关：[`nahida_bot_sdk/events.py`](../../nahida-bot-sdk/nahida_bot_sdk/events.py) 的 `PokeEvent` / `PokePayload`；`MessageReactionEvent`（本节暂不接入）。
+> 相关：`nahida_bot_sdk/events.py` 的 `PokeEvent` / `PokePayload`；`MessageReactionEvent`（本节暂不接入）。
 
 ### 16.1 背景
 

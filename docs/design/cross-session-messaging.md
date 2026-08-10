@@ -61,7 +61,7 @@ nahida-bot 当前所有 LLM 工具都绑定在 `current_session` 上下文中，
 | `BotAPI.send_message` | **已实现** | `plugins/api_bridge.py` — 支持任意 channel + target |
 | `ChannelService.send_message` | **已实现** | Telegram/Milky 各自实现了文本+附件投递 |
 | `POST /api/send` | **已实现（纯文本）** | `gateway/routes/messages.py` |
-| `OrchestrationPolicy.can_send_session` | **存根** | `agent/orchestration/policy.py` — 从未被调用 |
+| `OrchestrationPolicy.can_send_session` | **已实现** | `agent/orchestration/policy.py` — 复用 `can_read_session` 策略（target 必须是 requester session 或其 child） |
 | `sessions_send` denylist 引用 | **已存在** | `agent/orchestration/service.py`、`policy.py` — 工具未注册 |
 | `OutboundMessage` 模型 | **已实现** | `plugins/base.py` — text/reply_to/reasoning/attachments/extra |
 | `Attachment` 模型 | **已实现** | `plugins/base.py` — type/path/filename/mime_type/caption |

@@ -5,7 +5,7 @@
 > 目标：为 nahida-bot 提供统一的后台长驻进程（SSH 隧道、frpc、cloudflared、各类 sidecar）监管能力，确保它们在依赖它们的 Channel/服务之前就绪、在它们之后收尾，并提供统一的状态观测与管理入口。
 > 相关文档：
 >
-> - [architecture/README.md](../architecture/README.md)
+> - [architecture/概览](../architecture/)
 > - [webui-design.md](webui-design.md)
 > - [plugin-web-panels.md](plugin-web-panels.md)
 > - [cron-and-webapi-optimization.md](cron-and-webapi-optimization.md)

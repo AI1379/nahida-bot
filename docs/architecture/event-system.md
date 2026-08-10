@@ -32,20 +32,16 @@ Python 对"进程内事件总线"没有单一官方规范（标准库未给出�
 - 借鉴 Bevy：事件用独立类建模，按事件类订阅，不用裸字符串驱动主逻辑。
 - 借鉴 Signals2：`subscribe` 返回可取消句柄，避免遗忘反注册导致泄漏。
 
-## 核心类型契约（建议固定）
+## 核心类型契约
 
-建议目录：
+实际实现采用单文件 + SDK 拆分（而非独立 `core/events/` 包）：
 
 ```text
-nahida_bot/core/events/
-  __init__.py
-  bus.py               # EventBus 实现
-  types.py             # 事件基类与类型定义
-  registry.py          # 允许事件类型白名单（可选）
-  errors.py            # 事件系统错误定义
+nahida_bot/core/events.py            # EventBus 实现 + 应用生命周期事件 re-export
+nahida-bot-sdk/nahida_bot_sdk/events.py  # Event 基类、全部事件类型定义（~25 个）
 ```
 
-建议类型模型：
+事件基类与类型模型（节选自 `nahida_bot_sdk/events.py`）：
 
 ```python
 from dataclasses import dataclass, field

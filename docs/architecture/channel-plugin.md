@@ -17,6 +17,10 @@ Channel 仍然是插件系统的一部分，但不再通过专门的 channel 基
 
 ## ChannelService 协议
 
+`ChannelService` 协议定义在 `nahida-bot-sdk/nahida_bot_sdk/api.py`（经
+`nahida_bot/plugins/base.py` 再导出）；运行时由 `RealBotAPI.register_channel()`
+（`plugins/api_bridge.py`）登记到 `ChannelRegistry`。
+
 ```python
 class ChannelService(Protocol):
     @property

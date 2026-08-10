@@ -1,6 +1,6 @@
 # AgentLoop 改造实施计划
 
-> 状态：提案，尚未开始实现。
+> 状态：Phase 1（写入侧）已落地——`nahida_bot/agent/runtime/`（`RunRecorder` / `AgentRunStore` + `sqlite_agent_run_repo`）已在每个 run 的终态写入 `TerminalState`、`ExecutionReceipt`、`RunEvent`，`AgentLoop` 在退出时调用 `recorder.terminal(...)`。Phase 2–5（receipt 校验、verified/partial 状态、读取/重放侧）尚未实现。
 > 关联：[Agent Loop 与 Context Builder 审计报告](../architecture/agent-loop-context-audit.md)（#21 / #24）。
 
 ## 1. 目标与边界

@@ -172,22 +172,23 @@ class DefaultAgentRuntimeConfig:
 
 ## 4. 模块边界
 
-建议新增：
+实际实现：
 
 ```text
 nahida_bot/agent/orchestration/
   __init__.py
   models.py            # SubagentSpec, AgentRun, BackgroundTask, status enum
-  policy.py            # OrchestrationPolicy 粗粒度 hook
+  policy.py            # OrchestrationPolicy 粗粒度 hook（can_read/can_send_session）
   registry.py          # 进程内 AgentRegistry
-  queue.py             # per-session lane + global lane
   executors.py         # AgentRunExecutor, LocalAgentRunExecutor
   service.py           # AgentOrchestrator 高层入口
   task_store.py        # BackgroundTaskStore 协议
-  sqlite_task_store.py
-  tools.py             # agent_spawn / agent_yield / agent_list / agent_stop
-  session_tools.py     # sessions_list / sessions_history / sessions_send / session_status
+  sqlite_task_store.py # SQLite 实现
+  delivery.py          # ChannelCompletionDeliverer：把子 agent 完成通知回投到来源 channel
 ```
+
+`agent_spawn` / `agent_wait` / `agent_stop` 等工具实际注册在 `plugins/builtin/commands.py`，
+`sessions_*` 工具同处该模块（按 manifest 声明启用）。
 
 依赖方向：
 

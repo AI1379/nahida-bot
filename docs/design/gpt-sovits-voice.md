@@ -1,7 +1,7 @@
 # 语音输出设计（统一 TTS 层，GPT-SoVITS 为首个后端）
 
 > 记录时间：2026-07-07
-> 状态：**Part A 已实现** —— 统一 TTS 抽象（`nahida_bot/speech/`：`TtsProvider` registry + `SpeechService` + GPT-SoVITS adapter）已落地并测试通过。`speak` 工具、memory 投影（§11）、Telegram/OneBot 通道层待实现。
+> 状态：**Part A + `speak` 工具 + OneBot 出站 `record` 已实现** —— 统一 TTS 抽象（`nahida_bot/speech/`：`TtsProvider` registry + `SpeechService` + GPT-SoVITS adapter）已落地；`speak` 工具已注册（`plugins/tts/plugin.py`）；OneBot 出站已构造 `RecordSegment`（`channels/onebot/segment_models.py` + `message_converter.py`）。**仍待实现**：Telegram 语音出站（仅支持 photo/document）、memory 投影（§11）。
 > 相关文档：
 >
 > - [Desktop App §9.3.1](desktop-app.md#931-统一-tts-provider-与音频分发边界) — **统一 TTS Provider 愿景**（SpeechService / TtsProvider registry / SpeechArtifactStore）。本设计实现其 Part A（可换后端）；Part B（ArtifactStore / Gateway Media / Desktop 播放）留待 Desktop Phase 7。

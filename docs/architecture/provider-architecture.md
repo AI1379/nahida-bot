@@ -699,62 +699,21 @@ def _build_assistant_message(self, response: ProviderResponse) -> ContextMessage
 
 ```text
 ChatProvider (ABC)                              # base.py — 现有抽象类，扩展 api_family/format_tools/serialize_messages
-├── OpenAICompatibleProvider(_ReasoningMixin)   # openai_compatible.py — 演进自当前实现
+├── OpenAICompatibleProvider(ReasoningMixin)    # openai_compatible.py — 演进自当前实现
 │   ├── DeepSeekProvider                        # deepseek.py — @register_provider，空子类
 │   ├── GLMProvider                             # glm.py — @register_provider，空子类
-│   ├── GroqProvider                            # groq.py — reasoning_key="reasoning" + 历史 strip
-│   └── MinimaxProvider                         # minimax.py — @register_provider，空子类
-├── AnthropicProvider                           # anthropic.py — 独立实现（Phase 2.8b）
-└── GeminiProvider                              # gemini.py — 独立实现（Phase 3）
+│   └── GroqProvider                            # groq.py — reasoning_key="reasoning" + 历史 strip
+├── AnthropicProvider(ReasoningMixin)           # anthropic.py — 独立实现（Phase 2.8b）
+│   └── MinimaxProvider                         # minimax.py — @register_provider，复用 Anthropic Messages 协议
+├── OpenAIResponsesProvider                     # openai_responses.py — Responses API（/responses 端点）
+└── CodexProvider                               # codex.py — ChatGPT Plus/Pro 订阅（OAuth）
 ```
 
-**ChatProvider 基类扩展**：
-
-```python
-class ChatProvider(ABC):
-    """Provider 基类，被 agent loop 消费。"""
-
-    name: str
-    api_family: str  # "openai-completions" | "anthropic-messages" | "google-generative-ai"
-
-    @property
-    @abstractmethod
-    def tokenizer(self) -> Tokenizer | None: ...
-
-    @abstractmethod
-    async def chat(
-        self,
-        *,
-        messages: list[ContextMessage],
-        tools: list[ToolDefinition] | None = None,
-        timeout_seconds: float | None = None,
-    ) -> ProviderResponse: ...
-
-    def format_tools(self, tools: list[ToolDefinition]) -> list[object]:
-        """将 ToolDefinition 列表转换为 Provider 原生工具格式。默认 OpenAI 格式。"""
-        return [
-            {
-                "type": tool.type,
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                },
-            }
-            for tool in tools
-        ]
-
-    def serialize_messages(self, messages: list[ContextMessage]) -> list[dict[str, object]]:
-        """将 ContextMessage 列表转换为 Provider 原生请求格式。默认 OpenAI 格式。"""
-        result: list[dict[str, object]] = []
-        for msg in messages:
-            result.append(self._serialize_one_message(msg))
-        return result
-
-    def _serialize_one_message(self, message: ContextMessage) -> dict[str, object]:
-        """默认 OpenAI 序列化。子类按 Provider 族覆盖。"""
-        ...  # 当前 OpenAICompatibleProvider._serialize_message 的逻辑
-```
+::: tip 实现注记
+`ChatProvider.chat()` 在 `base.py` 中是**具体方法**（负责通用流程），各子类覆写抽象的
+`_chat_impl()`。注意 mixin 名为 `ReasoningMixin`（无前导下划线），从
+`nahida_bot.agent.providers.reasoning` 导入。
+:::
 
 **三族 Provider 的关键差异**：
 
@@ -772,7 +731,7 @@ class ChatProvider(ABC):
 
 ```python
 @dataclass(slots=True)
-class OpenAICompatibleProvider(_ReasoningMixin, ChatProvider):
+class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
     """OpenAI 兼容 Provider。处理 HTTP 传输 + 响应解析。"""
 
     base_url: str
@@ -939,7 +898,7 @@ def list_providers() -> list[ProviderDescriptor]:
 
 ---
 
-### B.5 `_ReasoningMixin` — 共享推理提取逻辑
+### B.5 `ReasoningMixin` — 共享推理提取逻辑
 
 ```python
 # nahida_bot/agent/providers/reasoning.py
@@ -980,7 +939,7 @@ def extract_think_tags(content: str) -> tuple[str, str | None]:
     return cleaned, reasoning or None
 
 
-class _ReasoningMixin:
+class ReasoningMixin:
     """OpenAI 兼容族共享的推理提取逻辑。"""
 
     reasoning_key: str = "reasoning_content"     # 响应中推理字段的键名
@@ -1136,8 +1095,8 @@ nahida_bot/agent/providers/
     __init__.py              # ✅ 已更新：新增导出（AnthropicProvider, TokenUsage, ReasoningPolicy, registry 函数等）
     base.py                  # ✅ 已扩展：TokenUsage, ProviderResponse 新字段, api_family, format_tools, serialize_messages
     registry.py              # ✅ 已新增：@register_provider, get_provider_class, create_provider, list_providers
-    reasoning.py             # ✅ 已新增：extract_think_tags, _ReasoningMixin（ReasoningPolicy 定义在 context.py 以避免循环导入）
-    openai_compatible.py     # ✅ 已演进：继承 _ReasoningMixin，填充新 ProviderResponse 字段，serialize_messages 注入推理
+    reasoning.py             # ✅ 已新增：extract_think_tags, ReasoningMixin（ReasoningPolicy 定义在 context.py 以避免循环导入）
+    openai_compatible.py     # ✅ 已演进：继承 ReasoningMixin，填充新 ProviderResponse 字段，serialize_messages 注入推理
     deepseek.py              # ✅ 已新增：@register_provider("deepseek")，空子类
     glm.py                   # ✅ 已新增：@register_provider("glm")，空子类
     groq.py                  # ✅ 已新增：@register_provider("groq")，reasoning_key 覆盖 + 历史 strip
@@ -1151,7 +1110,7 @@ nahida_bot/agent/
     loop.py                  # ✅ 已扩展：_build_assistant_message 传播推理/签名字段
 
 tests/
-    test_reasoning.py                              # ✅ 14 tests: extract_think_tags, _ReasoningMixin, ReasoningPolicy
+    test_reasoning.py                              # ✅ 14 tests: extract_think_tags, ReasoningMixin, ReasoningPolicy
     test_provider_registry.py                      # ✅ 7 tests: 注册表、查找、重复检测
     test_provider_reasoning_integration.py         # ✅ 12 tests: DeepSeek reasoning, think-tag fallback, Groq stripping, TokenUsage, refusal
     test_provider_anthropic.py                     # ✅ 14 tests: text/thinking/redacted/tool_use blocks, system prompt, signature replay
@@ -1166,9 +1125,9 @@ tests/
 
 1. ✅ 扩展 `base.py`：`TokenUsage` dataclass + `ProviderResponse` 新字段 + `ChatProvider` 新方法
 2. ✅ 扩展 `context.py`：`ContextMessage` 新字段 + `ContextBudget` 新字段 + `ReasoningPolicy` 枚举
-3. ✅ 新建 `reasoning.py`：`extract_think_tags()` + `_ReasoningMixin`
+3. ✅ 新建 `reasoning.py`：`extract_think_tags()` + `ReasoningMixin`
 4. ✅ 新建 `registry.py`：`@register_provider` + 工厂方法
-5. ✅ 演进 `openai_compatible.py`：继承 `_ReasoningMixin`，填充新字段，`serialize_messages` 处理推理历史
+5. ✅ 演进 `openai_compatible.py`：继承 `ReasoningMixin`，填充新字段，`serialize_messages` 处理推理历史
 6. ✅ 新建空子类：`deepseek.py`、`glm.py`、`groq.py`、`minimax.py`
 7. ✅ 扩展 `loop.py`：`_build_assistant_message` 传播推理/签名字段
 8. ✅ 编写完整测试套件
@@ -1197,7 +1156,7 @@ tests/
 
 1. **`ReasoningPolicy` 定义位置**：architecture 文档原设计将其放在 `reasoning.py`，实际放在 `context.py` 以避免循环导入（`context.py` → `providers.reasoning` → `providers.__init__` → `base` → `context.py`）。`reasoning.py` 通过 `from nahida_bot.agent.context import ReasoningPolicy` 重新导出。
 
-2. **`_ReasoningMixin._extract_reasoning_from_message` 返回值**：architecture 文档原设计返回 `str | None`，实际返回 `tuple[str | None, str | None]`（reasoning_content, cleaned_content）。当 think-tag 被提取后，调用方需要使用 cleaned content 替换原始 content。
+2. **`ReasoningMixin._extract_reasoning_from_message` 返回值**：architecture 文档原设计返回 `str | None`，实际返回 `tuple[str | None, str | None]`（reasoning_content, cleaned_content）。当 think-tag 被提取后，调用方需要使用 cleaned content 替换原始 content。
 
 3. **`GroqProvider.serialize_messages`**：不使用 `super()` 而是显式调用 `OpenAICompatibleProvider.serialize_messages(self, ...)`，因为 `@dataclass(slots=True)` + 多重继承导致 `super()` 的 MRO 解析失败。
 
@@ -1209,12 +1168,14 @@ tests/
 
 | Provider Type | Class | API Family | Key Features |
 |---|---|---|---|
-| `openai-compatible` | `OpenAICompatibleProvider` | `openai-completions` | Base class, `_ReasoningMixin`, think-tag fallback |
+| `openai-compatible` | `OpenAICompatibleProvider` | `openai-completions` | Base class, `ReasoningMixin`, think-tag fallback |
 | `deepseek` | `DeepSeekProvider` | `openai-completions` | Empty subclass, inherits `reasoning_key` |
 | `glm` | `GLMProvider` | `openai-completions` | Empty subclass |
 | `groq` | `GroqProvider` | `openai-completions` | `reasoning_key="reasoning"`, strips reasoning from history |
-| `minimax` | `MinimaxProvider` | `openai-completions` | Empty subclass |
+| `minimax` | `MinimaxProvider` | `anthropic-messages` | Subclass of `AnthropicProvider`, reuses Anthropic Messages 协议 |
 | `anthropic` | `AnthropicProvider` | `anthropic-messages` | Independent impl, content blocks, signature passback |
+| `openai-responses` | `OpenAIResponsesProvider` | `openai-responses` | `/responses` 端点，内置工具与有状态对话链 |
+| `codex` | `CodexProvider` | `codex` | ChatGPT Plus/Pro 订阅，OAuth token 鉴权 |
 
 **集成测试环境**：
 
@@ -1443,7 +1404,7 @@ def test_extract_think_tags_handles_no_tags()
 def test_extract_think_tags_handles_empty_content()
 def test_extract_think_tags_strips_from_content()
 
-# === _ReasoningMixin ===
+# === ReasoningMixin ===
 def test_reasoning_mixin_extracts_native_field()
 def test_reasoning_mixin_falls_back_to_tags()
 def test_reasoning_mixin_respects_custom_reasoning_key()

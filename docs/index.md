@@ -29,7 +29,7 @@ features:
   - title: Multi-Provider
     details: OpenAI / DeepSeek / Claude / GLM / Groq / Minimax 多后端运行时切换
   - title: Multi-Channel
-    details: Telegram + Milky QQ + OneBot（开发中），统一消息标准化
+    details: Telegram + Milky QQ + OneBot v11，统一消息标准化
   - title: WebUI Console
     details: Vue 3 SPA 运维面板，SSE 实时事件，配置可视化管理
 ---

@@ -93,10 +93,16 @@ export const sidebar: DefaultTheme.Sidebar = {
       text: "设计文档",
       items: [
         { text: "WebUI 设计", link: "/design/webui-design" },
+        { text: "Desktop 桌宠", link: "/design/desktop-app" },
         { text: "OneBot Channel", link: "/design/onebot-channel" },
         { text: "Agent Core", link: "/design/agent-core" },
+        { text: "AgentLoop 改造计划", link: "/design/agent-loop-repair-plan" },
         { text: "记忆系统", link: "/design/memory-system" },
         { text: "记忆作用域", link: "/design/memory-scoping" },
+        { text: "人物身份系统", link: "/design/person-identity-system" },
+        { text: "知识库", link: "/design/knowledge-base" },
+        { text: "附属进程监管", link: "/design/process-supervisor" },
+        { text: "MCP 动态服务器", link: "/design/mcp-dynamic-servers" },
         {
           text: "Cron 与 WebAPI 优化",
           link: "/design/cron-and-webapi-optimization",
@@ -125,10 +131,6 @@ export const sidebar: DefaultTheme.Sidebar = {
         {
           text: "Live2D 动作智能层",
           link: "/design/live2d-motion-intelligence",
-        },
-        {
-          text: "AgentLoop 改造计划",
-          link: "/design/agent-loop-repair-plan",
         },
         {
           text: "仓库减法清单",
