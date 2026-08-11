@@ -282,7 +282,7 @@ class Application:
         """Create ProviderManager, AgentLoop, and MemoryStore."""
         from nahida_bot.agent.context import ContextBuilder
         from nahida_bot.agent.context import build_context_budget
-        from nahida_bot.agent.loop import AgentLoop, AgentLoopConfig
+        from nahida_bot.agent.loop import AgentLoop
         from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
         from nahida_bot.agent.providers import create_provider
         from nahida_bot.agent.providers.manager import ProviderManager, ProviderSlot
@@ -490,18 +490,7 @@ class Application:
                     else None
                 ),
                 authorization=self._authorization_gate,
-                config=AgentLoopConfig(
-                    max_steps=self.settings.agent.max_steps,
-                    provider_timeout_seconds=self.settings.agent.provider_timeout_seconds,
-                    retry_attempts=self.settings.agent.retry_attempts,
-                    retry_backoff_seconds=self.settings.agent.retry_backoff_seconds,
-                    tool_timeout_seconds=self.settings.agent.tool_timeout_seconds,
-                    tool_retry_attempts=self.settings.agent.tool_retry_attempts,
-                    tool_retry_backoff_seconds=self.settings.agent.tool_retry_backoff_seconds,
-                    max_tool_log_chars=self.settings.agent.max_tool_log_chars,
-                    tool_use_system_prompt=self.settings.agent.tool_use_system_prompt,
-                    provider_error_template=self.settings.agent.provider_error_template,
-                ),
+                config=self.settings.agent,
             )
         else:
             logger.warning(

@@ -23,6 +23,7 @@ from nahida_bot.agent.runtime import (
     NullAgentRunStore,
     RunRecorder,
 )
+from nahida_bot.core.config import AgentConfig
 from nahida_bot.agent.providers import (
     ChatProvider,
     ProviderError,
@@ -102,30 +103,11 @@ class ToolExecutionResult:
         )
 
 
-@dataclass(slots=True, frozen=True)
-class AgentLoopConfig:
-    """Config for loop retries and termination conditions."""
-
-    # TODO: there is already an AgentConfig pydantic model in config.py.
-    # Check if we should merge these two classes, and if there is any similar issues.
-
-    max_steps: int = 8
-    provider_timeout_seconds: float = 120.0
-    retry_attempts: int = 2
-    retry_backoff_seconds: float = 0.2
-    tool_timeout_seconds: float = 135.0
-    tool_retry_attempts: int = 1
-    tool_retry_backoff_seconds: float = 0.1
-    max_tool_log_chars: int = 400
-    tool_use_system_prompt: str = (
-        "Tool use policy: When a tool is needed, call it through the structured "
-        "tool/function calling interface. Do not merely say that you will call a "
-        "tool. After tool results are provided, continue reasoning from the "
-        "results and produce the final user-facing answer."
-    )
-    provider_error_template: str = (
-        "Service temporarily unavailable ({code}). Please try again later."
-    )
+# The runtime loop config IS the pydantic ``AgentConfig`` from core.config.
+# Kept under this name for the public ``nahida_bot.agent`` re-export and
+# existing call sites; new fields only need to be added to ``AgentConfig``.
+# (Resolves the long-standing duplication noted in subtraction-backlog 2.4.)
+AgentLoopConfig = AgentConfig
 
 
 @dataclass(slots=True, frozen=True)
@@ -216,7 +198,7 @@ class AgentLoop:
     ) -> None:
         self.provider = provider
         self.context_builder = context_builder
-        self.config = config or AgentLoopConfig()
+        self.config = config or AgentConfig()
         self.tool_executor = tool_executor
         self.metrics = metrics
         # Canonical run ledger (Phase 1). Defaults to a no-op store so the loop
