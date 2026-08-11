@@ -545,7 +545,6 @@ memory:
   embedding:
     enabled: false
     model: ""      # model spec；空则默认找 embedding tag
-    provider_id: ""  # legacy
     dimensions: 0
     batch_size: 16
     embed_after_consolidation: true
@@ -559,7 +558,6 @@ scheduler:
   memory_dreaming_initial_delay_seconds: 300
   memory_dreaming_session_limit: 20
   memory_dreaming_recent_turn_limit: 40
-  memory_dreaming_provider_id: ""  # legacy
   memory_dreaming_model: ""        # model spec；空则默认找 memory tag
 ```
 
@@ -587,10 +585,9 @@ scheduler:
 
 设计取舍：
 
-- `MEMORY.md` 和 `memory/YYYY-MM-DD.md` 先作为可运行的轻量权威数据。
-- Context 注入只读取 bounded `MEMORY.md` 和最近少量 daily notes，避免把流水全塞进 prompt。
-- 写入采用 append-only，用户可直接编辑 Markdown。
-- 每条自动写入的 bullet 带稳定 ID，后续可导入 `memory_items`。
+- 结构化 `memory_items` 是权威数据，`MEMORY.md` 是兼容投影。
+- Context 只注入 bounded `MEMORY.md` 与 `memory_summary.md`。
+- daily notes 读写路径已删除，避免长期保留无人写入的陈旧分支。
 - 安全过滤先做最小可用版本：拒绝 token、cookie、API key、私钥、base64、临时签名 URL。
 
 任务清单：
@@ -598,7 +595,7 @@ scheduler:
 - [x] 新增 Markdown memory helper。
 - [x] workspace 初始化时创建 `MEMORY.md` 和 memory skill。
 - [x] `ContextBuilder` 注入 bounded Markdown memory。
-- [x] 内置 `memory_read` 工具：读取 `MEMORY.md` 和最近 N 天 daily notes，支持简单 query 过滤。
+- [x] 内置 `memory_read` 工具：搜索结构化记忆及兼容 Markdown 投影，支持简单 query 过滤。
 - [x] 内置 `memory_write` 工具：只写结构化 `memory_items`；Markdown 保留为派生兼容投影。
 - [x] 内置 `memory_update` / `memory_archive` 工具：允许 Bot 按当前可见 scope 修正或归档记忆。
 - [x] 内置工具 manifest 暴露 memory 工具。

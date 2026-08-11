@@ -205,9 +205,18 @@ nahida-bot start [--debug]        # 启动应用（含 Gateway + WebUI）
 nahida-bot doctor                 # 运行诊断检查（配置/数据库/就绪度）
 nahida-bot config schema          # 显示配置 schema（含插件 schema）
 nahida-bot config validate        # 校验配置文件
-nahida-bot codex login            # ChatGPT Codex OAuth 登录
+nahida-bot auth login codex       # ChatGPT Codex OAuth 登录
+nahida-bot auth login deepseek-main  # 隐藏输入并保存 provider API key
+nahida-bot auth list              # 查看 provider 认证状态
+nahida-bot auth logout codex      # 删除 auth CLI 保存的凭据
+nahida-bot webui hash-password    # 生成 WebUI 管理员密码哈希
 nahida-bot tokens                 # Token 用量统计
 ```
+
+`auth` 只管理 `providers` 下的凭据。`type: codex` 使用设备码 OAuth；其他
+provider 使用隐藏的 API key 输入，并保存到 `db_path` 指向的 SQLite 数据库，
+优先于 YAML / 环境变量中的 `api_key`。API key 更新后需重启 Bot，Codex token
+刷新不需要重启。WebUI 管理员认证与 provider 凭据分离，由 `webui` 命令管理。
 
 ### 配置生成（bootstrap）
 

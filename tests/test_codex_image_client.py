@@ -297,7 +297,7 @@ async def test_token_resolver_raises_when_codex_slot_missing() -> None:
     resolver = plugin._build_codex_token_resolver(backend)
     with pytest.raises(ImageGenerationError) as exc_info:
         await resolver()
-    assert "codex login" in exc_info.value.message
+    assert "auth login codex" in exc_info.value.message
 
 
 @pytest.mark.asyncio

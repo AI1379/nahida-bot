@@ -225,6 +225,27 @@ def test_validate_warns_for_sqlite_vec_without_dimensions() -> None:
     assert any(i.path == "memory.embedding.dimensions" for i in report.issues)
 
 
+def test_validate_accepts_stored_provider_credential() -> None:
+    settings = Settings.model_validate(
+        {
+            "providers": {
+                "p1": {
+                    "type": "deepseek",
+                    "models": ["deepseek-chat"],
+                }
+            },
+            "default_provider": "p1",
+        }
+    )
+
+    report = validate_settings(
+        settings,
+        authenticated_provider_ids=frozenset({"p1"}),
+    )
+
+    assert not any(issue.path == "providers.p1.api_key" for issue in report.issues)
+
+
 def test_validate_uses_channel_config_models() -> None:
     settings = Settings.model_validate(
         {

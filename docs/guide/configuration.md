@@ -410,11 +410,16 @@ multimodal:
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `enabled` | `bool` | `true` | 是否启用登录认证 |
-| `admin_password` | `str` | `""` | 明文管理员密码；与 `admin_password_hash` 二选一 |
-| `admin_password_hash` | `str` | `""` | bcrypt 哈希密码；优先于明文密码 |
+| `admin_password_hash` | `str` | `""` | PBKDF2-SHA256 管理员密码哈希；格式为 `pbkdf2_sha256$迭代次数$salt$digest` |
 | `session_ttl_seconds` | `int` | `3600` | 登录会话有效期（秒） |
 | `login_rate_per_minute` | `int` | `5` | 每分钟最大登录尝试次数 |
 | `bind_session_to_ip` | `bool` | `true` | 是否将 session 绑定到客户端 IP |
+
+可在部署目录交互式生成哈希，密码不会进入 shell 历史：
+
+```bash
+nahida-bot webui hash-password
+```
 
 ---
 
@@ -609,7 +614,7 @@ webui:
   enabled: true
   auth:
     enabled: true
-    admin_password: "${WEBUI_ADMIN_PASSWORD}"
+    admin_password_hash: "${WEBUI_ADMIN_PASSWORD_HASH}"
 
 memory:
   enabled: true

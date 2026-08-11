@@ -111,7 +111,7 @@ def validate_cmd(
     Checks include:
     - default_provider refers to a defined provider
     - internal model spec references can potentially resolve
-    - provider entries have api_key set
+    - provider entries have config/env or auth-store credentials
     - sqlite-vec dependency and dimension setup
     - multimodal fallback model is set when fallback mode is enabled
     """
@@ -133,7 +133,14 @@ def validate_cmd(
             console.print(f"[bold red]Failed to load config:[/bold red] {exc}")
         raise typer.Exit(1)
 
-    report = validate_settings(settings)
+    from nahida_bot.db.repositories.sqlite_provider_credential_repo import (
+        stored_provider_ids,
+    )
+
+    report = validate_settings(
+        settings,
+        authenticated_provider_ids=stored_provider_ids(settings.db_path),
+    )
     _print_report(report)
 
     if not report.ok:

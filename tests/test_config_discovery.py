@@ -164,6 +164,15 @@ class TestCheckReadiness:
         assert report.warnings == 1
         assert report.issues[0].code == "no_usable_provider"
 
+    def test_stored_provider_credential_is_usable(self) -> None:
+        s = _settings_with({"ds": {"type": "deepseek", "models": [{"name": "m"}]}})
+        report = check_readiness(
+            s,
+            authenticated_provider_ids=frozenset({"ds"}),
+        )
+        assert report.ok
+        assert report.issues == []
+
     def test_codex_provider_needs_no_key(self) -> None:
         s = _settings_with({"codex": {"type": "codex", "models": [{"name": "gpt"}]}})
         report = check_readiness(s)

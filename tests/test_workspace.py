@@ -47,6 +47,11 @@ class TestWorkspaceManager:
         assert (
             temp_dir / "workspaces" / "default" / "skills" / "memory" / "SKILL.md"
         ).exists()
+        memory_skill = (
+            temp_dir / "workspaces" / "default" / "skills" / "memory" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        assert "memory_read(query?, max_length?)" in memory_skill
+        assert "days?" not in memory_skill
         assert (temp_dir / "workspaces" / "default" / "MEMORY.md").exists()
         assert "Nahida Bot Workspace" in (
             temp_dir / "workspaces" / "default" / "AGENTS.md"

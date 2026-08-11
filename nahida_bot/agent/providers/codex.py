@@ -11,7 +11,7 @@ but swaps in:
   ``https://chatgpt.com/backend-api/codex/responses``
 
 Tokens live in the ``codex_tokens`` SQLite table (one row per configured
-provider id). Login happens out-of-band via ``nahida-bot codex login``;
+provider id). Login happens out-of-band via ``nahida-bot auth login codex``;
 if no token is present the provider raises ``ProviderAuthError`` on the
 first request instead of failing at startup.
 """
@@ -104,7 +104,7 @@ class CodexProvider(OpenAIResponsesProvider):
         if token is None:
             raise ProviderAuthError(
                 f"No Codex OAuth token for provider '{self.name}'. "
-                f"Run `nahida-bot codex login --provider {self.name}` first."
+                f"Run `nahida-bot auth login {self.name}` first."
             )
         if not token_needs_refresh(token):
             return token

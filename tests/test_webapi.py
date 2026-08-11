@@ -16,6 +16,7 @@ from nahida_bot.core.config import (
     WebUIConfigModel,
 )
 from nahida_bot.gateway.app import WebAPIApp
+from nahida_bot.gateway.services.webui_auth import hash_password_pbkdf2
 
 
 def _make_mock_app(
@@ -28,6 +29,12 @@ def _make_mock_app(
     is_started: bool = True,
     debug: bool = True,
 ) -> MagicMock:
+    if webui_password and not webui_password_hash:
+        webui_password_hash = hash_password_pbkdf2(
+            webui_password,
+            salt="test-salt",
+            iterations=1_000,
+        )
     settings = Settings(
         app_name="Test WebAPI",
         debug=debug,
@@ -37,7 +44,6 @@ def _make_mock_app(
         webapi=WebAPIConfigModel(auth_token=auth_token),
         webui=WebUIConfigModel(
             auth=WebUIAuthConfigModel(
-                admin_password=webui_password,
                 admin_password_hash=webui_password_hash,
                 login_rate_per_minute=login_rate_per_minute,
                 bind_session_to_ip=bind_session_to_ip,
@@ -265,8 +271,6 @@ async def test_webui_login_is_rate_limited() -> None:
 
 
 async def test_webui_password_hash_auth_flow() -> None:
-    from nahida_bot.gateway.services.webui_auth import hash_password_pbkdf2
-
     webapi = WebAPIApp(
         application=_make_mock_app(
             webui_password_hash=hash_password_pbkdf2(

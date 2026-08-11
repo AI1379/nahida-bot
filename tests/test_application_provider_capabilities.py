@@ -17,6 +17,11 @@ from nahida_bot.core.config import (
     RouterConfigModel,
     Settings,
 )
+from nahida_bot.db.engine import DatabaseEngine
+from nahida_bot.db.repositories.sqlite_provider_credential_repo import (
+    ProviderCredential,
+    SQLiteProviderCredentialRepository,
+)
 
 
 def test_model_capabilities_from_config_parses_known_fields() -> None:
@@ -83,6 +88,44 @@ def test_provider_model_entries_normalizes_strings_and_objects() -> None:
         ("text-model", {}, []),
         ("vision-model", {"image_input": True}, []),
     ]
+
+
+@pytest.mark.asyncio
+async def test_application_uses_stored_provider_api_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "nahida.db"
+    engine = DatabaseEngine(db_path)
+    await engine.initialize()
+    try:
+        await SQLiteProviderCredentialRepository(engine).upsert(
+            ProviderCredential("deepseek", "api_key", "stored-secret")
+        )
+    finally:
+        await engine.close()
+
+    settings = Settings(
+        db_path=str(db_path),
+        workspace_base_dir=str(tmp_path / "workspace"),
+        plugin_paths=[],
+        discover_builtin_channels=False,
+        providers={
+            "deepseek": ProviderEntryConfig(
+                type="deepseek",
+                base_url="https://example.invalid",
+                models=["deepseek-chat"],
+            )
+        },
+        default_provider="deepseek",
+    )
+
+    app = Application(settings=settings)
+    await app.initialize()
+    try:
+        provider_manager = cast(Any, app._provider_manager)
+        slot = provider_manager.get("deepseek")
+        assert slot is not None
+        assert slot.provider.api_key == "stored-secret"
+    finally:
+        await app.stop()
 
 
 @pytest.mark.asyncio

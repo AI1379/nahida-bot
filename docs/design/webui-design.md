@@ -1230,7 +1230,7 @@ nahida-bot 不需要首版复制完整 WebSocket RPC，但应预留以下边界�
 - session group 能正确识别 typed main session、cron isolated、cron named。
 - file API 拒绝绝对路径和 `..` 逃逸。
 - file API 拒绝非允许扩展和超大文件。
-- auth login 使用 Argon2id hash 校验，不把管理员密码写入日志。
+- WebUI 登录使用 PBKDF2-SHA256 hash 校验，不把管理员密码写入日志。
 - HTTP emergency 未显式开启时拒绝公网 HTTP 登录。
 - chat OTP 短 TTL、单次使用、失败限速和发送冷却生效。
 - session cookie 具备预期属性；HTTPS 模式包含 `Secure`，loopback HTTP 模式不强制 `Secure`。

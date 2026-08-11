@@ -584,7 +584,7 @@ class ImageGenerationPlugin(Plugin):
                     "image_generation_not_configured",
                     f"Codex provider '{backend.provider_id}' is not configured. "
                     "Add a 'type: codex' provider entry and run "
-                    f"`nahida-bot codex login --provider {backend.provider_id}`.",
+                    f"`nahida-bot auth login {backend.provider_id}`.",
                 )
             provider = slot.provider
             resolve_token = getattr(provider, "_resolve_token", None)

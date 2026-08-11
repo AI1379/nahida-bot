@@ -1290,8 +1290,7 @@ Provider 的 `serialize_messages()` 负责把 `ContextPart` 转成各自格式�
 ```yaml
 multimodal:
   image_fallback_mode: auto   # auto / tool / off
-  image_fallback_provider: vision
-  image_fallback_model: gpt-5.2
+  image_fallback_model: vision/gpt-5.2
   max_images_per_turn: 4
   max_image_bytes: 10485760
 

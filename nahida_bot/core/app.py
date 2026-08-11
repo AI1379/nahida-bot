@@ -293,6 +293,9 @@ class Application:
         from nahida_bot.db.repositories.sqlite_plugin_data_repo import (
             SQLitePluginDataRepository,
         )
+        from nahida_bot.db.repositories.sqlite_provider_credential_repo import (
+            SQLiteProviderCredentialRepository,
+        )
 
         # Database + Memory
         db_path = self.settings.db_path
@@ -302,6 +305,7 @@ class Application:
         self.memory_store = SQLiteMemoryStore(engine)
         self.message_delivery_store = SQLiteMessageDeliveryStore(engine)
         self._plugin_data_repo = SQLitePluginDataRepository(engine)
+        self._provider_credential_repo = SQLiteProviderCredentialRepository(engine)
         from nahida_bot.db.repositories.sqlite_chat_metadata_repo import (
             SQLiteChatMetadataRepository,
         )
@@ -384,7 +388,12 @@ class Application:
             # Codex providers authenticate via OAuth tokens stored in SQLite,
             # not via an api_key in config — so skip the api_key gate for them.
             requires_api_key = cfg.type != "codex"
-            if (requires_api_key and not cfg.api_key) or not model_entries:
+            api_key = cfg.api_key
+            if requires_api_key:
+                credential = await self._provider_credential_repo.get(pid)
+                if credential is not None and credential.auth_method == "api_key":
+                    api_key = credential.secret
+            if (requires_api_key and not api_key) or not model_entries:
                 logger.warning(
                     "application.provider_skipped",
                     provider_id=pid,
@@ -406,7 +415,7 @@ class Application:
             tags_by_model = {name: tags for name, _, tags in model_entries if tags}
             provider_kwargs: dict[str, object] = {
                 "base_url": cfg.base_url,
-                "api_key": cfg.api_key,
+                "api_key": api_key,
                 "model": default_model,
             }
             merge_flag = getattr(cfg, "merge_system_messages", None)
@@ -488,7 +497,7 @@ class Application:
             logger.warning(
                 "application.no_provider",
                 msg="Provider not configured — agent loop disabled. "
-                "Set providers.<id>.api_key and providers.<id>.models in config.",
+                "Run `nahida-bot auth login <provider>` and configure models.",
             )
 
     async def _init_speech(self) -> None:
@@ -846,10 +855,7 @@ class Application:
         host = cfg.host or self.settings.host
         port = cfg.port or self.settings.port
 
-        webui_password_configured = bool(
-            self.settings.webui.auth.admin_password
-            or self.settings.webui.auth.admin_password_hash
-        )
+        webui_password_configured = bool(self.settings.webui.auth.admin_password_hash)
         if (
             not cfg.auth_token
             and not webui_password_configured
@@ -859,7 +865,7 @@ class Application:
                 "application.webapi_no_auth_on_public_interface",
                 host=host,
                 _msg="WebAPI is exposed on a non-loopback interface without "
-                "webui.auth.admin_password or webapi.auth_token.",
+                "webui.auth.admin_password_hash or webapi.auth_token.",
             )
 
         self._usage_ledger = UsageRecorder()

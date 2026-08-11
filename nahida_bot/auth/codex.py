@@ -6,7 +6,7 @@ through OAuth against ``auth.openai.com`` plus a request rewrite to the
 codex backend at ``chatgpt.com/backend-api/codex/responses``.
 
 This module is transport-only — it does not touch the database. Callers
-(``CodexProvider`` for refresh, the ``codex login`` CLI for the initial
+(``CodexProvider`` for refresh, the ``auth login`` CLI for the initial
 device-code flow) are responsible for persisting returned tokens via
 ``SQLiteCodexTokenRepository``.
 

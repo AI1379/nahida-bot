@@ -7,12 +7,31 @@ from nahida_bot.core.config import (
     AgentConfig,
     ContextConfig,
     GroupContextConfig,
+    IdentityConfig,
     MemoryConfig,
     MemoryConsolidationConfig,
+    MemoryEmbeddingConfig,
     RouterConfigModel,
     SchedulerConfigModel,
     Settings,
+    WebUIAuthConfigModel,
 )
+
+
+def test_removed_internal_config_fields_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="memory_dreaming_provider_id"):
+        SchedulerConfigModel.model_validate({"memory_dreaming_provider_id": "cheap"})
+    with pytest.raises(ValidationError, match="provider_id"):
+        MemoryEmbeddingConfig.model_validate({"provider_id": "embedder"})
+    with pytest.raises(ValidationError, match="authorization_tickets"):
+        IdentityConfig.model_validate({"authorization_tickets": {"enabled": True}})
+
+
+def test_webui_auth_requires_current_pbkdf2_hash_config() -> None:
+    with pytest.raises(ValidationError, match="admin_password"):
+        WebUIAuthConfigModel.model_validate({"admin_password": "plaintext"})
+    with pytest.raises(ValidationError, match="admin_password_hash"):
+        WebUIAuthConfigModel(admin_password_hash="sha256:deadbeef")
 
 
 class TestAgentConfig:

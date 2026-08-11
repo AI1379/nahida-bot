@@ -9,10 +9,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from nahida_bot.cli.auth_commands import auth_app
 from nahida_bot.cli.bootstrap_commands import bootstrap_app
 from nahida_bot.cli.config_commands import config_app
-from nahida_bot.cli.codex_commands import codex_app
 from nahida_bot.cli.token_commands import token_app
+from nahida_bot.cli.webui_commands import webui_app
 from nahida_bot.core.app import Application
 from nahida_bot.core.config import (
     find_config_yaml,
@@ -27,7 +28,8 @@ console = Console()
 app = typer.Typer(help="Nahida Bot - LLM Chatbot Framework")
 app.add_typer(bootstrap_app, name="bootstrap")
 app.add_typer(config_app, name="config")
-app.add_typer(codex_app, name="codex")
+app.add_typer(auth_app, name="auth")
+app.add_typer(webui_app, name="webui")
 app.add_typer(token_app, name="tokens")
 
 
@@ -113,7 +115,14 @@ def start(
     # Pre-flight readiness checks: warn loudly when the bot would come up but
     # be unable to serve (no usable provider, unresolved tokens, ...).
     if not skip_preflight:
-        report = check_readiness(settings)
+        from nahida_bot.db.repositories.sqlite_provider_credential_repo import (
+            stored_provider_ids,
+        )
+
+        report = check_readiness(
+            settings,
+            authenticated_provider_ids=stored_provider_ids(settings.db_path),
+        )
         if report.issues:
             console.print("[bold yellow]Pre-flight checks found issues:[/bold yellow]")
             for issue in report.issues:
@@ -213,7 +222,15 @@ def doctor(
         rows.append(("config loads & parses", "fail", f"{type(exc).__name__}: {exc}"))
 
     if settings is not None:
-        vreport = validate_settings(settings)
+        from nahida_bot.db.repositories.sqlite_provider_credential_repo import (
+            stored_provider_ids,
+        )
+
+        authenticated_provider_ids = stored_provider_ids(settings.db_path)
+        vreport = validate_settings(
+            settings,
+            authenticated_provider_ids=authenticated_provider_ids,
+        )
         sev = "pass" if not vreport.issues else ("fail" if vreport.errors else "warn")
         rows.append(
             (
@@ -225,7 +242,10 @@ def doctor(
             )
         )
 
-        pre = check_readiness(settings)
+        pre = check_readiness(
+            settings,
+            authenticated_provider_ids=authenticated_provider_ids,
+        )
         sev = "pass" if not pre.issues else ("fail" if pre.errors else "warn")
         rows.append(
             (

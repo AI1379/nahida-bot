@@ -95,5 +95,4 @@ multimodal:
 - `ModelRouter.resolve()` 的解析顺序是 provider/model 或裸模型名优先，tag 兜底。
 - `resolve_for_task()` 支持 explicit -> default spec -> fallback policy，fallback 目前为代码级语义，不暴露公开配置链。
 - `memory.embedding.model`、`scheduler.memory_dreaming_model`、`multimodal.image_fallback_model` 都是单字符串 model spec。
-- legacy 双字段仍保留兼容：`memory.embedding.provider_id`、`scheduler.memory_dreaming_provider_id`、`multimodal.image_fallback_provider`。
-- `Settings.model_routing` 仍存在但标记为 legacy ignored，CLI config validator 也把它当旧字段处理。
+- 已删除 provider/model 双字段和 `Settings.model_routing`；固定供应商时直接使用 `provider/model` spec。

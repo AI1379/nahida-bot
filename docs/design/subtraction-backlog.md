@@ -9,7 +9,6 @@
 > - [memory-simplification-proposal.md](memory-simplification-proposal.md)（已落地的 Markdown ↔ memory_items 合并）
 > - [memory-soft-scope-and-authz.md](memory-soft-scope-and-authz.md)
 > - [person-identity-system.md](person-identity-system.md)
-> - [authorization-tickets.md](authorization-tickets.md)
 > - [agent-loop-repair-plan.md](agent-loop-repair-plan.md)
 
 ---
@@ -57,7 +56,7 @@
   - `nahida_bot/plugins/builtin/commands.py:2401-2484`（`_cmd_auth` + `_auth_usage`，约 85 行）
   - `nahida_bot/gateway/routes/` 无对应路由（已经省了）
   - 配置：`IdentityAuthorizationTicketsConfig`（4 个字段 + `IdentityConfig.authorization_tickets`）
-  - 文档：[authorization-tickets.md](authorization-tickets.md)
+  - 文档：临时授权票据设计稿（已删除）
 - **默认状态**：`identity.authorization_tickets.enabled=false`，整套流程从未运行。
 - **删除步骤**：
   1. 删 `IdentityAuthorizationTicketsConfig` 与 `IdentityConfig.authorization_tickets` 字段。
@@ -65,7 +64,7 @@
      `_consume_matching_grant` / `_prune` / `_new_id` / `_challenges` / `_grants` 等成员。
   3. 删 `commands.py` 的 `_cmd_auth` 与 `_auth_usage`，以及 `_register_commands` 里对应的 `register_command`。
   4. 删 `api_bridge.py` 里 `authorization_ticket` 这个 API（若存在）。
-  5. 删 [authorization-tickets.md](authorization-tickets.md)。
+   5. 删临时授权票据设计稿。
 - **风险**：极低。功能默认关、无生产数据、无外部 API 依赖。非管理员要执行一次特权工具，
   让管理员代跑即可——聊天机器人不需要"一次性精确参数授权工单"。
 
@@ -276,12 +275,12 @@
 
 每完成一项打勾并填写 PR / commit：
 
-- [ ] 2.1 Authorization Tickets —— PR: ___
+- [x] 2.1 Authorization Tickets —— commit: `4795e85`
 - [ ] 2.2 Sensitivity / portability 简化 —— PR: ___
 - [ ] 2.3 Person/account scope 移除 —— PR: ___
-- [ ] 2.4 AgentConfig / AgentLoopConfig 合并 —— PR: ___
-- [ ] 2.5 Markdown 死代码 / daily 读路径 —— PR: ___
-- [ ] 2.6 Legacy 字段 + sha256 密码 —— PR: ___
+- [x] 2.4 AgentConfig / AgentLoopConfig 合并 —— commit: `8838e70`
+- [x] 2.5 Markdown 死代码 / daily 读路径 —— commit: `090e7e7`
+- [x] 2.6 Legacy 字段 + sha256 密码 —— commit: `960b667`
 - [ ] 2.7 conversation_joiner 收敛 —— PR: ___
 - [ ] 2.8 Dreamer 二选一 —— PR: ___
 - [ ] 2.9 canonical ledger 关闭/移除 —— PR: ___

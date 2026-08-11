@@ -108,7 +108,7 @@ workspace context would help, or when you need to check remembered preferences.
 
 ## Available Tools
 
-- `memory_read(query?, days?, max_length?)` searches structured durable memory and compatible workspace notes.
+- `memory_read(query?, max_length?)` searches structured durable memory and compatible workspace notes.
 - `memory_write(content, title?, kind?, audience?, sensitivity?)` creates a structured memory item.
 - `memory_update(item_id, content, ...)` replaces an outdated visible item and archives the old version.
 - `memory_archive(item_id, reason)` archives an obsolete, wrong, or duplicate visible item.

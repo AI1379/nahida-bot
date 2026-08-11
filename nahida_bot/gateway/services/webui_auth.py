@@ -66,10 +66,7 @@ class WebUIAuthService:
 
     @property
     def password_configured(self) -> bool:
-        return self.enabled and bool(
-            getattr(self._config, "admin_password", "")
-            or getattr(self._config, "admin_password_hash", "")
-        )
+        return self.enabled and bool(getattr(self._config, "admin_password_hash", ""))
 
     @property
     def mode(self) -> str:
@@ -91,15 +88,8 @@ class WebUIAuthService:
         if not self.password_configured:
             return False
 
-        configured_plain = str(getattr(self._config, "admin_password", ""))
-        if configured_plain:
-            return hmac.compare_digest(password, configured_plain)
-
         configured_hash = str(getattr(self._config, "admin_password_hash", ""))
-        if configured_hash.startswith(f"{_PBKDF2_SCHEME}$"):
-            return _verify_pbkdf2_hash(password, configured_hash)
-
-        return False
+        return _verify_pbkdf2_hash(password, configured_hash)
 
     def is_login_allowed(self, request: Request) -> bool:
         limit = self.login_rate_per_minute

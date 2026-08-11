@@ -118,7 +118,7 @@ providers:
           reasoning: true
 
   # ChatGPT Codex（可选）— 通过 ChatGPT Plus/Pro 订阅使用 Codex 模型。
-  # 无需 api_key：运行 `nahida-bot codex login` 完成 OAuth 设备码登录后，
+  # 无需 api_key：运行 `nahida-bot auth login codex` 完成 OAuth 设备码登录后，
   # refresh token 会写入 SQLite，bot 启动时会自动加载并按需刷新。
   # 非官方用法，仅面向 Plus/Pro 订阅者；账号有被 OpenAI 风控的风险。
   # 高级覆盖项（均为可选环境变量）：

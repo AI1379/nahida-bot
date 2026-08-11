@@ -54,7 +54,7 @@ class ProviderEntryConfig(BaseModel):
 class MultimodalConfig(BaseModel):
     """Multimodal context configuration."""
 
-    model_config = ConfigDict(frozen=True, extra="allow")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     image_fallback_mode: ImageFallbackMode = "auto"
     media_context_policy: MediaContextPolicy = "cache_aware"
@@ -128,7 +128,7 @@ class ContextConfig(BaseModel):
 class SchedulerConfigModel(BaseModel):
     """Scheduler service configuration."""
 
-    model_config = ConfigDict(frozen=True, extra="allow")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     poll_interval_seconds: float = Field(default=1.0, ge=0.1)
     max_concurrent_fires: int = Field(default=5, ge=1)
@@ -209,11 +209,13 @@ class WebAPIConfigModel(BaseModel):
 class WebUIAuthConfigModel(BaseModel):
     """Browser WebUI authentication configuration."""
 
-    model_config = ConfigDict(frozen=True, extra="allow")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = True
-    admin_password: str = ""
-    admin_password_hash: str = ""
+    admin_password_hash: str = Field(
+        default="",
+        pattern=r"^$|^pbkdf2_sha256\$[1-9][0-9]*\$[^$]+\$[0-9a-fA-F]{64}$",
+    )
     session_ttl_seconds: int = Field(default=3600, ge=60)
     login_rate_per_minute: int = Field(default=5, ge=0)
     bind_session_to_ip: bool = True
@@ -251,7 +253,7 @@ class MemoryRetrievalConfig(BaseModel):
 class MemoryEmbeddingConfig(BaseModel):
     """Durable memory embedding configuration."""
 
-    model_config = ConfigDict(frozen=True, extra="allow")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = False
     model: str = ""
@@ -352,7 +354,7 @@ class IdentityConfig(BaseModel):
     unchanged. Seeded links are upserted (never deleted) at startup.
     """
 
-    model_config = ConfigDict(frozen=True, extra="allow")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = False
     people: list[IdentityPersonSeed] = Field(default_factory=list)

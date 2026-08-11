@@ -38,7 +38,7 @@ config.yaml + .env
 
 ### 1.1 Settings — 根配置模型
 
-- **类型**: Pydantic `BaseModel`，`frozen=True, extra="allow"`
+- **类型**: Pydantic `BaseModel`，`frozen=True, extra="forbid"`
 - **定义**: [config.py](https://github.com/AI1379/nahida-bot/blob/main/nahida_bot/core/config.py)
 - **实例化**: `load_settings()` 末尾 `Settings(**full_config)`
 - **来源**: `config.yaml` + `.env` 环境变量插值 + CLI kwargs 合并
@@ -96,7 +96,6 @@ class ProviderModelConfig(BaseModel):
 class MultimodalConfig(BaseModel):
     image_fallback_mode: ImageFallbackMode = "auto"        # auto | tool | off
     media_context_policy: MediaContextPolicy = "cache_aware" # cache_aware | description_only | native_recent
-    image_fallback_provider: str = ""
     image_fallback_model: str = ""
     max_images_per_turn: int = 4
     max_image_bytes: int = 10485760       # 10 MB
@@ -338,7 +337,6 @@ class SchedulerConfig:
     memory_dreaming_initial_delay_seconds: int = 300  # 首次延迟
     memory_dreaming_session_limit: int = 20  # 单次扫描会话数
     memory_dreaming_recent_turn_limit: int = 40  # 单会话读取 turns
-    memory_dreaming_provider_id: str = ""    # Legacy: prefer model spec
     memory_dreaming_model: str = ""          # dreaming 模型 spec
 ```
 
@@ -370,7 +368,6 @@ class MemoryRetrievalConfig(BaseModel):
 class MemoryEmbeddingConfig(BaseModel):
     enabled: bool = False
     model: str = ""                        # embedding 模型 spec
-    provider_id: str = ""                  # Legacy: prefer model spec
     dimensions: int = 0                    # 向量维度（sqlite-vec 必填）
     batch_size: int = 16
     embed_after_consolidation: bool = True
@@ -409,8 +406,7 @@ class WebUIConfigModel(BaseModel):
 
 class WebUIAuthConfigModel(BaseModel):
     enabled: bool = True
-    admin_password: str = ""               # 明文密码
-    admin_password_hash: str = ""          # bcrypt 哈希（优先）
+    admin_password_hash: str = ""          # PBKDF2-SHA256 哈希
     session_ttl_seconds: int = 3600
     login_rate_per_minute: int = 5
     bind_session_to_ip: bool = True

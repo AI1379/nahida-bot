@@ -135,7 +135,11 @@ def _add_pydantic_issues(
         )
 
 
-def validate_settings(settings: Settings) -> ValidationReport:
+def validate_settings(
+    settings: Settings,
+    *,
+    authenticated_provider_ids: frozenset[str] = frozenset(),
+) -> ValidationReport:
     """Validate a Settings object for common issues.
 
     Returns a ValidationReport with errors (blocking) and warnings (advisory).
@@ -160,7 +164,9 @@ def validate_settings(settings: Settings) -> ValidationReport:
             )
 
         for pid, entry in settings.providers.items():
-            if not entry.api_key:
+            needs_api_key = entry.type != "codex"
+            has_api_key = bool(entry.api_key) or pid in authenticated_provider_ids
+            if needs_api_key and not has_api_key:
                 report.issues.append(
                     ValidationIssue(
                         "warning",

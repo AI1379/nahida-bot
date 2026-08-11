@@ -493,6 +493,18 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_node_tokens_node
         ON node_tokens(node_id, created_at);
     """,
+    # Migration 026: credentials entered through ``nahida-bot auth login`` for
+    # ordinary API-key providers. Codex keeps its richer refresh/access token
+    # bundle in ``codex_tokens``; both stores are presented through one CLI.
+    """
+    CREATE TABLE IF NOT EXISTS provider_credentials (
+        provider_id  TEXT PRIMARY KEY,
+        auth_method  TEXT NOT NULL,
+        secret       TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+    );
+    """,
 ]
 
 

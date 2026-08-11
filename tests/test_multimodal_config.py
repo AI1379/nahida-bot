@@ -47,6 +47,10 @@ class TestMultimodalConfig:
         with pytest.raises(ValidationError):
             MultimodalConfig.model_validate({"media_context_policy": policy})
 
+    def test_removed_provider_field_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="image_fallback_provider"):
+            MultimodalConfig.model_validate({"image_fallback_provider": "vision"})
+
     def test_negative_limits_rejected(self) -> None:
         with pytest.raises(ValidationError):
             MultimodalConfig(max_images_per_turn=-1)
