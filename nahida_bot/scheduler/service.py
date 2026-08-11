@@ -121,7 +121,6 @@ class SchedulerService:
                 "scheduler.memory_dreaming_scheduled",
                 next_at=self._memory_dream_next_at.isoformat(),
                 interval_seconds=self._config.memory_dreaming_interval_seconds,
-                provider_id=self._config.memory_dreaming_provider_id,
                 model=self._config.memory_dreaming_model,
             )
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -690,14 +689,9 @@ class SchedulerService:
 
         router = self._runner.model_router
         if router is not None:
-            # Build explicit override from legacy config fields
-            explicit = _legacy_model_spec(
-                provider_id=self._config.memory_dreaming_provider_id,
-                model=self._config.memory_dreaming_model,
-            )
             result = router.resolve_for_task(
                 "memory_dreaming",
-                explicit=explicit,
+                explicit=self._config.memory_dreaming_model,
                 default_spec="memory",
                 fallback="session",
             )
@@ -1157,14 +1151,3 @@ def _safe_int(value: object, default: int = 0) -> int:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
-
-
-def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
-    """Build a model spec from legacy provider/model split fields."""
-    provider_id = provider_id.strip()
-    model = model.strip()
-    if provider_id and model:
-        if model.startswith(f"{provider_id}/"):
-            return model
-        return f"{provider_id}/{model}"
-    return model

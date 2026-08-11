@@ -203,7 +203,7 @@ def build_config_schema(
     """Build the schema entry list, optionally filtered by section."""
     entries: list[SchemaEntry] = []
 
-    nested_keys = {*_NESTED_MODELS, "providers", "memory", "model_routing"}
+    nested_keys = {*_NESTED_MODELS, "providers", "memory"}
     for fname, finfo in Settings.model_fields.items():
         if fname in nested_keys:
             continue

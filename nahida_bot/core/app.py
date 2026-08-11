@@ -560,13 +560,9 @@ class Application:
         from nahida_bot.agent.storage.vector import SQLiteVecIndex
 
         emb_cfg = self.settings.memory.embedding
-        explicit = _legacy_model_spec(
-            provider_id=emb_cfg.provider_id,
-            model=emb_cfg.model,
-        )
         routed = self._model_router.resolve_for_task(
             "embedding",
-            explicit=explicit,
+            explicit=emb_cfg.model,
             default_spec="embedding",
             fallback="disabled",
         )
@@ -835,7 +831,6 @@ class Application:
                 memory_dreaming_recent_turn_limit=(
                     scheduler_cfg.memory_dreaming_recent_turn_limit
                 ),
-                memory_dreaming_provider_id=(scheduler_cfg.memory_dreaming_provider_id),
                 memory_dreaming_model=scheduler_cfg.memory_dreaming_model,
             ),
             enable_silent_reply=self.settings.enable_silent_reply,
@@ -1399,14 +1394,3 @@ def _provider_model_entries(
             if name:
                 entries.append((name, raw.capabilities, raw.tags))
     return entries
-
-
-def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
-    """Build a model spec from legacy provider/model split fields."""
-    provider_id = provider_id.strip()
-    model = model.strip()
-    if provider_id and model:
-        if model.startswith(f"{provider_id}/"):
-            return model
-        return f"{provider_id}/{model}"
-    return model

@@ -161,7 +161,6 @@ default_provider: deepseek-main   # 可选，默认使用 providers 中的第一
 multimodal:
   image_fallback_mode: "auto"
   media_context_policy: "cache_aware"
-  image_fallback_provider: ""  # Legacy；建议把 provider 写进 image_fallback_model
   image_fallback_model: "siliconflow/Qwen/Qwen3.6-35B-A3B"
   max_images_per_turn: 4
   max_image_bytes: 10485760
@@ -476,7 +475,6 @@ agent_runtime:
 #   memory_dreaming_initial_delay_seconds: 300   # 启动后首次 dreaming 延迟
 #   memory_dreaming_session_limit: 20            # 单次最多扫描会话数
 #   memory_dreaming_recent_turn_limit: 40        # 单会话最多读取 turns 数
-#   memory_dreaming_provider_id: ""     # Legacy；建议改用 memory_dreaming_model
 #   memory_dreaming_model: ""           # model spec；空则默认找 memory tag，失败后走会话模型
 
 # ── Router ─────────────────────────────────────────────

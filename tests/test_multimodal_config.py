@@ -16,7 +16,6 @@ class TestMultimodalConfig:
         cfg = MultimodalConfig()
         assert cfg.image_fallback_mode == "auto"
         assert cfg.media_context_policy == "cache_aware"
-        assert cfg.image_fallback_provider == ""
         assert cfg.image_fallback_model == ""
         assert cfg.max_images_per_turn == 4
         assert cfg.max_image_bytes == 10485760
@@ -26,7 +25,6 @@ class TestMultimodalConfig:
         cfg = MultimodalConfig(
             image_fallback_mode="tool",
             media_context_policy="native_recent",
-            image_fallback_provider="vision",
             image_fallback_model="gpt-5.2",
             max_images_per_turn=8,
             max_image_bytes=20 * 1024 * 1024,
@@ -34,7 +32,6 @@ class TestMultimodalConfig:
         )
         assert cfg.image_fallback_mode == "tool"
         assert cfg.media_context_policy == "native_recent"
-        assert cfg.image_fallback_provider == "vision"
         assert cfg.image_fallback_model == "gpt-5.2"
         assert cfg.max_images_per_turn == 8
         assert cfg.max_image_bytes == 20 * 1024 * 1024

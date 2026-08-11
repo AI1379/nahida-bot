@@ -40,7 +40,6 @@ Nahida Bot 从 YAML 文件、`.env` 文件和环境变量读取配置。值的�
 | `webui` | `object` | （见下文） | WebUI 控制台配置 |
 | `memory` | `object` | （见下文） | 长期记忆与 embedding 配置 |
 | `enable_silent_reply` | `bool` | `true` | 全局开关：是否允许 Agent 以 `NO_REPLY` 静默回复 |
-| `model_routing` | `dict` | `{}` | ~~Legacy，已忽略。~~ 内部任务路由改用 model spec + `ModelRouter` |
 
 ### 示例
 
@@ -251,7 +250,6 @@ multimodal:
 |----|------|--------|------|
 | `image_fallback_mode` | `str` | `"auto"` | 主模型不支持图片时的策略：`auto`（自动调用 fallback 视觉模型）、`tool`（注入 `image_understand` 工具）、`off`（跳过图片） |
 | `media_context_policy` | `str` | `"cache_aware"` | 历史中的媒体保留方式：`cache_aware`（近期图片保留原生块，旧的降级为描述）、`native_recent`（仅最新图片保留原生）、`description_only`（全部使用文本描述） |
-| `image_fallback_provider` | `str` | `""` | Legacy 字段；建议把 provider 写进 `image_fallback_model` |
 | `image_fallback_model` | `str` | `""` | Fallback 视觉模型 spec；空则默认找 `vision` tag |
 | `max_images_per_turn` | `int` | `4` | 每轮对话处理的最大图片数 |
 | `max_image_bytes` | `int` | `10485760` | 单张图片最大字节数（10 MB） |
@@ -324,7 +322,6 @@ multimodal:
 | `memory_dreaming_initial_delay_seconds` | `int` | `300` | 应用启动后首次 dreaming 延迟（秒） |
 | `memory_dreaming_session_limit` | `int` | `20` | 单次 dreaming 最多扫描的最近会话数 |
 | `memory_dreaming_recent_turn_limit` | `int` | `40` | 单个会话最多读取的最近 turns 数 |
-| `memory_dreaming_provider_id` | `str` | `""` | Legacy 字段；建议把 provider 写进 `memory_dreaming_model` |
 | `memory_dreaming_model` | `str` | `""` | dreaming 模型 spec；空则默认找 `memory` tag，失败后使用会话模型 |
 
 ---
@@ -343,7 +340,6 @@ multimodal:
 | `retrieval.max_injected_items` | `int` | `5` | 单轮最多注入的长期记忆条数 |
 | `retrieval.max_injected_chars` | `int` | `4000` | 单轮长期记忆注入字符预算 |
 | `embedding.enabled` | `bool` | `false` | 是否启用长期记忆 embedding |
-| `embedding.provider_id` | `str` | `""` | Legacy 字段；建议把 provider 写进 `embedding.model` |
 | `embedding.model` | `str` | `""` | embedding 模型 spec；空则默认找 `embedding` tag |
 | `embedding.dimensions` | `int` | `0` | embedding 维度；`sqlite-vec` 后端必须填写 |
 | `embedding.batch_size` | `int` | `16` | embedding 批量大小 |

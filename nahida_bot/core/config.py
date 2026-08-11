@@ -58,7 +58,6 @@ class MultimodalConfig(BaseModel):
 
     image_fallback_mode: ImageFallbackMode = "auto"
     media_context_policy: MediaContextPolicy = "cache_aware"
-    image_fallback_provider: str = ""
     image_fallback_model: str = ""
     max_images_per_turn: int = Field(default=4, ge=0)
     max_image_bytes: int = Field(default=10485760, ge=0)  # 10 MB
@@ -144,7 +143,6 @@ class SchedulerConfigModel(BaseModel):
     memory_dreaming_initial_delay_seconds: int = Field(default=300, ge=0)
     memory_dreaming_session_limit: int = Field(default=20, ge=1)
     memory_dreaming_recent_turn_limit: int = Field(default=40, ge=2)
-    memory_dreaming_provider_id: str = ""
     memory_dreaming_model: str = ""
 
 
@@ -257,7 +255,6 @@ class MemoryEmbeddingConfig(BaseModel):
 
     enabled: bool = False
     model: str = ""
-    provider_id: str = ""  # Legacy: prefer ``model: provider/model``.
     dimensions: int = Field(default=0, ge=0)
     batch_size: int = Field(default=16, ge=1)
     embed_after_consolidation: bool = True
@@ -562,7 +559,6 @@ class Settings(BaseModel):
     router: RouterConfigModel = RouterConfigModel()
     webapi: WebAPIConfigModel = WebAPIConfigModel()
     webui: WebUIConfigModel = WebUIConfigModel()
-    model_routing: dict[str, Any] = Field(default_factory=dict)  # Legacy, ignored.
     motion_planner: MotionPlannerConfigModel = MotionPlannerConfigModel()
     memory: MemoryConfig = MemoryConfig()
     kb_auto_recall: KBAutoRecallConfig = KBAutoRecallConfig()

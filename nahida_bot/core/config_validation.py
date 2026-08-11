@@ -37,16 +37,6 @@ class ValidationReport:
         return self.errors == 0
 
 
-def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
-    provider_id = provider_id.strip()
-    model = model.strip()
-    if provider_id and model:
-        if model.startswith(f"{provider_id}/"):
-            return model
-        return f"{provider_id}/{model}"
-    return model
-
-
 def _iter_config_models(settings: Settings) -> list[tuple[str, str, list[str]]]:
     models: list[tuple[str, str, list[str]]] = []
     for provider_id, entry in settings.providers.items():
@@ -190,10 +180,7 @@ def validate_settings(settings: Settings) -> ValidationReport:
     # --- multimodal ---
     mm = settings.multimodal
     if mm.image_fallback_mode != "off":
-        fallback_spec = _legacy_model_spec(
-            provider_id=mm.image_fallback_provider,
-            model=mm.image_fallback_model,
-        )
+        fallback_spec = mm.image_fallback_model
         if fallback_spec:
             if not _model_spec_resolves(settings, fallback_spec):
                 _add_unresolved_model_issue(
@@ -201,21 +188,12 @@ def validate_settings(settings: Settings) -> ValidationReport:
                     "multimodal.image_fallback_model",
                     fallback_spec,
                 )
-        elif mm.image_fallback_provider:
-            if mm.image_fallback_provider not in settings.providers:
-                report.issues.append(
-                    ValidationIssue(
-                        "error",
-                        "multimodal.image_fallback_provider",
-                        f"Provider '{mm.image_fallback_provider}' is not configured",
-                    )
-                )
         elif not _model_spec_resolves(settings, "vision"):
             report.issues.append(
                 ValidationIssue(
                     "warning",
                     "multimodal.image_fallback_model",
-                    "Image fallback is enabled but no fallback model/provider is "
+                    "Image fallback is enabled but no fallback model is "
                     "configured and no model has the 'vision' tag",
                 )
             )
@@ -225,33 +203,13 @@ def validate_settings(settings: Settings) -> ValidationReport:
     if mem.enabled:
         emb = mem.embedding
         if emb.enabled:
-            embedding_spec = _legacy_model_spec(
-                provider_id=emb.provider_id,
-                model=emb.model,
-            )
+            embedding_spec = emb.model
             if embedding_spec:
                 if not _model_spec_resolves(settings, embedding_spec):
                     _add_unresolved_model_issue(
                         report,
                         "memory.embedding.model",
                         embedding_spec,
-                    )
-            elif emb.provider_id:
-                report.issues.append(
-                    ValidationIssue(
-                        "warning",
-                        "memory.embedding.provider_id",
-                        "memory.embedding.provider_id without memory.embedding.model "
-                        "is ignored; use memory.embedding.model: provider/model",
-                    )
-                )
-                if not _model_spec_resolves(settings, "embedding"):
-                    report.issues.append(
-                        ValidationIssue(
-                            "warning",
-                            "memory.embedding",
-                            "Embedding is enabled but no model has the 'embedding' tag",
-                        )
                     )
             elif not _model_spec_resolves(settings, "embedding"):
                 report.issues.append(
@@ -297,27 +255,12 @@ def validate_settings(settings: Settings) -> ValidationReport:
     # --- scheduler ---
     scheduler = settings.scheduler
     if scheduler.memory_dreaming_enabled:
-        dreaming_spec = _legacy_model_spec(
-            provider_id=scheduler.memory_dreaming_provider_id,
-            model=scheduler.memory_dreaming_model,
-        )
+        dreaming_spec = scheduler.memory_dreaming_model
         if dreaming_spec and not _model_spec_resolves(settings, dreaming_spec):
             _add_unresolved_model_issue(
                 report,
                 "scheduler.memory_dreaming_model",
                 dreaming_spec,
-            )
-        elif (
-            scheduler.memory_dreaming_provider_id
-            and not scheduler.memory_dreaming_model
-        ):
-            report.issues.append(
-                ValidationIssue(
-                    "warning",
-                    "scheduler.memory_dreaming_provider_id",
-                    "memory_dreaming_provider_id without memory_dreaming_model is "
-                    "ignored; use memory_dreaming_model: provider/model",
-                )
             )
 
     # --- channels ---

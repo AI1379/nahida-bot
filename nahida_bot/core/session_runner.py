@@ -311,15 +311,8 @@ class SessionRunner:
         explicit: str = "",
         default_spec: str = "",
         fallback: str = "disabled",
-        legacy_provider_id: str = "",
     ) -> tuple[Any, str | None, str] | None:
         """Resolve an internal task model from one model spec string."""
-        legacy_provider_id = legacy_provider_id.strip()
-        if not explicit and legacy_provider_id and self._providers is not None:
-            slot = self._providers.get(legacy_provider_id)
-            if slot is not None:
-                return slot, None, "legacy_provider"
-
         if self._model_router is not None:
             result = self._model_router.resolve_for_task(
                 task,
@@ -873,13 +866,9 @@ class SessionRunner:
 
         routed = self._resolve_task_model(
             "image_fallback",
-            explicit=_legacy_model_spec(
-                provider_id=self._multimodal_config.image_fallback_provider,
-                model=self._multimodal_config.image_fallback_model,
-            ),
+            explicit=self._multimodal_config.image_fallback_model,
             default_spec="vision",
             fallback="disabled",
-            legacy_provider_id=self._multimodal_config.image_fallback_provider,
         )
         if routed is None:
             return "Error: no fallback vision model configured"
@@ -2413,7 +2402,6 @@ class SessionRunner:
             logger.debug(
                 "session_runner.fallback_auto_describe",
                 image_count=min(len(image_attachments), 4),
-                fallback_provider=self._multimodal_config.image_fallback_provider,
                 fallback_model=self._multimodal_config.image_fallback_model,
             )
             for att in image_attachments[:4]:
@@ -2455,13 +2443,9 @@ class SessionRunner:
 
         routed = self._resolve_task_model(
             "image_fallback",
-            explicit=_legacy_model_spec(
-                provider_id=self._multimodal_config.image_fallback_provider,
-                model=self._multimodal_config.image_fallback_model,
-            ),
+            explicit=self._multimodal_config.image_fallback_model,
             default_spec="vision",
             fallback="disabled",
-            legacy_provider_id=self._multimodal_config.image_fallback_provider,
         )
         if routed is None:
             logger.debug(
@@ -3226,17 +3210,6 @@ def _visible_text(raw: str) -> str:
     text = strip_envelope_prefix(raw)
     result = detect_sentinel(text)
     return result.text if result.action is not None else text
-
-
-def _legacy_model_spec(*, provider_id: str = "", model: str = "") -> str:
-    """Build a model spec from legacy provider/model split fields."""
-    provider_id = provider_id.strip()
-    model = model.strip()
-    if provider_id and model:
-        if model.startswith(f"{provider_id}/"):
-            return model
-        return f"{provider_id}/{model}"
-    return model
 
 
 def _message_context_log_fields(message_context: Any | None) -> dict[str, object]:

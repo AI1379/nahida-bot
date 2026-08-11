@@ -98,9 +98,6 @@ class WebUIAuthService:
         configured_hash = str(getattr(self._config, "admin_password_hash", ""))
         if configured_hash.startswith(f"{_PBKDF2_SCHEME}$"):
             return _verify_pbkdf2_hash(password, configured_hash)
-        if configured_hash.startswith("sha256:"):
-            digest = hashlib.sha256(password.encode("utf-8")).hexdigest()
-            return hmac.compare_digest(configured_hash, f"sha256:{digest}")
 
         return False
 
