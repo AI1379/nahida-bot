@@ -44,6 +44,32 @@ class TestBootstrapNonInteractive:
         assert data["db_path"] == "./data/nahida.db"
         assert data["plugin_paths"] == ["./plugins"]
 
+    def test_capability_checklist_warns_about_missing_tags(
+        self, tmp_path: Path
+    ) -> None:
+        """Minimal bootstrap only carries [primary]; the checklist must surface
+        the optional subsystems (vision/embedding/memory) that lack a target."""
+        cfg = tmp_path / "config.yaml"
+        env = tmp_path / ".env"
+        result = _run(
+            [
+                "bootstrap",
+                "--non-interactive",
+                "--config-yaml",
+                str(cfg),
+                "--env",
+                str(env),
+            ]
+        )
+        assert result.exit_code == 0, result.output
+        out = result.output
+        # primary (chat) is satisfied
+        assert "对话" in out and "primary" in out
+        # optional subsystems flagged as missing their tag
+        assert "vision" in out
+        assert "embedding" in out
+        assert "memory" in out
+
     def test_channels_via_env(
         self,
         tmp_path: Path,

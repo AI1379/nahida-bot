@@ -232,6 +232,46 @@ def _pick_preset(
     return options[int(choice) - 1]
 
 
+# Capability → required model tag mapping. A bootstrapped minimal config only
+# carries [primary], so we surface which optional subsystems are left without a
+# target model and point the user at the config reference.
+_CAPABILITY_TAGS = [
+    ("对话", "primary", "基础聊天（已配置）"),
+    ("图片理解", "vision", "收发图片；可加到某个多模态模型上"),
+    ("记忆向量检索", "embedding", "memory 向量/混合检索，需显式开启 memory.embedding"),
+    ("记忆整理 dreaming", "memory", "更省的 dreaming 模型；不配则退回会话模型"),
+]
+
+
+def _collect_model_tags(merged: dict[str, Any]) -> set[str]:
+    tags: set[str] = set()
+    for entry in (merged.get("providers") or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        for model in entry.get("models") or []:
+            if isinstance(model, dict):
+                tags.update(model.get("tags") or [])
+    return tags
+
+
+def _print_capability_checklist(merged: dict[str, Any]) -> None:
+    tags = _collect_model_tags(merged)
+    console.print("[bold]能力检查（按 model tag）：[/bold]")
+    for label, tag, hint in _CAPABILITY_TAGS:
+        if tag in tags:
+            console.print(f"  [green]✓[/green] {label}  [dim]({tag})[/dim]")
+        elif tag == "primary":
+            console.print(f"  [green]✓[/green] {label}  [dim]({tag})[/dim]")
+        else:
+            console.print(
+                f"  [yellow]~[/yellow] {label}  [dim]缺 [cyan]{tag}[/cyan] tag — {hint}[/dim]"
+            )
+    console.print(
+        "[dim]以上「~」项不影响启动，只是对应能力会降级或关闭。"
+        "补 tag 见 [cyan]docs/guide/configuration.md[/cyan] 的 providers.models[].tags。[/dim]"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main command
 # ---------------------------------------------------------------------------
@@ -417,6 +457,8 @@ def bootstrap(
             "[yellow]No provider configured — run `nahida-bot bootstrap` again "
             "or edit config.yaml before starting the bot.[/yellow]"
         )
+    else:
+        _print_capability_checklist(merged)
     console.print(
         "Next: edit [cyan].env[/cyan] to fill in secrets, then "
         "[cyan]nahida-bot doctor[/cyan] to verify, and "
