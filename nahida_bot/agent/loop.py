@@ -61,6 +61,10 @@ class ToolExecutor(ABC):
         """Execute a tool call and return structured result."""
         raise NotImplementedError
 
+    def tool_requires_admin(self, tool_name: str) -> bool:
+        """Return whether a registered tool requires an administrator sender."""
+        return False
+
 
 @dataclass(slots=True, frozen=True)
 class ToolExecutionResult:
@@ -1255,6 +1259,9 @@ class AgentLoop:
                     tool_call.name,
                     sender_account_key,
                     tool_call.arguments,
+                    requires_admin=self.tool_executor.tool_requires_admin(
+                        tool_call.name
+                    ),
                 )
             except NotAuthorized:
                 logger.warning(

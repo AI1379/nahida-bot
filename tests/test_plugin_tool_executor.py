@@ -10,6 +10,7 @@ from nahida_bot.agent.context import ContextBudget, ContextBuilder
 from nahida_bot.agent.loop import AgentLoop
 from nahida_bot.agent.providers import ChatProvider, ProviderResponse, ToolCall
 from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
+from nahida_bot.identity.authorization import AuthorizationGate
 from nahida_bot.plugins.registry import ToolEntry, ToolRegistry
 from nahida_bot.plugins.tool_executor import RegistryToolExecutor
 
@@ -96,3 +97,72 @@ async def test_registry_tool_executor_reports_missing_tool() -> None:
 
     assert result.is_error is True
     assert result.error_code == "tool_not_registered"
+
+
+def test_registry_tool_executor_exposes_admin_requirement() -> None:
+    async def admin_action() -> str:
+        return "ok"
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolEntry(
+            name="admin_action",
+            description="Admin action",
+            parameters={"type": "object"},
+            handler=admin_action,
+            plugin_id="admin-plugin",
+            requires_admin=True,
+        )
+    )
+    executor = RegistryToolExecutor(registry)
+
+    assert executor.tool_requires_admin("admin_action") is True
+    assert executor.tool_requires_admin("missing") is False
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_enforces_registry_admin_requirement() -> None:
+    executed = False
+
+    async def admin_action() -> str:
+        nonlocal executed
+        executed = True
+        return "ok"
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolEntry(
+            name="plugin_admin_action",
+            description="Admin action",
+            parameters={"type": "object"},
+            handler=admin_action,
+            plugin_id="admin-plugin",
+            requires_admin=True,
+        )
+    )
+    executor = RegistryToolExecutor(registry)
+    loop = AgentLoop(
+        provider=_ToolCallingProvider(),
+        context_builder=ContextBuilder(
+            budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+            fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
+        ),
+        tool_executor=executor,
+        authorization=AuthorizationGate(
+            frozenset({"milky:admin"}),
+            enabled=True,
+        ),
+    )
+
+    result, _, phase = await loop._execute_tool_with_lifecycle(
+        ToolCall(
+            call_id="tc_admin",
+            name="plugin_admin_action",
+            arguments={},
+        ),
+        sender_account_key="milky:user",
+    )
+
+    assert result.error_code == "not_authorized"
+    assert phase == "not_authorized"
+    assert executed is False

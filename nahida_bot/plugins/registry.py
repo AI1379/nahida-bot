@@ -18,6 +18,7 @@ class ToolEntry:
     parameters: dict[str, Any]  # JSON Schema
     handler: Callable[..., Awaitable[str]]
     plugin_id: str
+    requires_admin: bool = False
 
 
 @dataclass(slots=True, frozen=True)

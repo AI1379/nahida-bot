@@ -337,7 +337,11 @@ class DecoratorPlugin(Plugin):
     async def _cmd_decorated(self, *, args, inbound, session_id):
         return "ok"
 
-    @register_tool("decorated_tool", description="Decorated")
+    @register_tool(
+        "decorated_tool",
+        description="Decorated",
+        requires_admin=True,
+    )
     async def _tool_decorated(self, **kwargs):
         return "ok"
 
@@ -353,7 +357,9 @@ class DecoratorPlugin(Plugin):
         await manager.enable("decorator_lifecycle")
 
         assert manager.command_registry.get("decorated") is not None
-        assert manager.tool_registry.get("decorated_tool") is not None
+        decorated_tool = manager.tool_registry.get("decorated_tool")
+        assert decorated_tool is not None
+        assert decorated_tool.requires_admin is True
         assert (
             len(manager.handler_registry.handlers_for_plugin("decorator_lifecycle"))
             == 1
@@ -366,7 +372,9 @@ class DecoratorPlugin(Plugin):
 
         await manager.enable("decorator_lifecycle")
         assert manager.command_registry.get("decorated") is not None
-        assert manager.tool_registry.get("decorated_tool") is not None
+        decorated_tool = manager.tool_registry.get("decorated_tool")
+        assert decorated_tool is not None
+        assert decorated_tool.requires_admin is True
         assert (
             len(manager.handler_registry.handlers_for_plugin("decorator_lifecycle"))
             == 1

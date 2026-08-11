@@ -89,16 +89,20 @@ class AuthorizationGate:
         tool_name: str,
         sender_account_key: str,
         arguments: dict[str, Any] | None = None,
+        *,
+        requires_admin: bool = False,
     ) -> None:
         """Raise :class:`NotAuthorized` if a privileged tool is called by a non-admin.
 
-        Non-privileged tools always pass. A disabled gate passes everything
-        (legacy behavior when identity is off). ``arguments`` is accepted for
-        call-site compatibility but no longer used (the one-use ticket subsystem
-        was removed; privileged calls now require an admin sender directly).
+        Non-privileged tools always pass unless the tool registry marks them as
+        admin-only. A disabled gate passes everything (legacy behavior when
+        identity is off). ``arguments`` is accepted for call-site compatibility
+        but no longer used (the one-use ticket subsystem was removed; privileged
+        calls now require an admin sender directly).
         """
         if not self._enabled:
             return
-        if not self.is_privileged(tool_name) or self.is_admin(sender_account_key):
+        privileged = self.is_privileged(tool_name) or requires_admin
+        if not privileged or self.is_admin(sender_account_key):
             return
         raise NotAuthorized(tool_name, sender_account_key)

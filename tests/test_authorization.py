@@ -53,6 +53,30 @@ def test_non_privileged_tools_pass_for_anyone() -> None:
     gate.authorize("memory_write", "milky:999")
 
 
+def test_registration_metadata_can_require_admin_for_new_tool() -> None:
+    gate = AuthorizationGate(frozenset({"milky:1"}), enabled=True)
+
+    with pytest.raises(NotAuthorized):
+        gate.authorize(
+            "plugin_admin_action",
+            "milky:2",
+            requires_admin=True,
+        )
+
+    gate.authorize(
+        "plugin_admin_action",
+        "milky:1",
+        requires_admin=True,
+    )
+
+
+def test_registration_metadata_cannot_downgrade_legacy_privileged_tool() -> None:
+    gate = AuthorizationGate(frozenset({"milky:1"}), enabled=True)
+
+    with pytest.raises(NotAuthorized):
+        gate.authorize("exec", "milky:2", requires_admin=False)
+
+
 def test_empty_sender_denied_when_enabled() -> None:
     gate = AuthorizationGate(frozenset({"milky:1"}), enabled=True)
     with pytest.raises(NotAuthorized):

@@ -34,7 +34,11 @@ class _DecoratedPlugin(Plugin):
     ) -> CommandResult:
         return CommandResult.text(f"{session_id}:{inbound.user_id}:{args}")
 
-    @register_tool("uppercase", description="Uppercase text")
+    @register_tool(
+        "uppercase",
+        description="Uppercase text",
+        requires_admin=True,
+    )
     async def _tool_uppercase(self, text: str) -> str:
         return text.upper()
 
@@ -87,6 +91,7 @@ async def test_load_plugin_for_test_records_decorated_handlers() -> None:
     assert "hello" in api.registered_commands
     assert "hi" in api.registered_commands
     assert "uppercase" in api.registered_tools
+    assert api.registered_tools["uppercase"]["requires_admin"] is True
     assert MessageReceived in api.registered_event_handlers
 
 

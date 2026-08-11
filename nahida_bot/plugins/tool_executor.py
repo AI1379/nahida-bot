@@ -41,3 +41,8 @@ class RegistryToolExecutor(ToolExecutor):
     def definitions(self) -> list[ToolDefinition]:
         """Return all currently registered tools as provider definitions."""
         return [tool_entry_to_definition(entry) for entry in self._registry.all()]
+
+    def tool_requires_admin(self, tool_name: str) -> bool:
+        """Expose registry authorization metadata to the agent loop."""
+        entry = self._registry.get(tool_name)
+        return bool(entry and entry.requires_admin)

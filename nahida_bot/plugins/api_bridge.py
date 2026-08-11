@@ -525,6 +525,8 @@ class RealBotAPI:
         description: str,
         parameters: dict[str, Any],
         handler: Callable[..., Awaitable[str]],
+        *,
+        requires_admin: bool = False,
     ) -> None:
         entry = ToolEntry(
             name=name,
@@ -532,6 +534,7 @@ class RealBotAPI:
             parameters=parameters,
             handler=handler,
             plugin_id=self._plugin_id,
+            requires_admin=requires_admin,
         )
         if name in self._registered_tools:
             if self._registrations_active:

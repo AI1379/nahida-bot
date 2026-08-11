@@ -3,29 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import mimetypes
-import os
-import re
-import socket
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 
-import httpx
 import structlog
-from markdownify import markdownify as md
-from readability import Document
 
-from nahida_bot.agent.memory.markdown import (
-    MEMORY_FILE,
-    MEMORY_SUMMARY_FILE,
-    MAX_TOOL_READ_CHARS,
-    filter_memory_text,
-    validate_memory_content,
+from nahida_bot.plugins.base import (
+    Attachment,
+    BotAPI,
+    InboundMessage,
+    OutboundMessage,
+    Plugin,
+    PluginManifest,
 )
-from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage, Plugin
+from nahida_bot.plugins.builtin.tools.history import HistoryTools
+from nahida_bot.plugins.builtin.tools.memory import MemoryTools
+from nahida_bot.plugins.builtin.tools.web_fetch import WebFetchTools
+from nahida_bot.plugins.builtin.tools.workspace import WorkspaceTools
+from nahida_bot.plugins.tooling import register_tool_definitions
 
 from nahida_bot.core.chat_address import (
     ChatAddress,
@@ -49,40 +46,9 @@ from nahida_bot.gateway.services.desktop_control import (
 _logger = structlog.get_logger(__name__)
 
 _MAX_EXEC_OUTPUT = 50_000
-_MAX_HISTORY_TOOL_OUTPUT = 200_000
-_MAX_HISTORY_TURN_CHARS = 8000
 _MAX_EXEC_TIMEOUT = 120
 _MAX_DESKTOP_TOOL_RESULT_CHARS = 70_000
-_WEB_FETCH_TIMEOUT = 30
-_WEB_FETCH_MAX_BODY = 5 * 1024 * 1024
-_PRIVATE_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-]
 _PLAN_PATH = ".agent/plan.json"
-# Strip media noise from cross-session turn content before showing the model
-# (base64 data URLs and long base64 blobs blow up context; see
-# cross-session-messaging.md §4.3).
-_BASE64_DATA_URL_RE = re.compile(r"data:[^;\"]+;base64,[A-Za-z0-9+/=]+")
-_LONG_BASE64_RE = re.compile(r"[A-Za-z0-9+/]{200,}={0,2}")
-
-
-def _parse_history_datetime(value: str) -> datetime | None:
-    text = value.strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"{value!r} is not ISO-8601") from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _desktop_tool_error(code: str, message: str) -> str:
@@ -131,6 +97,13 @@ def _bounded_desktop_tool_json(value: dict[str, Any]) -> str:
 
 class BuiltinCommandsPlugin(Plugin):
     """Registers core commands and built-in tools."""
+
+    def __init__(self, api: BotAPI, manifest: PluginManifest) -> None:
+        super().__init__(api, manifest)
+        self._history_tools = HistoryTools(api)
+        self._memory_tools = MemoryTools(api)
+        self._workspace_tools = WorkspaceTools(api)
+        self._web_fetch_tools = WebFetchTools()
 
     async def on_load(self) -> None:
         self._register_commands()
@@ -226,56 +199,7 @@ class BuiltinCommandsPlugin(Plugin):
         )
 
     def _register_workspace_tools(self) -> None:
-        self.api.register_tool(
-            "workspace_read",
-            "Read a UTF-8 text file from the current workspace. The path must "
-            "be relative to the workspace root; absolute paths are rejected. "
-            "The workspace root is the same directory exec uses as its default "
-            "working directory, so reuse paths produced by exec as relative "
-            "paths, not absolute ones.",
-            {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": (
-                            "Path relative to the workspace root. Absolute "
-                            "paths and paths that escape the workspace are "
-                            "rejected."
-                        ),
-                    }
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-            self._tool_workspace_read,
-        )
-        self.api.register_tool(
-            "workspace_write",
-            "Write UTF-8 text content to a file in the current workspace. The "
-            "path must be relative to the workspace root; absolute paths are "
-            "rejected. Same workspace root as workspace_read and exec.",
-            {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": (
-                            "Path relative to the workspace root. Absolute "
-                            "paths and paths that escape the workspace are "
-                            "rejected."
-                        ),
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Text content to write.",
-                    },
-                },
-                "required": ["path", "content"],
-                "additionalProperties": False,
-            },
-            self._tool_workspace_write,
-        )
+        register_tool_definitions(self.api, self._workspace_tools.definitions())
 
     def _register_attachment_tools(self) -> None:
         self.api.register_tool(
@@ -317,421 +241,15 @@ class BuiltinCommandsPlugin(Plugin):
         )
 
     def _register_memory_tools(self) -> None:
-        self.api.register_tool(
-            "memory_read",
-            "Search structured durable memory visible to the current chat, plus compatible "
-            "workspace Markdown notes. Use this before relying on remembered facts that "
-            "are not already in context. Returned structured entries include item ids for "
-            "memory_update or memory_archive.",
-            {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Optional text to search for in memory lines.",
-                    },
-                    "max_length": {
-                        "type": "integer",
-                        "description": "Maximum characters to return. Default 10000.",
-                    },
-                },
-                "required": [],
-                "additionalProperties": False,
-            },
-            self._tool_memory_read,
-        )
-        self.api.register_tool(
-            "memory_write",
-            "Create one structured durable memory. Use only for stable preferences, facts, "
-            "tasks, decisions, procedures, warnings, or explicit requests to remember. "
-            "Audience defaults to the current identity/chat; global is exceptional and "
-            "must apply intentionally across every chat and user.",
-            {
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "Concise memory text to append.",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Short descriptive title.",
-                    },
-                    "kind": {
-                        "type": "string",
-                        "enum": [
-                            "fact",
-                            "preference",
-                            "task",
-                            "decision",
-                            "procedure",
-                            "warning",
-                            "summary",
-                        ],
-                        "description": "Content type. Default fact.",
-                    },
-                    "audience": {
-                        "type": "string",
-                        "enum": ["current", "global"],
-                        "description": (
-                            "Visibility intent. Default current. Use global only for "
-                            "public bot-wide knowledge that applies across every chat. "
-                            "Summaries cannot be global."
-                        ),
-                    },
-                    "sensitivity": {
-                        "type": "string",
-                        "enum": ["public", "private", "secret_like"],
-                        "description": (
-                            "Sensitivity tag (Piece A4). Default public — soft, recallable "
-                            "according to scope. Use 'private' "
-                            "when the user asks to keep it between you ('别告诉别人'/'私下'), "
-                            "or 'secret_like' for content that must NEVER leave this chat "
-                            "(e.g. sensitive personal matters you promised to keep secret). "
-                            "Raw credentials (passwords/api keys/tokens) are NEVER stored — "
-                            "do not use this to save them. private/secret_like notes are "
-                            "stored only in the protected durable store."
-                        ),
-                    },
-                    "portable": {
-                        "type": "boolean",
-                        "description": (
-                            "Whether a public memory may be recalled outside its primary "
-                            "scope. Default true. Set false for current-chat-only social "
-                            "context such as a nickname used only in this group. This is "
-                            "independent from sensitivity."
-                        ),
-                    },
-                },
-                "required": ["content"],
-                "additionalProperties": False,
-            },
-            self._tool_memory_write,
-        )
-        can_reassign = bool(os.environ.get("NAHIDA_MEMORY_REASSIGN"))
-        update_description = (
-            "Replace a visible structured memory item when its content or scope is "
-            "outdated or incorrect. This creates a replacement with provenance and "
-            "archives the old item. Changing audience to 'global' requires the "
-            "sensitivity to be 'public'. Do not use merely to rephrase correct memory."
-        )
-        update_properties: dict[str, Any] = {
-            "item_id": {"type": "string"},
-            "content": {"type": "string"},
-            "title": {"type": "string"},
-            "kind": {
-                "type": "string",
-                "enum": [
-                    "fact",
-                    "preference",
-                    "task",
-                    "decision",
-                    "procedure",
-                    "warning",
-                    "summary",
-                ],
-            },
-            "audience": {
-                "type": "string",
-                "enum": ["current", "global"],
-                "description": (
-                    "Visibility intent. Default — keep existing audience. "
-                    "Use 'global' only to promote a public item to bot-wide "
-                    "visibility. Use 'current' to demote a global item back "
-                    "to the current chat scope."
-                ),
-            },
-            "sensitivity": {
-                "type": "string",
-                "enum": ["public", "private", "secret_like"],
-            },
-            "portable": {
-                "type": "boolean",
-                "description": (
-                    "Whether a public item may leave its primary scope during "
-                    "soft-scope recall. Omit to keep the existing value."
-                ),
-            },
-        }
-        if can_reassign:
-            update_description = (
-                "Replace a visible structured memory item when its content or scope is "
-                "outdated or incorrect. This creates a replacement with provenance and "
-                "archives the old item. Changing audience to 'global' requires the "
-                "sensitivity to be 'public'. You may also reassign an item to any "
-                "person, account, or chat scope via target_scope_type+target_scope_id. "
-                "Do not use merely to rephrase correct memory."
-            )
-            update_properties["target_scope_type"] = {
-                "type": "string",
-                "enum": ["chat", "person", "account"],
-                "description": (
-                    "Reassign to a specific scope type. Use with target_scope_id. "
-                    "Overrides audience when both are given."
-                ),
-            }
-            update_properties["target_scope_id"] = {
-                "type": "string",
-                "description": (
-                    "Target scope id (e.g. person id, chat key). "
-                    "Required when target_scope_type is set."
-                ),
-            }
-        self.api.register_tool(
-            "memory_update",
-            update_description,
-            {
-                "type": "object",
-                "properties": update_properties,
-                "required": ["item_id", "content"],
-                "additionalProperties": False,
-            },
-            self._tool_memory_update,
-        )
-        self.api.register_tool(
-            "memory_archive",
-            "Archive a visible structured memory item only when it is obsolete, wrong, "
-            "duplicated, or explicitly revoked. Read the item first and pass its item id.",
-            {
-                "type": "object",
-                "properties": {
-                    "item_id": {"type": "string"},
-                    "reason": {
-                        "type": "string",
-                        "description": "Short reason for the archival decision.",
-                    },
-                },
-                "required": ["item_id", "reason"],
-                "additionalProperties": False,
-            },
-            self._tool_memory_archive,
-        )
+        register_tool_definitions(self.api, self._memory_tools.definitions())
 
     # ── Cross-session history & chat lookup ────────────────
 
     def _register_history_tools(self) -> None:
-        self.api.register_tool(
-            "read_chat_history",
-            (
-                "Read a chronological slice of raw chat history when nearby automatic "
-                "context is not enough. Supports recent messages, time ranges, context "
-                "around one platform message_id, and text search with neighboring turns. "
-                "Omit chat_address/session_id to read the current chat. To continue a "
-                "discussion from another group/private chat, resolve the chat with "
-                "find_chat and pass its typed chat_address. Cross-chat results are private "
-                "recall: preserve provenance and do not reveal private messages to a "
-                "different audience without authorization. Use before_turn_id to page "
-                "backward through long history."
-            ),
-            {
-                "type": "object",
-                "properties": {
-                    "mode": {
-                        "type": "string",
-                        "enum": ["recent", "time_range", "around_message", "search"],
-                        "description": "How to select the history slice.",
-                    },
-                    "chat_address": {
-                        "type": "string",
-                        "description": "Optional typed chat target, e.g. milky:group:20001.",
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Optional exact derived session id instead of a whole chat.",
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Required for search mode.",
-                    },
-                    "message_id": {
-                        "type": "string",
-                        "description": "Required for around_message mode.",
-                    },
-                    "since": {
-                        "type": "string",
-                        "description": "Optional ISO-8601 inclusive start time.",
-                    },
-                    "until": {
-                        "type": "string",
-                        "description": "Optional ISO-8601 inclusive end time.",
-                    },
-                    "before_turn_id": {
-                        "type": "integer",
-                        "description": "Pagination cursor: return turns older than this turn id.",
-                    },
-                    "before": {
-                        "type": "integer",
-                        "description": "Neighbor turns before an anchor/search hit; default 5.",
-                    },
-                    "after": {
-                        "type": "integer",
-                        "description": "Neighbor turns after an anchor/search hit; default 5.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum recent turns or search hits; default 50, max 100.",
-                    },
-                },
-                "required": ["mode"],
-                "additionalProperties": False,
-            },
-            self._tool_read_chat_history,
-        )
-        self.api.register_tool(
-            "search_chat_history",
-            (
-                "Search ALL past conversations across every chat — both what users said "
-                "and what you said — to recall something from another session/chat. "
-                "Use sparingly, only when the user wants to remember something from "
-                "elsewhere (e.g. 'do you remember when we talked about X', or continuing "
-                "a thread from another group/private chat). Results may include private "
-                "1:1 content from other people — treat it as reference for your own "
-                "recall, and do not volunteer others' private messages in a group. "
-                "Narrow with chat_address (use find_chat to resolve a name) or role when "
-                "you can. This is a recall aid, not a way to surveil."
-            ),
-            {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Text to search for across all conversation history.",
-                    },
-                    "chat_address": {
-                        "type": "string",
-                        "description": (
-                            "Optional: narrow to one chat, e.g. 'milky:group:20001' "
-                            "(prefix match). Use find_chat to resolve a name to this."
-                        ),
-                    },
-                    "role": {
-                        "type": "string",
-                        "enum": ["user", "assistant", "system"],
-                        "description": "Optional: only return turns of this role.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max results. Default 20, capped at 50.",
-                    },
-                },
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-            self._tool_search_chat_history,
-        )
-        self.api.register_tool(
-            "find_chat",
-            (
-                "Fuzzy-search a chat by group/chat name to resolve its address "
-                "(e.g. '原神' -> milky:group:20001). Use before search_chat_history "
-                "(to narrow) or the message tool (to target) when the user refers to "
-                "a chat by name rather than id. Only knows chats the bot has seen."
-            ),
-            {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Chat/group name or substring to search.",
-                    },
-                    "platform": {
-                        "type": "string",
-                        "description": "Optional: limit to a platform (milky/telegram/onebot).",
-                    },
-                },
-                "required": ["name"],
-                "additionalProperties": False,
-            },
-            self._tool_find_chat,
-        )
+        register_tool_definitions(self.api, self._history_tools.definitions())
 
-    async def _tool_read_chat_history(
-        self,
-        mode: str = "recent",
-        chat_address: str = "",
-        session_id: str = "",
-        query: str = "",
-        message_id: str = "",
-        since: str = "",
-        until: str = "",
-        before_turn_id: int | None = None,
-        before: int = 5,
-        after: int = 5,
-        limit: int = 50,
-    ) -> str:
-        mode = mode.strip().lower() or "recent"
-        if mode not in {"recent", "time_range", "around_message", "search"}:
-            return f"Unsupported history mode: {mode}"
-        if mode == "around_message" and not message_id.strip():
-            return "around_message mode requires message_id."
-        if mode == "search" and not query.strip():
-            return "search mode requires query."
-
-        try:
-            since_dt = _parse_history_datetime(since)
-            until_dt = _parse_history_datetime(until)
-        except ValueError as exc:
-            return f"Invalid history time: {exc}"
-        if mode == "time_range" and since_dt is None and until_dt is None:
-            return "time_range mode requires since and/or until."
-
-        capped_limit = max(min(int(limit or 50), 100), 1)
-        capped_before = max(min(int(before), 20), 0)
-        capped_after = max(min(int(after), 20), 0)
-        cursor = int(before_turn_id) if before_turn_id is not None else None
-        rows = await self.api.read_chat_history(
-            mode=mode,
-            chat_address=chat_address.strip(),
-            session_id=session_id.strip(),
-            query=query.strip(),
-            message_id=message_id.strip(),
-            since=since_dt,
-            until=until_dt,
-            before_turn_id=cursor,
-            before=capped_before,
-            after=capped_after,
-            limit=capped_limit,
-        )
-        if not rows:
-            return "No chat history found for that selection."
-
-        target = chat_address.strip() or session_id.strip() or "current chat"
-        lines = [
-            f"Chat history ({mode}, {target}), {len(rows)} turns, chronological:",
-            f"Older-page cursor: before_turn_id={rows[0].get('turn_id', '')}",
-        ]
-        total_chars = sum(len(line) for line in lines)
-        for row in rows:
-            sender = str(row.get("sender_display_name") or row.get("sender_id") or "")
-            role = str(row.get("role") or "turn")
-            if not sender:
-                sender = "bot" if role == "assistant" else role
-            flags: list[str] = []
-            if row.get("observed_only"):
-                flags.append("observed")
-            trigger_kind = str(row.get("trigger_kind") or "")
-            if trigger_kind:
-                flags.append(trigger_kind)
-            message_ref = str(row.get("message_id") or "")
-            reply_to = str(row.get("reply_to") or "")
-            header = (
-                f"\n[{row.get('turn_id')}] {row.get('created_at', '')} "
-                f"[{sender}] [{row.get('source') or role}]"
-            )
-            if flags:
-                header += f" ({', '.join(flags)})"
-            if message_ref:
-                header += f" message_id={message_ref}"
-            if reply_to:
-                header += f" reply_to={reply_to}"
-            content = self._sanitize_turn_for_model(str(row.get("content") or ""))
-            block = f"{header}\n{content}"
-            if total_chars + len(block) > _MAX_HISTORY_TOOL_OUTPUT:
-                lines.append("\n[remaining history omitted due to tool output limit]")
-                break
-            lines.append(block)
-            total_chars += len(block)
-        return "\n".join(lines)
+    async def _tool_read_chat_history(self, **arguments: Any) -> str:
+        return await self._history_tools.read(**arguments)
 
     async def _tool_search_chat_history(
         self,
@@ -740,94 +258,26 @@ class BuiltinCommandsPlugin(Plugin):
         role: str = "",
         limit: int = 20,
     ) -> str:
-        _logger.debug(
-            "tool.search_chat_history",
+        return await self._history_tools.search(
             query=query,
             chat_address=chat_address,
             role=role,
+            limit=limit,
         )
-        capped_limit = max(min(int(limit or 20), 50), 1)
-        rows = await self.api.search_chat_history(
-            query,
-            chat_address=chat_address,
-            role=role,
-            limit=capped_limit,
-        )
-        if not rows:
-            return "No matching conversation history found."
-        # Annotate chat addresses with friendly names where observed.
-        addrs = [str(r.get("session_id", "")) for r in rows]
-        # session_id may carry a suffix; resolve on the base chat_key.
-        name_map = await self._resolve_chat_names(addrs)
-        lines = [f"Found {len(rows)} conversation matches (newest first):"]
-        for idx, row in enumerate(rows, start=1):
-            role_value = str(row.get("role", "") or "")
-            session_id = str(row.get("session_id", "") or "")
-            created = str(row.get("created_at", "") or "")
-            content = self._sanitize_turn_for_model(str(row.get("content", "") or ""))
-            label = name_map.get(self._base_chat_key(session_id)) or session_id or "?"
-            lines.append(
-                f"\n{idx}. [{role_value or 'turn'}] [{label}] {created}\n{content}"
-            )
-        return "\n".join(lines)
 
     async def _tool_find_chat(self, name: str, platform: str = "") -> str:
-        _logger.debug("tool.find_chat", name=name, platform=platform)
-        rows = await self.api.search_chats(name, platform=platform)
-        if not rows:
-            return "No chats matched that name."
-        lines = [f"Found {len(rows)} chats:"]
-        for idx, row in enumerate(rows, start=1):
-            chat_address = str(row.get("chat_address", "") or "")
-            display_name = str(row.get("display_name", "") or "")
-            plat = str(row.get("platform", "") or "")
-            last_seen = str(row.get("last_seen_at", "") or "")
-            lines.append(
-                f"{idx}. [{chat_address}] {display_name} ({plat}, last seen {last_seen})"
-            )
-        return "\n".join(lines)
+        return await self._history_tools.find_chat(name=name, platform=platform)
 
     @staticmethod
     def _base_chat_key(session_id: str) -> str:
-        """Strip any session suffix from a session id to get its chat_key.
-
-        Session ids are ``channel:type:id`` or ``channel:type:id:suffix``; the
-        chat_key is the first three colon-segments. Falls back to the full id.
-        """
-        if not session_id:
-            return ""
-        parts = session_id.split(":")
-        if len(parts) >= 3:
-            return ":".join(parts[:3])
-        return session_id
+        return HistoryTools.base_chat_key(session_id)
 
     async def _resolve_chat_names(self, session_ids: list[str]) -> dict[str, str]:
-        """Resolve chat_key -> display_name via the chat metadata store.
-
-        Returns an empty map if no store is wired (callers then show raw ids).
-        """
-        chat_keys = {self._base_chat_key(sid) for sid in session_ids if sid}
-        chat_keys.discard("")
-        if not chat_keys:
-            return {}
-        return await self.api.get_chat_names(list(chat_keys))
+        return await self._history_tools.resolve_chat_names(session_ids)
 
     @staticmethod
     def _sanitize_turn_for_model(content: str) -> str:
-        """Strip media/payload noise and truncate a turn for model consumption.
-
-        Replaces base64 data URLs and long base64 blobs with a placeholder, and
-        truncates to a safe length. Mirrors the filtering outlined in
-        cross-session-messaging.md §4.3 (sessions_history).
-        """
-        if not content:
-            return ""
-        sanitized = _BASE64_DATA_URL_RE.sub("[media omitted]", content)
-        sanitized = _LONG_BASE64_RE.sub("[data omitted]", sanitized)
-        max_chars = _MAX_HISTORY_TURN_CHARS
-        if len(sanitized) > max_chars:
-            sanitized = sanitized[:max_chars].rstrip() + "..."
-        return sanitized
+        return HistoryTools.sanitize_turn(content)
 
     # ── exec Tool ──────────────────────────────────────────
 
@@ -862,6 +312,7 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_exec,
+            requires_admin=True,
         )
 
     async def _tool_exec(
@@ -959,118 +410,23 @@ class BuiltinCommandsPlugin(Plugin):
     # ── web_fetch Tool ─────────────────────────────────────
 
     def _register_web_fetch_tool(self) -> None:
-        self.api.register_tool(
-            "web_fetch",
-            "Fetch a web page and return its main content as Markdown.",
-            {
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The URL to fetch (http or https).",
-                    },
-                    "max_length": {
-                        "type": "integer",
-                        "description": "Maximum content length in characters (default 10000).",
-                    },
-                },
-                "required": ["url"],
-                "additionalProperties": False,
-            },
-            self._tool_web_fetch,
-        )
+        register_tool_definitions(self.api, self._web_fetch_tools.definitions())
 
     @staticmethod
     def _is_private_ip(ip_str: str) -> bool:
-        try:
-            addr = ipaddress.ip_address(ip_str)
-            return any(addr in net for net in _PRIVATE_NETWORKS)
-        except ValueError:
-            return False
+        return WebFetchTools.is_disallowed_ip(ip_str)
 
     @staticmethod
     def _resolve_host(hostname: str) -> str | None:
-        try:
-            results = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
-            for _family, _type, _proto, _canon, sockaddr in results:
-                ip = sockaddr[0]
-                if isinstance(ip, str):
-                    return ip
-        except (socket.gaierror, OSError):
-            return None
-        return None
+        addresses = WebFetchTools.resolve_host(hostname)
+        return addresses[0] if addresses else None
 
     @staticmethod
     def _html_to_markdown(html_content: str) -> str:
-        try:
-            doc = Document(html_content)
-            summary_html = doc.summary()
-            return md(summary_html, strip=["img", "script", "style"])
-        except Exception:
-            return md(html_content, strip=["img", "script", "style"])
+        return WebFetchTools.html_to_markdown(html_content)
 
     async def _tool_web_fetch(self, url: str, max_length: int = 10000) -> str:
-        _logger.debug("tool.web_fetch", url=url, max_length=max_length)
-
-        # Validate scheme
-        if not url.startswith(("http://", "https://")):
-            return f"Error: URL must start with http:// or https://. Got: {url}"
-
-        # SSRF protection — resolve hostname and check against private ranges
-        from urllib.parse import urlparse
-
-        parsed = urlparse(url)
-        hostname = parsed.hostname
-        if not hostname:
-            return f"Error: Could not parse hostname from URL: {url}"
-
-        resolved_ip = self._resolve_host(hostname)
-        if resolved_ip is None:
-            return f"Error: Could not resolve hostname: {hostname}"
-
-        if self._is_private_ip(resolved_ip):
-            return (
-                f"Error: URL resolves to private/internal IP {resolved_ip}. "
-                f"Access denied (SSRF protection)."
-            )
-
-        try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                max_redirects=5,
-                timeout=httpx.Timeout(_WEB_FETCH_TIMEOUT),
-            ) as client:
-                response = await client.get(
-                    url,
-                    headers={"User-Agent": "NahidaBot/0.1 (web_fetch tool)"},
-                )
-                response.raise_for_status()
-
-                if len(response.content) > _WEB_FETCH_MAX_BODY:
-                    return (
-                        f"Error: Response body exceeds "
-                        f"{_WEB_FETCH_MAX_BODY // 1024 // 1024}MB limit."
-                    )
-
-                content_type = response.headers.get("content-type", "")
-
-                if "text/html" in content_type:
-                    result = self._html_to_markdown(response.text)
-                else:
-                    result = response.text
-
-                if len(result) > max_length:
-                    result = result[:max_length] + "\n... (content truncated)"
-
-                return result
-
-        except httpx.HTTPStatusError as e:
-            return f"HTTP error {e.response.status_code}: {e.response.reason_phrase}"
-        except httpx.RequestError as e:
-            return f"Request failed: {e}"
-        except Exception as e:
-            _logger.exception("tool.web_fetch.error", url=url)
-            return f"Failed to fetch URL: {e}"
+        return await self._web_fetch_tools.fetch(url, max_length)
 
     # ── plan Tool ──────────────────────────────────────────
 
@@ -1135,47 +491,14 @@ class BuiltinCommandsPlugin(Plugin):
         )
 
     async def _read_workspace_text_or_empty(self, path: str) -> str:
-        try:
-            return await self.api.workspace_read(path)
-        except FileNotFoundError:
-            return ""
-        except Exception as exc:
-            if exc.__class__.__name__ in {
-                "WorkspacePathError",
-                "WorkspaceNotFoundError",
-            }:
-                raise
-            return ""
+        return await self._memory_tools.read_workspace_text_or_empty(path)
 
     async def _tool_memory_read(
         self,
         query: str = "",
         max_length: int = 10000,
     ) -> str:
-        _logger.debug("tool.memory_read", query=query)
-        structured = await self.api.memory_search(query, limit=20)
-        paths = [
-            MEMORY_FILE,
-            MEMORY_SUMMARY_FILE,
-        ]
-        max_chars = min(max(max_length, 1), MAX_TOOL_READ_CHARS)
-        blocks: list[str] = []
-        if structured:
-            blocks.append(self._format_memory_refs(structured))
-        for path in paths:
-            raw = await self._read_workspace_text_or_empty(path)
-            filtered = filter_memory_text(raw, query).strip()
-            if not filtered:
-                continue
-            blocks.append(f"## {path}\n{filtered}")
-
-        if not blocks:
-            return "No matching durable memory found."
-
-        result = "\n\n".join(blocks)
-        if len(result) > max_chars:
-            result = result[:max_chars].rstrip() + "\n... (memory truncated)"
-        return result
+        return await self._memory_tools.read(query=query, max_length=max_length)
 
     async def _tool_memory_write(
         self,
@@ -1186,53 +509,14 @@ class BuiltinCommandsPlugin(Plugin):
         sensitivity: str = "public",
         portable: bool = True,
     ) -> str:
-        _logger.debug(
-            "tool.memory_write",
+        return await self._memory_tools.write(
+            content=content,
+            title=title,
             kind=kind,
             audience=audience,
             sensitivity=sensitivity,
             portable=portable,
         )
-        error = validate_memory_content(content)
-        if error is not None:
-            return error
-        valid_kinds = {
-            "fact",
-            "preference",
-            "task",
-            "decision",
-            "procedure",
-            "warning",
-            "summary",
-        }
-        if kind not in valid_kinds:
-            return "Error: invalid memory kind."
-        if audience not in {"current", "global"}:
-            return "Error: audience must be current or global."
-        if sensitivity not in {"public", "private", "secret_like"}:
-            return "Error: sensitivity must be one of: public, private, secret_like."
-        if kind == "summary":
-            audience = "current"
-        if sensitivity != "public":
-            audience = "current"
-        if not portable:
-            audience = "current"
-        try:
-            item_id = await self.api.memory_store(
-                title,
-                content,
-                metadata={
-                    "source": "memory_tool",
-                    "kind": kind,
-                    "audience": audience,
-                    "sensitivity": sensitivity,
-                    "portable": portable,
-                },
-            )
-        except Exception as exc:
-            _logger.warning("tool.memory_write_failed", error=str(exc))
-            return "Error: failed to store durable memory."
-        return f"Memory stored: {item_id or '(id unavailable)'}"
 
     async def _tool_memory_update(
         self,
@@ -1246,84 +530,20 @@ class BuiltinCommandsPlugin(Plugin):
         sensitivity: str = "",
         portable: bool | None = None,
     ) -> str:
-        error = validate_memory_content(content)
-        if error is not None:
-            return error
-        if kind and kind not in {
-            "fact",
-            "preference",
-            "task",
-            "decision",
-            "procedure",
-            "warning",
-            "summary",
-        }:
-            return "Error: invalid memory kind."
-        if audience and audience not in {"current", "global"}:
-            return "Error: audience must be current or global."
-        if target_scope_type and target_scope_type not in {
-            "chat",
-            "person",
-            "account",
-        }:
-            return "Error: target_scope_type must be chat, person, or account."
-        if (target_scope_type or target_scope_id) and not os.environ.get(
-            "NAHIDA_MEMORY_REASSIGN"
-        ):
-            return (
-                "Error: reassigning memory to an arbitrary scope requires "
-                "NAHIDA_MEMORY_REASSIGN=1."
-            )
-        if target_scope_type and not target_scope_id:
-            return "Error: target_scope_id is required when target_scope_type is set."
-        if sensitivity and sensitivity not in {
-            "public",
-            "private",
-            "secret_like",
-        }:
-            return "Error: invalid memory sensitivity."
-        metadata: dict[str, Any] = {"update_reason": "bot_memory_tool"}
-        if kind:
-            metadata["kind"] = kind
-        if audience:
-            metadata["audience"] = audience
-        if target_scope_type:
-            metadata["target_scope_type"] = target_scope_type
-            metadata["target_scope_id"] = target_scope_id
-        if sensitivity:
-            metadata["sensitivity"] = sensitivity
-        if portable is not None:
-            metadata["portable"] = portable
-        try:
-            replacement_id = await self.api.memory_update(
-                item_id,
-                content,
-                key=title,
-                metadata=metadata,
-            )
-        except Exception as exc:
-            _logger.warning(
-                "tool.memory_update_failed", item_id=item_id, error=str(exc)
-            )
-            return "Error: failed to update durable memory."
-        if replacement_id is None:
-            return (
-                "Error: memory item is missing, inaccessible, or could not be updated."
-            )
-        return f"Memory updated: {item_id} -> {replacement_id}"
+        return await self._memory_tools.update(
+            item_id=item_id,
+            content=content,
+            title=title,
+            kind=kind,
+            audience=audience,
+            target_scope_type=target_scope_type,
+            target_scope_id=target_scope_id,
+            sensitivity=sensitivity,
+            portable=portable,
+        )
 
     async def _tool_memory_archive(self, item_id: str, reason: str) -> str:
-        try:
-            archived = await self.api.memory_archive(item_id)
-        except Exception as exc:
-            _logger.warning(
-                "tool.memory_archive_failed", item_id=item_id, error=str(exc)
-            )
-            return "Error: failed to archive durable memory."
-        if not archived:
-            return "Error: memory item is missing, inaccessible, or already archived."
-        _logger.info("tool.memory_archived", item_id=item_id, reason=reason)
-        return f"Memory archived: {item_id}"
+        return await self._memory_tools.archive(item_id=item_id, reason=reason)
 
     @staticmethod
     def _format_plan(data: dict[str, Any]) -> str:
@@ -1898,6 +1118,7 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_desktop_exec,
+            requires_admin=True,
         )
         self.api.register_tool(
             "desktop_file_read",
@@ -1940,6 +1161,7 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_desktop_file_read,
+            requires_admin=True,
         )
 
     async def _tool_desktop_exec(
@@ -2072,6 +1294,7 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_message,
+            requires_admin=True,
         )
 
     async def _tool_message(
@@ -3064,28 +2287,7 @@ class BuiltinCommandsPlugin(Plugin):
 
     @staticmethod
     def _format_memory_refs(results: list[Any]) -> str:
-        if not results:
-            return "No memory found."
-        lines = ["Memory results:"]
-        for idx, item in enumerate(results, start=1):
-            title = ""
-            scope_type = ""
-            audience = ""
-            sensitivity = ""
-            metadata = getattr(item, "metadata", None)
-            if isinstance(metadata, dict):
-                title_value = metadata.get("title")
-                if isinstance(title_value, str) and title_value:
-                    title = f"{title_value}: "
-                scope_type = str(metadata.get("scope_type", "") or "")
-                audience = str(metadata.get("audience", "") or "")
-                sensitivity = str(metadata.get("sensitivity", "") or "")
-            key = getattr(item, "key", "")
-            content = getattr(item, "content", "")
-            scope_parts = [p for p in (scope_type, audience, sensitivity) if p]
-            scope_label = f" ({', '.join(scope_parts)})" if scope_parts else ""
-            lines.append(f"{idx}. [{key}]{scope_label} {title}{str(content)[:500]}")
-        return "\n".join(lines)
+        return MemoryTools.format_refs(results)
 
     async def _cmd_agents(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -3219,6 +2421,7 @@ class BuiltinCommandsPlugin(Plugin):
                 "additionalProperties": False,
             },
             self._tool_identity_manage,
+            requires_admin=True,
         )
 
     async def _tool_identity_manage(
@@ -3240,38 +2443,11 @@ class BuiltinCommandsPlugin(Plugin):
 
     async def _tool_workspace_read(self, path: str) -> str:
         """Read a text file from the current workspace."""
-        from nahida_bot.workspace.exceptions import (
-            WorkspaceError,
-            WorkspacePathError,
-        )
-
-        try:
-            return await self.api.workspace_read(path)
-        except WorkspacePathError as exc:
-            return (
-                f"Error: {exc}. workspace_read only accepts paths relative to "
-                "the workspace root."
-            )
-        except WorkspaceError as exc:
-            return f"Error reading workspace file: {exc}"
+        return await self._workspace_tools.read(path)
 
     async def _tool_workspace_write(self, path: str, content: str) -> str:
         """Write a text file to the current workspace."""
-        from nahida_bot.workspace.exceptions import (
-            WorkspaceError,
-            WorkspacePathError,
-        )
-
-        try:
-            await self.api.workspace_write(path, content)
-        except WorkspacePathError as exc:
-            return (
-                f"Error: {exc}. workspace_write only accepts paths relative to "
-                "the workspace root."
-            )
-        except WorkspaceError as exc:
-            return f"Error writing workspace file: {exc}"
-        return f"Written workspace file: {path}"
+        return await self._workspace_tools.write(path, content)
 
     async def _tool_send_local_attachment(
         self,

@@ -51,6 +51,7 @@ def register_tool(
     *,
     description: str = "",
     parameters: dict[str, Any] | None = None,
+    requires_admin: bool = False,
 ) -> Callable:
     """Decorator to mark a method as an LLM-callable tool handler.
 
@@ -71,6 +72,7 @@ def register_tool(
             "description": description,
             "parameters": parameters
             or {"type": "object", "properties": {}, "required": []},
+            "requires_admin": requires_admin,
         }
         return func
 
@@ -134,6 +136,7 @@ class _ToolDeclaration:
     method_name: str
     description: str
     parameters: dict[str, Any]
+    requires_admin: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -156,6 +159,7 @@ class _BoundToolRegistration:
     handler: Callable[..., Awaitable[str]]
     description: str
     parameters: dict[str, Any]
+    requires_admin: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -188,6 +192,7 @@ def bind_decorated_registrations(plugin: Any, api: BotAPI | None = None) -> None
             tool.description,
             tool.parameters,
             tool.handler,
+            requires_admin=tool.requires_admin,
         )
     for subscription in plugin._iter_decorated_subscriptions():
         target_api.subscribe(subscription.event_type, subscription.handler)
@@ -292,6 +297,7 @@ class Plugin(ABC):
                                 {"type": "object", "properties": {}, "required": []},
                             )
                         ),
+                        requires_admin=bool(tool_meta.get("requires_admin", False)),
                     )
                     tool_name_by_method[attr_name] = tool_name
 
@@ -346,6 +352,7 @@ class Plugin(ABC):
                     handler=handler,
                     description=declaration.description,
                     parameters=dict(declaration.parameters),
+                    requires_admin=declaration.requires_admin,
                 )
             )
         return tuple(registrations)

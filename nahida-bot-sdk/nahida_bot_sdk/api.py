@@ -293,8 +293,10 @@ class BotAPI(Protocol):
         description: str,
         parameters: dict[str, Any],  # JSON Schema
         handler: Callable[..., Awaitable[str]],
+        *,
+        requires_admin: bool = False,
     ) -> None:
-        """Register a tool that the LLM can call during conversations."""
+        """Register an LLM tool, optionally requiring an administrator sender."""
         ...
 
     def unregister_tool(self, name: str) -> bool:

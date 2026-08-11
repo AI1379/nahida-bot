@@ -105,12 +105,19 @@ class _FakeAPI:
         return None
 
     def register_tool(
-        self, name: str, description: str, parameters: dict[str, Any], handler: Any
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        handler: Any,
+        *,
+        requires_admin: bool = False,
     ) -> None:
         self.tools[name] = {
             "description": description,
             "parameters": parameters,
             "handler": handler,
+            "requires_admin": requires_admin,
         }
 
     def register_channel(self, channel: Any) -> None:
@@ -296,6 +303,17 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert api.tools["memory_read"]["parameters"]["required"] == []
     assert api.tools["memory_write"]["parameters"]["required"] == ["content"]
     assert api.tools["read_chat_history"]["parameters"]["required"] == ["mode"]
+    for tool_name in {
+        "exec",
+        "message",
+        "workspace_write",
+        "desktop_exec",
+        "desktop_file_read",
+        "identity_manage",
+    }:
+        assert api.tools[tool_name]["requires_admin"] is True
+    assert api.tools["workspace_read"]["requires_admin"] is False
+    assert api.tools["memory_write"]["requires_admin"] is False
     create_params = api.tools["cron_create"]["parameters"]
     update_params = api.tools["cron_update"]["parameters"]
     assert create_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
