@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 from uuid import uuid4
 
 MEMORY_FILE = "MEMORY.md"
 MEMORY_SUMMARY_FILE = "memory_summary.md"
-DAILY_MEMORY_DIR = "memory"
-DAILY_MEMORY_GLOB = "%Y-%m-%d.md"
-DEFAULT_DAILY_DAYS = 3
 MAX_CONTEXT_MEMORY_CHARS = 6000
 MAX_TOOL_READ_CHARS = 20000
 GENERATED_MEMORY_START = "<!-- nahida-memory-generated:start -->"
@@ -43,24 +40,6 @@ class MarkdownMemoryEntry:
     content: str
 
 
-def daily_memory_path(day: datetime | None = None) -> str:
-    """Return the relative daily memory path for a datetime."""
-    value = day or datetime.now()
-    return f"{DAILY_MEMORY_DIR}/{value.strftime(DAILY_MEMORY_GLOB)}"
-
-
-def recent_daily_memory_paths(
-    *, days: int = DEFAULT_DAILY_DAYS, now: datetime | None = None
-) -> list[str]:
-    """Return relative paths for recent daily memory notes, newest first."""
-    count = max(days, 0)
-    base = now or datetime.now()
-    return [
-        f"{DAILY_MEMORY_DIR}/{(base - timedelta(days=offset)).strftime(DAILY_MEMORY_GLOB)}"
-        for offset in range(count)
-    ]
-
-
 def stable_memory_id(prefix: str = "mem") -> str:
     """Create a short stable-looking memory id for markdown bullets."""
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
@@ -79,38 +58,6 @@ def validate_memory_content(content: str) -> str | None:
     if "http" in lower and ("token=" in lower or "signature=" in lower):
         return "Error: memory content appears to contain a signed or temporary URL."
     return None
-
-
-def append_daily_memory(
-    existing: str, content: str, *, entry_id: str | None = None
-) -> str:
-    """Append a memory bullet to a daily note."""
-    memory_id = entry_id or stable_memory_id("mem")
-    body = existing.rstrip()
-    if not body:
-        body = f"# {datetime.now().strftime('%Y-%m-%d')}\n\n## Notes"
-    if "## Notes" not in body:
-        body = f"{body}\n\n## Notes"
-    return f"{body}\n\n- [{memory_id}] {content.strip()}\n"
-
-
-def append_long_term_memory(
-    existing: str,
-    content: str,
-    *,
-    section: str = "Notes",
-    entry_id: str | None = None,
-) -> str:
-    """Append a memory bullet to MEMORY.md under a section."""
-    memory_id = entry_id or stable_memory_id("mem")
-    section_title = section.strip().lstrip("#").strip() or "Notes"
-    body = existing.rstrip()
-    if not body:
-        body = "# Memory\n\n<!-- User-editable long-term workspace memory. -->"
-    heading = f"## {section_title}"
-    if heading not in body:
-        body = f"{body}\n\n{heading}"
-    return f"{body}\n\n- [{memory_id}] {content.strip()}\n"
 
 
 def build_memory_summary(items: Sequence[object], *, max_items: int = 20) -> str:
@@ -264,14 +211,12 @@ def has_memory_signal(content: str) -> bool:
 def load_workspace_markdown_memory(
     workspace_root: Path,
     *,
-    daily_days: int = DEFAULT_DAILY_DAYS,
     max_chars: int = MAX_CONTEXT_MEMORY_CHARS,
 ) -> list[MarkdownMemoryEntry]:
     """Load bounded markdown memory entries from a workspace."""
     candidates = [
         MEMORY_FILE,
         MEMORY_SUMMARY_FILE,
-        *recent_daily_memory_paths(days=daily_days),
     ]
     entries: list[MarkdownMemoryEntry] = []
     total = 0

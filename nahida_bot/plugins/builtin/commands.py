@@ -23,7 +23,6 @@ from nahida_bot.agent.memory.markdown import (
     MEMORY_SUMMARY_FILE,
     MAX_TOOL_READ_CHARS,
     filter_memory_text,
-    recent_daily_memory_paths,
     validate_memory_content,
 )
 from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage, Plugin
@@ -335,10 +334,6 @@ class BuiltinCommandsPlugin(Plugin):
                     "query": {
                         "type": "string",
                         "description": "Optional text to search for in memory lines.",
-                    },
-                    "days": {
-                        "type": "integer",
-                        "description": "Number of recent daily memory files to include. Default 3.",
                     },
                     "max_length": {
                         "type": "integer",
@@ -1160,15 +1155,13 @@ class BuiltinCommandsPlugin(Plugin):
     async def _tool_memory_read(
         self,
         query: str = "",
-        days: int = 3,
         max_length: int = 10000,
     ) -> str:
-        _logger.debug("tool.memory_read", query=query, days=days)
+        _logger.debug("tool.memory_read", query=query)
         structured = await self.api.memory_search(query, limit=20)
         paths = [
             MEMORY_FILE,
             MEMORY_SUMMARY_FILE,
-            *recent_daily_memory_paths(days=max(days, 0)),
         ]
         max_chars = min(max(max_length, 1), MAX_TOOL_READ_CHARS)
         blocks: list[str] = []

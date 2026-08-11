@@ -885,7 +885,7 @@ async def test_memory_tools_use_structured_store() -> None:
     assert metadata["audience"] == "current"
     assert metadata["portable"] is True
 
-    read_result = await plugin._tool_memory_read(query="nahida", days=1)
+    read_result = await plugin._tool_memory_read(query="nahida")
     assert "Memory results:" in read_result
     assert "mem_1" in read_result
 
