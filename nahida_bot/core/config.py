@@ -344,17 +344,6 @@ class IdentityPersonSeed(BaseModel):
     accounts: list[IdentityAccountSeed] = Field(default_factory=list)
 
 
-class IdentityAuthorizationTicketsConfig(BaseModel):
-    """Short-lived, one-use delegation tickets approved by declared admins."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    enabled: bool = False
-    challenge_ttl_seconds: int = Field(default=600, ge=60, le=3600)
-    grant_ttl_seconds: int = Field(default=300, ge=30, le=900)
-    max_grant_ttl_seconds: int = Field(default=900, ge=30, le=3600)
-
-
 class IdentityConfig(BaseModel):
     """Person/account identity system (issue #7).
 
@@ -372,9 +361,6 @@ class IdentityConfig(BaseModel):
     # management). Decoupled from ``people``: declaring someone a Person does NOT
     # make them an admin. Only consulted when ``enabled`` is true.
     admins: list[IdentityAccountSeed] = Field(default_factory=list)
-    authorization_tickets: IdentityAuthorizationTicketsConfig = (
-        IdentityAuthorizationTicketsConfig()
-    )
 
 
 class RouterConfigModel(BaseModel):

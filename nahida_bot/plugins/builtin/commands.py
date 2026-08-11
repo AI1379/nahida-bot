@@ -224,11 +224,6 @@ class BuiltinCommandsPlugin(Plugin):
             self._cmd_identity,
             description="Show your resolved identity (/identity whoami)",
         )
-        self.api.register_command(
-            "auth",
-            self._cmd_auth,
-            description="Request or approve a one-use privileged action",
-        )
 
     def _register_workspace_tools(self) -> None:
         self.api.register_tool(
@@ -2757,91 +2752,6 @@ class BuiltinCommandsPlugin(Plugin):
             "  /identity create <person_id> [display name]\n"
             "  /identity link <account_key> <person_id>\n"
             "  /identity unlink <account_key>"
-        )
-
-    async def _cmd_auth(
-        self, *, args: str, inbound: InboundMessage, session_id: str
-    ) -> str:
-        """Manage exact-argument, one-use authorization tickets."""
-        action, _, remainder = args.strip().partition(" ")
-        action = action.lower()
-        try:
-            if action == "request":
-                tool_name, separator, raw_arguments = remainder.strip().partition(" ")
-                if not separator or not tool_name or not raw_arguments.strip():
-                    return self._auth_usage()
-                arguments = json.loads(raw_arguments)
-                if not isinstance(arguments, dict):
-                    return "Authorization request arguments must be a JSON object."
-                result = await self.api.authorization_ticket(
-                    "request",
-                    tool_name=tool_name,
-                    arguments=arguments,
-                )
-                return (
-                    f"Authorization challenge {result.get('ticket_id')} created.\n"
-                    f"Tool: {result.get('tool_name')}\n"
-                    f"Exact arguments: {json.dumps(arguments, ensure_ascii=False, sort_keys=True)}\n"
-                    f"Expires: {result.get('expires_at')}\n"
-                    "A declared admin must approve this challenge with "
-                    f"/auth approve {result.get('ticket_id')}"
-                )
-            if action == "approve":
-                parts = remainder.split()
-                if not parts:
-                    return self._auth_usage()
-                ttl_seconds = int(parts[1]) if len(parts) > 1 else None
-                result = await self.api.authorization_ticket(
-                    "approve",
-                    ticket_id=parts[0],
-                    ttl_seconds=ttl_seconds,
-                )
-                return (
-                    f"Approved one use of {result.get('tool_name')} for "
-                    f"{result.get('requester_account_key')}.\n"
-                    f"Grant: {result.get('ticket_id')}\n"
-                    f"Expires: {result.get('expires_at')}"
-                )
-            if action == "revoke":
-                ticket_id = remainder.strip()
-                if not ticket_id:
-                    return self._auth_usage()
-                result = await self.api.authorization_ticket(
-                    "revoke", ticket_id=ticket_id
-                )
-                return (
-                    f"Revoked {ticket_id}."
-                    if result.get("revoked")
-                    else f"No active challenge or grant named {ticket_id}."
-                )
-            if action in {"status", "list"}:
-                result = await self.api.authorization_ticket("status")
-                rows = []
-                for item in result.get("challenges", []):
-                    rows.append(
-                        f"pending {item.get('ticket_id')}: {item.get('requester_account_key')} "
-                        f"-> {item.get('tool_name')} (expires {item.get('expires_at')})"
-                    )
-                for item in result.get("grants", []):
-                    rows.append(
-                        f"approved {item.get('ticket_id')}: {item.get('requester_account_key')} "
-                        f"-> {item.get('tool_name')} (expires {item.get('expires_at')})"
-                    )
-                return "\n".join(rows) if rows else "No active authorization tickets."
-        except (ValueError, TypeError) as exc:
-            return f"Authorization operation failed: {exc}"
-        except Exception as exc:
-            return f"Authorization operation denied: {exc}"
-        return self._auth_usage()
-
-    @staticmethod
-    def _auth_usage() -> str:
-        return (
-            "Usage:\n"
-            "  /auth request <tool> <exact JSON arguments>\n"
-            "  /auth approve <challenge_id> [ttl_seconds]\n"
-            "  /auth revoke <challenge_or_grant_id>\n"
-            "  /auth status"
         )
 
     @staticmethod

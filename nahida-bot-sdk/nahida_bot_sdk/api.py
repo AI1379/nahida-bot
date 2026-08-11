@@ -209,18 +209,6 @@ class BotAPI(Protocol):
         """Run one authorized identity-management operation."""
         ...
 
-    async def authorization_ticket(
-        self,
-        action: str,
-        *,
-        tool_name: str = "",
-        arguments: dict[str, Any] | None = None,
-        ticket_id: str = "",
-        ttl_seconds: int | None = None,
-    ) -> dict[str, Any]:
-        """Request, approve, inspect, or revoke a temporary authorization."""
-        ...
-
     async def record_session_event(
         self,
         session_id: str,

@@ -9,12 +9,10 @@ docs/design/memory-soft-scope-and-authz.md §4.4).
 from __future__ import annotations
 
 import pathlib
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from nahida_bot.identity.authorization import (
-    DELEGABLE_TOOLS,
     PRIVILEGED_TOOLS,
     AuthorizationGate,
     NotAuthorized,
@@ -30,8 +28,6 @@ def test_privileged_set_covers_system_tools_not_memory_write() -> None:
     assert "workspace_write" in PRIVILEGED_TOOLS
     assert "desktop_exec" in PRIVILEGED_TOOLS
     assert "desktop_file_read" in PRIVILEGED_TOOLS
-    assert "desktop_exec" in DELEGABLE_TOOLS
-    assert "desktop_file_read" in DELEGABLE_TOOLS
     # memory_write is memory-side (writes own scope); gating it would couple
     # authorization into memory, violating §2.5.
     assert "memory_write" not in PRIVILEGED_TOOLS
@@ -76,112 +72,6 @@ def test_enabled_with_empty_admins_is_fail_closed() -> None:
     gate = AuthorizationGate(frozenset(), enabled=True)
     with pytest.raises(NotAuthorized):
         gate.authorize("exec", "milky:1")
-
-
-# --- one-use delegated authorization ---------------------------------------
-
-
-def _ticket_gate() -> AuthorizationGate:
-    return AuthorizationGate(
-        frozenset({"milky:user:admin"}),
-        enabled=True,
-        tickets_enabled=True,
-        challenge_ttl_seconds=600,
-        grant_ttl_seconds=300,
-    )
-
-
-def test_admin_can_approve_one_exact_tool_invocation() -> None:
-    gate = _ticket_gate()
-    arguments = {"command": "git status --short", "workdir": "."}
-    challenge = gate.request_ticket(
-        requester_account_key="milky:user:guest",
-        tool_name="exec",
-        arguments=arguments,
-    )
-    grant = gate.approve_ticket(
-        challenge_id=challenge.challenge_id,
-        admin_account_key="milky:user:admin",
-    )
-
-    assert grant.requester_account_key == "milky:user:guest"
-    gate.authorize("exec", "milky:user:guest", arguments)
-    with pytest.raises(NotAuthorized):
-        gate.authorize("exec", "milky:user:guest", arguments)
-
-
-def test_ticket_rejects_wrong_account_or_arguments_without_consuming() -> None:
-    gate = _ticket_gate()
-    approved = {"path": "approved.txt", "content": "ok"}
-    challenge = gate.request_ticket(
-        requester_account_key="milky:user:guest",
-        tool_name="workspace_write",
-        arguments=approved,
-    )
-    gate.approve_ticket(
-        challenge_id=challenge.challenge_id,
-        admin_account_key="milky:user:admin",
-    )
-
-    with pytest.raises(NotAuthorized):
-        gate.authorize("workspace_write", "milky:user:other", approved)
-    with pytest.raises(NotAuthorized):
-        gate.authorize(
-            "workspace_write",
-            "milky:user:guest",
-            {"path": "approved.txt", "content": "changed"},
-        )
-    gate.authorize("workspace_write", "milky:user:guest", approved)
-
-
-def test_identity_management_cannot_be_delegated() -> None:
-    gate = _ticket_gate()
-    with pytest.raises(ValueError, match="cannot be delegated"):
-        gate.request_ticket(
-            requester_account_key="milky:user:guest",
-            tool_name="identity_manage",
-            arguments={"action": "link"},
-        )
-
-
-def test_only_declared_admin_can_approve_or_revoke() -> None:
-    gate = _ticket_gate()
-    challenge = gate.request_ticket(
-        requester_account_key="milky:user:guest",
-        tool_name="exec",
-        arguments={"command": "pwd"},
-    )
-    with pytest.raises(NotAuthorized):
-        gate.approve_ticket(
-            challenge_id=challenge.challenge_id,
-            admin_account_key="milky:user:other",
-        )
-    with pytest.raises(NotAuthorized):
-        gate.revoke_ticket(
-            challenge.challenge_id,
-            admin_account_key="milky:user:other",
-        )
-    assert gate.revoke_ticket(
-        challenge.challenge_id,
-        admin_account_key="milky:user:admin",
-    )
-
-
-def test_expired_challenge_cannot_be_approved() -> None:
-    gate = _ticket_gate()
-    now = datetime(2026, 7, 13, tzinfo=UTC)
-    challenge = gate.request_ticket(
-        requester_account_key="milky:user:guest",
-        tool_name="exec",
-        arguments={"command": "pwd"},
-        now=now,
-    )
-    with pytest.raises(ValueError, match="not found or expired"):
-        gate.approve_ticket(
-            challenge_id=challenge.challenge_id,
-            admin_account_key="milky:user:admin",
-            now=now + timedelta(minutes=11),
-        )
 
 
 # --- auth/memory decoupling invariant ---------------------------------------

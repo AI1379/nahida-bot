@@ -52,31 +52,6 @@ if TYPE_CHECKING:
 _PROVIDER_ALLOWED_PHASES = frozenset({"pre-agent"})
 
 
-def _authorization_challenge_dict(item: Any) -> dict[str, Any]:
-    return {
-        "ticket_id": item.challenge_id,
-        "requester_account_key": item.requester_account_key,
-        "tool_name": item.tool_name,
-        "arguments": item.arguments,
-        "argument_fingerprint": item.argument_fingerprint,
-        "created_at": item.created_at.isoformat(),
-        "expires_at": item.expires_at.isoformat(),
-    }
-
-
-def _authorization_grant_dict(item: Any) -> dict[str, Any]:
-    return {
-        "ticket_id": item.grant_id,
-        "challenge_id": item.challenge_id,
-        "requester_account_key": item.requester_account_key,
-        "tool_name": item.tool_name,
-        "argument_fingerprint": item.argument_fingerprint,
-        "approved_by": item.approved_by,
-        "created_at": item.created_at.isoformat(),
-        "expires_at": item.expires_at.isoformat(),
-    }
-
-
 @dataclass(slots=True)
 class _EventRegistration:
     event_type: type
@@ -312,73 +287,6 @@ class RealBotAPI:
             changed = await manager.unlink_account(account_key=account_key, actor=actor)
             return {"account_key": account_key, "unlinked": changed}
         raise ValueError(f"unknown identity action: {action}")
-
-    async def authorization_ticket(
-        self,
-        action: str,
-        *,
-        tool_name: str = "",
-        arguments: dict[str, Any] | None = None,
-        ticket_id: str = "",
-        ttl_seconds: int | None = None,
-    ) -> dict[str, Any]:
-        """Manage account-bound, one-use grants through the app auth gate."""
-        from nahida_bot.core.context import current_session
-
-        app = self._event_bus.context.app
-        gate = getattr(app, "_authorization_gate", None)
-        if gate is None:
-            raise RuntimeError("authorization gate is not initialized")
-        ctx = current_session.get()
-        actor = ctx.actor_account_key if ctx is not None else ""
-
-        if action == "request":
-            challenge = gate.request_ticket(
-                requester_account_key=actor,
-                tool_name=tool_name,
-                arguments=arguments or {},
-            )
-            self._logger.info(
-                "authorization.ticket_requested",
-                challenge_id=challenge.challenge_id,
-                requester_account_key=actor,
-                tool_name=tool_name,
-                argument_fingerprint=challenge.argument_fingerprint,
-            )
-            return _authorization_challenge_dict(challenge)
-        if action == "approve":
-            grant = gate.approve_ticket(
-                challenge_id=ticket_id,
-                admin_account_key=actor,
-                ttl_seconds=ttl_seconds,
-            )
-            self._logger.info(
-                "authorization.ticket_approved",
-                grant_id=grant.grant_id,
-                challenge_id=grant.challenge_id,
-                requester_account_key=grant.requester_account_key,
-                approved_by=actor,
-                tool_name=grant.tool_name,
-            )
-            return _authorization_grant_dict(grant)
-        if action == "revoke":
-            revoked = gate.revoke_ticket(ticket_id, admin_account_key=actor)
-            self._logger.info(
-                "authorization.ticket_revoked",
-                ticket_id=ticket_id,
-                actor_account_key=actor,
-                revoked=revoked,
-            )
-            return {"ticket_id": ticket_id, "revoked": revoked}
-        if action == "status":
-            state = gate.ticket_status(actor_account_key=actor)
-            return {
-                "challenges": [
-                    _authorization_challenge_dict(item) for item in state["challenges"]
-                ],
-                "grants": [_authorization_grant_dict(item) for item in state["grants"]],
-            }
-        raise ValueError(f"unknown authorization ticket action: {action!r}")
 
     async def send_message(
         self, target: str, message: OutboundMessage, *, channel: str = ""

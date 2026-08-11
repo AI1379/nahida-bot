@@ -408,11 +408,6 @@ agent_runtime:
 #   admins:
 #     - channel: "milky"
 #       platform_account_id: "123456789"
-#   authorization_tickets:
-#     enabled: false                    # explicit opt-in
-#     challenge_ttl_seconds: 600        # requester waits for admin approval
-#     grant_ttl_seconds: 300            # approved one-use grant lifetime
-#     max_grant_ttl_seconds: 900        # hard cap for /auth approve TTL
 
 # ── Processes（附属进程监管 / SSH 隧道 / frpc / sidecar）──
 # 把需要在服务端常驻的附属进程统一交给 bot 核心监管。

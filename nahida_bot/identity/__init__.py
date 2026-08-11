@@ -7,9 +7,7 @@ and WebUI (Phase 4), and self-service linking (Phase 5) build on this base.
 """
 
 from nahida_bot.identity.authorization import (
-    AuthorizationChallenge,
     AuthorizationGate,
-    AuthorizationGrant,
     NotAuthorized,
 )
 from nahida_bot.identity.management import IdentityManagementError, IdentityManager
@@ -37,8 +35,6 @@ __all__ = [
     "AccountKey",
     "AccountLink",
     "AuthorizationGate",
-    "AuthorizationChallenge",
-    "AuthorizationGrant",
     "IdentityResolution",
     "IdentityAuditEntry",
     "IdentityManagementError",
