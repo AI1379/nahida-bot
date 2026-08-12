@@ -326,7 +326,7 @@ function resetToDefaults() {
       </fieldset>
 
       <div class="connection-panel__grid">
-        <label class="connection-panel__field">
+        <label class="connection-panel__field connection-panel__field--wide">
           <span>Gateway WebSocket URL</span>
           <input
             v-model="draft.gatewayWsUrl"
@@ -360,7 +360,7 @@ function resetToDefaults() {
           />
         </label>
 
-        <label class="connection-panel__field">
+        <label class="connection-panel__field connection-panel__field--wide">
           <span>Default session ID (optional)</span>
           <input
             v-model="draft.defaultSessionId"
@@ -374,6 +374,7 @@ function resetToDefaults() {
 
       <div class="connection-panel__actions">
         <button
+          class="settings-button settings-button--primary"
           type="button"
           :disabled="!canSave"
           @click="saveDraft"
@@ -381,17 +382,25 @@ function resetToDefaults() {
           Save
         </button>
         <button
+          class="settings-button settings-button--quiet"
           type="button"
           :disabled="!isDirty"
           @click="revertDraft"
         >
           Revert
         </button>
-        <button type="button" @click="resetToDefaults">Reset</button>
+        <button
+          class="settings-button settings-button--quiet"
+          type="button"
+          @click="resetToDefaults"
+        >
+          Reset
+        </button>
         <span class="connection-panel__spacer" />
         <template v-if="draft.mode === 'gateway'">
           <button
             v-if="store.connected"
+            class="settings-button"
             type="button"
             @click="disconnect"
           >
@@ -399,6 +408,7 @@ function resetToDefaults() {
           </button>
           <button
             v-else
+            class="settings-button settings-button--primary"
             type="button"
             :disabled="!canConnect"
             @click="connect"
@@ -406,6 +416,7 @@ function resetToDefaults() {
             Connect
           </button>
           <button
+            class="settings-button"
             type="button"
             :disabled="!canConnect || !store.connected"
             :title="!store.connected ? 'Connect first to apply new settings' : ''"
@@ -417,12 +428,20 @@ function resetToDefaults() {
         <template v-else>
           <button
             v-if="store.connected"
+            class="settings-button"
             type="button"
             @click="disconnect"
           >
             Disconnect
           </button>
-          <button v-else type="button" @click="useMock">Start Mock</button>
+          <button
+            v-else
+            class="settings-button settings-button--primary"
+            type="button"
+            @click="useMock"
+          >
+            Start Mock
+          </button>
         </template>
       </div>
 
@@ -494,6 +513,7 @@ function resetToDefaults() {
 
         <div class="connection-panel__actions">
           <button
+            class="settings-button settings-button--primary"
             type="button"
             :disabled="!canPairDevice"
             @click="pairDevice"
@@ -547,6 +567,7 @@ function resetToDefaults() {
           </label>
           <div class="connection-panel__actions">
             <button
+              class="settings-button"
               type="button"
               :disabled="!canExchangeManualPairing"
               @click="exchangeManualPairing"

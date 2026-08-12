@@ -172,7 +172,11 @@ onBeforeUnmount(() => {
           rows="3"
           lang="zh-CN"
         ></textarea>
-        <button type="submit" :disabled="!previewText.trim() || !voices.length">
+        <button
+          class="settings-button settings-button--primary"
+          type="submit"
+          :disabled="!previewText.trim() || !voices.length"
+        >
           Preview Voice
         </button>
       </form>

@@ -149,10 +149,20 @@ function setMode(event: Event) {
         <code>actorAccountKey</code> for both capabilities.
       </p>
       <div class="remote-control__actions">
-        <button type="button" :disabled="!available || loading || saving" @click="savePolicy">
+        <button
+          class="settings-button settings-button--primary"
+          type="button"
+          :disabled="!available || loading || saving"
+          @click="savePolicy"
+        >
           {{ saving ? "Saving..." : "Save policy" }}
         </button>
-        <button type="button" :disabled="!available || loading || saving" @click="loadPolicy">
+        <button
+          class="settings-button settings-button--quiet"
+          type="button"
+          :disabled="!available || loading || saving"
+          @click="loadPolicy"
+        >
           Reload
         </button>
       </div>
