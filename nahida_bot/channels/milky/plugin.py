@@ -23,6 +23,10 @@ from nahida_bot.channels.milky.client import (
 )
 from nahida_bot.channels.milky.config import MilkyPluginConfig, parse_milky_config
 from nahida_bot.channels.milky.event_stream import MilkyEventStream
+from nahida_bot.channels.milky.file_upload import (
+    MilkyFileUpload,
+    render_file_upload_text as _render_file_upload_text,
+)
 from nahida_bot.channels.milky.message_converter import MilkyMessageConverter
 from nahida_bot.channels.milky.segment_converter import (
     MilkyOutboundConverter,
@@ -50,11 +54,6 @@ from nahida_bot.core.events import (
     PokePayload,
 )
 from nahida_bot.core.group_policy import GroupInteractionPolicy
-from nahida_bot.core.message_context import (
-    chat_context_from_values,
-    context_from_inbound,
-    sender_context_from_values,
-)
 from nahida_bot.core.router import MessageRouter
 from nahida_bot.agent.media.store import MediaPayload, MediaStore
 from nahida_bot.plugins.base import (
@@ -868,132 +867,14 @@ class MilkyPlugin(Plugin):
         *,
         raw_event: dict[str, Any],
     ) -> InboundMessage | None:
-        is_group = event_type == "group_file_upload"
-        group = as_mapping(data.get("group"))
-        user = as_mapping(data.get("user"))
-        file_data = as_mapping(data.get("file"))
-
-        group_id = coerce_str(
-            data.get("group_id")
-            or data.get("peer_id")
-            or group.get("group_id")
-            or group.get("id")
-        )
-        user_id = coerce_str(
-            data.get("user_id")
-            or data.get("sender_id")
-            or user.get("user_id")
-            or user.get("id")
-        )
-        chat_id = group_id if is_group else user_id
-        if not chat_id:
+        upload = MilkyFileUpload.from_event(event_type, data)
+        if upload is None:
             return None
-
-        file_id = coerce_str(
-            data.get("file_id") or file_data.get("file_id") or file_data.get("id")
-        )
-        file_name = coerce_str(
-            data.get("file_name")
-            or data.get("name")
-            or file_data.get("file_name")
-            or file_data.get("name")
-        )
-        file_size = coerce_int(
-            data.get("file_size")
-            or data.get("size")
-            or file_data.get("file_size")
-            or file_data.get("size")
-        )
-        file_hash = coerce_str(
-            data.get("file_hash")
-            or data.get("hash")
-            or file_data.get("file_hash")
-            or file_data.get("hash")
-        )
-        download_url = coerce_str(
-            data.get("download_url")
-            or data.get("url")
-            or file_data.get("download_url")
-            or file_data.get("url")
-        )
-        if not file_id and not file_name:
-            return None
-
-        attachment_metadata: dict[str, object] = {
-            "file_name": file_name,
-            "file_size": file_size,
-            "file_hash": file_hash,
-            "milky_event_type": event_type,
-        }
-        if is_group:
-            attachment_metadata["group_id"] = group_id
-        else:
-            attachment_metadata["user_id"] = user_id
-
-        text = _render_file_upload_text(
-            file_name=file_name,
-            file_id=file_id,
-            file_size=file_size,
-        )
-        # TODO(milky-media-cache): If file content access is needed, use
-        # get_private_file_download_url/get_group_file_download_url to download
-        # the file into config.media_download_dir before the URL expires, then
-        # persist the stable local path on this attachment.
-        attachment = InboundAttachment(
-            kind="file",
-            platform_id=file_id,
-            url=download_url,
-            file_size=file_size,
-            metadata=attachment_metadata,
-        )
-        sender_context = sender_context_from_values(
-            display_name=coerce_str(
-                data.get("sender_name")
-                or data.get("nickname")
-                or user.get("nickname")
-                or user.get("name")
-            ),
-            platform_user_id=user_id or "0",
-            is_self=self._self_id > 0 and user_id == str(self._self_id),
-        )
-        chat_context = chat_context_from_values(
-            platform="milky",
-            chat_type="group" if is_group else "private",
-            platform_chat_id=chat_id,
-            display_name=coerce_str(
-                data.get("group_name")
-                or data.get("peer_name")
-                or data.get("friend_name")
-                or group.get("group_name")
-                or group.get("name")
-                or user.get("nickname")
-                or user.get("name")
-            ),
-        )
-
-        inbound = InboundMessage(
-            message_id=coerce_str(
-                data.get("message_seq")
-                or data.get("event_id")
-                or data.get("time")
-                or file_id
-                or file_name
-            ),
-            platform="milky",
-            chat_id=chat_id,
-            user_id=user_id or "0",
-            text=text,
+        return upload.to_inbound(
             raw_event=raw_event,
-            is_group=is_group,
-            timestamp=float(coerce_int(data.get("time"))),
             command_prefix=self.config.command_prefix,
-            attachments=[attachment],
-            sender_context=sender_context,
-            chat_context=chat_context,
-            mentions_bot=False,
-            mentioned_user_ids=(),
+            self_id=self._self_id,
         )
-        return replace(inbound, message_context=context_from_inbound(inbound))
 
     async def send_message(self, target: str, message: OutboundMessage) -> str:
         """Send one normalized outbound message to Milky.
@@ -1890,16 +1771,6 @@ def _outbound_log_fields(message: OutboundMessage) -> dict[str, object]:
         "reply_to": message.reply_to,
         "extra_keys": sorted(message.extra.keys()),
     }
-
-
-def _render_file_upload_text(
-    *,
-    file_name: str,
-    file_id: str,
-    file_size: int,
-) -> str:
-    name = file_name or "<unknown>"
-    return f"[File: name={name}, file_id={file_id}, size={file_size}]"
 
 
 def _is_disallowed_ip(addr: object) -> bool:

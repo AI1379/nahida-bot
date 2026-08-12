@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -39,6 +40,24 @@ _PARAMETERS: dict[str, Any] = {
 }
 
 HostResolver = Callable[[str], tuple[str, ...]]
+
+
+@dataclass(slots=True, frozen=True)
+class _PublicTarget:
+    """A URL whose DNS answers have been validated for direct connection."""
+
+    original_url: str
+    hostname: str
+    host_header: str
+    addresses: tuple[str, ...]
+    port: int | None
+
+    def request_url(self, address: str) -> str:
+        """Replace the hostname with one already-validated address."""
+        parsed = urlparse(self.original_url)
+        ip_host = f"[{address}]" if ":" in address else address
+        netloc = f"{ip_host}:{self.port}" if self.port is not None else ip_host
+        return parsed._replace(netloc=netloc).geturl()
 
 
 class WebFetchTools:
@@ -106,12 +125,18 @@ class WebFetchTools:
         except Exception:
             return md(html_content, strip=["img", "script", "style"])
 
-    def _validate_url(self, url: str) -> str | None:
+    def _validate_url(self, url: str) -> _PublicTarget | str:
         parsed = urlparse(url)
         if parsed.scheme.lower() not in {"http", "https"}:
             return f"Error: URL must start with http:// or https://. Got: {url}"
         if not parsed.hostname:
             return f"Error: Could not parse hostname from URL: {url}"
+        if parsed.username is not None or parsed.password is not None:
+            return "Error: URL credentials are not supported."
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            return f"Error: Invalid URL port: {exc}"
 
         addresses = self._resolver(parsed.hostname)
         if not addresses:
@@ -122,7 +147,43 @@ class WebFetchTools:
                 f"Error: URL resolves to private/internal IP {blocked}. "
                 "Access denied (SSRF protection)."
             )
-        return None
+        hostname = parsed.hostname.encode("idna").decode("ascii")
+        header_host = f"[{hostname}]" if ":" in hostname else hostname
+        host_header = f"{header_host}:{port}" if port is not None else header_host
+        return _PublicTarget(
+            original_url=url,
+            hostname=hostname,
+            host_header=host_header,
+            addresses=addresses,
+            port=port,
+        )
+
+    @staticmethod
+    async def _request_pinned_target(
+        client: httpx.AsyncClient,
+        target: _PublicTarget,
+    ) -> httpx.Response:
+        """Connect only to validated addresses while preserving Host and TLS SNI."""
+        last_error: httpx.RequestError | None = None
+        for address in target.addresses:
+            try:
+                return await client.get(
+                    target.request_url(address),
+                    headers={
+                        "User-Agent": _USER_AGENT,
+                        "Host": target.host_header,
+                        # The pool is keyed by the pinned IP origin. Closing each
+                        # hop prevents a redirect to another hostname on the same
+                        # IP from reusing a TLS connection with the previous SNI.
+                        "Connection": "close",
+                    },
+                    extensions={"sni_hostname": target.hostname},
+                )
+            except httpx.RequestError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise httpx.ConnectError("No validated address was available")
 
     async def _request_public_response(
         self,
@@ -131,24 +192,21 @@ class WebFetchTools:
     ) -> httpx.Response | str:
         current_url = url
         for redirect_count in range(_MAX_REDIRECTS + 1):
-            validation_error = self._validate_url(current_url)
-            if validation_error is not None:
-                return validation_error
+            target = self._validate_url(current_url)
+            if isinstance(target, str):
+                return target
 
-            response = await client.get(
-                current_url,
-                headers={"User-Agent": _USER_AGENT},
-            )
+            response = await self._request_pinned_target(client, target)
             if not response.is_redirect:
                 response.raise_for_status()
                 return response
 
             location = response.headers.get("location")
             if not location:
-                response.raise_for_status()
+                return "Request failed: redirect response omitted the Location header"
             if redirect_count >= _MAX_REDIRECTS:
                 return f"Request failed: exceeded {_MAX_REDIRECTS} redirects"
-            current_url = urljoin(str(response.url), location)
+            current_url = urljoin(current_url, location)
         return "Request failed: no response received"
 
     def _render_response(self, response: httpx.Response, max_length: int) -> str:

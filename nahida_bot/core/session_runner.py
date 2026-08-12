@@ -155,6 +155,50 @@ class ActiveRun:
     started_at: float = field(default_factory=time.monotonic)
 
 
+@dataclass(slots=True, frozen=True)
+class _SessionRunRequest:
+    """Normalized inputs for one session-scoped agent run."""
+
+    user_message: str
+    session_id: str
+    system_prompt: str
+    workspace_id: str | None
+    workspace_root: Any
+    attachments: tuple[InboundAttachment, ...]
+    message_context: MessageContext | None
+    provider_id: str | None
+    model: str | None
+    reasoning_effort: str | None
+    tool_allowlist: AbstractSet[str] | None
+    tool_filter: AbstractSet[str] | None
+    source_tag: str
+    agent_instruction: str
+    trigger_kind: str
+    ephemeral_context: str
+    attention_episode_id: str
+    stop_event: asyncio.Event | None
+
+
+@dataclass(slots=True)
+class _SessionRunRuntime:
+    """Prepared route, context, and invocation state for one session run."""
+
+    request: _SessionRunRequest
+    provider_slot: Any = None
+    selected_model: str | None = None
+    effective_model: str = ""
+    capabilities: Any = None
+    context_builder: Any = None
+    recent_records: list[Any] = field(default_factory=list)
+    history: list[ContextMessage] = field(default_factory=list)
+    tools: list[ToolDefinition] = field(default_factory=list)
+    visible_user_message: str = ""
+    user_parts: list[ContextPart] = field(default_factory=list)
+    image_descriptions: dict[str, str] = field(default_factory=dict)
+    workspace_root: Any = None
+    run_kwargs: dict[str, Any] = field(default_factory=dict)
+
+
 class ActiveRunTracker:
     """Per-session active agent run tracking with cancellation support."""
 
@@ -473,6 +517,30 @@ class SessionRunner:
             raise RuntimeError("SessionRunner has no agent loop configured")
 
         attachments_for_turn = tuple(attachments or [])
+        request = _SessionRunRequest(
+            user_message=user_message,
+            session_id=session_id,
+            system_prompt=system_prompt,
+            workspace_id=workspace_id,
+            workspace_root=workspace_root,
+            attachments=attachments_for_turn,
+            message_context=message_context,
+            provider_id=provider_id,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            tool_allowlist=tool_allowlist,
+            tool_filter=tool_filter,
+            source_tag=source_tag,
+            agent_instruction=agent_instruction,
+            trigger_kind=trigger_kind,
+            ephemeral_context=ephemeral_context,
+            attention_episode_id=attention_episode_id,
+            stop_event=stop_event,
+        )
+        runtime = _SessionRunRuntime(
+            request=request,
+            workspace_root=workspace_root,
+        )
         attachments_token = current_attachments.set(attachments_for_turn)
         runtime_settings = await self._load_runtime_settings(session_id)
         runtime_settings = self._apply_runtime_overrides(
@@ -481,334 +549,386 @@ class SessionRunner:
         )
         runtime_token = current_runtime_settings.set(runtime_settings)
         done_event: LoopEvent | None = None
-        logger.debug(
-            "session_runner.run_stream_start",
-            session_id=session_id,
-            source_tag=source_tag,
-            workspace_id=workspace_id or "",
-            provider_id=provider_id or "",
-            requested_model=model or "",
-            reasoning_effort=reasoning_effort or "",
-            user_message_chars=len(user_message),
-            user_message_preview=user_message[:120],
-            attachment_count=len(attachments_for_turn),
-            attachment_kinds=[att.kind for att in attachments_for_turn],
-            stop_requested=stop_event.is_set() if stop_event is not None else False,
-            **_message_context_log_fields(message_context),
-        )
+        self._log_session_run_start(request)
         try:
-            provider_slot, selected_model = await self._resolve_provider(
-                session_id,
-                provider_id=provider_id,
-                model=model,
-            )
-            effective_model = (
-                selected_model or provider_slot.default_model
-                if provider_slot is not None
-                else ""
-            )
-            capabilities = (
-                provider_slot.resolve_capabilities(effective_model)
-                if provider_slot is not None
-                else None
-            )
-            context_builder = None
-            context_budget = None
-            if provider_slot is not None:
-                context_builder = self._context_builder_for_model(
-                    provider_slot.provider,
-                    capabilities,
-                )
-                context_budget = context_builder.budget
-            image_count = sum(1 for att in attachments_for_turn if att.kind == "image")
-            logger.debug(
-                "session_runner.route_selected",
-                session_id=session_id,
-                provider_id=provider_slot.id if provider_slot is not None else "",
-                selected_model=selected_model or "",
-                effective_model=effective_model,
-                image_input=bool(capabilities and capabilities.image_input),
-                context_max_tokens=(
-                    context_budget.max_tokens if context_budget is not None else None
-                ),
-                context_reserved_tokens=(
-                    context_budget.reserved_tokens
-                    if context_budget is not None
-                    else None
-                ),
-                context_soft_token_limit=(
-                    context_budget.soft_token_limit
-                    if context_budget is not None
-                    else None
-                ),
-                image_count=image_count,
-                attachment_count=len(attachments_for_turn),
-                image_fallback_mode=(
-                    self._multimodal_config.image_fallback_mode
-                    if self._multimodal_config is not None
-                    else ""
-                ),
-                media_context_policy=(
-                    self._multimodal_config.media_context_policy
-                    if self._multimodal_config is not None
-                    else ""
-                ),
-            )
+            await self._resolve_session_route(runtime)
+            await self._prepare_session_history(runtime)
+            await self._prepare_session_inputs(runtime)
+            self._build_agent_run_kwargs(runtime)
+            self._log_agent_run_start(runtime)
 
-            recent_records = await self._load_recent_records(
-                session_id,
-                workspace_id=workspace_id,
-                include_observed_surplus=bool(
-                    message_context is not None and message_context.chat_type == "group"
-                ),
-            )
-            history = await self._build_history_context(
-                session_id,
-                recent_records,
-                capabilities=capabilities,
-                message_context=message_context,
-            )
-            reply_anchor = self._load_reply_anchor_context(
-                recent_records,
-                current_message_context=message_context,
-            )
-            if reply_anchor is not None and not _history_contains_message_id(
-                history,
-                message_context.reply_to_message_id if message_context else "",
-            ):
-                history.append(reply_anchor)
-            explicit_ephemeral_context = ephemeral_context.strip()
-            if explicit_ephemeral_context:
-                # ConversationJoiner selected this exact batch for the current
-                # run. Keep it as an untrusted, ephemeral history message so it
-                # is visible to the model but never becomes the active user
-                # turn, a persisted memory turn, or transcript replay input.
-                # The generic observed loader is intentionally skipped here:
-                # its rows overlap the selected batch and previously caused the
-                # same group messages to appear multiple times in one prompt.
-                history.append(
-                    ContextMessage(
-                        role="user",
-                        source="proactive_attention_frame",
-                        content=explicit_ephemeral_context,
-                        metadata={
-                            "ephemeral": True,
-                            "selected_by": "conversation_joiner",
-                            "attention_episode_id": attention_episode_id,
-                        },
-                    )
-                )
-                logger.debug(
-                    "session_runner.proactive_attention_frame_added",
-                    session_id=session_id,
-                    attention_frame_chars=len(explicit_ephemeral_context),
-                    history_count=len(history),
-                )
-            else:
-                observed_context = await self._load_observed_group_context(
-                    session_id,
-                    records=recent_records,
-                    current_message_context=message_context,
-                    current_message_content=user_message,
-                )
-                if observed_context is not None:
-                    history.append(observed_context)
-                    logger.debug(
-                        "session_runner.group_observed_context_added",
-                        session_id=session_id,
-                        observed_context_chars=len(observed_context.content),
-                        history_count=len(history),
-                    )
-            relevant_memory = await self._load_relevant_memory(
-                user_message, session_id=session_id
-            )
-            relevant_kb = await self._load_relevant_knowledge(
-                user_message, session_id=session_id
-            )
-            if relevant_memory:
-                history = [relevant_memory, *history]
-                logger.debug(
-                    "session_runner.relevant_memory_added",
-                    session_id=session_id,
-                    relevant_memory_chars=len(relevant_memory.content),
-                    history_count=len(history),
-                )
-            if relevant_kb:
-                history = [relevant_kb, *history]
-                logger.debug(
-                    "session_runner.relevant_kb_added",
-                    session_id=session_id,
-                    relevant_kb_chars=len(relevant_kb.content),
-                    history_count=len(history),
-                )
-            effective_tool_filter = set(tool_filter or ())
-            if source_tag != "cron_trigger":
-                effective_tool_filter.add("desktop_announce")
-            tools = self._collect_tools(
-                effective_tool_filter,
-                tool_allowlist=tool_allowlist,
-                capabilities=capabilities,
-            )
-            logger.debug(
-                "session_runner.tools_collected",
-                session_id=session_id,
-                provider_id=provider_slot.id if provider_slot is not None else "",
-                effective_model=effective_model,
-                tool_count=len(tools),
-                tool_names=[tool.name for tool in tools[:50]],
-                tool_denylist=sorted(effective_tool_filter),
-                tool_allowlist=(
-                    sorted(tool_allowlist) if tool_allowlist is not None else []
-                ),
-                model_tool_calling=(
-                    capabilities.tool_calling if capabilities is not None else None
-                ),
-            )
-            visible_user_message = render_message_with_context(
-                user_message,
-                message_context,
-                role="user",
-            )
-            user_parts = await self._build_user_parts(
-                visible_user_message,
-                list(attachments_for_turn),
-                capabilities=capabilities,
-            )
-            persisted_image_descriptions: dict[str, str] = {}
-            if (
-                not bool(capabilities and capabilities.image_input)
-                and self._multimodal_config is not None
-                and self._multimodal_config.image_fallback_mode == "auto"
-            ):
-                persisted_image_descriptions = self._image_descriptions_from_parts(
-                    user_parts
-                )
-            logger.debug(
-                "session_runner.context_inputs_ready",
-                session_id=session_id,
-                history_count=len(history),
-                history_roles=[m.role for m in history],
-                tool_count=len(tools),
-                user_part_types=[part.type for part in user_parts],
-                workspace_id=workspace_id or "",
-            )
-
-            if workspace_root is None and workspace_id is not None:
-                workspace_root = self._resolve_workspace_root(workspace_id)
-
-            effective_system_prompt = self._build_system_prompt(
-                system_prompt,
-                message_context,
-                source_tag=source_tag,
-                agent_instruction=agent_instruction,
-                enable_silent_reply=self._enable_silent_reply,
-            )
-
-            run_kwargs: dict[str, Any] = {
-                "user_message": visible_user_message,
-                "system_prompt": effective_system_prompt,
-                "history_messages": history,
-            }
-            if user_parts:
-                run_kwargs["user_parts"] = user_parts
-            if workspace_root is not None:
-                run_kwargs["workspace_root"] = workspace_root
-            if tools:
-                run_kwargs["tools"] = tools
-            if provider_slot is not None:
-                run_kwargs["provider"] = provider_slot.provider
-                run_kwargs["context_builder"] = (
-                    context_builder or provider_slot.context_builder
-                )
-                run_kwargs["provider_id"] = provider_slot.id
-            if selected_model is not None:
-                run_kwargs["model"] = selected_model
-            # Canonical-ledger run context (Phase 1): always passed; the loop
-            # ignores them when the ledger store is the no-op default.
-            run_kwargs["session_id"] = session_id
-            run_kwargs["workspace_id"] = workspace_id
-            # Phase 0.5 telemetry: run origin (trigger source) for Phase 3
-            # contract-source sizing. Reuses source_tag ("user_input" /
-            # "cron_trigger" / "proactive_join" / ...).
-            run_kwargs["origin"] = source_tag
-            # Phase A authorization: thread the sender's account_key into the
-            # loop so the AuthorizationGate can check privileged tools at the
-            # dispatch boundary. Empty when identity is off / unresolved — the
-            # gate is then a no-op (identity off) or denies privileged tools.
-            sess_ctx = current_session.get()
-            run_kwargs["sender_account_key"] = (
-                sess_ctx.sender_account_key if sess_ctx is not None else ""
-            )
-
-            logger.debug(
-                "session_runner.agent_run_start",
-                session_id=session_id,
-                provider_id=provider_slot.id if provider_slot is not None else "",
-                selected_model=selected_model or "",
-                effective_model=effective_model,
-                history_count=len(history),
-                tool_count=len(tools),
-                user_part_count=len(user_parts),
-            )
-            if stop_event is not None:
-                run_kwargs["stop_event"] = stop_event
-
-            async for event in self._agent.run_stream(**run_kwargs):
-                logger.debug(
-                    "session_runner.agent_event",
-                    session_id=session_id,
-                    event_type=event.type,
-                    trace_id=event.trace_id or "",
-                    text_chars=len(event.text or ""),
-                    reasoning_chars=len(event.reasoning or ""),
-                    final_response_chars=len(event.final_response or ""),
-                    tool_names=list(event.tool_names or []),
-                    steps=event.steps,
-                    error=event.error or "",
-                )
+            async for event in self._agent.run_stream(**runtime.run_kwargs):
+                self._log_session_agent_event(request.session_id, event)
                 if event.type == "done":
                     done_event = event
                 yield event
-            logger.debug(
-                "session_runner.agent_run_done",
-                session_id=session_id,
-                trace_id=done_event.trace_id if done_event is not None else None,
-                provider_id=provider_slot.id if provider_slot is not None else "",
-                effective_model=effective_model,
-                steps=done_event.steps if done_event is not None else 0,
-                error=done_event.error if done_event is not None else None,
-                response_chars=(
-                    len(done_event.final_response or "")
-                    if done_event is not None
-                    else 0
-                ),
-                assistant_message_count=(
-                    len(done_event.assistant_messages or [])
-                    if done_event is not None
-                    else 0
-                ),
-                tool_message_count=(
-                    len(done_event.tool_messages or []) if done_event is not None else 0
-                ),
-            )
-            await self._persist_turns(
-                session_id,
-                user_message,
-                AgentRunResult.from_done_event(done_event)
-                if done_event is not None
-                else AgentRunResult(final_response=""),
-                attachments=list(attachments_for_turn),
-                image_descriptions=persisted_image_descriptions,
-                message_context=message_context,
-                source_tag=source_tag,
-                trigger_kind=trigger_kind,
-                attention_episode_id=attention_episode_id,
-                workspace_id=workspace_id,
-                workspace_root=workspace_root,
-            )
+            self._log_session_agent_done(runtime, done_event)
+            await self._persist_session_run(runtime, done_event)
         finally:
             current_runtime_settings.reset(runtime_token)
             current_attachments.reset(attachments_token)
+
+    @staticmethod
+    def _log_session_run_start(request: _SessionRunRequest) -> None:
+        logger.debug(
+            "session_runner.run_stream_start",
+            session_id=request.session_id,
+            source_tag=request.source_tag,
+            workspace_id=request.workspace_id or "",
+            provider_id=request.provider_id or "",
+            requested_model=request.model or "",
+            reasoning_effort=request.reasoning_effort or "",
+            user_message_chars=len(request.user_message),
+            user_message_preview=request.user_message[:120],
+            attachment_count=len(request.attachments),
+            attachment_kinds=[attachment.kind for attachment in request.attachments],
+            stop_requested=(
+                request.stop_event.is_set() if request.stop_event is not None else False
+            ),
+            **_message_context_log_fields(request.message_context),
+        )
+
+    async def _resolve_session_route(self, runtime: _SessionRunRuntime) -> None:
+        """Resolve the provider, model capabilities, and context budget."""
+        request = runtime.request
+        provider_slot, selected_model = await self._resolve_provider(
+            request.session_id,
+            provider_id=request.provider_id,
+            model=request.model,
+        )
+        runtime.provider_slot = provider_slot
+        runtime.selected_model = selected_model
+        runtime.effective_model = (
+            selected_model or provider_slot.default_model
+            if provider_slot is not None
+            else ""
+        )
+        if provider_slot is not None:
+            runtime.capabilities = provider_slot.resolve_capabilities(
+                runtime.effective_model
+            )
+            runtime.context_builder = self._context_builder_for_model(
+                provider_slot.provider,
+                runtime.capabilities,
+            )
+        context_budget = (
+            runtime.context_builder.budget
+            if runtime.context_builder is not None
+            else None
+        )
+        logger.debug(
+            "session_runner.route_selected",
+            session_id=request.session_id,
+            provider_id=provider_slot.id if provider_slot is not None else "",
+            selected_model=selected_model or "",
+            effective_model=runtime.effective_model,
+            image_input=bool(runtime.capabilities and runtime.capabilities.image_input),
+            context_max_tokens=(
+                context_budget.max_tokens if context_budget is not None else None
+            ),
+            context_reserved_tokens=(
+                context_budget.reserved_tokens if context_budget is not None else None
+            ),
+            context_soft_token_limit=(
+                context_budget.soft_token_limit if context_budget is not None else None
+            ),
+            image_count=sum(
+                1 for attachment in request.attachments if attachment.kind == "image"
+            ),
+            attachment_count=len(request.attachments),
+            image_fallback_mode=(
+                self._multimodal_config.image_fallback_mode
+                if self._multimodal_config is not None
+                else ""
+            ),
+            media_context_policy=(
+                self._multimodal_config.media_context_policy
+                if self._multimodal_config is not None
+                else ""
+            ),
+        )
+
+    async def _prepare_session_history(self, runtime: _SessionRunRuntime) -> None:
+        """Build history, reply anchors, attention context, and retrieval context."""
+        request = runtime.request
+        message_context = request.message_context
+        runtime.recent_records = await self._load_recent_records(
+            request.session_id,
+            workspace_id=request.workspace_id,
+            include_observed_surplus=bool(
+                message_context is not None and message_context.chat_type == "group"
+            ),
+        )
+        runtime.history = await self._build_history_context(
+            request.session_id,
+            runtime.recent_records,
+            capabilities=runtime.capabilities,
+            message_context=message_context,
+        )
+        reply_anchor = self._load_reply_anchor_context(
+            runtime.recent_records,
+            current_message_context=message_context,
+        )
+        reply_message_id = (
+            message_context.reply_to_message_id if message_context is not None else ""
+        )
+        if reply_anchor is not None and not _history_contains_message_id(
+            runtime.history,
+            reply_message_id,
+        ):
+            runtime.history.append(reply_anchor)
+        await self._append_attention_context(runtime)
+
+        relevant_memory = await self._load_relevant_memory(
+            request.user_message,
+            session_id=request.session_id,
+        )
+        relevant_knowledge = await self._load_relevant_knowledge(
+            request.user_message,
+            session_id=request.session_id,
+        )
+        if relevant_memory:
+            runtime.history.insert(0, relevant_memory)
+            logger.debug(
+                "session_runner.relevant_memory_added",
+                session_id=request.session_id,
+                relevant_memory_chars=len(relevant_memory.content),
+                history_count=len(runtime.history),
+            )
+        if relevant_knowledge:
+            runtime.history.insert(0, relevant_knowledge)
+            logger.debug(
+                "session_runner.relevant_kb_added",
+                session_id=request.session_id,
+                relevant_kb_chars=len(relevant_knowledge.content),
+                history_count=len(runtime.history),
+            )
+
+    async def _append_attention_context(self, runtime: _SessionRunRuntime) -> None:
+        """Append either an explicit proactive frame or generic observations."""
+        request = runtime.request
+        explicit_context = request.ephemeral_context.strip()
+        if explicit_context:
+            runtime.history.append(
+                ContextMessage(
+                    role="user",
+                    source="proactive_attention_frame",
+                    content=explicit_context,
+                    metadata={
+                        "ephemeral": True,
+                        "selected_by": "conversation_joiner",
+                        "attention_episode_id": request.attention_episode_id,
+                    },
+                )
+            )
+            logger.debug(
+                "session_runner.proactive_attention_frame_added",
+                session_id=request.session_id,
+                attention_frame_chars=len(explicit_context),
+                history_count=len(runtime.history),
+            )
+            return
+
+        observed_context = await self._load_observed_group_context(
+            request.session_id,
+            records=runtime.recent_records,
+            current_message_context=request.message_context,
+            current_message_content=request.user_message,
+        )
+        if observed_context is not None:
+            runtime.history.append(observed_context)
+            logger.debug(
+                "session_runner.group_observed_context_added",
+                session_id=request.session_id,
+                observed_context_chars=len(observed_context.content),
+                history_count=len(runtime.history),
+            )
+
+    async def _prepare_session_inputs(self, runtime: _SessionRunRuntime) -> None:
+        """Collect tools, render the user turn, and resolve workspace inputs."""
+        request = runtime.request
+        effective_tool_filter = set(request.tool_filter or ())
+        if request.source_tag != "cron_trigger":
+            effective_tool_filter.add("desktop_announce")
+        runtime.tools = self._collect_tools(
+            effective_tool_filter,
+            tool_allowlist=request.tool_allowlist,
+            capabilities=runtime.capabilities,
+        )
+        logger.debug(
+            "session_runner.tools_collected",
+            session_id=request.session_id,
+            provider_id=(
+                runtime.provider_slot.id if runtime.provider_slot is not None else ""
+            ),
+            effective_model=runtime.effective_model,
+            tool_count=len(runtime.tools),
+            tool_names=[tool.name for tool in runtime.tools[:50]],
+            tool_denylist=sorted(effective_tool_filter),
+            tool_allowlist=(
+                sorted(request.tool_allowlist)
+                if request.tool_allowlist is not None
+                else []
+            ),
+            model_tool_calling=(
+                runtime.capabilities.tool_calling
+                if runtime.capabilities is not None
+                else None
+            ),
+        )
+        runtime.visible_user_message = render_message_with_context(
+            request.user_message,
+            request.message_context,
+            role="user",
+        )
+        runtime.user_parts = await self._build_user_parts(
+            runtime.visible_user_message,
+            list(request.attachments),
+            capabilities=runtime.capabilities,
+        )
+        if (
+            not bool(runtime.capabilities and runtime.capabilities.image_input)
+            and self._multimodal_config is not None
+            and self._multimodal_config.image_fallback_mode == "auto"
+        ):
+            runtime.image_descriptions = self._image_descriptions_from_parts(
+                runtime.user_parts
+            )
+        logger.debug(
+            "session_runner.context_inputs_ready",
+            session_id=request.session_id,
+            history_count=len(runtime.history),
+            history_roles=[message.role for message in runtime.history],
+            tool_count=len(runtime.tools),
+            user_part_types=[part.type for part in runtime.user_parts],
+            workspace_id=request.workspace_id or "",
+        )
+        if runtime.workspace_root is None and request.workspace_id is not None:
+            runtime.workspace_root = self._resolve_workspace_root(request.workspace_id)
+
+    def _build_agent_run_kwargs(self, runtime: _SessionRunRuntime) -> None:
+        """Build the stable keyword contract passed into AgentLoop."""
+        request = runtime.request
+        effective_system_prompt = self._build_system_prompt(
+            request.system_prompt,
+            request.message_context,
+            source_tag=request.source_tag,
+            agent_instruction=request.agent_instruction,
+            enable_silent_reply=self._enable_silent_reply,
+        )
+        run_kwargs: dict[str, Any] = {
+            "user_message": runtime.visible_user_message,
+            "system_prompt": effective_system_prompt,
+            "history_messages": runtime.history,
+            "session_id": request.session_id,
+            "workspace_id": request.workspace_id,
+            "origin": request.source_tag,
+        }
+        if runtime.user_parts:
+            run_kwargs["user_parts"] = runtime.user_parts
+        if runtime.workspace_root is not None:
+            run_kwargs["workspace_root"] = runtime.workspace_root
+        if runtime.tools:
+            run_kwargs["tools"] = runtime.tools
+        if runtime.provider_slot is not None:
+            run_kwargs["provider"] = runtime.provider_slot.provider
+            run_kwargs["context_builder"] = (
+                runtime.context_builder or runtime.provider_slot.context_builder
+            )
+            run_kwargs["provider_id"] = runtime.provider_slot.id
+        if runtime.selected_model is not None:
+            run_kwargs["model"] = runtime.selected_model
+        session_context = current_session.get()
+        run_kwargs["sender_account_key"] = (
+            session_context.sender_account_key if session_context is not None else ""
+        )
+        if request.stop_event is not None:
+            run_kwargs["stop_event"] = request.stop_event
+        runtime.run_kwargs = run_kwargs
+
+    @staticmethod
+    def _log_agent_run_start(runtime: _SessionRunRuntime) -> None:
+        request = runtime.request
+        logger.debug(
+            "session_runner.agent_run_start",
+            session_id=request.session_id,
+            provider_id=(
+                runtime.provider_slot.id if runtime.provider_slot is not None else ""
+            ),
+            selected_model=runtime.selected_model or "",
+            effective_model=runtime.effective_model,
+            history_count=len(runtime.history),
+            tool_count=len(runtime.tools),
+            user_part_count=len(runtime.user_parts),
+        )
+
+    @staticmethod
+    def _log_session_agent_event(session_id: str, event: LoopEvent) -> None:
+        logger.debug(
+            "session_runner.agent_event",
+            session_id=session_id,
+            event_type=event.type,
+            trace_id=event.trace_id or "",
+            text_chars=len(event.text or ""),
+            reasoning_chars=len(event.reasoning or ""),
+            final_response_chars=len(event.final_response or ""),
+            tool_names=list(event.tool_names or []),
+            steps=event.steps,
+            error=event.error or "",
+        )
+
+    @staticmethod
+    def _log_session_agent_done(
+        runtime: _SessionRunRuntime,
+        done_event: LoopEvent | None,
+    ) -> None:
+        logger.debug(
+            "session_runner.agent_run_done",
+            session_id=runtime.request.session_id,
+            trace_id=done_event.trace_id if done_event is not None else None,
+            provider_id=(
+                runtime.provider_slot.id if runtime.provider_slot is not None else ""
+            ),
+            effective_model=runtime.effective_model,
+            steps=done_event.steps if done_event is not None else 0,
+            error=done_event.error if done_event is not None else None,
+            response_chars=(
+                len(done_event.final_response or "") if done_event is not None else 0
+            ),
+            assistant_message_count=(
+                len(done_event.assistant_messages or [])
+                if done_event is not None
+                else 0
+            ),
+            tool_message_count=(
+                len(done_event.tool_messages or []) if done_event is not None else 0
+            ),
+        )
+
+    async def _persist_session_run(
+        self,
+        runtime: _SessionRunRuntime,
+        done_event: LoopEvent | None,
+    ) -> None:
+        request = runtime.request
+        result = (
+            AgentRunResult.from_done_event(done_event)
+            if done_event is not None
+            else AgentRunResult(final_response="")
+        )
+        await self._persist_turns(
+            request.session_id,
+            request.user_message,
+            result,
+            attachments=list(request.attachments),
+            image_descriptions=runtime.image_descriptions,
+            message_context=request.message_context,
+            source_tag=request.source_tag,
+            trigger_kind=request.trigger_kind,
+            attention_episode_id=request.attention_episode_id,
+            workspace_id=request.workspace_id,
+            workspace_root=runtime.workspace_root,
+        )
 
     # ── Public helpers (used by image_understand tool) ─────────
 

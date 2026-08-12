@@ -186,6 +186,54 @@ class LoopEvent:
     terminal_reason: str = ""
 
 
+@dataclass(slots=True, frozen=True)
+class _LoopRequest:
+    """Normalized inputs for one streaming agent loop run."""
+
+    user_message: str
+    system_prompt: str
+    user_parts: list[ContextPart] | None
+    history_messages: list[ContextMessage] | None
+    workspace_root: Path | None
+    tools: list[ToolDefinition] | None
+    provider: ChatProvider | None
+    context_builder: ContextBuilder | None
+    model: str | None
+    stop_event: asyncio.Event | None
+    session_id: str | None
+    workspace_id: str | None
+    provider_id: str | None
+    origin: str
+    sender_account_key: str
+
+
+@dataclass(slots=True)
+class _LoopRuntime:
+    """Mutable state shared by loop steps and terminal handlers."""
+
+    request: _LoopRequest
+    provider: ChatProvider
+    context_builder: ContextBuilder
+    trace: Trace | None
+    recorder: RunRecorder
+    effective_system_prompt: str
+    history: list[ContextMessage]
+    active_turn_messages: list[ContextMessage]
+    tool_messages: list[ContextMessage] = field(default_factory=list)
+    assistant_messages: list[ContextMessage] = field(default_factory=list)
+    total_usage: TokenUsage = field(default_factory=TokenUsage)
+    step: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class _StepResponse:
+    """Provider response plus its user-visible projections."""
+
+    response: ProviderResponse
+    display: str
+    reasoning: str | None
+
+
 class AgentLoop:
     """Minimal agent loop with provider calls, tools, and stop conditions."""
 
@@ -277,255 +325,65 @@ class AgentLoop:
         This lets callers stream progress without waiting for the full loop
         to complete.
         """
-        active_provider = provider or self.provider
-        active_builder = context_builder or self.context_builder
-        trace = self.metrics.new_trace() if self.metrics else None
-        provider_default_model = getattr(active_provider, "model", "")
-        effective_system_prompt = self._system_prompt_with_tool_guidance(
-            system_prompt, tools
-        )
-
-        # Canonical run ledger (Phase 1): best-effort dual-write of this run's
-        # event stream + receipts. run_id reuses trace_id so log ↔ ledger
-        # join is trivial; falls back to a uuid when metrics is absent.
-        run_context = AgentRunContext(
-            run_id=trace.trace_id if trace else uuid4().hex,
-            trace_id=trace.trace_id if trace else "",
+        request = _LoopRequest(
+            user_message=user_message,
+            system_prompt=system_prompt,
+            user_parts=user_parts,
+            history_messages=history_messages,
+            workspace_root=workspace_root,
+            tools=tools,
+            provider=provider,
+            context_builder=context_builder,
+            model=model,
+            stop_event=stop_event,
             session_id=session_id,
             workspace_id=workspace_id,
             provider_id=provider_id,
-        )
-        recorder = RunRecorder(self.run_store, run_context)
-        await recorder.run_started(
-            user_message=user_message,
-            model=model or provider_default_model,
-            api_family=getattr(active_provider, "api_family", ""),
-        )
-
-        logger.debug(
-            "agent_loop.run",
-            trace_id=trace.trace_id if trace else "",
             origin=origin,
-            provider_name=getattr(active_provider, "name", ""),
-            provider_api_family=getattr(active_provider, "api_family", ""),
-            provider_default_model=provider_default_model,
-            model_override=model or "",
-            max_steps=self.config.max_steps,
-            provider_timeout_seconds=self.config.provider_timeout_seconds,
-            tool_timeout_seconds=self.config.tool_timeout_seconds,
-            history_count=len(history_messages or []),
-            history_roles=[m.role for m in (history_messages or [])[:6]],
-            history_sources=[m.source for m in (history_messages or [])[:6]],
-            user_message_chars=len(user_message),
-            system_prompt_chars=len(system_prompt),
-            tool_count=len(tools or []),
-            tool_names=[tool.name for tool in (tools or [])[:30]],
-            user_part_types=[part.type for part in (user_parts or [])],
-            stop_requested=stop_event.is_set() if stop_event is not None else False,
+            sender_account_key=sender_account_key,
         )
-
-        history = list(history_messages or [])
-        active_turn_messages: list[ContextMessage] = [
-            ContextMessage(
-                role="user",
-                source="user_input",
-                content=user_message,
-                parts=list(user_parts or []),
-            )
-        ]
-        logger.debug(
-            "agent_loop.active_turn_started",
-            trace_id=trace.trace_id if trace else "",
-            history_count=len(history),
-            protected_count=len(active_turn_messages),
-            protected_roles=[m.role for m in active_turn_messages],
-        )
-        tool_messages: list[ContextMessage] = []
-        assistant_messages: list[ContextMessage] = []
-        total_usage = TokenUsage()
-
-        step = 0
+        runtime = await self._start_loop_runtime(request)
         try:
             for step in range(1, self.config.max_steps + 1):
-                if stop_event is not None and stop_event.is_set():
-                    self._record_terminal_outcome(
-                        trace=trace,
-                        step=max(step - 1, 0),
-                        terminal_state="cancelled",
-                        reason="cancelled",
-                    )
-                    await recorder.terminal(
-                        terminal_state="cancelled", reason="cancelled"
-                    )
-                    yield self._cancelled_done_event(
-                        trace=trace,
+                runtime.step = step
+                if request.stop_event is not None and request.stop_event.is_set():
+                    yield await self._cancel_runtime(
+                        runtime,
                         steps=max(step - 1, 0),
-                        final_response=(
-                            assistant_messages[-1].content if assistant_messages else ""
-                        ),
-                        assistant_messages=assistant_messages,
-                        tool_messages=tool_messages,
-                        ordered_transcript=active_turn_messages,
-                        total_usage=total_usage,
+                        final_response=self._latest_assistant_content(runtime),
                     )
                     return
 
-                prompt_messages = active_builder.build_context(
-                    system_prompt=effective_system_prompt,
-                    workspace_root=workspace_root,
-                    history_messages=history,
-                    protected_messages=active_turn_messages,
-                )
-                logger.debug(
-                    "agent_loop.context_built",
-                    trace_id=trace.trace_id if trace else "",
-                    step=step,
-                    message_count=len(prompt_messages),
-                    roles=[m.role for m in prompt_messages],
-                    sources=[m.source for m in prompt_messages],
-                    context_summary=self._message_summary(prompt_messages),
-                    model_override=model or "",
-                )
-
-                response = await self._call_provider_with_retry(
-                    messages=prompt_messages,
-                    tools=tools,
-                    step=step,
-                    trace=trace,
-                    provider=active_provider,
-                    model=model,
-                    stop_event=stop_event,
-                )
-
-                # Accumulate token usage across all steps
-                if response.usage is not None:
-                    total_usage = TokenUsage(
-                        input_tokens=total_usage.input_tokens
-                        + response.usage.input_tokens,
-                        output_tokens=total_usage.output_tokens
-                        + response.usage.output_tokens,
-                        cached_tokens=total_usage.cached_tokens
-                        + response.usage.cached_tokens,
-                        reasoning_tokens=total_usage.reasoning_tokens
-                        + response.usage.reasoning_tokens,
-                        cache_creation_tokens=total_usage.cache_creation_tokens
-                        + response.usage.cache_creation_tokens,
-                    )
-
-                logger.debug(
-                    "agent_loop.step_response",
-                    trace_id=trace.trace_id if trace else "",
-                    step=step,
-                    response_summary=self._provider_response_summary(response),
-                    total_input_tokens=total_usage.input_tokens,
-                    total_output_tokens=total_usage.output_tokens,
-                    total_cached_tokens=total_usage.cached_tokens,
-                    total_reasoning_tokens=total_usage.reasoning_tokens,
-                )
-
-                assistant_message = self._build_assistant_message(response)
-                if assistant_message is not None:
-                    assistant_messages.append(assistant_message)
-                    active_turn_messages.append(assistant_message)
-
-                display = self._display_content(response)
-                reasoning = response.reasoning_content or None
-                if display or reasoning:
+                outcome = await self._call_loop_step(runtime)
+                if outcome.display or outcome.reasoning:
                     yield LoopEvent(
-                        type="text", text=display or None, reasoning=reasoning
+                        type="text",
+                        text=outcome.display or None,
+                        reasoning=outcome.reasoning,
                     )
-
-                await recorder.assistant_output(
-                    step=step,
-                    content=display or "",
-                    finish_reason=response.finish_reason or "",
-                    tool_call_count=len(response.tool_calls),
-                    protocol_anomaly=response.tool_protocol_anomaly or "",
-                )
+                await self._record_step_response(runtime, outcome)
+                response = outcome.response
 
                 if not response.tool_calls:
-                    self._log_terminal_without_tool_calls(
+                    yield await self._complete_without_tools(
+                        runtime,
                         response=response,
-                        tools=tools,
-                        step=step,
-                        trace=trace,
-                    )
-                    protocol_anomaly = response.tool_protocol_anomaly or ""
-                    # Distinguish a run that ended after tool results were
-                    # produced from one that never called a tool at all. The
-                    # latter is the #21 candidate pool (claim-without-calling).
-                    completion_reason = (
-                        "tool_calls_completed" if tool_messages else "no_tool_calls"
-                    )
-                    logger.info(
-                        "agent_loop.run_completed",
-                        trace_id=trace.trace_id if trace else "",
-                        reason=completion_reason,
-                        final_response_preview=(display or "")[:200],
-                        terminal_state="completed",
-                        step=step,
-                        max_steps=self.config.max_steps,
-                        finish_reason=response.finish_reason or "",
-                        tool_call_count=0,
-                        protocol_anomaly=protocol_anomaly,
-                        total_input_tokens=total_usage.input_tokens,
-                        total_output_tokens=total_usage.output_tokens,
-                        total_cached_tokens=total_usage.cached_tokens,
-                        total_reasoning_tokens=total_usage.reasoning_tokens,
-                    )
-                    self._record_terminal_outcome(
-                        trace=trace,
-                        step=step,
-                        terminal_state="completed",
-                        reason=completion_reason,
-                        finish_reason=response.finish_reason or "",
-                        tool_call_count=0,
-                        protocol_anomaly=protocol_anomaly,
-                    )
-                    await recorder.terminal(
-                        terminal_state="completed",
-                        reason=completion_reason,
-                        finish_reason=response.finish_reason or "",
-                    )
-                    yield LoopEvent(
-                        type="done",
-                        final_response=display,
-                        assistant_messages=list(assistant_messages),
-                        tool_messages=list(tool_messages),
-                        ordered_transcript=list(active_turn_messages),
-                        steps=step,
-                        trace_id=trace.trace_id if trace else None,
-                        total_usage=total_usage,
-                        terminal_state="completed",
-                        terminal_reason=completion_reason,
+                        display=outcome.display,
                     )
                     return
 
-                if stop_event is not None and stop_event.is_set():
-                    self._record_terminal_outcome(
-                        trace=trace,
-                        step=step,
-                        terminal_state="cancelled",
-                        reason="cancelled",
-                    )
-                    await recorder.terminal(
-                        terminal_state="cancelled", reason="cancelled"
-                    )
-                    yield self._cancelled_done_event(
-                        trace=trace,
+                if request.stop_event is not None and request.stop_event.is_set():
+                    yield await self._cancel_runtime(
+                        runtime,
                         steps=step,
-                        final_response=display or "",
-                        assistant_messages=assistant_messages,
-                        tool_messages=tool_messages,
-                        ordered_transcript=active_turn_messages,
-                        total_usage=total_usage,
+                        final_response=outcome.display,
                     )
                     return
 
                 if self.tool_executor is None:
                     logger.error(
                         "agent_loop.tool_executor_missing",
-                        trace_id=trace.trace_id if trace else "",
+                        trace_id=runtime.trace.trace_id if runtime.trace else "",
                         step=step,
                         requested_tool_count=len(response.tool_calls),
                         requested_tool_names=[tc.name for tc in response.tool_calls],
@@ -541,17 +399,17 @@ class AgentLoop:
 
                 executed_messages = await self._execute_tools(
                     response=response,
-                    tools=tools,
+                    tools=request.tools,
                     step=step,
-                    trace=trace,
-                    recorder=recorder,
-                    sender_account_key=sender_account_key,
+                    trace=runtime.trace,
+                    recorder=runtime.recorder,
+                    sender_account_key=request.sender_account_key,
                 )
-                tool_messages.extend(executed_messages)
-                active_turn_messages.extend(executed_messages)
+                runtime.tool_messages.extend(executed_messages)
+                runtime.active_turn_messages.extend(executed_messages)
                 logger.debug(
                     "agent_loop.tools_executed",
-                    trace_id=trace.trace_id if trace else "",
+                    trace_id=runtime.trace.trace_id if runtime.trace else "",
                     step=step,
                     tool_call_count=len(response.tool_calls),
                     tool_message_count=len(executed_messages),
@@ -563,137 +421,406 @@ class AgentLoop:
                     tool_summary=f"{len(executed_messages)} tool(s) completed",
                 )
 
-            final_fallback = (
-                assistant_messages[-1].content if assistant_messages else ""
-            )
-            logger.warning(
-                "agent_loop.run_completed",
-                trace_id=trace.trace_id if trace else "",
-                reason="max_steps_reached",
-                final_response_preview=final_fallback[:200],
-                terminal_state="incomplete",
-                step=self.config.max_steps,
-                max_steps=self.config.max_steps,
-                assistant_message_count=len(assistant_messages),
-                tool_message_count=len(tool_messages),
-                total_input_tokens=total_usage.input_tokens,
-                total_output_tokens=total_usage.output_tokens,
-                total_cached_tokens=total_usage.cached_tokens,
-                total_reasoning_tokens=total_usage.reasoning_tokens,
-            )
-            self._record_terminal_outcome(
-                trace=trace,
-                step=self.config.max_steps,
-                terminal_state="incomplete",
-                reason="max_steps_reached",
-                tool_call_count=0,
-            )
-            await recorder.terminal(
-                terminal_state="incomplete", reason="max_steps_reached"
-            )
-            yield LoopEvent(
-                type="done",
-                final_response=final_fallback,
-                assistant_messages=list(assistant_messages),
-                tool_messages=list(tool_messages),
-                ordered_transcript=list(active_turn_messages),
-                steps=self.config.max_steps,
-                trace_id=trace.trace_id if trace else None,
-                total_usage=total_usage,
-                terminal_state="incomplete",
-                terminal_reason="max_steps_reached",
-            )
+            yield await self._max_steps_event(runtime)
         except _StopRequested:
-            # Stop fired during an in-flight provider call (the call was
-            # cancelled in _call_chat_interruptible). Emit the cancelled done
-            # event with whatever assistant/tool messages prior steps produced
-            # so SessionRunner persists the partial turn (#28). Placed before
-            # ``except ProviderError`` because _StopRequested is not a
-            # ProviderError and must bypass retry.
-            completed_steps = max(step - 1, 0)
-            logger.info(
-                "agent_loop.run_completed",
-                trace_id=trace.trace_id if trace else "",
-                reason="cancelled",
-                final_response_preview=(
-                    assistant_messages[-1].content if assistant_messages else ""
-                )[:200],
-                terminal_state="cancelled",
-                step=step,
-                max_steps=self.config.max_steps,
-            )
-            self._record_terminal_outcome(
-                trace=trace,
-                step=completed_steps,
-                terminal_state="cancelled",
-                reason="cancelled",
-            )
-            await recorder.terminal(terminal_state="cancelled", reason="cancelled")
-            yield self._cancelled_done_event(
-                trace=trace,
-                steps=completed_steps,
-                final_response=(
-                    assistant_messages[-1].content if assistant_messages else ""
-                ),
-                assistant_messages=assistant_messages,
-                tool_messages=tool_messages,
-                ordered_transcript=active_turn_messages,
-                total_usage=total_usage,
-            )
+            yield await self._stop_during_provider_event(runtime)
         except ProviderError as exc:
-            logger.warning(
-                "agent_loop.provider_error_abort",
-                error=str(exc),
-                exc_info=True,
-            )
-            logger.warning(
-                "agent_loop.run_completed",
-                trace_id=trace.trace_id if trace else "",
-                reason="provider_error",
-                final_response_preview=(
-                    assistant_messages[-1].content if assistant_messages else ""
-                )[:200],
-                terminal_state="failed",
-                step=step,
-                max_steps=self.config.max_steps,
-                error_code=exc.code,
-                total_input_tokens=total_usage.input_tokens,
-                total_output_tokens=total_usage.output_tokens,
-                total_cached_tokens=total_usage.cached_tokens,
-                total_reasoning_tokens=total_usage.reasoning_tokens,
-            )
-            self._record_terminal_outcome(
-                trace=trace,
-                step=step,
-                terminal_state="failed",
-                reason="provider_error",
-            )
-            await recorder.terminal(
-                terminal_state="failed",
-                reason="provider_error",
-                failure_code=exc.code,
-            )
-            fallback = assistant_messages[-1].content if assistant_messages else ""
-            if not fallback:
-                fallback = self.config.provider_error_template.format(code=exc.code)
-            yield LoopEvent(
-                type="done",
-                final_response=fallback,
-                assistant_messages=list(assistant_messages),
-                tool_messages=list(tool_messages),
-                ordered_transcript=list(active_turn_messages),
-                steps=step,
-                trace_id=trace.trace_id if trace else None,
-                error=exc.code,
-                total_usage=total_usage,
-                terminal_state="failed",
-                terminal_reason="provider_error",
-            )
+            yield await self._provider_error_event(runtime, exc)
         finally:
             # Guarantee the ledger run is finalized even if an unexpected
             # exception escapes the known exit paths. A no-op when an exit
             # path already recorded a terminal event.
-            await recorder.ensure_finalized()
+            await runtime.recorder.ensure_finalized()
+
+    async def _call_loop_step(self, runtime: _LoopRuntime) -> _StepResponse:
+        """Build one prompt, call the provider, and update in-memory state."""
+        request = runtime.request
+        prompt_messages = runtime.context_builder.build_context(
+            system_prompt=runtime.effective_system_prompt,
+            workspace_root=request.workspace_root,
+            history_messages=runtime.history,
+            protected_messages=runtime.active_turn_messages,
+        )
+        logger.debug(
+            "agent_loop.context_built",
+            trace_id=runtime.trace.trace_id if runtime.trace else "",
+            step=runtime.step,
+            message_count=len(prompt_messages),
+            roles=[message.role for message in prompt_messages],
+            sources=[message.source for message in prompt_messages],
+            context_summary=self._message_summary(prompt_messages),
+            model_override=request.model or "",
+        )
+        response = await self._call_provider_with_retry(
+            messages=prompt_messages,
+            tools=request.tools,
+            step=runtime.step,
+            trace=runtime.trace,
+            provider=runtime.provider,
+            model=request.model,
+            stop_event=request.stop_event,
+        )
+        if response.usage is not None:
+            runtime.total_usage = self._merge_usage(
+                runtime.total_usage,
+                response.usage,
+            )
+        usage = runtime.total_usage
+        logger.debug(
+            "agent_loop.step_response",
+            trace_id=runtime.trace.trace_id if runtime.trace else "",
+            step=runtime.step,
+            response_summary=self._provider_response_summary(response),
+            total_input_tokens=usage.input_tokens,
+            total_output_tokens=usage.output_tokens,
+            total_cached_tokens=usage.cached_tokens,
+            total_reasoning_tokens=usage.reasoning_tokens,
+        )
+        assistant_message = self._build_assistant_message(response)
+        if assistant_message is not None:
+            runtime.assistant_messages.append(assistant_message)
+            runtime.active_turn_messages.append(assistant_message)
+        return _StepResponse(
+            response=response,
+            display=self._display_content(response),
+            reasoning=response.reasoning_content or None,
+        )
+
+    @staticmethod
+    async def _record_step_response(
+        runtime: _LoopRuntime,
+        outcome: _StepResponse,
+    ) -> None:
+        response = outcome.response
+        await runtime.recorder.assistant_output(
+            step=runtime.step,
+            content=outcome.display,
+            finish_reason=response.finish_reason or "",
+            tool_call_count=len(response.tool_calls),
+            protocol_anomaly=response.tool_protocol_anomaly or "",
+        )
+
+    @staticmethod
+    def _merge_usage(current: TokenUsage, update: TokenUsage) -> TokenUsage:
+        return TokenUsage(
+            input_tokens=current.input_tokens + update.input_tokens,
+            output_tokens=current.output_tokens + update.output_tokens,
+            cached_tokens=current.cached_tokens + update.cached_tokens,
+            reasoning_tokens=current.reasoning_tokens + update.reasoning_tokens,
+            cache_creation_tokens=(
+                current.cache_creation_tokens + update.cache_creation_tokens
+            ),
+        )
+
+    async def _start_loop_runtime(self, request: _LoopRequest) -> _LoopRuntime:
+        """Resolve run-scoped dependencies, start the ledger, and seed messages."""
+        active_provider = request.provider or self.provider
+        active_builder = request.context_builder or self.context_builder
+        trace = self.metrics.new_trace() if self.metrics else None
+        provider_default_model = getattr(active_provider, "model", "")
+        effective_system_prompt = self._system_prompt_with_tool_guidance(
+            request.system_prompt,
+            request.tools,
+        )
+        run_context = AgentRunContext(
+            run_id=trace.trace_id if trace else uuid4().hex,
+            trace_id=trace.trace_id if trace else "",
+            session_id=request.session_id,
+            workspace_id=request.workspace_id,
+            provider_id=request.provider_id,
+        )
+        recorder = RunRecorder(self.run_store, run_context)
+        await recorder.run_started(
+            user_message=request.user_message,
+            model=request.model or provider_default_model,
+            api_family=getattr(active_provider, "api_family", ""),
+        )
+        self._log_loop_start(
+            request,
+            active_provider,
+            trace,
+            provider_default_model,
+        )
+
+        history = list(request.history_messages or [])
+        active_turn_messages = [
+            ContextMessage(
+                role="user",
+                source="user_input",
+                content=request.user_message,
+                parts=list(request.user_parts or []),
+            )
+        ]
+        logger.debug(
+            "agent_loop.active_turn_started",
+            trace_id=trace.trace_id if trace else "",
+            history_count=len(history),
+            protected_count=len(active_turn_messages),
+            protected_roles=[message.role for message in active_turn_messages],
+        )
+        return _LoopRuntime(
+            request=request,
+            provider=active_provider,
+            context_builder=active_builder,
+            trace=trace,
+            recorder=recorder,
+            effective_system_prompt=effective_system_prompt,
+            history=history,
+            active_turn_messages=active_turn_messages,
+        )
+
+    def _log_loop_start(
+        self,
+        request: _LoopRequest,
+        provider: ChatProvider,
+        trace: Trace | None,
+        provider_default_model: str,
+    ) -> None:
+        logger.debug(
+            "agent_loop.run",
+            trace_id=trace.trace_id if trace else "",
+            origin=request.origin,
+            provider_name=getattr(provider, "name", ""),
+            provider_api_family=getattr(provider, "api_family", ""),
+            provider_default_model=provider_default_model,
+            model_override=request.model or "",
+            max_steps=self.config.max_steps,
+            provider_timeout_seconds=self.config.provider_timeout_seconds,
+            tool_timeout_seconds=self.config.tool_timeout_seconds,
+            history_count=len(request.history_messages or []),
+            history_roles=[m.role for m in (request.history_messages or [])[:6]],
+            history_sources=[m.source for m in (request.history_messages or [])[:6]],
+            user_message_chars=len(request.user_message),
+            system_prompt_chars=len(request.system_prompt),
+            tool_count=len(request.tools or []),
+            tool_names=[tool.name for tool in (request.tools or [])[:30]],
+            user_part_types=[part.type for part in (request.user_parts or [])],
+            stop_requested=(
+                request.stop_event.is_set() if request.stop_event is not None else False
+            ),
+        )
+
+    async def _cancel_runtime(
+        self,
+        runtime: _LoopRuntime,
+        *,
+        steps: int,
+        final_response: str,
+    ) -> LoopEvent:
+        """Record cancellation and build the canonical cancelled event."""
+        self._record_terminal_outcome(
+            trace=runtime.trace,
+            step=steps,
+            terminal_state="cancelled",
+            reason="cancelled",
+        )
+        await runtime.recorder.terminal(
+            terminal_state="cancelled",
+            reason="cancelled",
+        )
+        return self._cancelled_done_event(
+            trace=runtime.trace,
+            steps=steps,
+            final_response=final_response,
+            assistant_messages=runtime.assistant_messages,
+            tool_messages=runtime.tool_messages,
+            ordered_transcript=runtime.active_turn_messages,
+            total_usage=runtime.total_usage,
+        )
+
+    async def _complete_without_tools(
+        self,
+        runtime: _LoopRuntime,
+        *,
+        response: ProviderResponse,
+        display: str,
+    ) -> LoopEvent:
+        """Finalize a clean provider response that requested no more tools."""
+        self._log_terminal_without_tool_calls(
+            response=response,
+            tools=runtime.request.tools,
+            step=runtime.step,
+            trace=runtime.trace,
+        )
+        protocol_anomaly = response.tool_protocol_anomaly or ""
+        completion_reason = (
+            "tool_calls_completed" if runtime.tool_messages else "no_tool_calls"
+        )
+        usage = runtime.total_usage
+        logger.info(
+            "agent_loop.run_completed",
+            trace_id=runtime.trace.trace_id if runtime.trace else "",
+            reason=completion_reason,
+            final_response_preview=display[:200],
+            terminal_state="completed",
+            step=runtime.step,
+            max_steps=self.config.max_steps,
+            finish_reason=response.finish_reason or "",
+            tool_call_count=0,
+            protocol_anomaly=protocol_anomaly,
+            total_input_tokens=usage.input_tokens,
+            total_output_tokens=usage.output_tokens,
+            total_cached_tokens=usage.cached_tokens,
+            total_reasoning_tokens=usage.reasoning_tokens,
+        )
+        self._record_terminal_outcome(
+            trace=runtime.trace,
+            step=runtime.step,
+            terminal_state="completed",
+            reason=completion_reason,
+            finish_reason=response.finish_reason or "",
+            tool_call_count=0,
+            protocol_anomaly=protocol_anomaly,
+        )
+        await runtime.recorder.terminal(
+            terminal_state="completed",
+            reason=completion_reason,
+            finish_reason=response.finish_reason or "",
+        )
+        return self._done_event(
+            runtime,
+            final_response=display,
+            terminal_state="completed",
+            terminal_reason=completion_reason,
+        )
+
+    @staticmethod
+    def _done_event(
+        runtime: _LoopRuntime,
+        *,
+        final_response: str,
+        terminal_state: str,
+        terminal_reason: str,
+        error: str | None = None,
+    ) -> LoopEvent:
+        """Build a terminal event from the canonical mutable runtime state."""
+        return LoopEvent(
+            type="done",
+            final_response=final_response,
+            assistant_messages=list(runtime.assistant_messages),
+            tool_messages=list(runtime.tool_messages),
+            ordered_transcript=list(runtime.active_turn_messages),
+            steps=runtime.step,
+            trace_id=runtime.trace.trace_id if runtime.trace else None,
+            error=error,
+            total_usage=runtime.total_usage,
+            terminal_state=terminal_state,
+            terminal_reason=terminal_reason,
+        )
+
+    async def _max_steps_event(self, runtime: _LoopRuntime) -> LoopEvent:
+        """Finalize a run that exhausted the configured step budget."""
+        final_response = self._latest_assistant_content(runtime)
+        usage = runtime.total_usage
+        logger.warning(
+            "agent_loop.run_completed",
+            trace_id=runtime.trace.trace_id if runtime.trace else "",
+            reason="max_steps_reached",
+            final_response_preview=final_response[:200],
+            terminal_state="incomplete",
+            step=self.config.max_steps,
+            max_steps=self.config.max_steps,
+            assistant_message_count=len(runtime.assistant_messages),
+            tool_message_count=len(runtime.tool_messages),
+            total_input_tokens=usage.input_tokens,
+            total_output_tokens=usage.output_tokens,
+            total_cached_tokens=usage.cached_tokens,
+            total_reasoning_tokens=usage.reasoning_tokens,
+        )
+        self._record_terminal_outcome(
+            trace=runtime.trace,
+            step=self.config.max_steps,
+            terminal_state="incomplete",
+            reason="max_steps_reached",
+            tool_call_count=0,
+        )
+        await runtime.recorder.terminal(
+            terminal_state="incomplete",
+            reason="max_steps_reached",
+        )
+        runtime.step = self.config.max_steps
+        return self._done_event(
+            runtime,
+            final_response=final_response,
+            terminal_state="incomplete",
+            terminal_reason="max_steps_reached",
+        )
+
+    async def _stop_during_provider_event(
+        self,
+        runtime: _LoopRuntime,
+    ) -> LoopEvent:
+        """Finalize a stop raised while the provider request was in flight."""
+        completed_steps = max(runtime.step - 1, 0)
+        final_response = self._latest_assistant_content(runtime)
+        logger.info(
+            "agent_loop.run_completed",
+            trace_id=runtime.trace.trace_id if runtime.trace else "",
+            reason="cancelled",
+            final_response_preview=final_response[:200],
+            terminal_state="cancelled",
+            step=runtime.step,
+            max_steps=self.config.max_steps,
+        )
+        return await self._cancel_runtime(
+            runtime,
+            steps=completed_steps,
+            final_response=final_response,
+        )
+
+    async def _provider_error_event(
+        self,
+        runtime: _LoopRuntime,
+        error: ProviderError,
+    ) -> LoopEvent:
+        """Finalize a provider failure with any earlier assistant fallback."""
+        logger.warning(
+            "agent_loop.provider_error_abort",
+            error=str(error),
+            exc_info=True,
+        )
+        fallback = self._latest_assistant_content(runtime)
+        usage = runtime.total_usage
+        logger.warning(
+            "agent_loop.run_completed",
+            trace_id=runtime.trace.trace_id if runtime.trace else "",
+            reason="provider_error",
+            final_response_preview=fallback[:200],
+            terminal_state="failed",
+            step=runtime.step,
+            max_steps=self.config.max_steps,
+            error_code=error.code,
+            total_input_tokens=usage.input_tokens,
+            total_output_tokens=usage.output_tokens,
+            total_cached_tokens=usage.cached_tokens,
+            total_reasoning_tokens=usage.reasoning_tokens,
+        )
+        self._record_terminal_outcome(
+            trace=runtime.trace,
+            step=runtime.step,
+            terminal_state="failed",
+            reason="provider_error",
+        )
+        await runtime.recorder.terminal(
+            terminal_state="failed",
+            reason="provider_error",
+            failure_code=error.code,
+        )
+        if not fallback:
+            fallback = self.config.provider_error_template.format(code=error.code)
+        return self._done_event(
+            runtime,
+            final_response=fallback,
+            terminal_state="failed",
+            terminal_reason="provider_error",
+            error=error.code,
+        )
+
+    @staticmethod
+    def _latest_assistant_content(runtime: _LoopRuntime) -> str:
+        if not runtime.assistant_messages:
+            return ""
+        return runtime.assistant_messages[-1].content
 
     def _record_terminal_outcome(
         self,

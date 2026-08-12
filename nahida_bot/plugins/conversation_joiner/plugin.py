@@ -73,6 +73,30 @@ class _PendingRequest:
     session_id: str
 
 
+@dataclass(slots=True, frozen=True)
+class _BatchFlushContext:
+    """Stable dependencies and state for one engagement-batch flush."""
+
+    chat_key: str
+    address: ChatAddress
+    config: EffectiveJoinerConfig
+    engagement: EngagementConfig
+    session_id: str
+    state_machine: EngagementStateMachine
+    batch: Any
+    now: float
+
+
+@dataclass(slots=True, frozen=True)
+class _BatchDispatch:
+    """A continue-gate-approved agent request."""
+
+    anchor: InboundMessage
+    reply_to_message_id: str | None
+    instruction: str
+    decision: _SecretaryDecision | None
+
+
 class ConversationJoinerPlugin(Plugin):
     """Observe group chat and request the main agent when joining makes sense."""
 
@@ -533,186 +557,233 @@ class ConversationJoinerPlugin(Plugin):
         if batch is None or not batch.messages:
             sm.clear_batch(chat_key)
             return
-
-        # Guard: an accepted request for this chat is already awaiting feedback.
-        if chat_key in self._pending_requests:
-            self._reschedule_flush(
-                chat_key,
-                address,
-                cfg,
-                engagement_cfg,
-                session_id,
-                cfg.decision_timeout_seconds,
-            )
-            return
-
-        # Guard: active run.
-        if self._is_active_run(session_id):
-            self._reschedule_flush(
-                chat_key,
-                address,
-                cfg,
-                engagement_cfg,
-                session_id,
-                cfg.decision_timeout_seconds,
-            )
-            return
-
-        # Guard: response cooldown — only applies when the bot has already made
-        # a proactive engaged-state reply (tracked by state_updated_at in cooling).
-        # The initial join has its own cooldown; we don't want to block the first
-        # engaged flush for another 45 seconds after the agent already replied.
-        state = sm.get_state(chat_key)
-        now = time.monotonic()
-        sm.decay_engagement_score(chat_key, now, engagement_cfg)
-        cooldown = engagement_cfg.response_cooldown_seconds
-        if state.state == "cooling" and now - state.state_updated_at < cooldown:
-            # Still cooling from a previous proactive reply — reschedule.
-            remaining = cooldown - (now - state.state_updated_at)
-            self._reschedule_flush(
-                chat_key, address, cfg, engagement_cfg, session_id, remaining
-            )
-            return
-
-        if not self._has_hourly_budget(chat_key, cfg, now):
-            self.api.logger.debug(
-                "conversation_joiner.batch_budget_exhausted",
-                chat_key=chat_key,
-                batch_size=len(batch.messages),
-            )
-            sm.clear_batch(chat_key)
-            return
-
-        # Run continue_gate if enabled and enough messages.
-        continue_cfg = engagement_cfg.continue_gate
-        decision: _SecretaryDecision | None = None
-        if continue_cfg.enabled:
-            if len(batch.messages) < continue_cfg.min_messages:
-                self._reschedule_flush(
-                    chat_key,
-                    address,
-                    cfg,
-                    engagement_cfg,
-                    session_id,
-                    continue_cfg.evaluate_interval_seconds,
-                )
-                return
-            decision = await self._ask_continue_gate(
-                batch, chat_key, cfg, engagement_cfg
-            )
-            if decision is None:
-                # Secretary call failed; keep buffering and retry later.
-                self._reschedule_flush(
-                    chat_key,
-                    address,
-                    cfg,
-                    engagement_cfg,
-                    session_id,
-                    continue_cfg.evaluate_interval_seconds,
-                )
-                return
-            reply_mode = decision.reply_mode.strip().lower()
-            if (
-                not decision.should_join
-                or decision.confidence < continue_cfg.threshold
-                or reply_mode == "no_reply"
-            ):
-                # continue_gate says no.
-                sm.update_engagement_score(
-                    chat_key,
-                    decision.confidence * 0.5,
-                    engagement_cfg.engagement_score_alpha,
-                    now,
-                )
-                if (
-                    engagement_cfg.exit_gate.enabled
-                    and decision.confidence
-                    < engagement_cfg.exit_gate.low_value_threshold
-                ):
-                    sm.increment_low_value_strike(chat_key)
-                self.api.logger.debug(
-                    "conversation_joiner.continue_gate_rejected",
-                    chat_key=chat_key,
-                    confidence=decision.confidence,
-                    threshold=continue_cfg.threshold,
-                    reply_mode=reply_mode,
-                )
-                sm.clear_batch(chat_key)
-                return
-            # continue_gate passed.
-            anchor, reply_to_message_id = _select_batch_reply_anchor(
-                batch,
-                decision,
-            )
-            instruction = _build_continue_agent_instruction(decision, batch)
-        else:
-            # continue_gate disabled — flush with last message.
-            anchor = batch.messages[-1]
-            reply_to_message_id = None
-            instruction = _build_engaged_batch_instruction(batch)
-
-        batch_size = len(batch.messages)
-        triggered_now = time.monotonic()
-        self._last_triggered_at[chat_key] = triggered_now
-        self._triggered_at.setdefault(chat_key, []).append(triggered_now)
-        state = sm.get_state(chat_key)
-        state.last_triggered_at = triggered_now
-        state.triggered_timestamps.append(triggered_now)
-        self._pending_requests[chat_key] = _PendingRequest(
-            requested_at=triggered_now,
+        context = _BatchFlushContext(
+            chat_key=chat_key,
+            address=address,
+            config=cfg,
+            engagement=engagement_cfg,
             session_id=session_id,
+            state_machine=sm,
+            batch=batch,
+            now=time.monotonic(),
         )
+        if self._guard_batch_flush(context):
+            return
+        dispatch = await self._evaluate_batch_continue_gate(context)
+        if dispatch is None:
+            return
+        await self._request_batch_agent(context, dispatch)
+
+    def _guard_batch_flush(self, context: _BatchFlushContext) -> bool:
+        """Defer or discard a batch that is not currently eligible to flush."""
+        if context.chat_key in self._pending_requests or self._is_active_run(
+            context.session_id
+        ):
+            self._reschedule_batch_context(
+                context,
+                context.config.decision_timeout_seconds,
+            )
+            return True
+
+        state = context.state_machine.get_state(context.chat_key)
+        context.state_machine.decay_engagement_score(
+            context.chat_key,
+            context.now,
+            context.engagement,
+        )
+        cooldown = context.engagement.response_cooldown_seconds
+        elapsed = context.now - state.state_updated_at
+        if state.state == "cooling" and elapsed < cooldown:
+            self._reschedule_batch_context(context, cooldown - elapsed)
+            return True
+
+        if self._has_hourly_budget(
+            context.chat_key,
+            context.config,
+            context.now,
+        ):
+            return False
+        self.api.logger.debug(
+            "conversation_joiner.batch_budget_exhausted",
+            chat_key=context.chat_key,
+            batch_size=len(context.batch.messages),
+        )
+        context.state_machine.clear_batch(context.chat_key)
+        return True
+
+    async def _evaluate_batch_continue_gate(
+        self,
+        context: _BatchFlushContext,
+    ) -> _BatchDispatch | None:
+        """Evaluate continue-gate policy and return a dispatch when approved."""
+        continue_config = context.engagement.continue_gate
+        if not continue_config.enabled:
+            return _BatchDispatch(
+                anchor=context.batch.messages[-1],
+                reply_to_message_id=None,
+                instruction=_build_engaged_batch_instruction(context.batch),
+                decision=None,
+            )
+        if len(context.batch.messages) < continue_config.min_messages:
+            self._reschedule_batch_context(
+                context,
+                continue_config.evaluate_interval_seconds,
+            )
+            return None
+
+        decision = await self._ask_continue_gate(
+            context.batch,
+            context.chat_key,
+            context.config,
+            context.engagement,
+        )
+        if decision is None:
+            self._reschedule_batch_context(
+                context,
+                continue_config.evaluate_interval_seconds,
+            )
+            return None
+        reply_mode = decision.reply_mode.strip().lower()
+        rejected = (
+            not decision.should_join
+            or decision.confidence < continue_config.threshold
+            or reply_mode == "no_reply"
+        )
+        if rejected:
+            self._reject_batch_continue_gate(
+                context,
+                decision,
+                reply_mode=reply_mode,
+            )
+            return None
+        anchor, reply_to_message_id = _select_batch_reply_anchor(
+            context.batch,
+            decision,
+        )
+        return _BatchDispatch(
+            anchor=anchor,
+            reply_to_message_id=reply_to_message_id,
+            instruction=_build_continue_agent_instruction(decision, context.batch),
+            decision=decision,
+        )
+
+    def _reject_batch_continue_gate(
+        self,
+        context: _BatchFlushContext,
+        decision: _SecretaryDecision,
+        *,
+        reply_mode: str,
+    ) -> None:
+        context.state_machine.update_engagement_score(
+            context.chat_key,
+            decision.confidence * 0.5,
+            context.engagement.engagement_score_alpha,
+            context.now,
+        )
+        exit_gate = context.engagement.exit_gate
+        if exit_gate.enabled and decision.confidence < exit_gate.low_value_threshold:
+            context.state_machine.increment_low_value_strike(context.chat_key)
+        self.api.logger.debug(
+            "conversation_joiner.continue_gate_rejected",
+            chat_key=context.chat_key,
+            confidence=decision.confidence,
+            threshold=context.engagement.continue_gate.threshold,
+            reply_mode=reply_mode,
+        )
+        context.state_machine.clear_batch(context.chat_key)
+
+    async def _request_batch_agent(
+        self,
+        context: _BatchFlushContext,
+        dispatch: _BatchDispatch,
+    ) -> None:
+        """Register request state, call the agent API, and clear a sent batch."""
+        batch_size = len(context.batch.messages)
+        triggered_at = time.monotonic()
+        self._last_triggered_at[context.chat_key] = triggered_at
+        self._triggered_at.setdefault(context.chat_key, []).append(triggered_at)
+        state = context.state_machine.get_state(context.chat_key)
+        state.last_triggered_at = triggered_at
+        state.triggered_timestamps.append(triggered_at)
+        self._pending_requests[context.chat_key] = _PendingRequest(
+            requested_at=triggered_at,
+            session_id=context.session_id,
+        )
+        monitor_interval = context.config.decision_timeout_seconds * 3
         self._start_monitor(
-            chat_key,
-            session_id,
-            timeout=cfg.decision_timeout_seconds * 3,
-            interval=cfg.decision_timeout_seconds * 3,
+            context.chat_key,
+            context.session_id,
+            timeout=monitor_interval,
+            interval=monitor_interval,
         )
 
         try:
             await self.api.request_agent_response(
-                anchor,
-                session_id=session_id,
+                dispatch.anchor,
+                session_id=context.session_id,
                 reason=f"engaged continue (batch of {batch_size})",
-                instruction=instruction,
-                observed_messages=tuple(batch.messages),
-                reply_to_message_id=reply_to_message_id,
-                attention_frame=AttentionFrame(
-                    trigger_kind="engaged_continue",
+                instruction=dispatch.instruction,
+                observed_messages=tuple(context.batch.messages),
+                reply_to_message_id=dispatch.reply_to_message_id,
+                attention_frame=self._batch_attention_frame(
+                    context,
+                    dispatch,
                     episode_id=state.episode_id,
-                    anchor_message_id=anchor.message_id,
-                    messages=tuple(batch.messages),
-                    reason=decision.reason if decision is not None else "",
-                    focus=decision.focus if decision is not None else "",
-                    reply_to_message_id=reply_to_message_id,
-                    max_chars=engagement_cfg.batching.max_chars,
                 ),
             )
         except Exception as exc:  # noqa: BLE001
-            self._clear_pending_request(chat_key)
-            self._reschedule_flush(
-                chat_key,
-                address,
-                cfg,
-                engagement_cfg,
-                session_id,
-                cfg.decision_timeout_seconds,
+            self._clear_pending_request(context.chat_key)
+            self._reschedule_batch_context(
+                context,
+                context.config.decision_timeout_seconds,
             )
             self.api.logger.warning(
                 "conversation_joiner.engaged_agent_request_failed",
-                chat_key=chat_key,
-                session_id=session_id,
+                chat_key=context.chat_key,
+                session_id=context.session_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
             return
 
-        sm.clear_batch(chat_key)
-
+        context.state_machine.clear_batch(context.chat_key)
         self.api.logger.info(
             "conversation_joiner.engaged_agent_requested",
-            chat_key=chat_key,
-            session_id=session_id,
+            chat_key=context.chat_key,
+            session_id=context.session_id,
             batch_size=batch_size,
+        )
+
+    @staticmethod
+    def _batch_attention_frame(
+        context: _BatchFlushContext,
+        dispatch: _BatchDispatch,
+        *,
+        episode_id: str,
+    ) -> AttentionFrame:
+        decision = dispatch.decision
+        return AttentionFrame(
+            trigger_kind="engaged_continue",
+            episode_id=episode_id,
+            anchor_message_id=dispatch.anchor.message_id,
+            messages=tuple(context.batch.messages),
+            reason=decision.reason if decision is not None else "",
+            focus=decision.focus if decision is not None else "",
+            reply_to_message_id=dispatch.reply_to_message_id,
+            max_chars=context.engagement.batching.max_chars,
+        )
+
+    def _reschedule_batch_context(
+        self,
+        context: _BatchFlushContext,
+        delay: float,
+    ) -> None:
+        self._reschedule_flush(
+            context.chat_key,
+            context.address,
+            context.config,
+            context.engagement,
+            context.session_id,
+            delay,
         )
 
     def _start_window_flush_task(

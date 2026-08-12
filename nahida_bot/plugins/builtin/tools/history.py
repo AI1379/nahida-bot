@@ -192,6 +192,7 @@ class HistoryTools:
                 ),
                 parameters=_READ_PARAMETERS,
                 handler=self.read,
+                requires_admin=True,
             ),
             PluginToolDefinition(
                 name="search_chat_history",
@@ -209,6 +210,7 @@ class HistoryTools:
                 ),
                 parameters=_SEARCH_PARAMETERS,
                 handler=self.search,
+                requires_admin=True,
             ),
             PluginToolDefinition(
                 name="find_chat",
@@ -221,6 +223,7 @@ class HistoryTools:
                 ),
                 parameters=_FIND_PARAMETERS,
                 handler=self.find_chat,
+                requires_admin=True,
             ),
         )
 

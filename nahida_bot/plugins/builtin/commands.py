@@ -4,28 +4,32 @@ from __future__ import annotations
 
 import asyncio
 import json
-import mimetypes
 from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
+from typing import Any
 
 import structlog
 
 from nahida_bot.plugins.base import (
-    Attachment,
     BotAPI,
     InboundMessage,
-    OutboundMessage,
     Plugin,
     PluginManifest,
 )
+from nahida_bot.plugins.builtin.tools.agent import AgentTools
+from nahida_bot.plugins.builtin.tools.context import (
+    address_from_inbound as _address_from_inbound,
+    typed_address_from_session_context as _typed_address_from_session_context,
+)
+from nahida_bot.plugins.builtin.tools.cron import CronTools
 from nahida_bot.plugins.builtin.tools.history import HistoryTools
 from nahida_bot.plugins.builtin.tools.memory import MemoryTools
+from nahida_bot.plugins.builtin.tools.message import AttachmentResolver, MessageTools
+from nahida_bot.plugins.builtin.tools.plan import PlanTools
 from nahida_bot.plugins.builtin.tools.web_fetch import WebFetchTools
 from nahida_bot.plugins.builtin.tools.workspace import WorkspaceTools
 from nahida_bot.plugins.tooling import register_tool_definitions
 
 from nahida_bot.core.chat_address import (
-    ChatAddress,
     SessionKey,
     classify_session_key,
 )
@@ -48,7 +52,6 @@ _logger = structlog.get_logger(__name__)
 _MAX_EXEC_OUTPUT = 50_000
 _MAX_EXEC_TIMEOUT = 120
 _MAX_DESKTOP_TOOL_RESULT_CHARS = 70_000
-_PLAN_PATH = ".agent/plan.json"
 
 
 def _desktop_tool_error(code: str, message: str) -> str:
@@ -100,8 +103,12 @@ class BuiltinCommandsPlugin(Plugin):
 
     def __init__(self, api: BotAPI, manifest: PluginManifest) -> None:
         super().__init__(api, manifest)
+        self._agent_tools = AgentTools(api)
+        self._cron_tools = CronTools(api)
         self._history_tools = HistoryTools(api)
         self._memory_tools = MemoryTools(api)
+        self._message_tools = MessageTools(api, manifest.config)
+        self._plan_tools = PlanTools(api)
         self._workspace_tools = WorkspaceTools(api)
         self._web_fetch_tools = WebFetchTools()
 
@@ -202,42 +209,8 @@ class BuiltinCommandsPlugin(Plugin):
         register_tool_definitions(self.api, self._workspace_tools.definitions())
 
     def _register_attachment_tools(self) -> None:
-        self.api.register_tool(
-            "send_local_attachment",
-            "Send a local workspace file to the current chat as an attachment. "
-            "Use this for images, documents, audio, or video files that already "
-            "exist in the active workspace.",
-            {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": (
-                            "Path to the local file. By default this must be "
-                            "relative to the active workspace. Absolute paths require "
-                            "the builtin-commands allow_external_attachment_paths config."
-                        ),
-                    },
-                    "attachment_type": {
-                        "type": "string",
-                        "enum": ["auto", "photo", "document", "audio", "video"],
-                        "description": (
-                            "Attachment type. Use auto to infer from the file MIME type."
-                        ),
-                    },
-                    "caption": {
-                        "type": "string",
-                        "description": "Optional caption sent with the attachment.",
-                    },
-                    "filename": {
-                        "type": "string",
-                        "description": "Optional filename shown by the platform.",
-                    },
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-            self._tool_send_local_attachment,
+        register_tool_definitions(
+            self.api, self._message_tools.attachment_definitions()
         )
 
     def _register_memory_tools(self) -> None:
@@ -431,64 +404,13 @@ class BuiltinCommandsPlugin(Plugin):
     # ── plan Tool ──────────────────────────────────────────
 
     def _register_plan_tool(self) -> None:
-        self.api.register_tool(
-            "plan",
-            "Create and manage a task plan for structured work. "
-            "Actions: create, list, update, add, remove, clear.",
-            {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["create", "list", "update", "add", "remove", "clear"],
-                        "description": "The action to perform on the plan.",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Plan title (used with 'create').",
-                    },
-                    "tasks": {
-                        "type": "array",
-                        "description": "Tasks for 'create' or 'add'. Each has title and optional detail.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "detail": {"type": "string"},
-                            },
-                            "required": ["title"],
-                        },
-                    },
-                    "task_id": {
-                        "type": "integer",
-                        "description": "Task ID for 'update' or 'remove'.",
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "New status for 'update': pending, in_progress, completed, failed.",
-                    },
-                    "detail": {
-                        "type": "string",
-                        "description": "New detail text for 'update'.",
-                    },
-                },
-                "required": ["action"],
-                "additionalProperties": False,
-            },
-            self._tool_plan,
-        )
+        register_tool_definitions(self.api, self._plan_tools.definitions())
 
     async def _load_plan_data(self) -> dict[str, Any] | None:
-        try:
-            raw = await self.api.workspace_read(_PLAN_PATH)
-            return json.loads(raw)
-        except Exception:
-            return None
+        return await self._plan_tools.load()
 
     async def _save_plan_data(self, data: dict[str, Any]) -> None:
-        await self.api.workspace_write(
-            _PLAN_PATH, json.dumps(data, ensure_ascii=False, indent=2)
-        )
+        await self._plan_tools.save(data)
 
     async def _read_workspace_text_or_empty(self, path: str) -> str:
         return await self._memory_tools.read_workspace_text_or_empty(path)
@@ -547,22 +469,7 @@ class BuiltinCommandsPlugin(Plugin):
 
     @staticmethod
     def _format_plan(data: dict[str, Any]) -> str:
-        lines = [f"Plan: {data.get('title', 'Untitled')}"]
-        tasks = data.get("tasks", [])
-        if not tasks:
-            lines.append("  (no tasks)")
-        for t in tasks:
-            status_marker = {
-                "pending": "[ ]",
-                "in_progress": "[~]",
-                "completed": "[x]",
-                "failed": "[!]",
-            }.get(t.get("status", "pending"), "[ ]")
-            line = f"  {t['id']}. {status_marker} {t['title']}"
-            if t.get("detail"):
-                line += f" — {t['detail']}"
-            lines.append(line)
-        return "\n".join(lines)
+        return PlanTools.format_plan(data)
 
     async def _tool_plan(
         self,
@@ -573,465 +480,55 @@ class BuiltinCommandsPlugin(Plugin):
         status: str = "",
         detail: str = "",
     ) -> str:
-        _logger.debug("tool.plan", action=action)
-
-        if action == "create":
-            task_list = tasks or []
-            new_plan: dict[str, Any] = {
-                "title": title or "Untitled Plan",
-                "tasks": [
-                    {
-                        "id": i + 1,
-                        "title": t["title"],
-                        "status": "pending",
-                        "detail": t.get("detail", ""),
-                    }
-                    for i, t in enumerate(task_list)
-                ],
-            }
-            await self._save_plan_data(new_plan)
-            return f"Plan created.\n{self._format_plan(new_plan)}"
-
-        if action == "list":
-            plan_data = await self._load_plan_data()
-            if plan_data is None:
-                return "No plan exists. Use action='create' to start one."
-            return self._format_plan(plan_data)
-
-        if action == "add":
-            plan_data = await self._load_plan_data()
-            if plan_data is None:
-                return "No plan exists. Use action='create' to start one."
-            current_tasks: list[dict[str, Any]] = plan_data.get("tasks", [])
-            next_id = (max(t["id"] for t in current_tasks) + 1) if current_tasks else 1
-            for t in tasks or []:
-                current_tasks.append(
-                    {
-                        "id": next_id,
-                        "title": t["title"],
-                        "status": "pending",
-                        "detail": t.get("detail", ""),
-                    }
-                )
-                next_id += 1
-            plan_data["tasks"] = current_tasks
-            await self._save_plan_data(plan_data)
-            return f"Tasks added.\n{self._format_plan(plan_data)}"
-
-        if action == "update":
-            plan_data = await self._load_plan_data()
-            if plan_data is None:
-                return "No plan exists."
-            if task_id is None:
-                return "Error: task_id is required for update."
-            valid_statuses = {"pending", "in_progress", "completed", "failed"}
-            if status and status not in valid_statuses:
-                return f"Error: Invalid status '{status}'. Must be one of: {', '.join(sorted(valid_statuses))}"
-            found = False
-            for t in plan_data.get("tasks", []):
-                if t["id"] == task_id:
-                    if status:
-                        t["status"] = status
-                    if detail:
-                        t["detail"] = detail
-                    found = True
-                    break
-            if not found:
-                return f"Error: Task {task_id} not found."
-            await self._save_plan_data(plan_data)
-            return f"Task {task_id} updated.\n{self._format_plan(plan_data)}"
-
-        if action == "remove":
-            plan_data = await self._load_plan_data()
-            if plan_data is None:
-                return "No plan exists."
-            if task_id is None:
-                return "Error: task_id is required for remove."
-            original_len = len(plan_data.get("tasks", []))
-            plan_data["tasks"] = [
-                t for t in plan_data.get("tasks", []) if t["id"] != task_id
-            ]
-            # Renumber remaining tasks
-            for i, t in enumerate(plan_data["tasks"]):
-                t["id"] = i + 1
-            if len(plan_data["tasks"]) == original_len:
-                return f"Error: Task {task_id} not found."
-            await self._save_plan_data(plan_data)
-            return f"Task removed.\n{self._format_plan(plan_data)}"
-
-        if action == "clear":
-            try:
-                await self.api.workspace_write(_PLAN_PATH, "")
-            except Exception:
-                pass
-            return "Plan cleared."
-
-        return f"Error: Unknown action '{action}'."
+        return await self._plan_tools.execute(
+            action=action,
+            title=title,
+            tasks=tasks,
+            task_id=task_id,
+            status=status,
+            detail=detail,
+        )
 
     # ── Cron Tools ─────────────────────────────────────────
 
     def _register_cron_tools(self) -> None:
-        self.api.register_tool(
-            "cron_create",
-            "Create a scheduled task that runs a prompt once, repeatedly at a fixed interval, or by a 5-field cron expression.",
-            {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "The text prompt to execute when the task fires.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["once", "interval", "cron"],
-                        "description": "'once' fires at a specific datetime; 'interval' fires repeatedly; 'cron' uses a 5-field cron expression.",
-                    },
-                    "fire_at": {
-                        "type": "string",
-                        "description": (
-                            "ISO 8601 datetime for 'once' mode, e.g. '2025-06-15T09:00:00'. "
-                            "If no timezone is given, UTC is assumed."
-                        ),
-                    },
-                    "interval_seconds": {
-                        "type": "integer",
-                        "description": "Seconds between fires for 'interval' mode. Minimum 60.",
-                    },
-                    "cron_expression": {
-                        "type": "string",
-                        "description": "5-field cron expression for 'cron' mode, e.g. '0 9 * * 1-5'.",
-                    },
-                    "max_runs": {
-                        "type": "integer",
-                        "description": "Max number of fires for interval or cron mode. Omit for infinite.",
-                    },
-                    "session_mode": {
-                        "type": "string",
-                        "enum": ["main", "isolated", "fresh"],
-                        "description": (
-                            "'main' (default) uses the chat session. "
-                            "'isolated' reuses one private session per cron job. "
-                            "'fresh' creates a new session for each fire."
-                        ),
-                    },
-                },
-                "required": ["prompt", "mode"],
-                "additionalProperties": False,
-            },
-            self._tool_cron_create,
-        )
-        self.api.register_tool(
-            "cron_list",
-            "List all active scheduled tasks for the current chat.",
-            {
-                "type": "object",
-                "properties": {},
-                "required": [],
-                "additionalProperties": False,
-            },
-            self._tool_cron_list,
-        )
-        self.api.register_tool(
-            "cron_cancel",
-            "Cancel a scheduled task by its job ID.",
-            {
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "The job ID returned by cron_create or shown in cron_list.",
-                    },
-                },
-                "required": ["job_id"],
-                "additionalProperties": False,
-            },
-            self._tool_cron_cancel,
-        )
-        self.api.register_tool(
-            "cron_update",
-            "Update an active scheduled task's prompt, schedule, or max run count.",
-            {
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "The job ID returned by cron_create or shown in cron_list.",
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Replacement prompt to execute when the task fires.",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["once", "interval", "cron"],
-                        "description": "Switch the task to one-shot, interval, or cron mode.",
-                    },
-                    "fire_at": {
-                        "type": "string",
-                        "description": "ISO 8601 datetime for one-shot mode. If no timezone is given, UTC is assumed.",
-                    },
-                    "interval_seconds": {
-                        "type": "integer",
-                        "description": "Seconds between fires for interval mode. Minimum 60.",
-                    },
-                    "cron_expression": {
-                        "type": "string",
-                        "description": "5-field cron expression for cron mode, e.g. '0 9 * * 1-5'.",
-                    },
-                    "max_runs": {
-                        "type": "integer",
-                        "description": "Max number of successful fires for interval or cron mode.",
-                    },
-                },
-                "required": ["job_id"],
-                "additionalProperties": False,
-            },
-            self._tool_cron_update,
-        )
-        self.api.register_tool(
-            "cron_delete",
-            "Permanently delete a scheduled task by its job ID.",
-            {
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "The job ID returned by cron_create or shown in cron_list.",
-                    },
-                },
-                "required": ["job_id"],
-                "additionalProperties": False,
-            },
-            self._tool_cron_delete,
-        )
+        register_tool_definitions(self.api, self._cron_tools.definitions())
 
     def _get_scheduler(self) -> Any:
         """Access the SchedulerService exposed by the plugin API."""
-        return self.api.scheduler_service
+        return self._cron_tools.scheduler
 
     # ── Agent Orchestration Tools ────────────────────────
 
     def _register_agent_tools(self) -> None:
-        self.api.register_tool(
-            "agent_spawn",
-            "Start a one-off background subagent task in an isolated child session.",
-            {
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "Concrete delegated task for the subagent.",
-                    },
-                    "label": {
-                        "type": "string",
-                        "description": "Short display label for the task.",
-                    },
-                    "instructions": {
-                        "type": "string",
-                        "description": "Temporary task-specific instructions.",
-                    },
-                    "context_mode": {
-                        "type": "string",
-                        "enum": ["isolated", "summary", "fork"],
-                        "description": "How much parent context to pass.",
-                    },
-                    "provider_id": {
-                        "type": "string",
-                        "description": "Optional provider id for the child agent.",
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Optional model or provider/model for the child agent.",
-                    },
-                    "reasoning_effort": {
-                        "type": "string",
-                        "enum": sorted(REASONING_EFFORTS),
-                        "description": "Optional reasoning effort override for the child agent.",
-                    },
-                    "handoff_summary": {
-                        "type": "string",
-                        "description": "Brief parent context summary for summary mode.",
-                    },
-                    "timeout_seconds": {
-                        "type": "integer",
-                        "description": "Maximum subagent runtime in seconds.",
-                    },
-                    "notify": {
-                        "type": "string",
-                        "enum": ["done_only", "silent"],
-                        "description": "Whether to write a completion event to the parent session.",
-                    },
-                    "tool_denylist": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Extra tool names to hide from the child.",
-                    },
-                    "tool_allowlist": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "If set, only these tool names are visible to the child.",
-                    },
-                },
-                "required": ["task"],
-                "additionalProperties": False,
-            },
-            self._tool_agent_spawn,
-        )
-        self.api.register_tool(
-            "agent_wait",
-            "Wait for a subagent task result. Timeout does not cancel the task.",
-            {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string"},
-                    "timeout_seconds": {"type": "integer"},
-                },
-                "required": ["task_id"],
-                "additionalProperties": False,
-            },
-            self._tool_agent_wait,
-        )
-        # Note: ``agent_yield`` was removed (issue #41). It previously aliased
-        # ``agent_wait`` while implying a "yield current turn, continue in the
-        # background" semantic that the runtime never implemented. Real
-        # continuation remains a future feature; until then ``agent_wait`` is
-        # the only blocking-wait tool and the system denylist still pins the
-        # name so stale prompts cannot resurrect it from a child run.
-        self.api.register_tool(
-            "agent_list",
-            "List subagent tasks created by the current session.",
-            {
-                "type": "object",
-                "properties": {"limit": {"type": "integer"}},
-                "required": [],
-                "additionalProperties": False,
-            },
-            self._tool_agent_list,
-        )
-        self.api.register_tool(
-            "agent_stop",
-            "Cancel a subagent task created by the current session.",
-            {
-                "type": "object",
-                "properties": {"task_id": {"type": "string"}},
-                "required": ["task_id"],
-                "additionalProperties": False,
-            },
-            self._tool_agent_stop,
-        )
+        register_tool_definitions(self.api, self._agent_tools.definitions())
 
     def _get_orchestrator(self) -> Any:
-        return getattr(self.api, "orchestration_service", None)
+        return self._agent_tools.orchestrator
 
     async def _tool_agent_spawn(
         self,
         task: str,
-        label: str = "",
-        instructions: str = "",
-        context_mode: str = "isolated",
-        provider_id: str = "",
-        model: str = "",
-        reasoning_effort: str = "",
-        handoff_summary: str = "",
-        timeout_seconds: int | None = None,
-        notify: str = "done_only",
-        tool_allowlist: list[str] | None = None,
-        tool_denylist: list[str] | None = None,
+        **arguments: Any,
     ) -> str:
-        orchestrator = self._get_orchestrator()
-        if orchestrator is None:
-            return "Error: Agent orchestration service is not available."
-        try:
-            from nahida_bot.agent.orchestration import SubagentSpec
-
-            spec = SubagentSpec(
-                task=task,
-                label=label or None,
-                instructions=instructions or None,
-                context_mode=context_mode,  # type: ignore[arg-type]
-                handoff_summary=handoff_summary or None,
-                provider_id=provider_id or None,
-                model=model or None,
-                reasoning_effort=reasoning_effort or None,
-                timeout_seconds=timeout_seconds,
-                tool_allowlist=tuple(tool_allowlist or ()),
-                tool_denylist=tuple(tool_denylist or ()),
-                notify_policy=notify,  # type: ignore[arg-type]
-            )
-            bg_task = await orchestrator.spawn_subagent(spec)
-        except Exception as e:
-            return f"Error spawning subagent: {e}"
-
-        return json.dumps(
-            {
-                "task_id": bg_task.task_id,
-                "child_session_id": bg_task.child_session_id,
-                "status": bg_task.status.value,
-                "title": bg_task.title,
-            },
-            ensure_ascii=False,
-        )
+        return await self._agent_tools.spawn(task, **arguments)
 
     async def _tool_agent_wait(self, task_id: str, timeout_seconds: int = 30) -> str:
-        requester_session_id = self._current_requester_session_id()
-        if requester_session_id is None:
-            return "Error: No active session context."
-        orchestrator = self._get_orchestrator()
-        if orchestrator is None:
-            return "Error: Agent orchestration service is not available."
-        task = await orchestrator.wait_for_task(
-            task_id,
-            timeout_seconds=max(timeout_seconds, 0),
-        )
-        if task is None or task.requester_session_id != requester_session_id:
-            return f"Task {task_id} not found."
-        return self._format_background_task(task)
+        return await self._agent_tools.wait(task_id, timeout_seconds)
 
     async def _tool_agent_list(self, limit: int = 20) -> str:
-        requester_session_id = self._current_requester_session_id()
-        if requester_session_id is None:
-            return "Error: No active session context."
-        orchestrator = self._get_orchestrator()
-        if orchestrator is None:
-            return "Error: Agent orchestration service is not available."
-        tasks = await orchestrator.list_tasks(requester_session_id, limit=max(limit, 1))
-        if not tasks:
-            return "No subagent tasks for this session."
-        return "\n".join(self._format_background_task(task) for task in tasks)
+        return await self._agent_tools.list_tasks(limit)
 
     async def _tool_agent_stop(self, task_id: str) -> str:
-        requester_session_id = self._current_requester_session_id()
-        if requester_session_id is None:
-            return "Error: No active session context."
-        orchestrator = self._get_orchestrator()
-        if orchestrator is None:
-            return "Error: Agent orchestration service is not available."
-        task = await orchestrator.stop_task(requester_session_id, task_id)
-        if task is None:
-            return f"Task {task_id} not found or not owned by this session."
-        return self._format_background_task(task)
+        return await self._agent_tools.stop(task_id)
 
     @staticmethod
     def _current_requester_session_id() -> str | None:
-        from nahida_bot.core.context import current_agent_run
-
-        run_ctx = current_agent_run.get()
-        if run_ctx is not None:
-            return run_ctx.requester_session_id
-        ctx = current_session.get()
-        return ctx.session_id if ctx is not None else None
+        return AgentTools.current_requester_session_id()
 
     @staticmethod
     def _format_background_task(task: Any) -> str:
-        lines = [
-            f"{task.task_id}: {task.status.value} — {task.title}",
-            f"  child_session: {task.child_session_id or '(none)'}",
-        ]
-        if task.summary:
-            lines.append(f"  summary: {task.summary[:1000]}")
-        if task.error:
-            lines.append(f"  error: {task.error[:1000]}")
-        return "\n".join(lines)
+        return AgentTools.format_background_task(task)
 
     # ── Cross-Session Message Tool ───────────────────────
 
@@ -1218,84 +715,7 @@ class BuiltinCommandsPlugin(Plugin):
         return _bounded_desktop_tool_json({"ok": True, "result": result.payload})
 
     def _register_message_tool(self) -> None:
-        self.api.register_tool(
-            "message",
-            (
-                "Send a message to a chat on any registered platform. "
-                "Use 'notify' delivery for one-time notifications that do not "
-                "affect the target session's history. Use 'record' delivery to "
-                "also write the message into the target session's conversation "
-                "history, so the agent there can see it in context next time."
-                "Note that your output text will be sent to the current session "
-                "as well, so DO NOT use this tool to reply to the current "
-                "session's message. Only use it to send messages to other sessions."
-            ),
-            {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": (
-                            "Delivery target as 'platform:type:id' "
-                            "(e.g. 'milky:group:20001', 'telegram:private:123456')."
-                        ),
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Message text to send.",
-                    },
-                    "delivery": {
-                        "type": "string",
-                        "enum": ["notify", "record"],
-                        "description": (
-                            "Delivery mode. 'notify' (default) sends without "
-                            "affecting the target session's history. 'record' "
-                            "also writes into the target session's history so "
-                            "the agent there sees it in context."
-                        ),
-                    },
-                    "attachments": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": {
-                                    "type": "string",
-                                    "description": (
-                                        "Path to the file. Relative to workspace, "
-                                        "or absolute if allowed by config."
-                                    ),
-                                },
-                                "type": {
-                                    "type": "string",
-                                    "enum": [
-                                        "auto",
-                                        "photo",
-                                        "document",
-                                        "audio",
-                                        "video",
-                                    ],
-                                    "description": (
-                                        "Attachment type. 'auto' infers from file MIME type."
-                                    ),
-                                },
-                                "caption": {
-                                    "type": "string",
-                                    "description": "Optional caption for the attachment.",
-                                },
-                            },
-                            "required": ["path"],
-                            "additionalProperties": False,
-                        },
-                        "description": "Optional files to send alongside the message.",
-                    },
-                },
-                "required": ["target", "text"],
-                "additionalProperties": False,
-            },
-            self._tool_message,
-            requires_admin=True,
-        )
+        register_tool_definitions(self.api, self._message_tools.message_definitions())
 
     async def _tool_message(
         self,
@@ -1304,355 +724,36 @@ class BuiltinCommandsPlugin(Plugin):
         delivery: str = "notify",
         attachments: list[dict[str, Any]] | None = None,
     ) -> str:
-        ctx = current_session.get()
-        if ctx is None:
-            return "Error: No active session context."
-
-        if delivery not in ("notify", "record"):
-            return "Error: delivery must be 'notify' or 'record'."
-
-        if not target:
-            return "Error: Provide a typed 'target' such as 'milky:group:20001'."
-        try:
-            address = ChatAddress.parse(target)
-        except ValueError as exc:
-            return f"Error: Invalid target format: {exc}"
-        if not address.is_typed:
-            return "Error: target must include a chat type, such as private or group."
-
-        # Resolve attachments
-        resolved_attachments: list[Attachment] = []
-        if attachments:
-            for item in attachments:
-                raw_path = item.get("path", "")
-                if not raw_path:
-                    return "Error: Each attachment must have a 'path'."
-                try:
-                    file_path = self._resolve_attachment_path(raw_path)
-                except ValueError as exc:
-                    return f"Error: {exc}"
-                if not file_path.is_file():
-                    return f"Error: File does not exist: {raw_path}"
-
-                attachment_type = item.get("type", "auto")
-                if attachment_type not in (
-                    "auto",
-                    "photo",
-                    "document",
-                    "audio",
-                    "video",
-                ):
-                    return (
-                        "Error: attachment type must be one of: "
-                        "auto, photo, document, audio, video."
-                    )
-                selected_type = (
-                    self._infer_attachment_type(file_path)
-                    if attachment_type == "auto"
-                    else attachment_type
-                )
-                resolved_attachments.append(
-                    Attachment(
-                        type=selected_type,
-                        path=str(file_path),
-                        caption=item.get("caption", ""),
-                    )
-                )
-
-        outbound = OutboundMessage(
+        return await self._message_tools.send(
             text=text,
-            extra={"chat_address": address.chat_key},
-            attachments=resolved_attachments,
+            target=target,
+            delivery=delivery,
+            attachments=attachments,
         )
-        message_id = await self.api.send_message(
-            address.target_id,
-            outbound,
-            channel=address.channel,
-        )
-        delivery_metadata: dict[str, Any] = {
-            "from_session": ctx.session_id,
-            "from_platform": ctx.platform,
-            "from_chat_id": ctx.chat_id,
-            "from_user_id": ctx.user_id,
-        }
-        if ctx.chat_address is not None:
-            delivery_metadata["from_chat_address"] = ctx.chat_address.chat_key
-        if resolved_attachments:
-            delivery_metadata["attachment_count"] = len(resolved_attachments)
-        record_delivery = cast(
-            Callable[..., Awaitable[Any]],
-            getattr(self.api, "record_message_delivery", None),
-        )
-        if callable(record_delivery):
-            await record_delivery(
-                target=address,
-                text=text,
-                source="message_tool",
-                delivery_mode=delivery,
-                status="sent",
-                message_id=message_id,
-                metadata=delivery_metadata,
-            )
-
-        # Record in target session history if requested
-        if delivery == "record":
-            metadata: dict[str, Any] = {
-                "from_session": ctx.session_id,
-                "from_platform": ctx.platform,
-                "from_chat_id": ctx.chat_id,
-                "from_user_id": ctx.user_id,
-            }
-            if ctx.chat_address is not None:
-                metadata["from_chat_address"] = ctx.chat_address.chat_key
-            if resolved_attachments:
-                metadata["attachment_count"] = len(resolved_attachments)
-            await self.api.record_session_event(
-                address.chat_key,
-                text,
-                source="cross_session_message",
-                metadata=metadata,
-            )
-
-        display = address.chat_key
-        parts = [f"Message sent to {display}"]
-        if delivery == "record":
-            parts.append("(recorded in target session history)")
-        if message_id:
-            parts[0] += f" (id: {message_id})"
-        return ", ".join(parts)
 
     async def _tool_cron_create(
         self,
         prompt: str,
         mode: str,
-        fire_at: str | None = None,
-        interval_seconds: int | None = None,
-        cron_expression: str | None = None,
-        max_runs: int | None = None,
-        session_mode: str = "main",
+        **arguments: Any,
     ) -> str:
-        ctx = current_session.get()
-        if ctx is None:
-            return "Error: No active session context."
-
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Error: Scheduler is not available."
-
-        if mode == "once":
-            if not fire_at:
-                return "Error: 'fire_at' is required for mode='once'."
-            from datetime import UTC, datetime
-
-            try:
-                dt = datetime.fromisoformat(fire_at)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
-                fire_at = dt.astimezone(UTC).isoformat()
-            except ValueError:
-                return f"Error: Invalid datetime format: {fire_at}"
-        elif mode == "interval":
-            if not interval_seconds or interval_seconds < 60:
-                return "Error: 'interval_seconds' must be >= 60 for mode='interval'."
-            if max_runs is not None and max_runs <= 0:
-                return "Error: 'max_runs' must be > 0 when provided."
-        elif mode == "cron":
-            if not cron_expression:
-                return "Error: 'cron_expression' is required for mode='cron'."
-        else:
-            return f"Error: Invalid mode '{mode}'. Use 'once', 'interval', or 'cron'."
-
-        try:
-            address = _typed_address_from_session_context(ctx)
-            if address is None:
-                return "Error: Current chat does not have a typed delivery target."
-
-            job = await scheduler.create_job(
-                address=address,
-                prompt=prompt,
-                mode=mode,
-                fire_at=fire_at if mode == "once" else None,
-                interval_seconds=interval_seconds,
-                cron_expression=cron_expression,
-                max_runs=max_runs,
-                workspace_id=ctx.workspace_id,
-                session_mode=session_mode,
-                created_by_user_id=ctx.user_id,
-                created_from_session_id=ctx.session_id,
-                created_from_chat_address=address.chat_key,
-                # TODO(authz): sender_account_key inherits the *current turn's*
-                # initiator.  In group chats this may be a conversation-joiner
-                # anchor rather than an explicit @-mention — the permission model
-                # for cron ownership in auto-join scenarios needs further thought.
-                sender_account_key=ctx.sender_account_key,
-            )
-        except Exception as e:
-            return f"Error creating scheduled task: {e}"
-
-        # Format summary
-        lines = [f"Scheduled task created (id: {job.job_id})"]
-        if mode == "once":
-            lines.append(f"  Mode: once at {job.next_fire_at}")
-        elif mode == "cron":
-            lines.append(f"  Mode: cron ({cron_expression})")
-            if max_runs:
-                lines.append(f"  Max runs: {max_runs}")
-            else:
-                lines.append("  Max runs: infinite")
-        else:
-            lines.append(f"  Mode: every {interval_seconds}s")
-            if max_runs:
-                lines.append(f"  Max runs: {max_runs}")
-            else:
-                lines.append("  Max runs: infinite")
-        lines.append(f"  Next fire: {job.next_fire_at}")
-        lines.append(f"  Session: {job.session_mode}")
-        lines.append(f"  Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
-        return "\n".join(lines)
+        return await self._cron_tools.create(prompt, mode, **arguments)
 
     async def _tool_cron_list(self) -> str:
-        ctx = current_session.get()
-        if ctx is None:
-            return "Error: No active session context."
-
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Error: Scheduler is not available."
-
-        address = _address_from_session_context(ctx)
-        jobs = [
-            job
-            for job in await scheduler.list_jobs(address)
-            if _job_visible_to_user(job, address, ctx.user_id)
-        ]
-        if not jobs:
-            return "No active scheduled tasks for this chat."
-
-        lines = [f"Active scheduled tasks ({len(jobs)}):"]
-        for j in jobs:
-            if j.mode == "once":
-                schedule = f"once at {j.next_fire_at}"
-            elif j.mode == "cron":
-                schedule = f"cron ({j.cron_expression})"
-            else:
-                schedule = f"every {j.interval_seconds}s"
-            preview = j.prompt[:60] + ("..." if len(j.prompt) > 60 else "")
-            lines.append(
-                f"  {j.job_id}: [{j.mode}/{j.session_mode}] {schedule} — {preview}"
-            )
-            lines.append(f"    runs: {j.run_count}, next: {j.next_fire_at}")
-            if j.failure_count:
-                lines.append(
-                    f"    failures: {j.failure_count}, last error: {j.last_error}"
-                )
-        return "\n".join(lines)
+        return await self._cron_tools.list_active()
 
     async def _tool_cron_cancel(self, job_id: str) -> str:
-        ctx = current_session.get()
-        if ctx is None:
-            return "Error: No active session context."
-
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Error: Scheduler is not available."
-
-        # Verify ownership
-        job = await scheduler.get_job(job_id)
-        if job is None:
-            return f"Error: Job '{job_id}' not found."
-        address = _typed_address_from_session_context(ctx)
-        if address is None or not _job_visible_to_user(job, address, ctx.user_id):
-            return f"Error: Job '{job_id}' does not belong to this chat."
-
-        cancelled = await scheduler.cancel_job(job_id)
-        if cancelled:
-            return f"Cancelled task {job_id}."
-        return f"Task {job_id} is already inactive or completed."
+        return await self._cron_tools.cancel(job_id)
 
     async def _tool_cron_update(
         self,
         job_id: str,
-        prompt: str | None = None,
-        mode: str | None = None,
-        fire_at: str | None = None,
-        interval_seconds: int | None = None,
-        cron_expression: str | None = None,
-        max_runs: int | None = None,
+        **arguments: Any,
     ) -> str:
-        ctx = current_session.get()
-        if ctx is None:
-            return "Error: No active session context."
-
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Error: Scheduler is not available."
-
-        job = await scheduler.get_job(job_id)
-        if job is None:
-            return f"Error: Job '{job_id}' not found."
-        address = _typed_address_from_session_context(ctx)
-        if address is None or not _job_visible_to_user(job, address, ctx.user_id):
-            return f"Error: Job '{job_id}' does not belong to this chat."
-
-        if mode is not None and mode not in {"once", "interval", "cron"}:
-            return f"Error: Invalid mode '{mode}'. Use 'once', 'interval', or 'cron'."
-        if interval_seconds is not None and interval_seconds < 60:
-            return "Error: 'interval_seconds' must be >= 60 for mode='interval'."
-        if max_runs is not None and max_runs <= 0:
-            return "Error: 'max_runs' must be > 0 when provided."
-
-        try:
-            updated = await scheduler.update_job(
-                job_id,
-                prompt=prompt,
-                mode=mode,
-                fire_at=fire_at,
-                interval_seconds=interval_seconds,
-                cron_expression=cron_expression,
-                max_runs=max_runs,
-            )
-        except Exception as e:
-            return f"Error updating scheduled task: {e}"
-
-        lines = [f"Updated task {updated.job_id}."]
-        if updated.mode == "once":
-            lines.append(f"  Mode: once at {updated.next_fire_at}")
-        elif updated.mode == "cron":
-            lines.append(f"  Mode: cron ({updated.cron_expression})")
-            lines.append(
-                f"  Max runs: {updated.max_runs if updated.max_runs else 'infinite'}"
-            )
-        else:
-            lines.append(f"  Mode: every {updated.interval_seconds}s")
-            lines.append(
-                f"  Max runs: {updated.max_runs if updated.max_runs else 'infinite'}"
-            )
-        lines.append(f"  Next fire: {updated.next_fire_at}")
-        lines.append(
-            f"  Prompt: {updated.prompt[:100]}{'...' if len(updated.prompt) > 100 else ''}"
-        )
-        return "\n".join(lines)
+        return await self._cron_tools.update(job_id, **arguments)
 
     async def _tool_cron_delete(self, job_id: str) -> str:
-        ctx = current_session.get()
-        if ctx is None:
-            return "Error: No active session context."
-
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Error: Scheduler is not available."
-
-        job = await scheduler.get_job(job_id)
-        if job is None:
-            return f"Error: Job '{job_id}' not found."
-        address = _typed_address_from_session_context(ctx)
-        if address is None or not _job_visible_to_user(job, address, ctx.user_id):
-            return f"Error: Job '{job_id}' does not belong to this chat."
-
-        deleted = await scheduler.delete_job(job_id)
-        if deleted:
-            return f"Deleted task {job_id}."
-        return f"Task {job_id} was already deleted."
+        return await self._cron_tools.delete(job_id)
 
     # ── Command Handlers ──────────────────────────────────
 
@@ -1677,65 +778,13 @@ class BuiltinCommandsPlugin(Plugin):
         )
 
     async def _cron_list(self, inbound: InboundMessage) -> str:
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Scheduler is not available."
-        address = _address_from_inbound(inbound)
-        jobs = [
-            job
-            for job in await scheduler.list_jobs(address)
-            if _job_visible_to_user(job, address, inbound.user_id)
-        ]
-        if not jobs:
-            return "No scheduled tasks for this chat."
-        lines = []
-        for j in jobs:
-            status_tag = "active" if j.is_active else "inactive"
-            next_at = f", next: {j.next_fire_at}" if j.is_active else ""
-            lines.append(
-                f"  {j.job_id}  [{j.mode}] {status_tag}  runs: {j.run_count}{next_at}"
-            )
-            prompt_preview = j.prompt[:80] + ("..." if len(j.prompt) > 80 else "")
-            lines.append(f"    {prompt_preview}")
-        return "\n".join(lines)
+        return await self._cron_tools.list_for_inbound(inbound)
 
     async def _cron_cancel(self, job_id: str, inbound: InboundMessage) -> str:
-        if not job_id:
-            return "Usage: /cron cancel <job_id>"
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Scheduler is not available."
-        job = await scheduler.get_job(job_id)
-        address = _address_from_inbound(inbound)
-        if (
-            job is None
-            or not address.is_typed
-            or not _job_visible_to_user(job, address, inbound.user_id)
-        ):
-            return f"Task '{job_id}' not found."
-        cancelled = await scheduler.cancel_job(job_id)
-        if cancelled:
-            return f"Cancelled task {job_id}."
-        return f"Task {job_id} is already inactive."
+        return await self._cron_tools.cancel_for_inbound(job_id, inbound)
 
     async def _cron_delete(self, job_id: str, inbound: InboundMessage) -> str:
-        if not job_id:
-            return "Usage: /cron delete <job_id>"
-        scheduler = self._get_scheduler()
-        if scheduler is None:
-            return "Scheduler is not available."
-        job = await scheduler.get_job(job_id)
-        address = _address_from_inbound(inbound)
-        if (
-            job is None
-            or not address.is_typed
-            or not _job_visible_to_user(job, address, inbound.user_id)
-        ):
-            return f"Task '{job_id}' not found."
-        deleted = await scheduler.delete_job(job_id)
-        if deleted:
-            return f"Deleted task {job_id}."
-        return f"Task {job_id} was already deleted."
+        return await self._cron_tools.delete_for_inbound(job_id, inbound)
 
     async def _cmd_reset(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -2457,107 +1506,25 @@ class BuiltinCommandsPlugin(Plugin):
         filename: str = "",
     ) -> str:
         """Send a workspace file to the current chat as an attachment."""
-        ctx = current_session.get()
-        if ctx is None:
-            return "Error: No active session context."
-
-        if attachment_type not in {"auto", "photo", "document", "audio", "video"}:
-            return (
-                "Error: attachment_type must be one of: "
-                "auto, photo, document, audio, video."
-            )
-
-        try:
-            file_path = self._resolve_attachment_path(path)
-        except ValueError as exc:
-            return f"Error: {exc}"
-        except Exception as exc:
-            return f"Error: Invalid attachment path: {exc}"
-
-        if not file_path.is_file():
-            return f"Error: File does not exist: {path}"
-
-        selected_type = (
-            self._infer_attachment_type(file_path)
-            if attachment_type == "auto"
-            else attachment_type
+        return await self._message_tools.send_local_attachment(
+            path,
+            attachment_type,
+            caption,
+            filename,
         )
-        extra: dict[str, Any] = {}
-        address = _typed_address_from_session_context(ctx)
-        if address is not None:
-            extra["chat_address"] = address.chat_key
-        message_id = await self.api.send_message(
-            ctx.chat_id,
-            OutboundMessage(
-                text="",
-                extra=extra,
-                attachments=[
-                    Attachment(
-                        type=selected_type,
-                        path=str(file_path),
-                        filename=filename or file_path.name,
-                        caption=caption,
-                    )
-                ],
-            ),
-            channel=ctx.platform,
-        )
-        return f"Attachment sent: {message_id}" if message_id else "Attachment sent."
 
     def _resolve_attachment_path(self, path: str) -> Path:
-        raw_path = Path(path).expanduser()
-        if raw_path.is_absolute():
-            if not self._allow_external_attachment_paths():
-                raise ValueError(
-                    "Absolute attachment paths are disabled. Use a workspace-relative "
-                    "path or enable builtin-commands.allow_external_attachment_paths."
-                )
-            resolved = raw_path.resolve(strict=False)
-            self._validate_external_attachment_path(resolved)
-            return resolved
-
-        resolved_workspace_path = self.api.resolve_workspace_path(path)
-        if not resolved_workspace_path:
-            raise ValueError("Workspace is not available.")
-        return Path(resolved_workspace_path)
+        return self._message_tools.attachments.resolve(path)
 
     def _allow_external_attachment_paths(self) -> bool:
-        return bool(self.manifest.config.get("allow_external_attachment_paths", False))
+        return self._message_tools.attachments.allows_external_paths()
 
     def _validate_external_attachment_path(self, path: Path) -> None:
-        raw_roots = self.manifest.config.get("external_attachment_roots", [])
-        if not raw_roots:
-            return
-        if not isinstance(raw_roots, list):
-            raise ValueError("external_attachment_roots must be a list of paths.")
-
-        allowed_roots = [
-            Path(str(root)).expanduser().resolve(strict=False)
-            for root in raw_roots
-            if str(root).strip()
-        ]
-        if not allowed_roots:
-            return
-        for root in allowed_roots:
-            try:
-                path.relative_to(root)
-                return
-            except ValueError:
-                continue
-        roots = ", ".join(str(root) for root in allowed_roots)
-        raise ValueError(f"Attachment path is outside allowed external roots: {roots}")
+        self._message_tools.attachments.validate_external_path(path)
 
     @staticmethod
     def _infer_attachment_type(path: Path) -> str:
-        mime_type, _ = mimetypes.guess_type(str(path))
-        if mime_type:
-            if mime_type.startswith("image/"):
-                return "photo"
-            if mime_type.startswith("audio/"):
-                return "audio"
-            if mime_type.startswith("video/"):
-                return "video"
-        return "document"
+        return AttachmentResolver.infer_type(path)
 
 
 def _format_session_key_kind(kind: str) -> str:
@@ -2580,53 +1547,3 @@ def _chat_type_from_session_context(ctx: Any) -> str:
 def _chat_type_from_inbound(inbound: InboundMessage) -> str:
     address = _address_from_inbound(inbound)
     return address.target_type if address.is_typed else ""
-
-
-def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:
-    chat_type = ""
-    if inbound.chat_context and inbound.chat_context.chat_type:
-        chat_type = inbound.chat_context.chat_type
-    elif inbound.message_context and inbound.message_context.chat_type:
-        chat_type = inbound.message_context.chat_type
-    return ChatAddress.from_inbound(
-        inbound.platform,
-        inbound.chat_id,
-        is_group=inbound.is_group,
-        chat_type=chat_type,
-    )
-
-
-def _address_from_session_context(ctx: Any) -> ChatAddress:
-    address = getattr(ctx, "chat_address", None)
-    if isinstance(address, ChatAddress):
-        return address
-    return ChatAddress.from_inbound(
-        str(getattr(ctx, "platform", "")),
-        str(getattr(ctx, "chat_id", "")),
-    )
-
-
-def _typed_address_from_session_context(ctx: Any) -> ChatAddress | None:
-    address = _address_from_session_context(ctx)
-    return address if address.is_typed else None
-
-
-def _job_matches_address(job: Any, address: ChatAddress) -> bool:
-    return (
-        address.is_typed
-        and job.platform == address.channel
-        and job.chat_id == address.target_id
-        and job.chat_type == address.target_type
-    )
-
-
-def _job_visible_to_user(job: Any, address: ChatAddress, user_id: str) -> bool:
-    if not _job_matches_address(job, address):
-        return False
-    # TODO(cron-group-management): Revisit group-chat ownership UX. Per-creator
-    # filtering prevents accidental edits, but group admins may need a controlled
-    # way to list or manage all jobs in the group.
-    owner = str(getattr(job, "created_by_user_id", "") or "")
-    if not owner:
-        return True
-    return bool(user_id) and owner == user_id

@@ -283,6 +283,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "read_chat_history",
         "search_chat_history",
         "find_chat",
+        "plan",
         "cron_create",
         "cron_update",
         "cron_list",
@@ -303,6 +304,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert api.tools["memory_read"]["parameters"]["required"] == []
     assert api.tools["memory_write"]["parameters"]["required"] == ["content"]
     assert api.tools["read_chat_history"]["parameters"]["required"] == ["mode"]
+    assert api.tools["plan"]["parameters"]["required"] == ["action"]
     for tool_name in {
         "exec",
         "message",
@@ -310,6 +312,9 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "desktop_exec",
         "desktop_file_read",
         "identity_manage",
+        "read_chat_history",
+        "search_chat_history",
+        "find_chat",
     }:
         assert api.tools[tool_name]["requires_admin"] is True
     assert api.tools["workspace_read"]["requires_admin"] is False
@@ -608,6 +613,152 @@ async def test_workspace_tools_delegate_to_bot_api() -> None:
     result = await plugin._tool_workspace_write("notes/a.txt", "hello")
     assert result == "Written workspace file: notes/a.txt"
     assert await plugin._tool_workspace_read("notes/a.txt") == "hello"
+
+
+@pytest.mark.asyncio
+async def test_plan_tool_manages_durable_task_state() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    created = await plugin._tool_plan(
+        "create",
+        title="Refactor",
+        tasks=[
+            {"title": "Extract tools", "detail": "Keep compatibility wrappers"},
+            {"title": "Run tests"},
+        ],
+    )
+    updated = await plugin._tool_plan(
+        "update",
+        task_id=1,
+        status="completed",
+        detail="Done",
+    )
+    added = await plugin._tool_plan("add", tasks=[{"title": "Review quality"}])
+    removed = await plugin._tool_plan("remove", task_id=2)
+
+    assert "Plan: Refactor" in created
+    assert "1. [x] Extract tools — Done" in updated
+    assert "3. [ ] Review quality" in added
+    assert "2. [ ] Review quality" in removed
+    assert await plugin._tool_plan("list") == removed.removeprefix("Task removed.\n")
+
+
+@pytest.mark.asyncio
+async def test_plan_tool_validates_updates_and_clear() -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    assert await plugin._tool_plan("list") == (
+        "No plan exists. Use action='create' to start one."
+    )
+    await plugin._tool_plan("create", tasks=[{"title": "One"}])
+
+    assert await plugin._tool_plan("update", task_id=1, status="unknown") == (
+        "Error: Invalid status 'unknown'. Must be one of: "
+        "completed, failed, in_progress, pending"
+    )
+    assert await plugin._tool_plan("remove") == (
+        "Error: task_id is required for remove."
+    )
+    assert await plugin._tool_plan("clear") == "Plan cleared."
+    assert await plugin._tool_plan("list") == (
+        "No plan exists. Use action='create' to start one."
+    )
+
+
+class _FakeOrchestrator:
+    def __init__(self) -> None:
+        self.spec: Any = None
+        self.wait_timeout: int | None = None
+        self.list_request: tuple[str, int] | None = None
+        self.stop_request: tuple[str, str] | None = None
+        self.task = SimpleNamespace(
+            task_id="task-1",
+            child_session_id="agent:task-1",
+            requester_session_id="telegram:private:c1",
+            status=SimpleNamespace(value="running"),
+            title="Review",
+            summary="",
+            error="",
+        )
+
+    async def spawn_subagent(self, spec: Any) -> Any:
+        self.spec = spec
+        return self.task
+
+    async def wait_for_task(self, task_id: str, *, timeout_seconds: int) -> Any:
+        self.wait_timeout = timeout_seconds
+        return self.task if task_id == self.task.task_id else None
+
+    async def list_tasks(self, requester_session_id: str, *, limit: int) -> list[Any]:
+        self.list_request = (requester_session_id, limit)
+        return [self.task]
+
+    async def stop_task(self, requester_session_id: str, task_id: str) -> Any:
+        self.stop_request = (requester_session_id, task_id)
+        return self.task
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_delegate_with_session_ownership() -> None:
+    api = _FakeAPI()
+    orchestrator = _FakeOrchestrator()
+    api.orchestration_service = orchestrator
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+        )
+    )
+    try:
+        spawned = await plugin._tool_agent_spawn(
+            "Review the refactor",
+            label="Review",
+            context_mode="summary",
+            handoff_summary="Plan and cron are extracted",
+            tool_allowlist=["workspace_read"],
+        )
+        waited = await plugin._tool_agent_wait("task-1", timeout_seconds=-1)
+        listed = await plugin._tool_agent_list(limit=0)
+        stopped = await plugin._tool_agent_stop("task-1")
+    finally:
+        current_session.reset(token)
+
+    assert '"task_id": "task-1"' in spawned
+    assert orchestrator.spec.task == "Review the refactor"
+    assert orchestrator.spec.context_mode == "summary"
+    assert orchestrator.spec.tool_allowlist == ("workspace_read",)
+    assert "task-1: running — Review" in waited
+    assert listed == waited
+    assert stopped == waited
+    assert orchestrator.wait_timeout == 0
+    assert orchestrator.list_request == ("telegram:private:c1", 1)
+    assert orchestrator.stop_request == ("telegram:private:c1", "task-1")
+
+
+@pytest.mark.asyncio
+async def test_agent_wait_hides_tasks_owned_by_another_session() -> None:
+    api = _FakeAPI()
+    orchestrator = _FakeOrchestrator()
+    orchestrator.task.requester_session_id = "telegram:private:other"
+    api.orchestration_service = orchestrator
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+        )
+    )
+    try:
+        result = await plugin._tool_agent_wait("task-1")
+    finally:
+        current_session.reset(token)
+
+    assert result == "Task task-1 not found."
 
 
 @pytest.mark.asyncio
@@ -1175,6 +1326,13 @@ class _FakeScheduler:
         self.jobs[job_id] = job
         return job
 
+    async def cancel_job(self, job_id: str) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or not job.is_active:
+            return False
+        self.jobs.pop(job_id)
+        return True
+
     async def delete_job(self, job_id: str) -> bool:
         self.deleted.append(job_id)
         return self.jobs.pop(job_id, None) is not None
@@ -1253,6 +1411,61 @@ async def test_cron_create_records_creator_and_source_session() -> None:
     assert api.scheduler_service.created["created_from_chat_address"] == (
         "telegram:private:c1"
     )
+
+
+@pytest.mark.asyncio
+async def test_cron_once_normalizes_naive_datetime_to_utc() -> None:
+    api = _FakeAPI()
+    api.scheduler_service = _FakeScheduler()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
+    )
+    try:
+        result = await plugin._tool_cron_create(
+            "ping",
+            "once",
+            fire_at="2026-08-13T09:00:00",
+        )
+    finally:
+        current_session.reset(token)
+
+    assert "Scheduled task created" in result
+    assert api.scheduler_service.created["fire_at"] == "2026-08-13T09:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_cron_cancel_enforces_current_user_ownership() -> None:
+    api = _FakeAPI()
+    scheduler = _FakeScheduler()
+    scheduler.jobs["job1"] = _cron_job(created_by_user_id="u1")
+    api.scheduler_service = scheduler
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+            user_id="u1",
+        )
+    )
+    try:
+        cancelled = await plugin._tool_cron_cancel("job1")
+    finally:
+        current_session.reset(token)
+
+    assert cancelled == "Cancelled task job1."
+    assert "job1" not in scheduler.jobs
 
 
 @pytest.mark.asyncio

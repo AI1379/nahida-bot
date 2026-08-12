@@ -46,7 +46,7 @@ from nahida_bot.plugins.commands import (
 )
 
 if TYPE_CHECKING:
-    from nahida_bot.agent.loop import AgentLoop
+    from nahida_bot.agent.loop import AgentLoop, LoopEvent
     from nahida_bot.agent.memory.store import MemoryStore
     from nahida_bot.agent.providers.manager import ProviderManager
     from nahida_bot.core.events import EventContext, Subscription
@@ -81,6 +81,32 @@ class ReasoningDisplayConfig:
 
     show: bool
     max_chars: int
+
+
+@dataclass(slots=True, frozen=True)
+class _AgentDispatchRequest:
+    """Immutable inputs for one background agent dispatch."""
+
+    runner: SessionRunner
+    inbound: InboundMessage
+    session_id: str
+    workspace_id: str | None
+    stop_event: asyncio.Event
+    source_tag: str = "user_input"
+    agent_instruction: str = ""
+    reply_to_override: str | None = None
+    proactive_context: str = ""
+    attention_episode_id: str = ""
+
+
+@dataclass(slots=True)
+class _AgentDeliveryState:
+    """Mutable delivery and terminal state accumulated from loop events."""
+
+    last_sent: str = ""
+    cancelled: bool = False
+    crashed: bool = False
+    done_error: str = ""
 
 
 class MessageRouter:
@@ -923,16 +949,18 @@ class MessageRouter:
         stop_event = asyncio.Event()
         task = asyncio.create_task(
             self._run_agent_in_background(
-                runner,
-                inbound,
-                session_id,
-                workspace_id,
-                stop_event,
-                source_tag,
-                agent_instruction,
-                reply_to_override,
-                proactive_context,
-                attention_episode_id,
+                _AgentDispatchRequest(
+                    runner=runner,
+                    inbound=inbound,
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    stop_event=stop_event,
+                    source_tag=source_tag,
+                    agent_instruction=agent_instruction,
+                    reply_to_override=reply_to_override,
+                    proactive_context=proactive_context,
+                    attention_episode_id=attention_episode_id,
+                )
             )
         )
         tracker.start(session_id, task, stop_event)
@@ -945,180 +973,226 @@ class MessageRouter:
 
     async def _run_agent_in_background(
         self,
-        runner: SessionRunner,
-        inbound: InboundMessage,
-        session_id: str,
-        workspace_id: str | None,
-        stop_event: asyncio.Event,
-        source_tag: str = "user_input",
-        agent_instruction: str = "",
-        reply_to_override: str | None = None,
-        proactive_context: str = "",
-        attention_episode_id: str = "",
+        request: _AgentDispatchRequest,
     ) -> None:
         """Run agent loop in background, streaming responses as they arrive."""
-        tracker = runner.run_tracker
-        last_sent = ""
-        cancelled = False
-        crashed = False
-        done_error = ""
-        reasoning_display = await self._load_reasoning_display_config(session_id)
+        state = _AgentDeliveryState()
+        reasoning_display = await self._load_reasoning_display_config(
+            request.session_id
+        )
         logger.debug(
             "router.agent_run_start",
-            session_id=session_id,
-            workspace_id=workspace_id or "",
+            session_id=request.session_id,
+            workspace_id=request.workspace_id or "",
             reasoning_display=reasoning_display.show,
             reasoning_max_chars=reasoning_display.max_chars,
-            **_inbound_log_fields(inbound),
+            **_inbound_log_fields(request.inbound),
         )
-        # Lifecycle: signal run start reactively (webui etc.) instead of polling
-        # run_tracker. publish_nowait so observers can never block the run.
+        self._publish_agent_run_started(request)
+        try:
+            async for event in request.runner.run_stream(
+                user_message=request.inbound.text,
+                session_id=request.session_id,
+                system_prompt=self._config.system_prompt,
+                workspace_id=request.workspace_id,
+                attachments=request.inbound.attachments,
+                message_context=context_from_inbound(request.inbound),
+                source_tag=request.source_tag,
+                agent_instruction=request.agent_instruction,
+                trigger_kind=_trigger_kind(
+                    request.inbound,
+                    source_tag=request.source_tag,
+                ),
+                ephemeral_context=request.proactive_context,
+                attention_episode_id=request.attention_episode_id,
+                stop_event=request.stop_event,
+            ):
+                self._log_agent_event(request.session_id, event)
+                await self._handle_agent_event(
+                    request,
+                    event,
+                    reasoning_display,
+                    state,
+                )
+        except asyncio.CancelledError:
+            state.cancelled = True
+            logger.debug("router.agent_cancelled", session_id=request.session_id)
+            raise
+        except Exception:
+            state.crashed = True
+            logger.exception(
+                "router.agent_run_failed",
+                session_id=request.session_id,
+            )
+            try:
+                await self._send_response(
+                    request.inbound,
+                    request.session_id,
+                    "An error occurred during agent execution.",
+                    reply_to_override=request.reply_to_override,
+                )
+            except Exception:
+                logger.debug(
+                    "router.error_send_failed",
+                    session_id=request.session_id,
+                )
+        finally:
+            await self._finish_agent_run(request, state)
+
+    def _publish_agent_run_started(self, request: _AgentDispatchRequest) -> None:
+        """Publish the non-blocking start lifecycle event."""
         self._event_bus.publish_nowait(
             AgentRunStarted(
                 payload=AgentRunPayload(
-                    session_id=session_id,
-                    workspace_id=workspace_id or "",
+                    session_id=request.session_id,
+                    workspace_id=request.workspace_id or "",
                 ),
                 source="message_router",
             )
         )
-        try:
-            async for event in runner.run_stream(
-                user_message=inbound.text,
-                session_id=session_id,
-                system_prompt=self._config.system_prompt,
-                workspace_id=workspace_id,
-                attachments=inbound.attachments,
-                message_context=context_from_inbound(inbound),
-                source_tag=source_tag,
-                agent_instruction=agent_instruction,
-                trigger_kind=_trigger_kind(inbound, source_tag=source_tag),
-                ephemeral_context=proactive_context,
-                attention_episode_id=attention_episode_id,
-                stop_event=stop_event,
-            ):
-                logger.debug(
-                    "router.agent_event",
-                    session_id=session_id,
-                    event_type=event.type,
-                    trace_id=event.trace_id or "",
-                    text_chars=len(event.text or ""),
-                    reasoning_chars=len(event.reasoning or ""),
-                    final_response_chars=len(event.final_response or ""),
-                    tool_names=list(event.tool_names or []),
-                    error=event.error or "",
-                )
-                if event.type == "text":
-                    reasoning = self._prepare_reasoning(
-                        event.reasoning,
-                        reasoning_display,
-                    )
-                    send_text = event.text
-                    if self._config.enable_silent_reply and send_text:
-                        sr = detect_sentinel(send_text)
-                        if sr.action is not None:
-                            if sr.text:
-                                send_text = sr.text
-                            else:
-                                continue
-                    if send_text:
-                        send_text = strip_envelope_prefix(send_text)
-                    if send_text and send_text != last_sent:
-                        await self._send_response(
-                            inbound,
-                            session_id,
-                            send_text,
-                            reasoning=reasoning,
-                            reply_to_override=reply_to_override,
-                        )
-                        last_sent = send_text
-                    elif reasoning and not send_text:
-                        await self._send_response(
-                            inbound,
-                            session_id,
-                            "",
-                            reasoning=reasoning,
-                            reply_to_override=reply_to_override,
-                        )
-                elif event.type == "done":
-                    if event.error == "cancelled":
-                        cancelled = True
-                        await self._send_response(
-                            inbound,
-                            session_id,
-                            "[Agent stopped.]",
-                            reply_to_override=reply_to_override,
-                        )
-                    else:
-                        done_error = event.error or ""
-                        final = event.final_response or ""
-                        if self._config.enable_silent_reply and final:
-                            sr = detect_sentinel(final)
-                            if sr.action is not None:
-                                if not sr.text:
-                                    continue
-                                final = sr.text
-                        if final:
-                            final = strip_envelope_prefix(final)
-                        reasoning = self._prepare_reasoning(
-                            event.reasoning,
-                            reasoning_display,
-                        )
-                        if final and final != last_sent:
-                            await self._send_response(
-                                inbound,
-                                session_id,
-                                final,
-                                reasoning=reasoning,
-                                reply_to_override=reply_to_override,
-                            )
-        except asyncio.CancelledError:
-            # External cancellation (e.g. shutdown) — flag so the finally
-            # publishes AgentRunCancelled, not AgentRunFinished.
-            cancelled = True
-            logger.debug("router.agent_cancelled", session_id=session_id)
-            raise
-        except Exception:
-            crashed = True
-            logger.exception("router.agent_run_failed", session_id=session_id)
-            try:
-                await self._send_response(
-                    inbound,
-                    session_id,
-                    "An error occurred during agent execution.",
-                    reply_to_override=reply_to_override,
-                )
-            except Exception:
-                logger.debug("router.error_send_failed", session_id=session_id)
-        finally:
-            tracker.finish(session_id)
-            # Lifecycle: publish exactly one terminal event — Cancelled covers
-            # both internal stop and external task cancellation; Finished
-            # covers completed / max_steps / provider_error / crash.
-            terminal = (
-                "cancelled"
-                if cancelled
-                else (
-                    "crashed" if crashed else ("failed" if done_error else "completed")
-                )
+
+    @staticmethod
+    def _log_agent_event(session_id: str, event: LoopEvent) -> None:
+        logger.debug(
+            "router.agent_event",
+            session_id=session_id,
+            event_type=event.type,
+            trace_id=event.trace_id or "",
+            text_chars=len(event.text or ""),
+            reasoning_chars=len(event.reasoning or ""),
+            final_response_chars=len(event.final_response or ""),
+            tool_names=list(event.tool_names or []),
+            error=event.error or "",
+        )
+
+    async def _handle_agent_event(
+        self,
+        request: _AgentDispatchRequest,
+        event: LoopEvent,
+        reasoning_display: ReasoningDisplayConfig,
+        state: _AgentDeliveryState,
+    ) -> None:
+        """Route one loop event to its delivery behavior."""
+        if event.type == "text":
+            await self._handle_agent_text(
+                request,
+                event,
+                reasoning_display,
+                state,
             )
-            terminal_event_cls = AgentRunCancelled if cancelled else AgentRunFinished
-            self._event_bus.publish_nowait(
-                terminal_event_cls(
-                    payload=AgentRunPayload(
-                        session_id=session_id,
-                        workspace_id=workspace_id or "",
-                        terminal=terminal,
-                        error=done_error,
-                    ),
-                    source="message_router",
-                )
+        elif event.type == "done":
+            await self._handle_agent_done(
+                request,
+                event,
+                reasoning_display,
+                state,
             )
-            logger.debug("router.agent_run_finished", session_id=session_id)
-            if self._stopping:
-                self._pending.pop(session_id, None)
-            else:
-                await self._drain_pending(session_id)
+
+    async def _handle_agent_text(
+        self,
+        request: _AgentDispatchRequest,
+        event: LoopEvent,
+        reasoning_display: ReasoningDisplayConfig,
+        state: _AgentDeliveryState,
+    ) -> None:
+        reasoning = self._prepare_reasoning(event.reasoning, reasoning_display)
+        send_text = self._normalize_agent_text(event.text)
+        if send_text is None:
+            return
+        if send_text and send_text != state.last_sent:
+            await self._send_response(
+                request.inbound,
+                request.session_id,
+                send_text,
+                reasoning=reasoning,
+                reply_to_override=request.reply_to_override,
+            )
+            state.last_sent = send_text
+        elif reasoning and not send_text:
+            await self._send_response(
+                request.inbound,
+                request.session_id,
+                "",
+                reasoning=reasoning,
+                reply_to_override=request.reply_to_override,
+            )
+
+    async def _handle_agent_done(
+        self,
+        request: _AgentDispatchRequest,
+        event: LoopEvent,
+        reasoning_display: ReasoningDisplayConfig,
+        state: _AgentDeliveryState,
+    ) -> None:
+        if event.error == "cancelled":
+            state.cancelled = True
+            await self._send_response(
+                request.inbound,
+                request.session_id,
+                "[Agent stopped.]",
+                reply_to_override=request.reply_to_override,
+            )
+            return
+
+        state.done_error = event.error or ""
+        final = self._normalize_agent_text(event.final_response or "")
+        if final is None or not final or final == state.last_sent:
+            return
+        reasoning = self._prepare_reasoning(event.reasoning, reasoning_display)
+        await self._send_response(
+            request.inbound,
+            request.session_id,
+            final,
+            reasoning=reasoning,
+            reply_to_override=request.reply_to_override,
+        )
+
+    def _normalize_agent_text(self, text: str | None) -> str | None:
+        """Apply silent-reply suppression and remove the context envelope."""
+        text = text or ""
+        if self._config.enable_silent_reply and text:
+            sentinel = detect_sentinel(text)
+            if sentinel.action is not None:
+                if not sentinel.text:
+                    return None
+                text = sentinel.text
+        return strip_envelope_prefix(text) if text else text
+
+    async def _finish_agent_run(
+        self,
+        request: _AgentDispatchRequest,
+        state: _AgentDeliveryState,
+    ) -> None:
+        """Publish one terminal event, release tracking, and drain the queue."""
+        request.runner.run_tracker.finish(request.session_id)
+        terminal = self._terminal_status(state)
+        event_type = AgentRunCancelled if state.cancelled else AgentRunFinished
+        self._event_bus.publish_nowait(
+            event_type(
+                payload=AgentRunPayload(
+                    session_id=request.session_id,
+                    workspace_id=request.workspace_id or "",
+                    terminal=terminal,
+                    error=state.done_error,
+                ),
+                source="message_router",
+            )
+        )
+        logger.debug("router.agent_run_finished", session_id=request.session_id)
+        if self._stopping:
+            self._pending.pop(request.session_id, None)
+        else:
+            await self._drain_pending(request.session_id)
+
+    @staticmethod
+    def _terminal_status(state: _AgentDeliveryState) -> str:
+        if state.cancelled:
+            return "cancelled"
+        if state.crashed:
+            return "crashed"
+        if state.done_error:
+            return "failed"
+        return "completed"
 
     async def _drain_pending(self, session_id: str) -> None:
         """Process the next queued message for a session, if any."""
