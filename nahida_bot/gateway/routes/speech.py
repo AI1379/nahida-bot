@@ -1,7 +1,7 @@
 """WebAPI speech endpoints: synthesis + cached media download.
 
 Exposes the unified ``SpeechService`` over HTTP so the Desktop can request
-high-quality TTS (GPT-SoVITS or future providers) and stream back the cached
+high-quality TTS (for example GPT-SoVITS or MiniMax) and stream back the cached
 audio without re-synthesizing on each replay. See
 ``docs/design/desktop-app.md`` §9.3.1 (Part B).
 
@@ -263,6 +263,7 @@ def _ext_for_mime(mime_type: str) -> str:
         "audio/aac": "aac",
         "audio/mpeg": "mp3",
         "audio/flac": "flac",
+        "audio/pcm": "pcm",
     }
     candidate = mapping.get((mime_type or "").lower())
     if candidate:

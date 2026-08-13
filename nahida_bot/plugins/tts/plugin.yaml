@@ -1,7 +1,7 @@
 id: tts
 name: "Text-to-Speech (speak)"
 version: "0.1.0"
-description: "Synthesize voice via the unified TTS layer (GPT-SoVITS adapter) and send it as a voice message"
+description: "Synthesize voice via the unified TTS layer and send it as a voice message"
 entrypoint: "nahida_bot.plugins.tts.plugin:TtsPlugin"
 load_phase: "post-agent"
 enabled: false
@@ -43,15 +43,17 @@ config_schema:
       type: object
       description: |
         TTS backend instances keyed by name. Each must carry a `type`
-        discriminator selecting a registered provider adapter. For GPT-SoVITS
-        api_v2 use `type: gpt-sovits-v2` with base_url/media_type/etc.
+        discriminator selecting a registered provider adapter. Use
+        `type: gpt-sovits-v2` for GPT-SoVITS api_v2 or
+        `type: minimax-t2a-v2` for MiniMax synchronous speech synthesis.
       additionalProperties: true
     voices:
       type: object
       description: |
         Voice definitions keyed by name. Provider-specific; GPT-SoVITS voices
-        carry ref_audio_path/prompt_text/prompt_lang (server-side paths). Each
-        may set `backend` to override default_backend.
+        carry ref_audio_path/prompt_text/prompt_lang (server-side paths), while
+        MiniMax voices carry voice_id and optional speed/volume/pitch/emotion.
+        Each may set `backend` to override default_backend.
       additionalProperties: true
     default_voice:
       type: string

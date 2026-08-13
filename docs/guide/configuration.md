@@ -392,6 +392,64 @@ multimodal:
 | `host` | `str` | `""` | 绑定地址；空值跟随顶层 `host` |
 | `port` | `int` | `0` | 绑定端口；`0` 表示自动分配 |
 
+### Desktop / Gateway 语音合成
+
+`webapi.speech` 启用统一的 Gateway TTS 与音频缓存接口。Desktop 只调用
+`POST /api/speech/jobs`，不会直接持有云厂商密钥或依赖具体 Provider 协议。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `false` | 是否启用 Gateway TTS |
+| `default_backend` | `str` | `"default"` | 默认后端名称 |
+| `backends` | `dict` | `{}` | Provider 后端配置；每项必须包含 `type` |
+| `voices` | `dict` | `{}` | 逻辑音色配置；可通过 `backend` 指定后端 |
+| `default_voice` | `str` | `""` | 未显式指定音色时使用的逻辑音色 |
+| `artifact_cache_dir` | `str` | `"./data/speech_cache"` | 合成音频缓存目录 |
+| `artifact_ttl_seconds` | `int` | `21600` | 音频缓存有效时间 |
+| `max_text_length` | `int` | `500` | 单次合成文本长度上限 |
+| `max_concurrency` | `int` | `1` | 最大并发合成数 |
+
+MiniMax 使用 `type: minimax-t2a-v2`。`voice_id` 可以是系统音色、已激活的
+克隆音色或设计音色。Provider 使用同步非流式 `/v1/t2a_v2` 接口，并支持
+`mp3`、`wav`、`flac` 和 `pcm` 输出。
+
+```yaml
+webapi:
+  enabled: true
+  auth_token: "${WEBAPI_AUTH_TOKEN}"
+  speech:
+    enabled: true
+    default_backend: minimax
+    backends:
+      minimax:
+        type: minimax-t2a-v2
+        api_key: "${MINIMAX_LLM_API_KEY}"
+        base_url: "https://api.minimaxi.com"
+        model: speech-2.8-hd
+        audio_format: mp3
+        sample_rate: 32000
+        bitrate: 128000
+        channel: 1
+        language_boost: Chinese
+        timeout_seconds: 60
+    voices:
+      nahida:
+        backend: minimax
+        voice_id: "your-activated-minimax-voice-id"
+        speed: 1.0
+        volume: 1.0
+        pitch: 0
+        emotion: calm  # 可选；请求中的受支持 style 会覆盖它
+    default_voice: nahida
+    max_text_length: 500
+    max_concurrency: 2
+```
+
+MiniMax 后端还支持 `tts_path`、`trust_env`、`force_close_connections`、
+`aigc_watermark` 和 `extra_body`。`SpeechRequest.speed`、`pitch`、受支持的
+情绪 `style` 以及 `output_format` 会按请求覆盖对应默认值。API Key 应通过
+环境变量注入，不要写入 YAML。
+
 ---
 
 ## WebUI

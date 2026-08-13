@@ -85,6 +85,7 @@ def _extension_for_mime(mime_type: str) -> str:
         "audio/aac": "aac",
         "audio/mpeg": "mp3",
         "audio/flac": "flac",
+        "audio/pcm": "pcm",
     }
     candidate = mapping.get((mime_type or "").lower())
     if candidate:

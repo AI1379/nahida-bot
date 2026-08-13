@@ -16,14 +16,14 @@ import httpx
 from nahida_bot.speech.base import SpeechArtifact, SpeechRequest, TtsError, TtsProvider
 from nahida_bot.speech.config import TtsConfig
 from nahida_bot.speech.providers.gpt_sovits import GPTSoVITSProvider
+from nahida_bot.speech.providers.minimax import MiniMaxTtsProvider
 
 # Built-in provider adapter classes keyed by their ``type`` discriminator.
-# GPTSoVITSProvider inherits TtsProvider; pyright's ``type[ABC]`` assignability
-# is conservative about constructor signatures (the ABC declares ``__init__``
-# taking ``Any`` so subclasses match), but the real inheritance makes this a
-# sound nominal subclass relationship.
+# Each provider nominally inherits TtsProvider and accepts ``Any`` at the
+# constructor seam so registry instantiation remains type-safe for pyright.
 _BUILTIN_PROVIDERS: dict[str, type[TtsProvider]] = {
     GPTSoVITSProvider.type: GPTSoVITSProvider,
+    MiniMaxTtsProvider.type: MiniMaxTtsProvider,
 }
 
 

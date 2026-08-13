@@ -27,6 +27,27 @@ dependency_log_level: "WARNING"       # 三方库默认日志级别；避免 DEB
 host: "127.0.0.1"
 port: 6185
 
+# Desktop 通过 Gateway 使用 MiniMax TTS（可选）。启用后请确保
+# MINIMAX_LLM_API_KEY 是 MiniMax Token Plan Key 或按量付费 API Key。
+# webapi:
+#   enabled: true
+#   auth_token: "${WEBAPI_AUTH_TOKEN:}"
+#   speech:
+#     enabled: true
+#     default_backend: "minimax"
+#     backends:
+#       minimax:
+#         type: "minimax-t2a-v2"
+#         api_key: "${MINIMAX_LLM_API_KEY:}"
+#         model: "speech-2.8-hd"
+#         audio_format: "mp3"
+#         language_boost: "Chinese"
+#     voices:
+#       nahida:
+#         backend: "minimax"
+#         voice_id: "your-activated-minimax-voice-id"
+#     default_voice: "nahida"
+
 # ── 数据库 ────────────────────────────────────────────
 db_path: "./data/nahida.db"
 

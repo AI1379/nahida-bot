@@ -5,8 +5,8 @@ This module implements part A (provider registry + swappable backends); the
 ArtifactStore / Gateway Media / Desktop playback plumbing (part B) is deferred
 to Desktop Phase 7.
 
-A ``TtsProvider`` adapter wraps one backend type (e.g. GPT-SoVITS api_v2,
-future edge-tts / IndexTTS / cloud). The :class:`SpeechService` holds a
+A ``TtsProvider`` adapter wraps one backend type (e.g. GPT-SoVITS api_v2 or
+MiniMax synchronous T2A). The :class:`SpeechService` holds a
 ``type`` → adapter-class registry and dispatches per ``tts.backends.<name>.type``.
 """
 
