@@ -1,9 +1,13 @@
 import type {
-  BaseMotionProfile,
-  CommonLive2DParameterRole,
-} from "@/domain/live2dBaseMotion";
+  NormalizedMotionClip,
+  NormalizedPoseChannel,
+} from "@/domain/normalizedPose";
 
-import { clamp, lerp, smoothstep } from "./live2dMath";
+import { lerp, smoothstep } from "./live2dMath";
+import {
+  normalizedPoseValueToLive2D,
+  type Live2DParameterRange,
+} from "./live2dRetargeting";
 
 export interface RuntimeParameterKeyframe {
   atMs: number;
@@ -12,51 +16,68 @@ export interface RuntimeParameterKeyframe {
 
 export interface RuntimeParameterOverride {
   original: number;
+  finalValue: number;
   keyframes: RuntimeParameterKeyframe[];
   startedAt: number;
   durationMs: number;
+  loopable: boolean;
 }
 
-export function groupProceduralTargets(
-  profile: BaseMotionProfile,
-): Map<CommonLive2DParameterRole, RuntimeParameterKeyframe[]> {
-  const grouped = new Map<CommonLive2DParameterRole, RuntimeParameterKeyframe[]>();
-  for (const keyframe of profile.keyframes) {
-    for (const target of keyframe.targets) {
-      const values = grouped.get(target.role) ?? [];
-      values.push({
-        atMs: keyframe.atMs,
-        value: target.value,
-      });
-      grouped.set(target.role, values);
-    }
-  }
-  return grouped;
+export function groupNormalizedClipFrames(
+  clip: NormalizedMotionClip,
+): Map<NormalizedPoseChannel, RuntimeParameterKeyframe[]> {
+  return new Map(
+    clip.channels.map((channel) => [
+      channel,
+      clip.frames.map((frame) => ({
+        atMs: frame.atMs,
+        value: frame[channel],
+      })),
+    ]),
+  );
 }
 
 export function createRuntimeParameterOverride(options: {
-  profile: BaseMotionProfile;
+  clip: NormalizedMotionClip;
+  channel: NormalizedPoseChannel;
   current: number;
-  minimum: number;
-  maximum: number;
-  targets: RuntimeParameterKeyframe[];
+  original?: number;
+  range: Live2DParameterRange;
   startedAt: number;
 }): RuntimeParameterOverride {
-  const { profile, current, minimum, maximum, targets, startedAt } = options;
+  const { clip, channel, current, range, startedAt } = options;
+  const original = options.original ?? current;
+  const retargetedFrames = clip.frames
+    .filter(
+      (frame) =>
+        frame.atMs > 0 &&
+        (clip.restoreAtEnd
+          ? frame.atMs < clip.durationMs
+          : frame.atMs <= clip.durationMs),
+    )
+    .map((frame) => ({
+      atMs: frame.atMs,
+      value: normalizedPoseValueToLive2D(channel, frame[channel], range),
+    }));
+  const finalValue = clip.restoreAtEnd
+    ? original
+    : (retargetedFrames.at(-1)?.value ?? current);
   const keyframes = [
     { atMs: 0, value: current },
-    ...targets.map((target) => ({
-      atMs: target.atMs,
-      value: clamp(target.value, minimum, maximum),
-    })),
-    { atMs: profile.durationMs, value: current },
+    ...retargetedFrames,
   ].sort((left, right) => left.atMs - right.atMs);
 
+  if (keyframes.at(-1)?.atMs !== clip.durationMs) {
+    keyframes.push({ atMs: clip.durationMs, value: finalValue });
+  }
+
   return {
-    original: current,
+    original,
+    finalValue,
     keyframes,
     startedAt,
-    durationMs: profile.durationMs,
+    durationMs: clip.durationMs,
+    loopable: clip.loopable,
   };
 }
 
@@ -66,16 +87,22 @@ export function runtimeParameterValueAt(
 ): number {
   const keyframes = override.keyframes;
   if (keyframes.length === 0) return override.original;
+  const playbackElapsedMs =
+    override.loopable && override.durationMs > 0
+      ? elapsedMs % override.durationMs
+      : elapsedMs;
 
   let previous = keyframes[0];
   let next = keyframes[keyframes.length - 1];
   for (let index = 1; index < keyframes.length; index += 1) {
     next = keyframes[index];
-    if (elapsedMs <= next.atMs) break;
+    if (playbackElapsedMs <= next.atMs) break;
     previous = next;
   }
 
   const duration = Math.max(next.atMs - previous.atMs, 1);
-  const progress = smoothstep((elapsedMs - previous.atMs) / duration);
+  const progress = smoothstep(
+    (playbackElapsedMs - previous.atMs) / duration,
+  );
   return lerp(previous.value, next.value, progress);
 }

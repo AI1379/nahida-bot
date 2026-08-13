@@ -2,6 +2,7 @@
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import GatewayConnectionPanel from "@/components/GatewayConnectionPanel.vue";
 import RemoteControlSettingsPanel from "@/components/RemoteControlSettingsPanel.vue";
+import MotionDataPanel from "@/components/MotionDataPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
 
@@ -13,6 +14,10 @@ const store = useDesktopStore();
 
 function updateTtsSettings(next: typeof store.localConfig.ttsSettings) {
   store.updateTtsSettings(next);
+}
+
+function updateMotionDataCollectionEnabled(enabled: boolean) {
+  store.updateMotionDataCollectionEnabled(enabled);
 }
 </script>
 
@@ -46,6 +51,11 @@ function updateTtsSettings(next: typeof store.localConfig.ttsSettings) {
         />
 
         <RemoteControlSettingsPanel />
+
+        <MotionDataPanel
+          :enabled="store.localConfig.motionDataCollectionEnabled"
+          @update-enabled="updateMotionDataCollectionEnabled"
+        />
       </aside>
     </div>
   </section>

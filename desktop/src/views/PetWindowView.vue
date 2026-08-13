@@ -3,9 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import Live2DStage from "@/components/Live2DStage.vue";
+import MotionFeedbackPanel from "@/components/MotionFeedbackPanel.vue";
 import type { ProximityIntent } from "@/domain/petProximity";
+import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import {
+  listenForLipSyncEnergy,
   listenForRuntimeSnapshots,
+  publishMotionPlayback,
   sendPetWindowCommand,
 } from "@/services/desktopWindowBridge";
 import { PetProximityWatcher } from "@/services/petProximityWatcher";
@@ -19,7 +23,12 @@ const proximityWatcher = new PetProximityWatcher();
 const interactive = computed(
   () => store.petRuntime.interactionMode === "interactive",
 );
+const latestPlayback = computed(
+  () => store.recentMotionPlaybacks[0] ?? null,
+);
 let unlistenRuntimeSnapshots: UnlistenFn | null = null;
+let unlistenLipSyncEnergy: UnlistenFn | null = null;
+const lipSyncEnergy = ref<number | null>(null);
 let snapshotReceived = false;
 const stateRequestTimers: Array<ReturnType<typeof setTimeout>> = [];
 
@@ -58,6 +67,11 @@ function submitReply() {
   replyText.value = "";
 }
 
+function handleMotionExecuted(playback: MotionPlaybackSummary): void {
+  store.rememberMotionPlayback(playback);
+  void publishMotionPlayback(playback).catch(() => undefined);
+}
+
 watch(
   () => [
     store.petRuntime.status,
@@ -73,6 +87,9 @@ watch(
 );
 
 onMounted(async () => {
+  unlistenLipSyncEnergy = await listenForLipSyncEnergy((energy) => {
+    lipSyncEnergy.value = energy;
+  });
   unlistenRuntimeSnapshots = await listenForRuntimeSnapshots((snapshot) => {
     snapshotReceived = true;
     store.applyRuntimeSnapshot(snapshot);
@@ -98,6 +115,7 @@ onBeforeUnmount(() => {
   proximityWatcher.stop();
   for (const timer of stateRequestTimers) clearTimeout(timer);
   unlistenRuntimeSnapshots?.();
+  unlistenLipSyncEnergy?.();
 });
 </script>
 
@@ -114,11 +132,25 @@ onBeforeUnmount(() => {
       :render-mode="store.petRuntime.renderMode"
       :model="store.model"
       :speaking="store.speaking"
+      :lip-sync-energy="lipSyncEnergy"
+      :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
+      playback-surface="pet"
       :caption-text="store.petRuntime.bubbleText"
       :expression-map-version="store.expressionMapVersion"
       :motion-map-version="store.motionMapVersion"
       :debug-enabled="false"
       :dev-chrome="false"
+      @motion-executed="handleMotionExecuted"
+    />
+
+    <MotionFeedbackPanel
+      v-if="interactive && latestPlayback"
+      class="pet-window__motion-feedback"
+      :playback="latestPlayback"
+      :enabled="store.localConfig.motionDataCollectionEnabled"
+      compact
+      collapsible
+      initially-collapsed
     />
 
     <form

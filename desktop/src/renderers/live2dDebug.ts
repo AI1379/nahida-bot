@@ -4,10 +4,12 @@ import type {
   Live2DMotionOption,
 } from "@/domain/live2d";
 import {
-  baseMotionNames,
-  commonLive2DParameterIds,
-  type CommonLive2DParameterRole,
-} from "@/domain/live2dBaseMotion";
+  displayMotionPrimitiveMap,
+  motionPrimitiveNames,
+} from "@/domain/motionPrimitives";
+import type { NormalizedPoseChannel } from "@/domain/normalizedPose";
+
+import { live2dParameterIdsByPoseChannel } from "./live2dRetargeting";
 
 export interface Live2DParameterDebugInfo {
   index: number;
@@ -22,7 +24,7 @@ export interface Live2DParameterDebugInfo {
 
 export interface Live2DKeyParameterDebugInfo
   extends Live2DParameterDebugInfo {
-  roles: CommonLive2DParameterRole[];
+  channels: NormalizedPoseChannel[];
   lipSync: boolean;
 }
 
@@ -58,7 +60,7 @@ export interface Live2DDebugSnapshot {
   modelName: string;
   expressions: Live2DExpressionDebugInfo[];
   nativeMotions: Live2DMotionDebugInfo[];
-  baseMotions: Live2DMotionDebugInfo[];
+  proceduralMotions: Live2DMotionDebugInfo[];
   motions: Live2DMotionDebugInfo[];
   keyParameters: Live2DKeyParameterDebugInfo[];
   parameters: Live2DParameterDebugInfo[];
@@ -171,14 +173,14 @@ export function createLive2DDebugSnapshot(options: {
   );
 
   const nativeMotions = getNativeMotionDebugInfo(settings);
-  const baseMotions = getBaseMotionDebugInfo();
+  const proceduralMotions = getProceduralMotionDebugInfo();
 
   return {
     modelName: manifest.name,
     expressions: getExpressionDebugInfo(settings),
     nativeMotions,
-    baseMotions,
-    motions: [...nativeMotions, ...baseMotions],
+    proceduralMotions,
+    motions: [...nativeMotions, ...proceduralMotions],
     keyParameters: getKeyParameterDebugInfo(parameters, manifest),
     parameters,
     parts,
@@ -186,15 +188,25 @@ export function createLive2DDebugSnapshot(options: {
   };
 }
 
-export function getBaseMotionDebugInfo(): Live2DMotionDebugInfo[] {
-  return baseMotionNames.map((motion, index) => ({
+export function getProceduralMotionDebugInfo(): Live2DMotionDebugInfo[] {
+  return motionPrimitiveNames.map((primitive, index) => ({
     source: "procedural",
-    group: "Base",
+    group: "Primitive",
     index,
-    name: motion,
-    file: "common Live2D parameters",
-    motion,
+    name: primitive,
+    file: "normalized pose primitive",
+    motion: displayMotionForPrimitive(primitive),
+    primitive,
   }));
+}
+
+function displayMotionForPrimitive(
+  primitive: (typeof motionPrimitiveNames)[number],
+): Live2DMotionDebugInfo["motion"] {
+  const entry = Object.entries(displayMotionPrimitiveMap).find(
+    ([, candidate]) => candidate === primitive,
+  );
+  return entry?.[0] as Live2DMotionDebugInfo["motion"];
 }
 
 export function readLive2DIdList(value: unknown): string[] {
@@ -255,31 +267,32 @@ function getKeyParameterDebugInfo(
   const lipSyncParameterIds = new Set(
     (manifest.lipSync.parameterIds.length
       ? manifest.lipSync.parameterIds
-      : commonLive2DParameterIds.mouthOpen
+      : live2dParameterIdsByPoseChannel.mouthOpen
     ).map((id) => id.toLowerCase()),
   );
 
   return parameters.flatMap((parameter) => {
-    const roles = parameterRolesForId(parameter.id);
+    const channels = parameterChannelsForId(parameter.id);
     const lipSync =
       manifest.lipSync.enabled &&
       lipSyncParameterIds.has(parameter.id.toLowerCase());
-    if (!roles.length && !lipSync) return [];
+    if (!channels.length && !lipSync) return [];
     return [
       {
         ...parameter,
-        roles,
+        channels,
         lipSync,
       },
     ];
   });
 }
 
-function parameterRolesForId(id: string): CommonLive2DParameterRole[] {
+function parameterChannelsForId(id: string): NormalizedPoseChannel[] {
   const normalized = id.toLowerCase();
-  return Object.entries(commonLive2DParameterIds).flatMap(([role, ids]) =>
+  return Object.entries(live2dParameterIdsByPoseChannel).flatMap(
+    ([channel, ids]) =>
     ids.some((candidate) => candidate.toLowerCase() === normalized)
-      ? [role as CommonLive2DParameterRole]
+      ? [channel as NormalizedPoseChannel]
       : [],
   );
 }

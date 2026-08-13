@@ -15,6 +15,11 @@ import {
 } from "@/domain/config";
 import type { LocalDesktopConfig } from "@/domain/config";
 import {
+  sanitizeModelPerformanceProfile,
+  withLocalModelPerformanceProfileVersion,
+  type ModelPerformanceProfile,
+} from "@/domain/modelPerformanceProfile";
+import {
   sanitizeExpressionKeyword,
   sanitizeExpressionName,
 } from "@/domain/displayPlan";
@@ -54,6 +59,8 @@ import {
   writeSecureTokens,
 } from "@/services/desktopSettingsStorage";
 import type { MotionMap } from "@/services/modelMappingStorage";
+import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
+import { mergeRecentMotionPlaybacks } from "@/services/motionPlaybackHistory";
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
 import {
   nextCustomExpressionKeyword,
@@ -351,6 +358,24 @@ export const useDesktopStore = defineStore("desktop", {
         ttsSettings,
       });
     },
+    rememberMotionPlayback(playback: MotionPlaybackSummary) {
+      this.recentMotionPlaybacks = mergeRecentMotionPlaybacks(
+        this.recentMotionPlaybacks,
+        [playback],
+      );
+    },
+    mergeRecentMotionPlaybackHistory(playbacks: MotionPlaybackSummary[]) {
+      this.recentMotionPlaybacks = mergeRecentMotionPlaybacks(
+        this.recentMotionPlaybacks,
+        playbacks,
+      );
+    },
+    updateMotionDataCollectionEnabled(enabled: boolean) {
+      this.commitLocalConfig({
+        ...this.localConfig,
+        motionDataCollectionEnabled: enabled,
+      });
+    },
     updatePomodoroSettings(settings: LocalDesktopConfig["pomodoro"]) {
       const pomodoro = sanitizePomodoroSettings(settings);
       this.commitLocalConfig({
@@ -601,6 +626,24 @@ export const useDesktopStore = defineStore("desktop", {
         withModelConfig(this.localConfig, {
           ...currentConfig,
           motionMap: nextMotionMap,
+        }),
+      );
+      this.motionMapVersion += 1;
+    },
+    updateModelPerformanceProfile(profile: ModelPerformanceProfile) {
+      const currentConfig =
+        this.localConfig.modelConfigs[this.selectedModelId] ??
+        modelMappingConfigFromManifest(this.model);
+      const performanceProfile = withLocalModelPerformanceProfileVersion(
+        sanitizeModelPerformanceProfile(
+          profile,
+          currentConfig.performanceProfile,
+        ),
+      );
+      this.commitLocalConfig(
+        withModelConfig(this.localConfig, {
+          ...currentConfig,
+          performanceProfile,
         }),
       );
       this.motionMapVersion += 1;

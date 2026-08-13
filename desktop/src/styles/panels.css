@@ -266,3 +266,113 @@
 .transcript__item:first-child {
   border-left-color: var(--green);
 }
+
+.motion-performance__summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.motion-performance__summary label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.motion-performance details {
+  border-top: 1px solid var(--line);
+  padding: 10px 14px 14px;
+}
+
+.motion-performance summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.motion-performance__channels {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.motion-performance__channels label {
+  display: grid;
+  grid-template-columns: 88px minmax(140px, 1fr) 72px 72px;
+  align-items: center;
+  gap: 6px;
+}
+
+.motion-performance__channels strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.motion-history__body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+.motion-history__body > label {
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.motion-history__controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(130px, 1.4fr);
+  gap: 7px;
+}
+
+.motion-history__summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.motion-history__summary div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: var(--surface-muted);
+  font-size: 11px;
+}
+
+.motion-history__summary dt {
+  color: var(--text-muted);
+}
+
+.motion-history__summary dd {
+  overflow: hidden;
+  margin: 0;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motion-history__status,
+.motion-history__error {
+  margin: 0;
+  font-size: 11px;
+}
+
+.motion-history__status {
+  color: var(--green);
+}
+
+.motion-history__error {
+  color: var(--rose);
+}

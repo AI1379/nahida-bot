@@ -1,4 +1,6 @@
 import type { DisplayMotion } from "./displayPlan";
+import type { ModelPerformanceProfile } from "./modelPerformanceProfile";
+import type { MotionPrimitiveName } from "./motionPrimitives";
 
 export type Live2DMotionSource = "model" | "procedural" | "none";
 
@@ -29,6 +31,7 @@ export interface Live2DMotionOption {
   name: string;
   file: string;
   motion?: DisplayMotion;
+  primitive?: MotionPrimitiveName;
 }
 
 export interface Live2DExpressionOption {
@@ -58,6 +61,7 @@ export interface Live2DModelManifest {
     parameterIds: string[];
   };
   layout: Live2DModelLayout;
+  performanceProfile?: ModelPerformanceProfile;
 }
 
 export function live2dModelLoadKey(

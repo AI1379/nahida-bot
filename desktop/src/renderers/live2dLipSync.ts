@@ -1,13 +1,14 @@
 import { live2dRuntimeDefaults } from "@/config/desktopRuntimeDefaults";
 import type { Live2DModelManifest } from "@/domain/live2d";
-import { commonLive2DParameterIds } from "@/domain/live2dBaseMotion";
+
+import { live2dParameterIdsByPoseChannel } from "./live2dRetargeting";
 
 export function lipSyncParameterIdsForManifest(
   manifest: Live2DModelManifest,
 ): string[] {
   return manifest.lipSync.parameterIds.length
     ? manifest.lipSync.parameterIds
-    : commonLive2DParameterIds.mouthOpen;
+    : [...live2dParameterIdsByPoseChannel.mouthOpen];
 }
 
 export function lipSyncValueForSpeakingPulse(now: number): number {

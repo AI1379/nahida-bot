@@ -15,6 +15,10 @@ import type {
 import { AudioPlaybackAbortedError } from "@/services/audioPlaybackAdapter";
 import { gatewayWsUrlToHttpBase } from "@/domain/gatewayConnection";
 import type { TtsSettings } from "@/domain/config";
+import {
+  MediaElementEnergyMonitor,
+  type AudioEnergyListener,
+} from "@/services/audioEnergyEnvelope";
 
 type AdminBearerProvider = () => string;
 type TtsSettingsProvider = () => TtsSettings;
@@ -29,12 +33,14 @@ interface SpeechJobResponse {
 interface ActivePlayback {
   audio: HTMLAudioElement;
   abortController: AbortController;
+  energyMonitor: MediaElementEnergyMonitor | null;
 }
 
 export class GatewayAudioAdapter implements AudioPlaybackAdapter {
   private readonly getAdminBearer: AdminBearerProvider;
   private readonly getSettings: TtsSettingsProvider;
   private readonly gatewayWsUrl: () => string;
+  private readonly onEnergy: AudioEnergyListener;
   private active: ActivePlayback | null = null;
   /** In-memory blob-URL cache keyed by artifact_id. */
   private readonly blobCache = new Map<string, string>();
@@ -43,10 +49,12 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     getAdminBearer: AdminBearerProvider,
     getSettings: TtsSettingsProvider,
     gatewayWsUrl: () => string,
+    onEnergy: AudioEnergyListener = () => {},
   ) {
     this.getAdminBearer = getAdminBearer;
     this.getSettings = getSettings;
     this.gatewayWsUrl = gatewayWsUrl;
+    this.onEnergy = onEnergy;
   }
 
   isAvailable(): boolean {
@@ -99,19 +107,29 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
 
     const audio = new Audio(blobUrl);
     let disposed = false;
+    let energyMonitor: MediaElementEnergyMonitor | null = null;
 
     return {
       play: async (playSignal: AbortSignal) => {
         if (disposed) throw new AudioPlaybackAbortedError();
         if (playSignal.aborted) throw new AudioPlaybackAbortedError();
         const abortController = new AbortController();
-        this.active = { audio, abortController };
+        energyMonitor = this.createEnergyMonitor(audio);
+        this.active = { audio, abortController, energyMonitor };
         const linkedSignal = this.linkedAbort(playSignal, abortController.signal);
-        await this.playAudio(audio, linkedSignal, jobResp.duration_ms);
+        try {
+          await energyMonitor?.start();
+          await this.playAudio(audio, linkedSignal, jobResp.duration_ms);
+        } finally {
+          energyMonitor?.stop();
+          if (this.active?.audio === audio) this.active = null;
+        }
       },
       dispose: () => {
         if (disposed) return;
         disposed = true;
+        void energyMonitor?.dispose().catch(() => undefined);
+        energyMonitor = null;
         audio.src = "";
         URL.revokeObjectURL(blobUrl);
         this.blobCache.delete(jobResp.artifact_id);
@@ -124,6 +142,7 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     this.active = null;
     if (prev) {
       prev.abortController.abort();
+      prev.energyMonitor?.stop();
       prev.audio.pause();
       prev.audio.src = "";
     }
@@ -220,47 +239,38 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     durationMs: number,
   ): Promise<void> {
     const timeoutMs = Math.max(durationMs + 5000, 30000);
-
-    await Promise.race([
-      new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const cleanup = () => {
-          if (!settled) {
-            settled = true;
-            signal.removeEventListener("abort", onAbort);
-            audio.removeEventListener("ended", onEnd);
-            audio.removeEventListener("error", onError);
-          }
-        };
-        const onAbort = () => {
-          this.stop();
-          cleanup();
-          reject(new AudioPlaybackAbortedError());
-        };
-        const onEnd = () => {
-          cleanup();
-          resolve();
-        };
-        const onError = () => {
-          cleanup();
-          reject(new Error("Audio playback error."));
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        audio.addEventListener("ended", onEnd, { once: true });
-        audio.addEventListener("error", onError, { once: true });
-        audio.play().catch((err) => {
-          if (err.name === "AbortError") return;
-          cleanup();
-          reject(new Error(`Audio play() rejected: ${String(err)}`));
-        });
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error("TTS playback timed out.")),
-          timeoutMs,
-        ),
-      ),
-    ]);
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        finish(() => reject(new Error("TTS playback timed out.")));
+      }, timeoutMs);
+      const cleanup = () => {
+        signal.removeEventListener("abort", onAbort);
+        audio.removeEventListener("ended", onEnd);
+        audio.removeEventListener("error", onError);
+        window.clearTimeout(timer);
+      };
+      const finish = (settle: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        settle();
+      };
+      const onAbort = () => {
+        this.stop();
+        finish(() => reject(new AudioPlaybackAbortedError()));
+      };
+      const onEnd = () => finish(resolve);
+      const onError = () =>
+        finish(() => reject(new Error("Audio playback error.")));
+      signal.addEventListener("abort", onAbort, { once: true });
+      audio.addEventListener("ended", onEnd, { once: true });
+      audio.addEventListener("error", onError, { once: true });
+      audio.play().catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        finish(() => reject(new Error(`Audio play() rejected: ${String(error)}`)));
+      });
+    });
   }
 
   private linkedAbort(
@@ -298,5 +308,16 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
       // Fall through to status text.
     }
     return response.statusText || `HTTP ${response.status}`;
+  }
+
+  private createEnergyMonitor(
+    audio: HTMLAudioElement,
+  ): MediaElementEnergyMonitor | null {
+    if (typeof AudioContext === "undefined") return null;
+    try {
+      return new MediaElementEnergyMonitor(audio, this.onEnergy);
+    } catch {
+      return null;
+    }
   }
 }

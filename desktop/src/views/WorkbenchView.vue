@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 
 import ControlPanel from "@/components/ControlPanel.vue";
 import DisplayPlanPanel from "@/components/DisplayPlanPanel.vue";
 import ExpressionMappingPanel from "@/components/ExpressionMappingPanel.vue";
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
+import MotionPerformancePanel from "@/components/MotionPerformancePanel.vue";
+import MotionHistoryPanel from "@/components/MotionHistoryPanel.vue";
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import PomodoroSettingsPanel from "@/components/PomodoroSettingsPanel.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
+import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
+import type { NormalizedMotionClip } from "@/domain/normalizedPose";
 import { useDesktopStore } from "@/stores/desktop";
 
 const props = defineProps<{
@@ -17,6 +21,10 @@ const props = defineProps<{
 }>();
 
 const store = useDesktopStore();
+const live2dStage = ref<{
+  replayNormalizedClip: (clip: NormalizedMotionClip) => boolean;
+} | null>(null);
+const replayStatus = ref("");
 
 const activeSegment = computed(
   () => store.activePlan?.segments[store.currentSegmentIndex] ?? null,
@@ -26,17 +34,30 @@ const previewRenderMode = computed(() =>
     ? "idle"
     : store.petRuntime.renderMode,
 );
+
+function replayMotion(playback: MotionPlaybackSummary): void {
+  const applied = live2dStage.value?.replayNormalizedClip(
+    playback.normalizedClip,
+  ) ?? false;
+  replayStatus.value = applied
+    ? `Replaying ${playback.primitive} from ${new Date(playback.timestamp).toLocaleString()}.`
+    : "Live2D is not ready to replay this motion yet.";
+}
 </script>
 
 <template>
   <section class="workspace" aria-label="Development workbench">
     <Live2DStage
+      ref="live2dStage"
       :emotion="store.currentEmotion"
       :expression-key="store.currentExpressionKey"
       :motion="store.currentMotion"
       :render-mode="previewRenderMode"
       :model="store.model"
       :speaking="store.speaking"
+      :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
+      :motion-telemetry-enabled="false"
+      playback-surface="workbench"
       :caption-text="activeSegment?.text ?? ''"
       :expression-map-version="store.expressionMapVersion"
       :motion-map-version="store.motionMapVersion"
@@ -81,6 +102,16 @@ const previewRenderMode = computed(() =>
         :motions="store.motionOptions"
         @update-mapping="store.setMotionMapping"
         @preview="store.previewMotion"
+      />
+      <MotionPerformancePanel
+        :profile="store.model.performanceProfile!"
+        @update="store.updateModelPerformanceProfile"
+      />
+      <MotionHistoryPanel
+        :recent="store.recentMotionPlaybacks"
+        :feedback-enabled="store.localConfig.motionDataCollectionEnabled"
+        :replay-status="replayStatus"
+        @replay="replayMotion"
       />
       <TranscriptPanel :entries="store.transcript" />
     </aside>

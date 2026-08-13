@@ -36,6 +36,7 @@ describe("desktop settings persistence", () => {
       {
         ...fallback,
         performanceMode: "active",
+        motionDataCollectionEnabled: false,
         windowState: {
           ...fallback.windowState,
           width: 99999,
@@ -46,6 +47,10 @@ describe("desktop settings persistence", () => {
             ...fallback.modelConfigs[selectedModelId],
             scale: 1.75,
             offsetX: 28,
+            performanceProfile: {
+              ...fallback.modelConfigs[selectedModelId]?.performanceProfile,
+              intensityScale: 1.35,
+            },
           },
         },
         ttsSettings: {
@@ -62,10 +67,14 @@ describe("desktop settings persistence", () => {
     );
 
     expect(restored.performanceMode).toBe("active");
+    expect(restored.motionDataCollectionEnabled).toBe(false);
     expect(restored.windowState.width).toBe(2400);
     expect(restored.windowState.x).toBe(320);
     expect(restored.modelConfigs[selectedModelId]?.scale).toBe(1.75);
     expect(restored.modelConfigs[selectedModelId]?.offsetX).toBe(28);
+    expect(
+      restored.modelConfigs[selectedModelId]?.performanceProfile.intensityScale,
+    ).toBe(1.35);
     expect(restored.ttsSettings.rate).toBe(1.25);
     expect(restored.pomodoro.enabled).toBe(true);
     expect(restored.pomodoro.workDurationMinutes).toBe(45);

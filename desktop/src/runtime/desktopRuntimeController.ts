@@ -14,6 +14,7 @@ import type {
 import { petRuntimeNeedsEmerge } from "@/domain/petRuntimeMachine";
 import {
   listenForPetCommands,
+  publishLipSyncEnergy,
   publishRuntimeSnapshot,
 } from "@/services/desktopWindowBridge";
 import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
@@ -97,6 +98,7 @@ export function useDesktopRuntimeController(
     () => store.gatewayConnection.adminBearerToken,
     () => store.localConfig.ttsSettings,
     () => store.gatewayConnection.gatewayWsUrl,
+    (energy) => void publishLipSyncEnergy(energy),
   );
 
   const speechPlaybackAdapter: AudioPlaybackAdapter = {

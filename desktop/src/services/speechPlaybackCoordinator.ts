@@ -170,7 +170,6 @@ export class SpeechPlaybackCoordinator {
           await handle.play(signal);
         } catch (error) {
           if (isAudioPlaybackAborted(error)) throw error;
-          handle.dispose();
           this.callbacks.onSegmentFallback?.(
             presentation,
             index,
@@ -178,6 +177,8 @@ export class SpeechPlaybackCoordinator {
             error,
           );
           await abortableDelay(estimatedSegmentDuration(segment), signal);
+        } finally {
+          handle.dispose();
         }
       } else {
         await abortableDelay(estimatedSegmentDuration(segment), signal);

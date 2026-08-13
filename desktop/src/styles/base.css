@@ -3,6 +3,7 @@
 @import "./layout.css";
 @import "./stage.css";
 @import "./live2d-debug.css";
+@import "./motion-feedback.css";
 @import "./panels.css";
 @import "./settings.css";
 @import "./animations.css";

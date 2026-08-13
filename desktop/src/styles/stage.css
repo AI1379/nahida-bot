@@ -30,6 +30,19 @@
   min-height: 38px;
 }
 
+.pet-runtime__motion-feedback {
+  position: absolute;
+  left: 50%;
+  bottom: 78px;
+  z-index: 7;
+  width: min(680px, calc(100% - 36px));
+  transform: translateX(-50%);
+}
+
+.pet-runtime:has(.pet-runtime__motion-feedback) .stage__subtitle {
+  display: none;
+}
+
 .pet-window {
   position: relative;
   width: 100%;
@@ -307,4 +320,14 @@
 .avatar[data-motion="point"] .avatar__body {
   transform-origin: bottom center;
   animation: point 1200ms ease-in-out infinite;
+}
+
+.pet-window__motion-feedback {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  left: 12px;
+  z-index: 9;
+  max-height: min(330px, calc(100% - 108px));
+  overflow: auto;
 }

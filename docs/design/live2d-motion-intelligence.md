@@ -1,7 +1,7 @@
 # Live2D 动作智能层设计
 
 > 记录时间：2026-07-09
-> 状态：研究与方案收敛中
+> 状态：训练前基础设施已落地，进入本地数据积累阶段
 > 相关议题：GitHub Issue #9 Live2D 桌宠与桌面端软件
 > 相关文档：
 >
@@ -294,6 +294,12 @@ MotionSynthesizer
         └── LearnedResidualSynthesizer
         │
         ▼
+MotionDriver
+        │
+        ├── RuleMotionDriver
+        └── NativeOnnxMotionDriver
+        │
+        ▼
 MotionValidator
         │
         ▼
@@ -305,6 +311,8 @@ Live2DRetargeter
         ▼
 Live2DRenderer
 ```
+
+`MotionDriver` 是生成短时 `NormalizedMotionClip` 的运行时端口，不替代 planner、validator、scheduler 或 renderer。首版由规则驱动实现；未来 ONNX 驱动应保持同一输入输出协议，并继续经过后续硬校验与混合。
 
 ### 6.1 MotionPlanner
 
@@ -548,6 +556,21 @@ desktop/data/motion-dataset/
 }
 ```
 
+### 7.5 日常使用与反馈闭环
+
+用户不需要查看或手写 JSONL。长期采集按下面的交互完成：
+
+1. 在 `Settings -> Motion Data` 开启本地采集。
+2. 正常使用桌宠；真实 pet window 是 Tauri 模式下唯一自动写 decision/execution 的 surface，主窗口镜像和 Workbench preview 不重复入库。
+3. 在 Runtime 的 `Rate the last motion` 或交互态桌宠窗口点击 Good、Bad、Too much、Too little、Wrong emotion、Repetitive。
+4. 对 Bad/Wrong emotion 可补充正确 intent、emotion 和 intensity；反馈会直接关联原始 `motionPlanId`。
+5. 误操作使用 Undo；底层追加 retraction 记录，不破坏 JSONL 的 append-only 特性，审计和训练准备器只统计仍有效的反馈。
+6. 在 Workbench 的 `Recent Motion Replay` 选择最近 20 条真实记录，使用 Older/Newer 或下拉框重播，再进行反馈。
+
+Workbench 手动 primitive 预览和 replay 本身不会产生新的训练执行记录，避免一次真实回复被多个 Live2D stage 重复计数。Web-only 开发模式没有独立 pet window，因此 Runtime stage 会作为采集 surface。
+
+当前闭环采集的是可追溯、可重播的 normalized procedural motion；模型自带 motion 只能按 group/index 播放，渲染器尚不能提取其原始参数曲线，因此暂不进入曲线训练集或 Recent Motion Replay。
+
 ## 8. 小模型路线
 
 ### 8.1 Embedding retrieval + ranker
@@ -790,6 +813,14 @@ reward =
 
 没有 replay harness，偏好数据很难稳定积累。
 
+当前进度（2026-08-12）：
+
+- [x] 固定了 50 条中英文语义场景，覆盖 greet、apology、deny、agree、surprised、celebrate、concerned、thinking、explain、idle 与强 emotion override。
+- [x] `MotionPlan` 可以编译到 normalized clip，并按固定采样率确定性回放。
+- [x] 回放会计算越界数、最大速度、最大加速度和最大 jerk。
+- [x] 本地数据审计会检查 schema、decision/execution/preference 关联、intent 覆盖和最低样本门槛。
+- [ ] 固定 Live2D 模型的视频/GIF 导出和双候选并排 A/B 回放仍待有候选生成器后实现。
+
 ## 11. MVP 落地路线
 
 ### Phase 0：接口与 schema
@@ -797,6 +828,16 @@ reward =
 - 定义 `MotionIntent`、`MotionPlan`、`NormalizedPoseFrame`。
 - 定义 `ModelPerformanceProfile`。
 - 定义 `MotionPlanner`、`MotionSynthesizer`、`MotionValidator`、`MotionCache`、`MotionTelemetry` 接口。
+
+当前进度（2026-08-12）：
+
+- [x] 已定义 `MotionIntent`、`NormalizedPoseFrame`、`NormalizedMotionClip` 和 canonical channel range。
+- [x] 已定义异步 `MotionDriver` 边界，输入包含 phase、previous pose、audio energy、lookahead 和 runtime context。
+- [x] 已增加 `DisplayPlan` 兼容适配器，同时保留 legacy `DisplayMotion` 与新的语义 intent。
+- [x] 已定义 `MotionPlan`、`ModelPerformanceProfile` 以及 planner/synthesizer/validator/mixer/cache/telemetry/preference 接口。
+- [x] `PrimitiveMotionSynthesizer` 会生成带版本信息的模型无关 plan；plan 可重新编译为 normalized clip。
+- [x] 模型 performance profile 支持参数映射、强度、速度、加速度、idle energy、禁止组合、本地持久化与 Workbench 校准。
+- [x] 现有 procedural motion 已迁移到 `RuleMotionDriver`；renderer 只消费 normalized clip 并负责参数重定向。
 
 验收：
 
@@ -809,9 +850,20 @@ reward =
 - 支持 duration/intensity/repeat/startPose 参数化。
 - 加 validator 硬规则。
 
+当前进度（2026-08-12）：
+
+- [x] 原有 nod/point/wave/notify/speaking/emerge/retreat 已迁移为参数化 primitives。
+- [x] 已扩充为 18 个 primitives，包括 idle-breathe、blink、左右 glance、shake、think-loop、explain-small、surprised-pop、sad-drop、happy-bounce 和 celebrate。
+- [x] 已支持 duration、intensity、repeat、startPose，并可从中断中的当前 pose 平滑接续。
+- [x] Debug 面板可直接枚举和播放 procedural primitives。
+- [x] `RuleMotionPlanner` 已覆盖当前 13 类语义 intent，并通过固定 50 场景基准。
+- [x] validator 已实现范围修正、时间线补帧、模型强度缩放、速度/加速度限制、禁止组合与 safe-idle 降级。
+- [x] priority mixer 已实现 debug > state-transition > safety > lip-sync > speech > expression > idle 的逐通道优先级。
+- [x] Gateway TTS 已接 Web Audio RMS envelope；无法获取真实音频时保留 pulse lip-sync 降级。
+
 验收：
 
-- 常见 20-40 个 intent 能播放。
+- 当前 13 个 canonical intent 在固定 50 场景基准中都能选择并播放；新增 taxonomy 必须先补 benchmark case。
 - 参数不过界、无明显跳变。
 
 ### Phase 2：Telemetry 与 preference
@@ -819,6 +871,20 @@ reward =
 - 写本地 JSONL。
 - Debug/Workbench 增加 good/bad/too much/wrong emotion/repetitive。
 - 支持 A/B candidate 记录。
+
+当前进度（2026-08-12）：
+
+- [x] Tauri app-data 下按 decisions/executions/preferences/invalid 分文件追加 JSONL；Web 模式使用有上限的 localStorage fallback。
+- [x] 每条执行记录包含 planner/profile/synthesizer/driver/validator/mixer 版本、完整 `MotionPlan`、normalized clip、warnings 和 fallback 状态。
+- [x] 支持 good/bad/too much/too little/wrong emotion/repetitive 单候选反馈，记录能关联到真实 `motionPlanId`。
+- [x] 正常 Runtime 和交互态 pet window 均提供最近动作反馈、保存状态、纠正标签和 append-only Undo；不再要求进入 Debug。
+- [x] Workbench 可载入最近 20 条持久化动作，选择 Older/Newer、重播 normalized clip 并对原始 plan 反馈。
+- [x] Tauri 只由真实 pet surface 自动采集；Runtime 镜像与 Workbench preview 禁止重复写入。Web 开发模式则由 Runtime 代替真实 surface。
+- [x] 设置页提供采集开关、分类计数、训练门槛、导出和清空；关闭后 telemetry 与 preference 均不会写入。
+- [x] 数据审计门槛当前设为 500 decisions、100 preferences、8 类 intent、99% 合法记录及 95% execution/preference 关联率。
+- [x] `python -m scripts.prepare_motion_training_data` 会严格校验导出文件，联结 decision/plan/preference，按稳定哈希生成 80/10/10 planner 与 curve 数据集和 readiness manifest。
+- [x] 数据准备器会应用人工 intent/emotion/intensity 修正、排除未纠正的 Bad/Wrong emotion 监督目标、排除负反馈曲线，并忽略已撤销反馈及 Workbench/debug surface。
+- [ ] schema 已支持 candidate A/B，但运行时暂时只有一个 rule candidate；双候选 UI 放到 embedding/ranker 能生成候选之后。
 
 验收：
 
@@ -830,6 +896,12 @@ reward =
 - 用 embedding 替代硬字符串模式匹配。
 - semantic cache 保存稳定 MotionPlan。
 - planner source 标记为 `embedding` 或 `cache`。
+
+当前进度（2026-08-12）：
+
+- [x] 已实现版本化本地 semantic cache，key 包含规范化文本、runtime、emotion、近期 intent、model/profile/planner/primitive 版本。
+- [x] cache/planner/driver 任一失败都能回退到 DisplayPlan adapter、rule driver 和 safe idle。
+- [ ] 真正的 embedding retrieval 尚未接入；在没有可比较数据和确定的本地 embedding runtime 前，不为了“去掉正则”引入新的模型依赖。
 
 验收：
 
@@ -846,6 +918,10 @@ reward =
 
 - 非模板文本的动作选择优于 rule baseline。
 - 失败时能回退到 rule/cache。
+
+启动条件：设置页数据审计达到 ready，并冻结当前 50 场景 rule baseline。达到此前不开始神经网络训练，避免用少量、未关联或单一 intent 数据得到虚假提升。
+
+训练前最后一步：导出 Desktop JSONL 后运行数据准备器；只有生成的 `manifest.json` 中 `readyForPlannerTraining` 为 true 才启动 planner SFT。偏好 ranker 另要求 `readyForPreferenceTraining` 为 true。
 
 ### Phase 5：Residual refiner
 

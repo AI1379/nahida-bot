@@ -1,4 +1,8 @@
 import type { DisplayMotion } from "./displayPlan";
+import {
+  createDefaultModelPerformanceProfile,
+  type ModelPerformanceProfile,
+} from "./modelPerformanceProfile";
 import type {
   Live2DExpressionMap,
   Live2DModelManifest,
@@ -37,6 +41,7 @@ export interface ModelMappingConfig {
   offsetX: number;
   offsetY: number;
   edgeExposedPx: number;
+  performanceProfile: ModelPerformanceProfile;
 }
 
 export interface TtsSettings {
@@ -73,6 +78,7 @@ export interface LocalDesktopConfig {
   performanceMode: PerformanceMode;
   ttsSettings: TtsSettings;
   pomodoro: PomodoroSettings;
+  motionDataCollectionEnabled: boolean;
 }
 
 export function modelMappingConfigFromManifest(
@@ -90,6 +96,9 @@ export function modelMappingConfigFromManifest(
     offsetX: manifest.layout.offsetX,
     offsetY: manifest.layout.offsetY,
     edgeExposedPx: manifest.layout.edgeExposedPx,
+    performanceProfile:
+      manifest.performanceProfile ??
+      createDefaultModelPerformanceProfile(manifest.id),
   };
 }
 
@@ -119,6 +128,7 @@ export function createDefaultLocalDesktopConfig(
     performanceMode: desktopWindowDefaults.performanceMode,
     ttsSettings: { ...ttsDefaults },
     pomodoro: { ...pomodoroDefaults },
+    motionDataCollectionEnabled: true,
   };
 }
 
@@ -140,5 +150,6 @@ export function configuredModelFromManifest(
       offsetY: config.offsetY,
       edgeExposedPx: config.edgeExposedPx,
     },
+    performanceProfile: config.performanceProfile,
   };
 }

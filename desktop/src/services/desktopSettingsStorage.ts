@@ -9,6 +9,7 @@ import type {
 } from "@/domain/config";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
+import { sanitizeModelPerformanceProfile } from "@/domain/modelPerformanceProfile";
 import { sanitizeExpressionMap, sanitizeMotionMap } from "./modelMappingStorage";
 import { sanitizePomodoroSettings } from "./pomodoroSettingsStorage";
 import { sanitizeTtsSettings } from "./ttsSettingsStorage";
@@ -114,6 +115,10 @@ function sanitizeModelConfig(
       8,
       240,
     ),
+    performanceProfile: sanitizeModelPerformanceProfile(
+      value.performanceProfile,
+      fallback.performanceProfile,
+    ),
   };
 }
 
@@ -191,6 +196,10 @@ export function sanitizeLocalDesktopConfig(
       record.pomodoro === undefined
         ? { ...fallback.pomodoro }
         : sanitizePomodoroSettings(record.pomodoro),
+    motionDataCollectionEnabled:
+      typeof record.motionDataCollectionEnabled === "boolean"
+        ? record.motionDataCollectionEnabled
+        : fallback.motionDataCollectionEnabled,
   };
 }
 

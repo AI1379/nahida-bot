@@ -2,6 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import type { DisplayEmotion, DisplayMotion } from "@/domain/displayPlan";
+import type { MotionPrimitiveName } from "@/domain/motionPrimitives";
+import type {
+  MotionPlaybackSummary,
+  MotionPlaybackSurface,
+} from "@/domain/motionTelemetry";
+import type { NormalizedMotionClip } from "@/domain/normalizedPose";
 import type { RenderMode } from "@/domain/runtime";
 import type {
   Live2DExpressionOption,
@@ -10,8 +16,10 @@ import type {
 } from "@/domain/live2d";
 import { live2dModelLoadKey } from "@/domain/live2d";
 import Live2DDebugPanel from "@/components/Live2DDebugPanel.vue";
-import type { Live2DDebugSnapshot } from "@/renderers/live2dRenderer";
-import { WebLive2DRenderer } from "@/renderers/live2dRenderer";
+import type {
+  Live2DDebugSnapshot,
+  WebLive2DRenderer,
+} from "@/renderers/live2dRenderer";
 import { Live2DPresentationController } from "@/services/live2dPresentationController";
 
 const props = withDefaults(defineProps<{
@@ -21,6 +29,10 @@ const props = withDefaults(defineProps<{
   renderMode: RenderMode;
   model: Live2DModelManifest;
   speaking: boolean;
+  lipSyncEnergy?: number | null;
+  motionDataCollectionEnabled?: boolean;
+  motionTelemetryEnabled?: boolean;
+  playbackSurface?: MotionPlaybackSurface;
   captionText: string;
   expressionMapVersion: number;
   motionMapVersion: number;
@@ -29,11 +41,16 @@ const props = withDefaults(defineProps<{
 }>(), {
   debugEnabled: true,
   devChrome: true,
+  lipSyncEnergy: null,
+  motionDataCollectionEnabled: true,
+  motionTelemetryEnabled: true,
+  playbackSurface: "runtime",
 });
 
 const emit = defineEmits<{
   expressionsLoaded: [expressions: Live2DExpressionOption[]];
   motionsLoaded: [motions: Live2DMotionOption[]];
+  motionExecuted: [playback: MotionPlaybackSummary];
 }>();
 
 const live2dHost = ref<HTMLElement | null>(null);
@@ -58,9 +75,9 @@ const expressionLabel = computed(() => {
 
 const motionLabel = computed(() => {
   const mapped = props.model.motionMap[props.motion];
-  if (!mapped) return "Base fallback";
+  if (!mapped) return "Procedural fallback";
   if (mapped.source === "none") return "none";
-  if (mapped.source === "procedural") return `Base ${mapped.motion}`;
+  if (mapped.source === "procedural") return `Primitive ${mapped.motion}`;
   return `${mapped.group} #${mapped.index}`;
 });
 
@@ -85,10 +102,19 @@ function loadLive2D(): Promise<void> {
 }
 
 async function performLive2DLoad(generation: number): Promise<void> {
-  if (!live2dHost.value || generation !== loadGeneration) return;
-  const live2dRenderer = new WebLive2DRenderer(live2dHost.value);
+  const host = live2dHost.value;
+  if (!host || generation !== loadGeneration) return;
+  const { WebLive2DRenderer } = await import("@/renderers/live2dRenderer");
+  if (generation !== loadGeneration) return;
+  const live2dRenderer = new WebLive2DRenderer(host);
   const presentationController = new Live2DPresentationController(
     live2dRenderer,
+    {
+      motionDataCollectionEnabled: () =>
+        props.motionDataCollectionEnabled && props.motionTelemetryEnabled,
+      playbackSurface: props.playbackSurface,
+      onMotionExecuted: (playback) => emit("motionExecuted", playback),
+    },
   );
   try {
     await presentationController.loadModel(props.model);
@@ -101,6 +127,7 @@ async function performLive2DLoad(generation: number): Promise<void> {
       emotion: props.emotion,
       motion: props.motion,
       renderMode: props.renderMode,
+      assistantText: props.captionText,
     });
     if (generation !== loadGeneration) {
       presentationController.dispose();
@@ -179,10 +206,18 @@ function playDebugMotion(payload: {
   group: string;
   index: number;
   motion?: DisplayMotion;
+  primitive?: MotionPrimitiveName;
 }) {
-  void renderer.value
-    ?.playDebugMotion(payload.group, payload.index, payload.source, payload.motion)
-    .then(refreshDebugSnapshot);
+  const playback =
+    payload.source === "procedural" && payload.primitive
+      ? controller.value?.playPrimitive(payload.primitive)
+      : renderer.value?.playDebugMotion(payload.group, payload.index);
+  if (!playback) return;
+  void playback
+    .then(() => {
+      refreshDebugSnapshot();
+    })
+    .catch(() => {});
 }
 
 watch(
@@ -207,11 +242,13 @@ watch(
 );
 
 watch(
-  () => [props.motion, props.motionMapVersion] as const,
+  () => [props.motion, props.motionMapVersion, props.captionText] as const,
   () => {
     void controller.value
-      ?.playMotion(props.motion)
-      .then(refreshDebugSnapshot)
+      ?.playMotion(props.motion, props.emotion, props.captionText)
+      .then(() => {
+        refreshDebugSnapshot();
+      })
       .catch(() => {});
   },
 );
@@ -224,12 +261,27 @@ watch(
   },
 );
 
+watch(
+  () => props.lipSyncEnergy,
+  (energy) => {
+    if (energy === null || energy === undefined) return;
+    controller.value?.setLipSync(energy);
+  },
+);
+
 function handleVisibilityChange() {
   // A minimized/hidden window must not keep burning frames (design §9.8).
   controller.value?.setRenderMode(
     document.hidden ? "suspended" : props.renderMode,
   );
 }
+
+function replayNormalizedClip(clip: NormalizedMotionClip): boolean {
+  if (loadState.value !== "ready") return false;
+  return renderer.value?.playNormalizedMotion(clip) ?? false;
+}
+
+defineExpose({ replayNormalizedClip });
 
 onMounted(() => {
   document.addEventListener("visibilitychange", handleVisibilityChange);

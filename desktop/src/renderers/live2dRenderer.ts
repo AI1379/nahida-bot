@@ -2,18 +2,15 @@ import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display/cubism4";
 
 import { live2dRuntimeDefaults } from "@/config/desktopRuntimeDefaults";
-import type { DisplayMotion } from "@/domain/displayPlan";
 import type { RenderMode } from "@/domain/runtime";
+import type { Live2DModelManifest } from "@/domain/live2d";
 import {
-  baseMotionNames,
-  baseMotionProfiles,
-  commonLive2DParameterIds,
-  type CommonLive2DParameterRole,
-} from "@/domain/live2dBaseMotion";
-import type {
-  Live2DModelManifest,
-  Live2DMotionOption,
-} from "@/domain/live2d";
+  neutralNormalizedPose,
+  normalizedPoseChannels,
+  type NormalizedMotionClip,
+  type NormalizedPoseChannel,
+  type NormalizedPoseValues,
+} from "@/domain/normalizedPose";
 
 import {
   createLive2DDebugSnapshot,
@@ -31,10 +28,13 @@ import {
 import { clamp } from "./live2dMath";
 import {
   createRuntimeParameterOverride,
-  groupProceduralTargets,
   runtimeParameterValueAt,
   type RuntimeParameterOverride,
 } from "./live2dProceduralMotion";
+import {
+  live2dParameterIdsByPoseChannel,
+  live2DValueToNormalizedPose,
+} from "./live2dRetargeting";
 
 declare global {
   interface Window {
@@ -48,7 +48,8 @@ export interface Live2DRenderer {
   updateModelConfig(manifest: Live2DModelManifest): void;
   applyExpression(expressionName: string): Promise<boolean>;
   playModelMotion(group: string, index: number): Promise<boolean>;
-  playBaseMotion(motion: DisplayMotion): boolean;
+  playNormalizedMotion(clip: NormalizedMotionClip): boolean;
+  getNormalizedPose(): NormalizedPoseValues;
   clearRuntimeMotion(): void;
   setLipSync(value: number): void;
   setFpsMode(mode: RenderMode): void;
@@ -67,8 +68,6 @@ export type {
   Live2DPartDebugInfo,
 } from "./live2dDebug";
 
-type CommonParameterRole = CommonLive2DParameterRole;
-
 export class WebLive2DRenderer implements Live2DRenderer {
   private app: PIXI.Application | null = null;
   private model: Live2DModelInstance | null = null;
@@ -76,6 +75,9 @@ export class WebLive2DRenderer implements Live2DRenderer {
   private resizeObserver: ResizeObserver | null = null;
   private renderMode: RenderMode = "idle";
   private motionBoostUntil = 0;
+  private externalLipSyncUntil = 0;
+  private externalLipSyncValue = 0;
+  private activeMotionClipId: string | null = null;
   private readonly host: HTMLElement;
   private readonly parameterOverrides = new Map<number, DebugOverride>();
   private readonly partOpacityOverrides = new Map<number, DebugOverride>();
@@ -161,13 +163,14 @@ export class WebLive2DRenderer implements Live2DRenderer {
     }
   }
 
-  playBaseMotion(motion: DisplayMotion): boolean {
-    return this.playProceduralMotion(motion);
+  clearRuntimeMotion(): void {
+    this.cancelRuntimeMotion(true);
+    this.applyLipSyncValue(0);
   }
 
-  clearRuntimeMotion(): void {
+  private cancelRuntimeMotion(restoreOriginal: boolean): void {
     const coreModel = this.getCoreModel();
-    if (coreModel?.setParameterValueByIndex) {
+    if (restoreOriginal && coreModel?.setParameterValueByIndex) {
       for (const [index, override] of this.runtimeParameterOverrides) {
         const debugOverride = this.parameterOverrides.get(index);
         coreModel.setParameterValueByIndex(
@@ -178,11 +181,13 @@ export class WebLive2DRenderer implements Live2DRenderer {
       }
     }
     this.runtimeParameterOverrides.clear();
-    this.applyLipSyncValue(0);
+    this.activeMotionClipId = null;
   }
 
   setLipSync(value: number): void {
-    this.applyLipSyncValue(clamp(value, 0, 1));
+    this.externalLipSyncValue = clamp(value, 0, 1);
+    this.externalLipSyncUntil = performance.now() + 250;
+    this.applyLipSyncValue(this.externalLipSyncValue);
   }
 
   setFpsMode(mode: RenderMode): void {
@@ -247,17 +252,8 @@ export class WebLive2DRenderer implements Live2DRenderer {
   async playDebugMotion(
     group: string,
     index: number,
-    source: Live2DMotionOption["source"] = "model",
-    motion?: DisplayMotion,
   ): Promise<void> {
     if (!this.model || !group) return;
-    if (source === "procedural") {
-      const targetMotion = motion ?? baseMotionNames[index];
-      if (targetMotion) {
-        this.playBaseMotion(targetMotion);
-      }
-      return;
-    }
     await this.model.motion(group, index, 3);
   }
 
@@ -340,6 +336,8 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.motionBoostUntil = 0;
+    this.externalLipSyncUntil = 0;
+    this.externalLipSyncValue = 0;
     this.parameterOverrides.clear();
     this.partOpacityOverrides.clear();
     this.runtimeParameterOverrides.clear();
@@ -380,11 +378,11 @@ export class WebLive2DRenderer implements Live2DRenderer {
     const now = performance.now();
     for (const [index, override] of this.runtimeParameterOverrides) {
       const elapsed = now - override.startedAt;
-      if (elapsed >= override.durationMs) {
+      if (elapsed >= override.durationMs && !override.loopable) {
         const debugOverride = this.parameterOverrides.get(index);
         coreModel.setParameterValueByIndex?.(
           index,
-          debugOverride?.value ?? override.original,
+          debugOverride?.value ?? override.finalValue,
           1,
         );
         this.runtimeParameterOverrides.delete(index);
@@ -403,7 +401,11 @@ export class WebLive2DRenderer implements Live2DRenderer {
     }
 
     if (this.renderMode === "speaking") {
-      this.applyLipSyncValue(lipSyncValueForSpeakingPulse(now));
+      this.applyLipSyncValue(
+        now <= this.externalLipSyncUntil
+          ? this.externalLipSyncValue
+          : lipSyncValueForSpeakingPulse(now),
+      );
     }
   };
 
@@ -447,39 +449,46 @@ export class WebLive2DRenderer implements Live2DRenderer {
     return internalModel?.settings ?? null;
   }
 
-  private playProceduralMotion(motion: DisplayMotion): boolean {
+  playNormalizedMotion(clip: NormalizedMotionClip): boolean {
     const coreModel = this.getCoreModel();
-    const profile = baseMotionProfiles[motion];
-    if (!coreModel || !profile) return false;
+    if (!coreModel || !clip.channels.length || !clip.frames.length) return false;
 
-    this.clearRuntimeMotion();
+    const originalValues = new Map(
+      [...this.runtimeParameterOverrides].map(([index, override]) => [
+        index,
+        override.original,
+      ]),
+    );
+    this.cancelRuntimeMotion(false);
+    this.activeMotionClipId = clip.id;
     const now = performance.now();
     this.motionBoostUntil = Math.max(
       this.motionBoostUntil,
       now +
-        profile.durationMs +
+        clip.durationMs +
         live2dRuntimeDefaults.motion.boostTailMs,
     );
     this.applyTickerFps();
 
     let applied = false;
-    const targetsByRole = groupProceduralTargets(profile);
-    for (const [role, targets] of targetsByRole) {
-      for (const index of this.parameterIndicesForRole(role)) {
+    for (const channel of clip.channels) {
+      for (const index of this.parameterIndicesForChannel(channel)) {
         const current =
           coreModel.getParameterValueByIndex?.(index) ??
           coreModel.getParameterDefaultValue?.(index) ??
           0;
         const minimum = coreModel.getParameterMinimumValue?.(index) ?? current;
         const maximum = coreModel.getParameterMaximumValue?.(index) ?? current;
+        const defaultValue =
+          coreModel.getParameterDefaultValue?.(index) ?? current;
         this.runtimeParameterOverrides.set(
           index,
           createRuntimeParameterOverride({
-            profile,
+            clip,
+            channel,
             current,
-            minimum,
-            maximum,
-            targets,
+            original: originalValues.get(index),
+            range: { minimum, maximum, defaultValue },
             startedAt: now,
           }),
         );
@@ -488,6 +497,37 @@ export class WebLive2DRenderer implements Live2DRenderer {
     }
 
     return applied;
+  }
+
+  getNormalizedPose(): NormalizedPoseValues {
+    const coreModel = this.getCoreModel();
+    const pose: NormalizedPoseValues = { ...neutralNormalizedPose };
+    if (!coreModel) return pose;
+
+    for (const channel of normalizedPoseChannels) {
+      const values = this.parameterIndicesForChannel(channel).map((index) => {
+        const defaultValue =
+          coreModel.getParameterDefaultValue?.(index) ?? 0;
+        return live2DValueToNormalizedPose(
+          channel,
+          coreModel.getParameterValueByIndex?.(index) ?? defaultValue,
+          {
+            minimum: coreModel.getParameterMinimumValue?.(index) ?? defaultValue,
+            maximum: coreModel.getParameterMaximumValue?.(index) ?? defaultValue,
+            defaultValue,
+          },
+        );
+      });
+      if (values.length) {
+        pose[channel] =
+          values.reduce((total, value) => total + value, 0) / values.length;
+      }
+    }
+    return pose;
+  }
+
+  getActiveMotionClipId(): string | null {
+    return this.activeMotionClipId;
   }
 
   private applyLipSyncValue(value: number): void {
@@ -510,8 +550,13 @@ export class WebLive2DRenderer implements Live2DRenderer {
     }
   }
 
-  private parameterIndicesForRole(role: CommonParameterRole): number[] {
-    return commonLive2DParameterIds[role].flatMap((id) => {
+  private parameterIndicesForChannel(
+    channel: NormalizedPoseChannel,
+  ): number[] {
+    const parameterIds =
+      this.manifest?.performanceProfile?.poseParameterMap[channel] ??
+      live2dParameterIdsByPoseChannel[channel];
+    return parameterIds.flatMap((id) => {
       const index = this.parameterIndexById(id);
       return index === null ? [] : [index];
     });

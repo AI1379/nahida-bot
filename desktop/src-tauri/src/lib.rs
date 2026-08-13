@@ -1,4 +1,5 @@
 mod gateway_node;
+mod motion_dataset;
 mod remote_control;
 mod secure_storage;
 
@@ -119,6 +120,10 @@ pub fn run() {
             gateway_node::gateway_node_status,
             gateway_node::gateway_node_submit_input,
             gateway_node::gateway_node_complete_capability,
+            motion_dataset::motion_dataset_append,
+            motion_dataset::motion_dataset_read,
+            motion_dataset::motion_dataset_export,
+            motion_dataset::motion_dataset_clear,
             remote_control::remote_control_policy_read,
             remote_control::remote_control_policy_save,
             secure_storage::secure_tokens_read,
@@ -128,6 +133,9 @@ pub fn run() {
             let remote_control = remote_control::RemoteControlManager::load(app.handle())
                 .map_err(std::io::Error::other)?;
             app.manage(remote_control);
+            let motion_dataset = motion_dataset::MotionDatasetManager::load(app.handle())
+                .map_err(std::io::Error::other)?;
+            app.manage(motion_dataset);
             if let Some(pet) = app.get_webview_window("pet") {
                 suppress_nc_paint(&pet);
                 strip_window_chrome(&pet);

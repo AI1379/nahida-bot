@@ -3,6 +3,7 @@ import {
 } from "@/domain/config";
 import type { DisplayPlan } from "@/domain/displayPlan";
 import type { DisplayMotion } from "@/domain/displayPlan";
+import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import { createInitialPetRuntimeState } from "@/domain/runtime";
 import type { PresentationPlan } from "@/domain/runtime";
 import type {
@@ -92,6 +93,7 @@ export function createDesktopState() {
     expressionMapVersion: 0,
     motionMapVersion: 0,
     transcript: [] as TranscriptEntry[],
+    recentMotionPlaybacks: [] as MotionPlaybackSummary[],
     pendingAfterEmerge: createEmptyPendingAfterEmerge(),
     gatewayConnection,
     gatewayConnectionVersion: 0,

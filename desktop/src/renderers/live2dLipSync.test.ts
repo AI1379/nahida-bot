@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { live2dRuntimeDefaults } from "@/config/desktopRuntimeDefaults";
 import type { Live2DModelManifest } from "@/domain/live2d";
-import { commonLive2DParameterIds } from "@/domain/live2dBaseMotion";
 
 import {
   lipSyncParameterIdsForManifest,
   lipSyncValueForSpeakingPulse,
   scaleLipSyncParameterValue,
 } from "./live2dLipSync";
+import { live2dParameterIdsByPoseChannel } from "./live2dRetargeting";
 
 function manifestWithLipSync(parameterIds: string[]): Live2DModelManifest {
   return {
@@ -29,7 +29,7 @@ describe("live2dLipSync", () => {
       lipSyncParameterIdsForManifest(manifestWithLipSync(["CustomMouth"])),
     ).toEqual(["CustomMouth"]);
     expect(lipSyncParameterIdsForManifest(manifestWithLipSync([]))).toEqual(
-      commonLive2DParameterIds.mouthOpen,
+      live2dParameterIdsByPoseChannel.mouthOpen,
     );
   });
 

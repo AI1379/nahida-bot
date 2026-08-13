@@ -26,6 +26,7 @@ const emit = defineEmits<{
     group: string;
     index: number;
     motion?: DisplayMotion;
+    primitive?: Live2DMotionDebugInfo["primitive"];
   }];
 }>();
 
@@ -58,7 +59,7 @@ const filteredKeyParameters = computed(() => {
   const parameters = props.snapshot?.keyParameters ?? [];
   if (!normalizedQuery.value) return parameters;
   return parameters.filter((parameter) =>
-    `${parameter.index} ${parameter.id} ${parameter.roles.join(" ")}`
+    `${parameter.index} ${parameter.id} ${parameter.channels.join(" ")}`
       .toLowerCase()
       .includes(normalizedQuery.value),
   );
@@ -97,8 +98,8 @@ const filteredNativeMotions = computed(() =>
   filterMotions(props.snapshot?.nativeMotions ?? []),
 );
 
-const filteredBaseMotions = computed(() =>
-  filterMotions(props.snapshot?.baseMotions ?? []),
+const filteredProceduralMotions = computed(() =>
+  filterMotions(props.snapshot?.proceduralMotions ?? []),
 );
 
 function formatNumber(value: number, digits = 2): string {
@@ -112,10 +113,10 @@ function readNumericInput(event: Event): number {
 }
 
 function formatParameterTags(parameter: {
-  roles?: string[];
+  channels?: string[];
   lipSync?: boolean;
 }): string {
-  const tags = [...(parameter.roles ?? [])];
+  const tags = [...(parameter.channels ?? [])];
   if (parameter.lipSync) tags.push("lip-sync");
   return tags.join(" / ");
 }
@@ -131,7 +132,7 @@ function formatParameterTags(parameter: {
           {{ props.snapshot.drawables.length }} drawables /
           {{ props.snapshot.expressions.length }} expressions /
           {{ props.snapshot.nativeMotions.length }} model motions /
-          {{ props.snapshot.baseMotions.length }} base motions
+          {{ props.snapshot.proceduralMotions.length }} procedural primitives
         </span>
       </div>
       <button type="button" @click="emit('close')">Close</button>
@@ -229,12 +230,12 @@ function formatParameterTags(parameter: {
 
         <section>
           <header class="debug-section__header">
-            <strong>Base Motions</strong>
-            <span>{{ filteredBaseMotions.length }} profiles</span>
+            <strong>Procedural Primitives</strong>
+            <span>{{ filteredProceduralMotions.length }} available</span>
           </header>
           <div class="debug-button-grid">
             <button
-              v-for="motion in filteredBaseMotions"
+              v-for="motion in filteredProceduralMotions"
               :key="`${motion.source}:${motion.group}:${motion.index}`"
               type="button"
               @click="
@@ -243,10 +244,11 @@ function formatParameterTags(parameter: {
                   group: motion.group,
                   index: motion.index,
                   motion: motion.motion,
+                  primitive: motion.primitive,
                 })
               "
             >
-              <strong>Base {{ motion.name }}</strong>
+              <strong>{{ motion.name }}</strong>
               <span v-if="motion.file">{{ motion.file }}</span>
             </button>
           </div>

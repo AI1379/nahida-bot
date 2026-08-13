@@ -1,19 +1,25 @@
 <script setup lang="ts">
 import {
   computed,
+  onBeforeUnmount,
+  onMounted,
   ref,
 } from "vue";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useDesktopRuntimeController } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
 import PetRuntimeView from "@/views/PetRuntimeView.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import WorkbenchView from "@/views/WorkbenchView.vue";
+import { listenForMotionPlaybacks } from "@/services/desktopWindowBridge";
+import { readRecentMotionPlaybacks } from "@/services/motionPlaybackHistory";
 
 const store = useDesktopStore();
 const runtime = useDesktopRuntimeController(store);
 
 type DesktopView = "runtime" | "workbench" | "settings";
 const activeView = ref<DesktopView>("runtime");
+let unlistenMotionPlaybacks: UnlistenFn | null = null;
 
 const title = computed(() => {
   switch (activeView.value) {
@@ -30,6 +36,21 @@ function selectModel(event: Event) {
   const target = event.target as HTMLSelectElement;
   store.selectModel(target.value);
 }
+
+onMounted(async () => {
+  unlistenMotionPlaybacks = await listenForMotionPlaybacks((playback) => {
+    store.rememberMotionPlayback(playback);
+  });
+  try {
+    store.mergeRecentMotionPlaybackHistory(await readRecentMotionPlaybacks());
+  } catch {
+    // Feedback remains available for new in-session playbacks.
+  }
+});
+
+onBeforeUnmount(() => {
+  unlistenMotionPlaybacks?.();
+});
 </script>
 
 <template>
