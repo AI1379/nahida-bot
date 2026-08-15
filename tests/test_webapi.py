@@ -2046,3 +2046,54 @@ async def test_cors_headers(client_no_auth: AsyncClient) -> None:
     )
     assert resp.status_code == 200
     assert "access-control-allow-origin" in resp.headers
+
+
+async def test_config_backup_restore_endpoint(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    original = """# preserved comment
+app_name: Demo Bot
+debug: false
+providers:
+  default:
+    type: openai-compatible
+    api_key: secret-key
+    base_url: https://old.example
+    models:
+      - demo-model
+"""
+    config_path.write_text(original, encoding="utf-8")
+    app = _make_mock_app()
+    app._config_yaml_path = str(config_path)
+    webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+    transport = ASGITransport(app=webapi.fastapi_app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        document = await client.get("/api/config/document")
+        await client.patch(
+            "/api/config/current",
+            json={
+                "expected_checksum": document.json()["checksum"],
+                "changes": [{"path": "debug", "value": True}],
+            },
+        )
+        assert "debug: true" in config_path.read_text(encoding="utf-8")
+
+        backups = (await client.get("/api/config/backups")).json()["backups"]
+        assert backups
+        current = await client.get("/api/config/document")
+        restored = await client.post(
+            f"/api/config/backups/{backups[0]['name']}/restore",
+            json={"expected_checksum": current.json()["checksum"]},
+        )
+
+    assert restored.status_code == 200
+    assert restored.json()["saved"] is True
+    assert config_path.read_text(encoding="utf-8") == original
+
+    # Restoring again with the stale pre-restore checksum must conflict.
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        stale = await client.post(
+            f"/api/config/backups/{backups[0]['name']}/restore",
+            json={"expected_checksum": current.json()["checksum"]},
+        )
+    assert stale.status_code == 409

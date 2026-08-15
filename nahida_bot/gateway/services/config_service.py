@@ -41,6 +41,9 @@ _REDACT_PLACEHOLDER = "***"
 
 _MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 MiB
 
+# Managed backups kept per config file before pruning kicks in.
+_MAX_BACKUPS = 30
+
 
 @dataclass(slots=True)
 class ConfigContent:
@@ -473,12 +476,104 @@ def _backup_and_write(path: Path, content: str, *, backup_dir: str | None) -> st
     bdir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     backup_file = bdir / f"config.yaml.{timestamp}.bak"
+    suffix = 1
+    while backup_file.exists():
+        # Two saves within the same second must not overwrite each other.
+        backup_file = bdir / f"config.yaml.{timestamp}-{suffix}.bak"
+        suffix += 1
     shutil.copy2(path, backup_file)
+    _prune_backups(bdir)
 
     tmp_path = path.with_suffix(".tmp")
     tmp_path.write_text(content, encoding="utf-8")
     tmp_path.replace(path)
     return str(backup_file)
+
+
+def _prune_backups(bdir: Path, keep: int = _MAX_BACKUPS) -> None:
+    """Keep only the newest *keep* managed backups (timestamped names sort
+    chronologically). Never raises — pruning must not fail a save."""
+    try:
+        backups = sorted(bdir.glob("config.yaml.*.bak"), reverse=True)
+        for old in backups[keep:]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("config.backup_prune_failed", dir=str(bdir))
+
+
+def restore_config_backup(
+    backup_name: str,
+    *,
+    config_path: str | None = None,
+    backup_dir: str | None = None,
+    expected_checksum: str | None = None,
+) -> ConfigSaveResult:
+    """Restore a managed backup over the current config file.
+
+    The backup content is validated through the same pipeline as a normal
+    save; the current file is itself backed up before being replaced, so a
+    restore is always reversible.
+    """
+    path = _resolve_config_path(config_path)
+    if not path or not path.exists():
+        return ConfigSaveResult(
+            saved=False,
+            validation=ValidationReport(
+                issues=[ValidationIssue("error", "", f"Config file not found: {path}")]
+            ),
+        )
+
+    if backup_dir:
+        bdir = Path(backup_dir)
+    else:
+        bdir = path.parent / "config_backups"
+    backup_file = bdir / backup_name
+    if Path(backup_name).name != backup_name or not backup_file.is_file():
+        return ConfigSaveResult(
+            saved=False,
+            validation=ValidationReport(
+                issues=[
+                    ValidationIssue("error", "", f"Backup not found: {backup_name}")
+                ]
+            ),
+        )
+
+    content = backup_file.read_text(encoding="utf-8")
+    report = validate_config_text(content, config_yaml_path=str(path))
+    if report.errors > 0:
+        return ConfigSaveResult(saved=False, validation=report)
+
+    if expected_checksum:
+        current_raw = path.read_text(encoding="utf-8")
+        if _sha256(current_raw) != expected_checksum:
+            return ConfigSaveResult(
+                saved=False,
+                validation=ValidationReport(
+                    issues=[
+                        ValidationIssue(
+                            "error",
+                            "",
+                            "Config was modified externally (checksum mismatch). "
+                            "Re-read and retry.",
+                        )
+                    ]
+                ),
+            )
+
+    backup_path = _backup_and_write(path, content, backup_dir=backup_dir)
+    logger.info(
+        "config.backup_restored",
+        path=str(path),
+        backup=str(backup_file),
+        new_backup=backup_path,
+    )
+    return ConfigSaveResult(
+        saved=True,
+        backup_path=backup_path,
+        checksum=_sha256(content),
+        restart_required=True,
+        validation=report,
+    )
 
 
 def _apply_patch_changes(data: dict[str, Any], changes: list[dict[str, Any]]) -> None:

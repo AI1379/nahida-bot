@@ -175,6 +175,10 @@ class ConfigSaveResponse(BaseModel):
     validation: dict[str, Any]
 
 
+class ConfigRestoreRequest(BaseModel):
+    expected_checksum: str | None = None
+
+
 # -- Sessions -------------------------------------------------------------
 
 

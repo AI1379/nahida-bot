@@ -10,6 +10,7 @@ from nahida_bot.gateway.schemas import (
     ConfigCurrentResponse,
     ConfigDocumentResponse,
     ConfigPatchRequest,
+    ConfigRestoreRequest,
     ConfigSaveRequest,
     ConfigSaveResponse,
     ConfigSchemaResponse,
@@ -24,6 +25,7 @@ from nahida_bot.gateway.services.config_service import (
     read_config_document,
     read_current_config,
     redact_yaml,
+    restore_config_backup as restore_config_backup_service,
     save_config_patch_with_backup,
     save_config_with_backup,
     validate_config_text,
@@ -286,3 +288,52 @@ async def get_config_backups(
 ):
     backups = list_backups(config_path=_config_path(app))
     return {"backups": backups}
+
+
+@router.post("/api/config/backups/{backup_name}/restore")
+async def restore_config_backup(
+    backup_name: str,
+    body: ConfigRestoreRequest | None = None,
+    app=Depends(get_application),
+):
+    expected = body.expected_checksum if body is not None else None
+    result = restore_config_backup_service(
+        backup_name,
+        config_path=_config_path(app),
+        expected_checksum=expected,
+    )
+    if not result.saved:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Restore rejected (missing backup, validation "
+                "failed, or checksum mismatch)",
+                "issues": [
+                    {
+                        "severity": i.severity,
+                        "path": i.path,
+                        "message": i.message,
+                    }
+                    for i in (result.validation.issues if result.validation else [])
+                ],
+            },
+        )
+
+    audit_log.audit("config.backup_restored", detail=f"backup={backup_name}")
+    logger.info(
+        "webapi.config_backup_restored",
+        backup=backup_name,
+        new_backup=result.backup_path,
+        restart_required=result.restart_required,
+    )
+    return ConfigSaveResponse(
+        saved=result.saved,
+        backup_path=result.backup_path,
+        checksum=result.checksum,
+        restart_required=result.restart_required,
+        validation={
+            "errors": result.validation.errors if result.validation else 0,
+            "warnings": result.validation.warnings if result.validation else 0,
+            "issues": [],
+        },
+    )
