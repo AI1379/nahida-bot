@@ -7,7 +7,6 @@ and redaction logic is centralized.
 from __future__ import annotations
 
 import hashlib
-import re
 import shutil
 from copy import deepcopy
 from dataclasses import dataclass
@@ -19,6 +18,10 @@ import structlog
 import yaml
 
 from nahida_bot.core.config import Settings, find_config_yaml
+from nahida_bot.core.config_secrets import (
+    SENSITIVE_KEY_PATTERN,
+    is_sensitive_path,
+)
 from nahida_bot.core.config_validation import (
     ValidationIssue,
     ValidationReport,
@@ -32,10 +35,10 @@ from nahida_bot.core.yaml_edit import (
 
 logger = structlog.get_logger(__name__)
 
-# Fields whose values should be redacted by default.
-_REDACT_PATTERNS = re.compile(
-    r"(api_key|token|secret|password|private_key)", re.IGNORECASE
-)
+# Fields whose values should be redacted by default. Model-declared
+# sensitive fields (core.config.SensitiveStr) take priority; this pattern is
+# the fallback for untyped sections (channels, plugin config, extra keys).
+_REDACT_PATTERNS = SENSITIVE_KEY_PATTERN
 
 _REDACT_PLACEHOLDER = "***"
 
@@ -179,7 +182,7 @@ def _redact_any(value: Any, path: str, out: list[str]) -> None:
             child = value[key]
             if isinstance(child, (dict, list)):
                 _redact_any(child, child_path, out)
-            elif isinstance(child, str) and _REDACT_PATTERNS.search(str(key)):
+            elif isinstance(child, str) and is_sensitive_path(child_path, str(key)):
                 value[key] = _REDACT_PLACEHOLDER
                 out.append(child_path)
         return

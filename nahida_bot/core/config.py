@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from dotenv import dotenv_values
@@ -10,6 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ImageFallbackMode = Literal["auto", "tool", "off"]
 MediaContextPolicy = Literal["cache_aware", "description_only", "native_recent"]
+
+# Marks a config field whose value must never be echoed verbatim by any
+# surface (WebUI redaction, CLI output, logs). Consumers derive the full
+# sensitive-path set from the model tree; see core.config_secrets.
+SensitiveStr = Annotated[str, Field(json_schema_extra={"nahida_sensitive": True})]
 
 
 class ProviderModelConfig(BaseModel):
@@ -32,7 +37,7 @@ class ProviderQuotaConfig(BaseModel):
 
     adapter: str = ""
     url: str = ""
-    api_key: str = ""
+    api_key: SensitiveStr = ""
     team: bool = False
     organization_id: str = ""
     project_id: str = ""
@@ -45,7 +50,7 @@ class ProviderEntryConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
     type: str = "openai-compatible"
-    api_key: str = ""
+    api_key: SensitiveStr = ""
     base_url: str = ""
     models: list[ProviderModelEntry] = Field(default_factory=list)
     quota: ProviderQuotaConfig | None = None
@@ -198,7 +203,7 @@ class WebAPIConfigModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
     enabled: bool = False
-    auth_token: str = ""
+    auth_token: SensitiveStr = ""
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
     host: str = ""
     port: int = 0
@@ -212,7 +217,7 @@ class WebUIAuthConfigModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     enabled: bool = True
-    admin_password_hash: str = Field(
+    admin_password_hash: SensitiveStr = Field(
         default="",
         pattern=r"^$|^pbkdf2_sha256\$[1-9][0-9]*\$[^$]+\$[0-9a-fA-F]{64}$",
     )
