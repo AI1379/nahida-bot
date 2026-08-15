@@ -36,6 +36,25 @@ def _yaml() -> YAML:
     return yaml
 
 
+def parse_yaml_text(text: str) -> CommentedMap:
+    """Parse YAML text in round-trip mode; empty text maps to an empty doc.
+
+    Raises:
+        YamlEditError: The text is not valid YAML or not a mapping.
+    """
+    try:
+        doc = _yaml().load(text)
+    except YAMLError as exc:
+        raise YamlEditError(f"Cannot parse YAML: {exc}") from exc
+    if doc is None:
+        return CommentedMap()
+    if not isinstance(doc, CommentedMap):
+        raise YamlEditError(
+            f"Expected a YAML mapping at the top level, got {type(doc).__name__}"
+        )
+    return doc
+
+
 def load_yaml_document(path: Path) -> CommentedMap:
     """Load *path* in round-trip mode; an empty result maps to an empty doc.
 
@@ -46,17 +65,9 @@ def load_yaml_document(path: Path) -> CommentedMap:
     if not path.exists():
         return CommentedMap()
     try:
-        doc = _yaml().load(path.read_text(encoding="utf-8"))
-    except YAMLError as exc:
+        return parse_yaml_text(path.read_text(encoding="utf-8"))
+    except YamlEditError as exc:
         raise YamlEditError(f"Cannot parse {path}: {exc}") from exc
-    if doc is None:
-        return CommentedMap()
-    if not isinstance(doc, CommentedMap):
-        raise YamlEditError(
-            f"Expected a YAML mapping at the top level of {path}, "
-            f"got {type(doc).__name__}"
-        )
-    return doc
 
 
 def upsert_path(doc: CommentedMap, segments: list[str], value: Any) -> None:

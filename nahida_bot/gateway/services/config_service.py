@@ -24,6 +24,11 @@ from nahida_bot.core.config_validation import (
     ValidationReport,
     validate_settings,
 )
+from nahida_bot.core.yaml_edit import (
+    YamlEditError,
+    document_to_text,
+    parse_yaml_text,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -418,13 +423,13 @@ def save_config_patch_with_backup(
         return ConfigSaveResult(saved=False, validation=report)
 
     try:
-        data = _parse_yaml_mapping(current_raw)
-        _apply_patch_changes(data, changes)
-    except (TypeError, ValueError) as exc:
+        doc = parse_yaml_text(current_raw)
+        _apply_patch_changes(doc, changes)
+    except (TypeError, ValueError, YamlEditError) as exc:
         report = ValidationReport(issues=[ValidationIssue("error", "", str(exc))])
         return ConfigSaveResult(saved=False, validation=report)
 
-    content = config_data_to_yaml(data)
+    content = document_to_text(doc)
     report = validate_config_text(content)
     if report.errors > 0:
         return ConfigSaveResult(saved=False, validation=report)
