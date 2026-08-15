@@ -316,11 +316,6 @@ def validate_config_text(
     return validate_settings(settings)
 
 
-def validate_config_data(data: dict[str, Any]) -> ValidationReport:
-    """Validate structured config data without writing to disk."""
-    return validate_config_text(config_data_to_yaml(data))
-
-
 def save_config_with_backup(
     content: str,
     *,

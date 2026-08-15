@@ -47,6 +47,7 @@ def schema_cmd(
     ),
     config_yaml: str | None = typer.Option(
         None,
+        "--config-yaml",
         "--config",
         "-c",
         help="Path to YAML configuration file; used for plugin_paths discovery",
@@ -101,6 +102,7 @@ def schema_cmd(
 def validate_cmd(
     config_yaml: str | None = typer.Option(
         None,
+        "--config-yaml",
         "--config",
         "-c",
         help="Path to YAML configuration file",

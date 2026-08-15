@@ -286,6 +286,7 @@ def login(
     ),
     config: str | None = typer.Option(
         None,
+        "--config-yaml",
         "--config",
         "-c",
         help="Path to YAML configuration file",
@@ -327,6 +328,7 @@ def logout(
     ),
     config: str | None = typer.Option(
         None,
+        "--config-yaml",
         "--config",
         "-c",
         help="Path to YAML configuration file",
@@ -373,6 +375,7 @@ def _print_credentials(config: str | None) -> None:
 def list_credentials(
     config: str | None = typer.Option(
         None,
+        "--config-yaml",
         "--config",
         "-c",
         help="Path to YAML configuration file",
@@ -386,6 +389,7 @@ def list_credentials(
 def list_credentials_alias(
     config: str | None = typer.Option(
         None,
+        "--config-yaml",
         "--config",
         "-c",
         help="Path to YAML configuration file",
