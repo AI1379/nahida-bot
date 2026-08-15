@@ -2,7 +2,9 @@
 
 Generates a minimal, working ``config.yaml`` + ``.env`` from a few prompts, so
 new deployments don't have to edit the 500-line reference config. Reentrant:
-when run against an existing config it only fills gaps instead of clobbering.
+when run against an existing config it only fills gaps instead of clobbering,
+and edits the file through the comment-preserving YAML editor so hand-written
+notes survive the run.
 
 Usage::
 
@@ -21,10 +23,21 @@ from typing import Any
 import typer
 import yaml
 from rich.console import Console
-from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 
+from nahida_bot.agent.providers.catalog import (
+    PROVIDER_PRESETS,
+    preset_with_base_url,
+)
+from nahida_bot.cli.provider_setup import pick_labelled, pick_provider_preset
 from nahida_bot.core.config import find_config_yaml, find_env_path, load_settings
+from nahida_bot.core.yaml_edit import (
+    YamlEditError,
+    document_to_text,
+    load_yaml_document,
+    save_document,
+    upsert_path,
+)
 
 console = Console()
 
@@ -32,80 +45,8 @@ bootstrap_app = typer.Typer(help="Interactive first-run configuration wizard")
 
 
 # ---------------------------------------------------------------------------
-# Templates
+# Channel templates
 # ---------------------------------------------------------------------------
-
-
-@dataclass(slots=True, frozen=True)
-class ProviderTemplate:
-    """A canned provider definition the wizard can stamp out."""
-
-    label: str
-    provider_type: str
-    base_url: str
-    key_env: str  # env var name that holds the api key
-    key_label: str  # human label for the key
-    models: list[dict[str, Any]]  # model entries with tags
-    needs_key: bool = True
-    extra: dict[str, Any] = field(default_factory=dict)
-
-
-# Curated presets. Keys mirror what config.yaml uses so existing users feel
-# at home. base_url / models are sensible defaults; the api key always lives
-# in .env and is referenced via ${VAR} interpolation.
-_PROVIDER_PRESETS: dict[str, ProviderTemplate] = {
-    "deepseek": ProviderTemplate(
-        label="DeepSeek (official)",
-        provider_type="deepseek",
-        base_url="https://api.deepseek.com",
-        key_env="DEEPSEEK_LLM_API_KEY",
-        key_label="DeepSeek API key",
-        models=[{"name": "deepseek-chat", "tags": ["primary"]}],
-    ),
-    "siliconflow": ProviderTemplate(
-        label="SiliconFlow (OpenAI-compatible)",
-        provider_type="openai-compatible",
-        base_url="https://api.siliconflow.cn/v1",
-        key_env="SILICONFLOW_LLM_API_KEY",
-        key_label="SiliconFlow API key",
-        models=[{"name": "Qwen/Qwen3.6-35B-A3B", "tags": ["primary", "vision"]}],
-        extra={"merge_system_messages": True, "stream_responses": True},
-    ),
-    "openai": ProviderTemplate(
-        label="OpenAI (Responses API)",
-        provider_type="openai-responses",
-        base_url="https://api.openai.com/v1",
-        key_env="OPENAI_API_KEY",
-        key_label="OpenAI API key",
-        models=[{"name": "gpt-5.4", "tags": ["primary"]}],
-        extra={"stream_responses": True},
-    ),
-    "anthropic": ProviderTemplate(
-        label="Anthropic Claude",
-        provider_type="anthropic",
-        base_url="",
-        key_env="ANTHROPIC_API_KEY",
-        key_label="Anthropic API key",
-        models=[{"name": "claude-sonnet-4-5", "tags": ["primary"]}],
-    ),
-    "glm": ProviderTemplate(
-        label="GLM / ZhiPu",
-        provider_type="glm",
-        base_url="",
-        key_env="GLM_API_KEY",
-        key_label="GLM API key",
-        models=[{"name": "glm-4-plus", "tags": ["primary"]}],
-    ),
-    "generic-openai": ProviderTemplate(
-        label="Generic OpenAI-compatible (custom base_url)",
-        provider_type="openai-compatible",
-        base_url="",
-        key_env="LLM_API_KEY",
-        key_label="API key",
-        models=[{"name": "gpt-3.5-turbo", "tags": ["primary"]}],
-        extra={"stream_responses": True},
-    ),
-}
 
 
 @dataclass(slots=True, frozen=True)
@@ -148,6 +89,11 @@ _CHANNEL_PRESETS: dict[str, ChannelTemplate] = {
         extras={"enabled": True, "protocol_version": "v11"},
     ),
 }
+
+
+# Provider presets live in nahida_bot.agent.providers.catalog so bootstrap and
+# `auth login` stamp identical entries; base_url / models are sensible
+# defaults and the api key always lives in .env behind ${VAR} interpolation.
 
 
 # ---------------------------------------------------------------------------
@@ -202,36 +148,6 @@ def _write_env(path: Path, env: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _provider_yaml(preset: ProviderTemplate, provider_id: str) -> dict[str, Any]:
-    entry: dict[str, Any] = {
-        "type": preset.provider_type,
-        "api_key": f"${{{preset.key_env}:}}",
-    }
-    if preset.base_url:
-        entry["base_url"] = preset.base_url
-    entry.update(preset.extra)
-    entry["models"] = list(preset.models)
-    return {provider_id: entry}
-
-
-def _pick_preset(
-    prompt_msg: str,
-    presets: dict[str, Any],
-    *,
-    default: str,
-) -> str:
-    options = list(presets.keys())
-    console.print(Panel.fit(prompt_msg, border_style="cyan"))
-    for idx, key in enumerate(options, 1):
-        console.print(f"  [cyan]{idx}[/cyan]. {presets[key].label}")
-    choice = Prompt.ask(
-        "Choice",
-        choices=[str(i) for i in range(1, len(options) + 1)],
-        default=str(options.index(default) + 1),
-    )
-    return options[int(choice) - 1]
-
-
 # Capability → required model tag mapping. A bootstrapped minimal config only
 # carries [primary], so we surface which optional subsystems are left without a
 # target model and point the user at the config reference.
@@ -270,6 +186,23 @@ def _print_capability_checklist(merged: dict[str, Any]) -> None:
         "[dim]以上「~」项不影响启动，只是对应能力会降级或关闭。"
         "补 tag 见 [cyan]docs/guide/configuration.md[/cyan] 的 providers.models[].tags。[/dim]"
     )
+
+
+def _validate_content(content: str, target_env: Path) -> None:
+    """Validate candidate config text through the real settings loader."""
+
+    tmp_yaml = Path(str(target_env) + ".tmp.bootstrap.yaml")
+    try:
+        tmp_yaml.write_text(content, encoding="utf-8")
+        load_settings(
+            config_yaml=str(tmp_yaml),
+            env_path=str(target_env) if target_env.is_file() else None,
+        )
+    except Exception as exc:
+        console.print(f"[bold red]Generated config failed validation:[/bold red] {exc}")
+        raise typer.Exit(1) from exc
+    finally:
+        tmp_yaml.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -317,48 +250,41 @@ def bootstrap(
 
     # --- provider selection ---
     providers_section: dict[str, Any] = dict(existing_yaml.get("providers") or {})
+    touched_providers: dict[str, dict[str, Any]] = {}
     new_env: dict[str, str] = {}
     default_provider = existing_yaml.get("default_provider", "")
 
     if non_interactive:
         if not providers_section:
-            preset = _PROVIDER_PRESETS[
-                os.environ.get("NAHIDA_BOOTSTRAP_PROVIDER", "deepseek")
-            ]
+            preset_key = os.environ.get("NAHIDA_BOOTSTRAP_PROVIDER", "deepseek")
+            preset = PROVIDER_PRESETS[preset_key]
             pid = os.environ.get("NAHIDA_BOOTSTRAP_PROVIDER_ID", "main")
-            providers_section.update(_provider_yaml(preset, pid))
+            providers_section[pid] = preset.render_entry()
+            touched_providers[pid] = providers_section[pid]
             default_provider = pid
             new_env[preset.key_env] = os.environ.get(preset.key_env, "")
     else:
         if not providers_section or Confirm.ask(
             "Configure an LLM provider?", default=True
         ):
-            preset_key = _pick_preset(
+            preset_key = pick_provider_preset(
                 "Choose an LLM provider preset:",
-                _PROVIDER_PRESETS,
                 default="deepseek",
+                console=console,
             )
-            preset = _PROVIDER_PRESETS[preset_key]
+            preset = PROVIDER_PRESETS[preset_key]
             pid = Prompt.ask("Provider id (the key in config)", default=preset_key)
             if preset.base_url and not fix_missing:
                 base = Prompt.ask("Base URL", default=preset.base_url)
-                preset_b: ProviderTemplate = ProviderTemplate(
-                    label=preset.label,
-                    provider_type=preset.provider_type,
-                    base_url=base,
-                    key_env=preset.key_env,
-                    key_label=preset.key_label,
-                    models=preset.models,
-                    needs_key=preset.needs_key,
-                    extra=preset.extra,
-                )
+                preset_b = preset_with_base_url(preset, base)
             else:
                 preset_b = preset
             key_value = ""
             if preset.needs_key:
                 key_value = Prompt.ask(preset.key_label, password=True, default="")
             if pid not in providers_section or not fix_missing:
-                providers_section.update(_provider_yaml(preset_b, pid))
+                providers_section[pid] = preset_b.render_entry()
+                touched_providers[pid] = providers_section[pid]
             if preset.needs_key:
                 new_env[preset.key_env] = key_value
             default_provider = default_provider or pid
@@ -368,6 +294,7 @@ def bootstrap(
     for k, v in existing_yaml.items():
         if k in _CHANNEL_PRESETS and isinstance(v, dict):
             channels_section[k] = v
+    touched_channels: dict[str, dict[str, Any]] = {}
 
     if non_interactive:
         desired = [
@@ -381,6 +308,7 @@ def bootstrap(
             ):
                 tpl = _CHANNEL_PRESETS[ch_key]
                 channels_section[ch_key] = {**tpl.extras, **tpl.fields}
+                touched_channels[ch_key] = channels_section[ch_key]
                 for env_name in tpl.secrets:
                     new_env[env_name] = os.environ.get(env_name, "")
     else:
@@ -395,10 +323,11 @@ def bootstrap(
                 "Configure a messaging channel?", default=not channels_section
             ):
                 break
-            ch_key = _pick_preset(
-                "Choose a channel to add:",
+            ch_key = pick_labelled(
                 remaining,
+                "Choose a channel to add:",
                 default=next(iter(remaining)),
+                console=console,
             )
             tpl = _CHANNEL_PRESETS[ch_key]
             channel_entry: dict[str, Any] = dict(tpl.extras)
@@ -407,35 +336,58 @@ def bootstrap(
                 new_env[env_name] = val
             channel_entry.update(tpl.fields)
             channels_section[ch_key] = channel_entry
+            touched_channels[ch_key] = channel_entry
 
-    # --- assemble final config ---
-    merged: dict[str, Any] = dict(existing_yaml)
-    merged["providers"] = providers_section
-    if default_provider:
-        merged["default_provider"] = default_provider
-    for ch_key, ch_val in channels_section.items():
-        merged[ch_key] = ch_val
-    # Ensure the bare-minimum framework fields exist.
-    merged.setdefault("app_name", "Nahida Bot")
-    merged.setdefault("db_path", "./data/nahida.db")
-    merged.setdefault("workspace_base_dir", "./data/workspace")
-    merged.setdefault("plugin_paths", ["./plugins"])
+    # --- assemble, validate and write ---
+    framework_defaults: dict[str, Any] = {
+        "app_name": "Nahida Bot",
+        "db_path": "./data/nahida.db",
+        "workspace_base_dir": "./data/workspace",
+        "plugin_paths": ["./plugins"],
+    }
 
-    # --- validate before writing ---
-    tmp_yaml = target_yaml.with_suffix(".tmp.bootstrap")
     try:
-        _write_yaml(tmp_yaml, merged)
-        load_settings(
-            config_yaml=str(tmp_yaml),
-            env_path=str(target_env) if target_env.is_file() else None,
-        )
-        tmp_yaml.unlink(missing_ok=True)
-    except Exception as exc:
-        console.print(f"[bold red]Generated config failed validation:[/bold red] {exc}")
-        tmp_yaml.unlink(missing_ok=True)
-        raise typer.Exit(1)
+        if has_config:
+            # Existing (possibly hand-edited) file: targeted, comment-
+            # preserving edits instead of a destructive full rewrite.
+            doc = load_yaml_document(target_yaml)
+            for pid, entry in touched_providers.items():
+                upsert_path(doc, ["providers", pid], entry)
+            if default_provider and doc.get("default_provider") != default_provider:
+                upsert_path(doc, ["default_provider"], default_provider)
+            for ch_key, ch_val in touched_channels.items():
+                upsert_path(doc, [ch_key], ch_val)
+            for key, val in framework_defaults.items():
+                if key not in doc:
+                    doc[key] = val
+            content = document_to_text(doc)
+            _validate_content(content, target_env)
+            backup_path = save_document(doc, target_yaml)
+            if backup_path:
+                console.print(f"[dim]Backup written: {backup_path}[/dim]")
+            merged = yaml.safe_load(content)
+        else:
+            merged = dict(existing_yaml)
+            merged["providers"] = providers_section
+            if default_provider:
+                merged["default_provider"] = default_provider
+            for ch_key, ch_val in channels_section.items():
+                merged[ch_key] = ch_val
+            merged.update(
+                {k: v for k, v in framework_defaults.items() if k not in merged}
+            )
+            body = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, width=78)
+            header = (
+                "# Nahida Bot configuration — generated by `nahida-bot bootstrap`.\n"
+                "# Edit freely; secrets live in .env and are referenced via ${VAR}.\n"
+                "# Run `nahida-bot config schema` for the full list of options.\n\n"
+            )
+            _validate_content(header + body, target_env)
+            _write_yaml(target_yaml, merged)
+    except YamlEditError as exc:
+        console.print(f"[bold red]Cannot edit {target_yaml}: {exc}[/bold red]")
+        raise typer.Exit(1) from exc
 
-    _write_yaml(target_yaml, merged)
     # Merge new secrets into existing env (preserve untouched entries, keep
     # empty placeholders so the user can see what to fill in).
     final_env = {**existing_env, **new_env}
@@ -445,7 +397,7 @@ def bootstrap(
     console.print(
         f"\n[bold green]Done.[/bold green]\n"
         f"  config: [cyan]{target_yaml}[/cyan]\n"
-        f"  env:    [cyan]{target_env}[/cyan]\n"
+        f"  env:    [cyan]{target_env}[/cyan]"
     )
     provider_count = len(merged.get("providers", {}))
     channel_count = sum(

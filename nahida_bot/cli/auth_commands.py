@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import time
+from pathlib import Path
 
 import httpx
 import typer
+import yaml
 from rich.console import Console
+from rich.prompt import Confirm
 from rich.table import Table
 
+from nahida_bot.agent.providers.catalog import (
+    ProviderTemplate,
+    is_known_provider_type,
+    preset_for_type,
+)
 from nahida_bot.auth import (
     DEVICE_VERIFICATION_URL,
     poll_device_challenge,
@@ -18,7 +27,9 @@ from nahida_bot.auth import (
     resolve_originator,
     to_codex_token,
 )
-from nahida_bot.core.config import Settings, load_settings_auto
+from nahida_bot.cli.provider_setup import prompt_provider_template
+from nahida_bot.core.config import Settings, find_config_yaml, load_settings_auto
+from nahida_bot.core.yaml_edit import YamlEditError, upsert_entry
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.db.repositories.sqlite_codex_token_repo import (
     SQLiteCodexTokenRepository,
@@ -32,13 +43,101 @@ console = Console()
 auth_app = typer.Typer(help="Provider authentication and credential management")
 
 
+def _provider_snippet(provider_id: str, template: ProviderTemplate) -> str:
+    """Render the YAML block a user would add manually for *provider_id*."""
+    body = yaml.safe_dump(
+        template.render_entry(), sort_keys=False, allow_unicode=True
+    ).rstrip("\n")
+    indented = "\n".join(f"    {line}" for line in body.splitlines())
+    return f"providers:\n  {provider_id}:\n{indented}"
+
+
+def _provision_provider(
+    settings: Settings,
+    requested: str,
+    config: str | None,
+) -> tuple[str, Settings]:
+    """Handle ``auth login <id>`` for an id missing from the config.
+
+    Offers typo correction against configured ids, then an interactive setup
+    flow that writes a minimal ``providers.<id>`` entry into the config file
+    (comment-preserving) before the caller continues with the credential step.
+    Degrades to an actionable snippet when stdin is unavailable.
+    """
+    configured = list(settings.providers)
+    console.print(
+        f"[yellow]Provider '{requested}' is not configured.[/yellow]"
+        + (f" Configured: {', '.join(configured)}" if configured else "")
+    )
+
+    close = difflib.get_close_matches(requested, configured, n=1, cutoff=0.6)
+    if close:
+        if Confirm.ask(f"Did you mean '{close[0]}'?", default=True):
+            return close[0], settings
+        console.print(f"[dim]Continuing with a new provider '{requested}'.[/dim]")
+
+    config_path = find_config_yaml(config)
+    # Best-effort template for static snippet messages (no config file / EOF):
+    # prefer the type the requested id itself names.
+    fallback_template = preset_for_type(requested) or ProviderTemplate(
+        label="",
+        provider_type="openai-compatible",
+        key_env="LLM_API_KEY",
+        models=[{"name": "gpt-3.5-turbo", "tags": ["primary"]}],
+    )
+    if not config_path:
+        console.print(
+            "[red]No config file found to write the provider entry into.[/red]\n"
+            "Run `nahida-bot bootstrap` first, or add this block manually:\n"
+            + _provider_snippet(requested, fallback_template)
+        )
+        raise typer.Exit(1)
+
+    try:
+        if not Confirm.ask(f"Create new provider '{requested}' now?", default=True):
+            raise typer.Exit(1)
+        id_names_type = is_known_provider_type(requested)
+        template = prompt_provider_template(
+            requested,
+            console=console,
+            suggested_type=requested if id_names_type else None,
+            # The requested id already names the type — no second confirmation.
+            confirm_suggested=not id_names_type,
+        )
+        backup_path = upsert_entry(
+            Path(config_path), "providers", requested, template.render_entry()
+        )
+        if backup_path:
+            console.print(f"[dim]Backup written: {backup_path}[/dim]")
+    except EOFError:
+        console.print(
+            "[red]No interactive terminal available.[/red] "
+            "Add this block to your config file and retry:\n"
+            + _provider_snippet(requested, fallback_template)
+        )
+        raise typer.Exit(1) from None
+    except YamlEditError as exc:
+        console.print(f"[red]Could not update {config_path}: {exc}[/red]")
+        raise typer.Exit(1) from None
+
+    settings = load_settings_auto(config)
+    if requested not in settings.providers:
+        console.print(
+            f"[red]Provider '{requested}' still missing after config update — "
+            "the generated entry failed validation. See the message above.[/red]"
+        )
+        raise typer.Exit(1)
+    return requested, settings
+
+
 def _select_provider(settings: Settings, requested: str | None) -> str:
     provider_ids = list(settings.providers)
     if requested:
         if requested not in settings.providers:
             console.print(
                 f"[red]Provider '{requested}' is not configured.[/red] "
-                f"Available: {', '.join(provider_ids) or '(none)'}"
+                f"Available: {', '.join(provider_ids) or '(none)'}\n"
+                "Run `nahida-bot auth login <id>` to set it up interactively."
             )
             raise typer.Exit(1)
         return requested
@@ -183,7 +282,7 @@ async def _credential_rows(settings: Settings) -> list[tuple[str, str, str, str]
 def login(
     provider: str | None = typer.Argument(
         None,
-        help="Configured provider id; prompts when omitted",
+        help="Provider id; offers interactive setup when not configured yet",
     ),
     config: str | None = typer.Option(
         None,
@@ -192,8 +291,15 @@ def login(
         help="Path to YAML configuration file",
     ),
 ) -> None:
-    """Log in to a provider using OAuth or a hidden API-key prompt."""
-    settings = load_settings_auto(config_yaml=config)
+    """Log in to a provider using OAuth or a hidden API-key prompt.
+
+    When the provider id is missing from the config, offers typo correction
+    and an interactive setup flow that writes a minimal ``providers.<id>``
+    entry (codex needs no api key — login goes straight to device OAuth).
+    """
+    settings = load_settings_auto(config)
+    if provider and provider not in settings.providers:
+        provider, settings = _provision_provider(settings, provider, config)
     provider_id = _select_provider(settings, provider)
     provider_config = settings.providers[provider_id]
     if provider_config.type == "codex":

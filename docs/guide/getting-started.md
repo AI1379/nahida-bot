@@ -115,6 +115,13 @@ provider 会隐藏输入 API key 并保存到 SQLite。数据库中的 key 优�
 `config.yaml` / `.env`；普通 API key 更新后需要重启服务。WebUI 密码哈希使用
 独立的 `nahida-bot webui hash-password`，不属于 provider auth。
 
+`auth login <id>` 遇到配置里还不存在的 provider 时会进入交互式配置：先做
+拼写纠错（比如 `deepseek-mian` 会提示是否指 `deepseek-main`），确认新建后
+依次选择 provider 类型、base_url 和默认模型，随后把最小条目**保注释地**写回
+配置文件（会留 `.bak.<时间戳>` 备份），再无缝进入凭据步骤。`codex` 这类
+id 本身就是已知类型时会跳过选单直奔 OAuth，且无需任何 api_key。非交互
+终端下则降级为打印可手动粘贴的 YAML 片段。
+
 ## 手动配置（可选）
 
 如果你不想用 bootstrap，也可以直接编辑 `config.yaml`。最小示例如下：

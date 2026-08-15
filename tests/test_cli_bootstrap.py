@@ -170,3 +170,47 @@ class TestBootstrapValidation:
 
         settings = load_settings(config_yaml=str(cfg), env_path=str(env))
         assert "main" in settings.providers
+
+
+class TestBootstrapExistingFilePreservesComments:
+    def test_fix_missing_on_commented_config_keeps_comments(
+        self, tmp_path: Path
+    ) -> None:
+        """bootstrap on a hand-maintained config must not strip comments."""
+        cfg = tmp_path / "config-run.yaml"
+        env = tmp_path / ".env"
+        cfg.write_text(
+            """# my hand-written config
+db_path: "./data/nahida.db"
+
+providers:
+  # main chat provider
+  deepseek-main:
+    type: deepseek
+    api_key: "${DEEPSEEK_LLM_API_KEY:}"
+    models: [deepseek-chat]
+""",
+            encoding="utf-8",
+        )
+        result = runner.invoke(
+            app,
+            [
+                "bootstrap",
+                "--config-yaml",
+                str(cfg),
+                "--env",
+                str(env),
+            ],
+            # y=add provider, 8=codex preset, mycodex=id, n=no channel
+            input="y\n8\nmycodex\nn\n",
+        )
+        assert result.exit_code == 0, result.output
+
+        text = cfg.read_text(encoding="utf-8")
+        assert "# my hand-written config" in text
+        assert "# main chat provider" in text
+        data = yaml.safe_load(text)
+        assert data["providers"]["deepseek-main"]["type"] == "deepseek"
+        assert data["providers"]["mycodex"]["type"] == "codex"
+        assert "api_key" not in data["providers"]["mycodex"]
+        assert data["default_provider"] == "mycodex"
