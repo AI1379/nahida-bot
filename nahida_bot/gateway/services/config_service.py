@@ -18,7 +18,7 @@ from typing import Any
 import structlog
 import yaml
 
-from nahida_bot.core.config import Settings
+from nahida_bot.core.config import Settings, find_config_yaml
 from nahida_bot.core.config_validation import (
     ValidationIssue,
     ValidationReport,
@@ -642,21 +642,11 @@ def _walk_for_placeholder(data: dict[str, Any], prefix: str, out: list[str]) -> 
 
 
 def _resolve_config_path(config_path: str | None = None) -> Path | None:
-    """Resolve the config YAML path.
+    """Resolve the config YAML path via the single core discovery rule.
 
-    Priority: explicit argument > CONFIG_YAML env var > ./config.yaml
+    Delegates to :func:`nahida_bot.core.config.find_config_yaml` so the
+    Gateway edits exactly the file the CLI would load (explicit argument >
+    ``NAHIDA_CONFIG`` env var > ``./config.yaml``).
     """
-    import os
-
-    if config_path:
-        return Path(config_path)
-
-    env_path = os.environ.get("CONFIG_YAML")
-    if env_path:
-        return Path(env_path)
-
-    candidate = Path("config.yaml")
-    if candidate.exists():
-        return candidate
-
-    return None
+    resolved = find_config_yaml(config_path)
+    return Path(resolved) if resolved else None
