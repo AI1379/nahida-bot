@@ -55,9 +55,9 @@ nahida_bot/
   speech/          # TTS 服务与适配（GPT-SoVITS 等）
   workspace/       # 工作空间管理与文件沙盒
     manager.py / sandbox.py
-  cli/             # Typer CLI（start / doctor / bootstrap / config / codex / tokens）
+  cli/             # Typer CLI（start / doctor / bootstrap / config / auth / webui / tokens）
     __init__.py
-    bootstrap_commands.py / config_commands.py / codex_commands.py / token_commands.py
+    bootstrap_commands.py / auth_commands.py / config_commands.py / token_commands.py / webui_commands.py
   core/config.py 是配置入口；SDK 定义见 nahida-bot-sdk/nahida_bot_sdk/。
 ```
 

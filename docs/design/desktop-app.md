@@ -1,13 +1,14 @@
 # Desktop App 与 Gateway-Node 设计
 
 > 记录时间：2026-06-07
-> 状态：规划中
+> 状态：部分落地（Desktop App 已接入 Gateway Node 协议、TTS、配对与远控；Live2D 本地渲染与动作智能见 [live2d-motion-intelligence.md](live2d-motion-intelligence.md)）
 > 相关文档：
 >
 > - [webui-design.md](webui-design.md) — 现有 Gateway + WebUI 运维面板设计
 > - [cross-session-messaging.md](cross-session-messaging.md) — 跨会话消息能力
 > - [memory-scoping.md](memory-scoping.md) — 会话与记忆作用域隔离
 > - [../architecture/directory-structure.md](../architecture/directory-structure.md) — 当前仓库模块边界
+> - [../architecture/gateway-node-protocol.md](../architecture/gateway-node-protocol.md) — Gateway-Node 协议
 
 ## 1. 背景
 
@@ -45,7 +46,8 @@ Desktop App 的技术方向暂定为：
 - 不让 Tauri 端直接 import 或 FFI 调用 Python core。
 - 不把 Desktop App 做成 WebUI 的换皮版本。WebUI 是运维面板，Desktop App 是常驻交互端。
 - 不在协议未稳定前引入复杂二进制协议、protobuf 或跨语言代码生成流水线。
-- 不在 V1 中开放高权限本机执行能力。Desktop Node 的 capability 必须显式声明、显式授权和可审计。
+- 本机高权限执行能力（读取本地文件、执行命令）已在「远程控制模式」中实现，
+  但**默认关闭**，且必须显式授权、可审计（详见 [10.3 远程控制模式](#103-远程控制模式)）。
 - 不在首版承诺任意第三方 Live2D 模型自动具备挥手、指向、特殊姿态等动作；缺失贴图、ArtMesh 或参数时只能降级表现。
 - 不实现逐帧 Live2D 参数曲线编辑器。Desktop 只提供语义映射、预览和少量校准工具，不复刻 Cubism Editor。
 
@@ -1099,12 +1101,13 @@ retreat
   - 回到 hidden 或 peek
 ```
 
-通知 pipeline 建议统一处理 Gateway 事件、本地番茄钟和后续其它本地提醒：
+通知 pipeline 统一处理 Gateway 事件、本地番茄钟和后续其它本地提醒：
 
 ```text
 DesktopEvent
-  ├── gateway message / CRON delivery
-  ├── local pomodoro timer
+  ├── gateway message / CRON delivery（agent.message.* 事件）
+  ├── scheduler notification（notification.reminder / notification.error 事件）
+  ├── local pomodoro timer（notification.reminder，带 dedupeKey）
   └── future posture reminder
         │
         ▼
@@ -1118,6 +1121,21 @@ Notification presentation plan
         ▼
 pet window emerge + speak + compact reply box
 ```
+
+已实现的通知通路：
+
+- **Scheduler → Node**：`SchedulerService` 发布 `SchedulerNotification`
+  （`level: "reminder"|"error"`），`NodeEventBridge` 映射为 node 协议事件
+  `notification.reminder` / `notification.error`，只路由到绑定该会话的节点。
+- **CRON 投送**：Agent 在 CRON 运行中可调用 `desktop_announce` 工具直接
+  在桌宠上播报（见 10.3）。
+- **本地番茄钟**：`pomodoroService` 完全本地运行（work/break 阶段），到点
+  触发带 `dedupeKey` 的 `notification.reminder` DesktopEvent，进入同一展示
+  pipeline；设置持久化到本地配置，UI 在 `PomodoroSettingsPanel`。
+- **通知队列**：`speechPlaybackCoordinator` 支持 replace/queue 打断语义，
+  桌面 store 维护 `pendingAfterEmerge` 动作队列；TTS 预载由
+  `preloadSegments` + Gateway blob 缓存完成。TTS 来源可在
+  `system | gateway | auto` 之间选择。
 
 首版采用 **方案 A：整窗穿透 + 手动交互模式**：
 
@@ -1197,8 +1215,21 @@ Desktop Gateway Client 可以先复用：
 | `/api/send` | 从 Desktop 发消息给指定 target/session |
 | `/api/sessions` | 浏览会话 |
 | `/api/events/stream` | 接收实时事件 |
-| `/api/speech/jobs` | 后续提交统一 TTS 合成任务并获取 job/artifact 状态 |
-| `/api/media/speech/{artifact_id}` | 后续从 Gateway 下载受鉴权的缓存音频 |
+| `/api/speech/jobs` | 提交统一 TTS 合成任务并获取 job/artifact 状态 |
+| `/api/media/speech/{artifact_id}` | 从 Gateway 下载受鉴权的缓存音频 |
+
+`/api/speech/jobs` 与 `/api/media/speech/{artifact_id}` 已实现：
+
+- `POST /api/speech/jobs`：请求体 `{text`（必填）`, voice, text_lang, style,
+  speed, pitch, output_format}`；同步合成，缓存命中时幂等返回同一 artifact。
+  响应 `{artifact_id, download_url, mime_type, size_bytes, duration_ms, voice,
+  provider, expires_at}`。文本超 `max_text_length` 返回 422，`TtsError`
+  返回 502，`webapi.speech` 未启用返回 503。
+- `GET /api/media/speech/{artifact_id}`：流式返回音频，`artifact_id` 含 `/`
+  或 `\` 时拒绝；缺失/过期/被淘汰返回 404，响应头带 `X-Artifact-Expires`。
+- `SpeechArtifactStore` 按 SHA-256（text/voice/provider/style/speed/pitch/
+  format/config_version）内容寻址缓存，TTL + 按字节 LRU 淘汰，`artifact_id`
+  不透明。
 
 ### 10.2 V2 新增 Node API
 
@@ -1220,6 +1251,45 @@ nahida_bot/gateway/services/node_registry.py
 nahida_bot/gateway/services/node_auth.py
 nahida_bot/gateway/services/node_invoker.py
 ```
+
+已实现（Desktop 设置页「Gateway 连接」自服务配对，替代早期复用 WebUI
+session 的方案）：
+
+- 路径 A：直接粘贴长期 node token（`nt_...` 前缀）。
+- 路径 B：输入 admin bearer → `POST /api/nodes/pairing/start` 签发一次性
+  `np_...` 配对 token（单次使用、默认 600s 过期）→ Desktop 调用**公开的**
+  `POST /api/nodes/pairing/complete`（凭据就是配对 token 本身，无需 admin
+  认证）兑换为 node token。
+- node token 由 SQLite 仓库持久化（另有 in-memory 兜底实现），可通过
+  `GET /api/nodes`、`GET /api/nodes/{id}` 查看，`POST /api/nodes/{id}/revoke`
+  撤销。
+- 连接模式 `mock | gateway`，WS 默认 `ws://127.0.0.1:6185/api/nodes/ws`；
+  Desktop 会话 ID 稳定为 `desktop:private:{nodeId}`。
+- 服务端参数在 `webapi.nodes`（见 [配置参考](../guide/configuration.md#desktop--gateway-node-协议)）。
+
+### 10.3 远程控制模式
+
+Desktop 设置页提供「远程控制」模式下拉，本地 Rust 侧按策略文件裁决
+（策略存于 Tauri app config 目录；旧版 `enabled: bool` 自动迁移为
+`scoped`）：
+
+| 模式 | 行为 |
+|------|------|
+| `disabled` | 禁止 `desktop.process.exec` / `desktop.fs.read_text`，默认 |
+| `scoped` | 仅允许 `exec_profiles[].id` 指定的程序；`cwd` 必须在配置的 root 内；文件读取要求 `rootId` + 相对路径，越出 root 即拒绝 |
+| `full_access` | 任意程序/路径，仅做 NUL 与 canonicalize 校验；UI 明确标注危险并要求确认 |
+
+授权要求：`allowed_actor_account_keys` 必须包含 Gateway 注入的
+`actorAccountKey`（服务端校验该 key 确为调用方唯一账号）。
+
+服务端路由：`DesktopControlService` 通过 NodeRegistry 找到当前在线且绑定到
+该 actor 的唯一 Desktop node，多个匹配时拒绝调用。Agent 侧对应工具
+`desktop_exec`、`desktop_file_read` 标记为 `requires_admin`（仅在
+`identity.admins` 中的账号可调用），对 subagent 不可用。
+
+CRON 专用提醒工具：`desktop_announce`（仅 `origin == "cron_trigger"` 时可用，
+消息最长 300 字符），由 `DesktopAnnouncementService.announce` 投递到绑定
+节点。
 
 ## 11. Capability 模型
 
@@ -1265,7 +1335,12 @@ Desktop Node 的能力应显式声明。
 - 录音、截屏、摄像头
 - 全局键盘监听
 
-V1 不开放这些高风险能力。
+其中**读取本机文件**（`desktop.fs.read_text`）与**执行命令**
+（`desktop.process.exec`）已通过 [10.3 远程控制模式](#103-远程控制模式)
+实现：默认关闭，`scoped`/`full_access` 两种模式按策略裁决，`allowed_actor`
+必须显式授权，每次调用由服务端路由到唯一绑定节点并受
+`AuthorizationGate` 管辖（工具标记 `requires_admin`）。写入本机文件、
+录音、截屏、摄像头与全局键盘监听仍不开放。
 
 ## 12. 安全设计
 
@@ -1493,8 +1568,8 @@ Gateway 需要保存或维护：
 - [x] 接入首版 `SystemSpeechAdapter` 作为本地开发/离线 fallback；失败时降级为字幕。
 - [x] 按 segment 串行播放，支持 `pause_after_ms`、replace/queue 打断和停止。
 - [x] 首版使用真实播放状态驱动 speaking/lip-sync；远程 artifact 接入后再升级为音量 envelope。
-- [ ] 实现通知队列、打断、合并和自动收回策略，避免多个提醒互相覆盖。
-- [ ] 实现本地番茄钟设置与提醒，让它进入同一 DesktopEvent pipeline。
+- [x] 实现通知队列、打断、合并和自动收回策略，避免多个提醒互相覆盖。
+- [x] 实现本地番茄钟设置与提醒，让它进入同一 DesktopEvent pipeline。
 
 当前实现备注：
 
@@ -1503,7 +1578,8 @@ Gateway 需要保存或维护：
 - 新的 replace presentation 会取消当前系统语音；queue 顺序、segment pause 和失败降级已有单元测试。
 - Workbench 提供系统语言、具体 voice、女声自动偏好、语速、音高、音量和中文试听；默认语言为 `zh-CN`，选择持久化到本地配置。
 - Web Speech 不提供可靠的 gender metadata，女声自动模式只对常见 voice 名称做启发式优先；用户明确选择的 voice 始终优先。
-- 当前 `PresentationPlanner` 已覆盖 message completed 和 error 基线，通知合并优先级与番茄钟事件仍待补齐。
+- `PresentationPlanner` 已覆盖 message completed / error 基线、通知合并优先级（`notification.reminder` / `notification.error`）与番茄钟事件；Gateway 音频走 `/api/speech/jobs` + `/api/media/speech/{artifact_id}`（见 10.1）。
+- TTS 来源可选 `system | gateway | auto`：gateway 模式经 Gateway 合成并缓存到本地 blob。
 
 验收口径：本地番茄钟或 mock 通知能触发桌宠唤出、气泡、可选 TTS、口型、表情和动作；TTS 失败不会影响文本展示。
 
@@ -1520,28 +1596,28 @@ Gateway 需要保存或维护：
 
 ### Phase 5：Gateway Client 集成
 
-- [ ] 连接现有 Gateway REST API。
-- [ ] 接入 `/api/events/stream` 或临时 WebSocket event bridge。
-- [ ] 实现 Gateway 地址配置、登录/token 保存和断线状态展示。
-- [ ] 将 Gateway message、CRON delivery、agent started/completed/error 等事件转换为 `DesktopEvent`。
-- [ ] 将气泡输入框里的用户回复发送到当前 Gateway session。
-- [ ] 保持本地 mock event source 可用，作为离线调试入口。
-- [ ] 确认普通 Channel 只收到干净文本，Desktop 只消费 `metadata.display_plan`。
-- [ ] 接入 Speech job 和 Gateway Media API，Desktop 通过 Gateway URL 下载 `SpeechArtifactRef`。
+- [x] 连接现有 Gateway REST API。
+- [x] 接入 `/api/events/stream` 或临时 WebSocket event bridge。
+- [x] 实现 Gateway 地址配置、登录/token 保存和断线状态展示。
+- [x] 将 Gateway message、CRON delivery、agent started/completed/error 等事件转换为 `DesktopEvent`。
+- [x] 将气泡输入框里的用户回复发送到当前 Gateway session。
+- [x] 保持本地 mock event source 可用，作为离线调试入口。
+- [x] 确认普通 Channel 只收到干净文本，Desktop 只消费 `metadata.display_plan`。
+- [x] 接入 Speech job 和 Gateway Media API，Desktop 通过 Gateway URL 下载 `SpeechArtifactRef`。
 
 验收口径：Gateway 未启动时本地桌宠仍可用；Gateway 启动后，真实消息和本地提醒进入同一展示 pipeline。
 
 ### Phase 6：Gateway-Node WebSocket 基线
 
-- [ ] 新增 `docs/architecture/gateway-node-protocol.md`。
-- [ ] 定义 envelope、错误码、认证、心跳、注册、capability 调用。
-- [ ] 增加 `tests/fixtures/gateway_node/*.json`。
-- [ ] Python 侧 Pydantic models 能 parse fixtures。
-- [ ] 新增 `/api/nodes/ws`。
-- [ ] 实现 node auth、node.register、heartbeat。
-- [ ] Gateway 维护在线节点 registry。
-- [ ] Desktop Rust side 实现 WebSocket client。
-- [ ] Rust side 通过 fixtures 与 Python 协议对齐。
+- [x] 新增 `docs/architecture/gateway-node-protocol.md`。
+- [x] 定义 envelope、错误码、认证、心跳、注册、capability 调用。
+- [x] 增加 `tests/fixtures/gateway_node/*.json`。
+- [x] Python 侧 Pydantic models 能 parse fixtures。
+- [x] 新增 `/api/nodes/ws`。
+- [x] 实现 node auth、node.register、heartbeat。
+- [x] Gateway 维护在线节点 registry。
+- [x] Desktop Rust side 实现 WebSocket client。
+- [x] Rust side 通过 fixtures 与 Python 协议对齐。
 
 验收口径：Desktop 可以作为 node 连接、鉴权、注册 capability、心跳重连，但 capability 调用仍可先只做 no-op 或日志记录。
 
@@ -1565,8 +1641,8 @@ Gateway 需要保存或维护：
 
 - [ ] 托盘、透明窗口、置顶、拖拽和快捷入口。
 - [ ] 设置生产 CSP，替换当前开发期的 `csp: null`（见 12.4 节）。
-- [ ] 配对流程。
-- [ ] token 撤销与重新登录。
+- [x] 配对流程（自服务配对已实现，见 10.2）。
+- [x] token 撤销与重新登录。
 - [ ] TTS voice 管理。
 - [ ] 性能模式和省电模式。
 - [ ] Windows/macOS 透明 pet window 验证。

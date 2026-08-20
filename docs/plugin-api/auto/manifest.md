@@ -206,6 +206,14 @@ Parsed plugin manifest from plugin.yaml.
 
 - **返回类型:** `str`
 
+#### enabled
+
+- **返回类型:** `bool`
+
+框架管理的生命周期开关（默认 `true`）。它是 Plugin Host 保留字段：主配置中
+可通过 `<plugin-id>.enabled` 覆盖它；框架会在实例化前消费该字段，不会把它
+放进插件 `config`。
+
 #### entrypoint
 
 - **返回类型:** `str`

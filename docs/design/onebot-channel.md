@@ -265,7 +265,22 @@ SEGMENT_TO_INBOUND = {
     "mention":  → (v12) 同 at
     "reply":    → InboundMessage.reply_to = message_id
     "face":     → InboundMessage.text 追加 "[表情: {id}]"
-    "forward":  → InboundMessage.text 追加 "[合并转发: {id}]"
+    "forward":  → 解析合并转发（见下文「合并转发解析」）
+```
+
+合并转发解析（已实现，关闭 #46）：
+
+- `forward` segment 不再只是文本占位符。`to_inbound` 是 async，通过
+  `get_forwarded_messages` action（v11 映射 `get_forward_msg`）递归拉取，
+  按 `- {sender_name}: {content}` 逐条渲染进 `InboundMessage.text`。
+- 嵌套转发超过 `max_forward_depth`（默认 3）时渲染
+  `[Forward: {id}, messages={n}, truncated=true]`；文本超过
+  `forward_render_max_chars`（默认 12000）时以 `[Truncated]` 截断。
+- 转发内部的图片、语音、视频、文件通过 `_iter_content_segments` 提取为一等
+  `InboundAttachment`；v11 嵌套消息的 `content` 可能是 CQ 码 string，会走
+  `parse_cq_code` 再提取。
+- 相关配置键：`max_forward_depth`、`max_forward_messages`（单次最多消息数，
+  默认 80）、`forward_render_max_chars`。
 }
 ```
 

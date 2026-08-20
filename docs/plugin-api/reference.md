@@ -342,6 +342,8 @@ def register_tool(
     description: str,
     parameters: dict[str, Any],  # JSON Schema
     handler: Callable[..., Awaitable[str]],
+    *,
+    requires_admin: bool = False,
 ) -> None:
 ```
 
@@ -365,6 +367,15 @@ self.api.register_tool(
 async def _add_numbers(self, a: int, b: int) -> str:
     return str(a + b)
 ```
+
+`@register_tool` 装饰器同样支持 `requires_admin` 关键字参数。
+
+`requires_admin=True` 把工具标记为特权工具：非管理员调用会被
+`AuthorizationGate` 拒绝（fail-closed）。管理员判定来自 `identity.admins`
+中的平台账号（见 [配置参考](../guide/configuration.md#身份与管理员授权)）；
+`identity` 未启用时放行。内置的 `exec`、`message`、`workspace_write`、
+`identity_manage` 和桌面远控工具（`desktop_exec`、`desktop_file_read`）
+都是如此标记的。
 
 LLM 调用工具时，参数名会映射到 handler 的关键字参数，返回值作为工具结果返回给 LLM。
 

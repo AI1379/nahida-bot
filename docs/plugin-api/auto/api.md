@@ -228,9 +228,13 @@ Decorator: register an event handler.
 
 Programmatic event subscription. Returns an unsubscribe handle.
 
-#### `register_tool(name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Awaitable[str]])`
+#### `register_tool(name: str, description: str, parameters: dict[str, Any], handler: Callable[..., Awaitable[str]], *, requires_admin: bool = False)`
 
-Register a tool that the LLM can call during conversations.
+Register a tool that the LLM can call during conversations. When
+`requires_admin=True`, the tool is treated as privileged: non-admin callers
+are rejected by `AuthorizationGate` (admin list comes from `identity.admins`;
+when `identity` is disabled the gate passes everything). The
+`@register_tool` decorator supports the same keyword argument.
 
 #### `unregister_tool(name: str)`
 

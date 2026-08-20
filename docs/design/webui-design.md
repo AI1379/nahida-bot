@@ -320,7 +320,7 @@ GET   /api/config/document?redact=true
 PATCH /api/config/current
 ```
 
-`GET /api/config/document` 返回结构化配置树、脱敏后的配置树、脱敏路径、schema、checksum、mtime 和配置文件路径。
+`GET /api/config/document` 返回结构化配置树、脱敏后的配置树、脱敏路径、checksum、mtime 和配置文件路径（响应字段：`content`、`checksum`、`path`、`mtime`、`data`、`redacted_data`、`redacted_paths`、`entries`；没有独立的 `schema` 字段，schema 走 `/api/config/schema`）。
 
 `PATCH /api/config/current` 接收：
 
@@ -342,7 +342,7 @@ PATCH /api/config/current
 - 前端配置页改为分区表单。
 - 优先覆盖 General、Providers、Multimodal、Agent、Router、Context、Memory、Scheduler。
 - YAML 视图保留为高级预览/兜底，不再作为默认编辑入口。
-- 当前实现可以先使用 PyYAML 完成结构化 patch；若要求保存后完整保留注释、空行和手写排版，应引入 `ruamel.yaml` round-trip 写入。
+- 保存已改为 ruamel.yaml round-trip 写入：注释、空行、引号和手写排版在 PATCH/PUT/restore 后完整保留（此前是 PyYAML `safe_load`/`safe_dump`，会丢注释）。
 
 视图：
 
@@ -379,20 +379,30 @@ PATCH /api/config/current
 备份目录：
 
 ```text
-data/config_backups/
+<config_file_dir>/config_backups/
   config.yaml.20260525-153012.bak
 ```
 
-脱敏规则：
+备份文件命名为 `config.yaml.<YYYYmmdd-HHMMSS>.bak`；同一秒内多次保存会追加
+`-N` 数字后缀。每次保存（PUT / PATCH / restore）后只保留最新的 30 个备份，
+多余的自动清理，清理失败不影响保存本身。
+
+脱敏规则（已实现版）：
 
 - 脱敏是 WebUI 的防泄漏 guardrail，不作为完整安全边界。
-- 配置 schema 支持 `sensitive: true` 元数据；配置 UI/API 优先按源头标记脱敏，例如 `admin_password_hash` 和 provider/channel credential。
-- 对日志等没有 schema 的结构化数据使用低误伤 fallback：只对规范化后的敏感字段名做精确匹配，例如 `api_key`、`access_token`、`refresh_token`、`auth_token`、`api_token`、`bot_token`、`secret`、`client_secret`、`password`、`password_hash`、`private_key`、`authorization`、`cookie`。
-- 保留正常调试字段，例如 `input_tokens`、`output_tokens`、`cached_tokens`、`reasoning_tokens`、`token_usage`、`session_key`。
-- 值模式只覆盖少量高置信格式，例如 PEM private key、`Bearer ...`、`sk-...`、GitHub token、Telegram bot token。
-- 不做宽泛 substring 规则，例如所有包含 `token` 或 `key` 的字段都脱敏；误脱敏会降低配置排错效率。
+- 敏感字段在配置模型层声明（`nahida_bot/core/config.py` 的
+  `SensitiveStr` 类型）：`providers.*.api_key`、`providers.*.quota.api_key`、
+  `webapi.auth_token`、`webui.auth.admin_password_hash`；再据此派生通配路径
+  模式（`providers.*.api_key` 等）。
+- 对没有模型标记的字段（如 channel/plugin 配置），用键名正则
+  `(api_key|token|secret|password|private_key)`（大小写不敏感）兜底匹配。
+- 脱敏后的占位值统一是 `***`。
+- `GET /api/config/current` 默认 `redact=true`；`redact=false` 时 `content`
+  返回原始秘密值。
+- 保存（PUT / PATCH / restore 共享同一管线）时，如果敏感字段仍持有 `***`
+  占位值，会拒绝保存并返回包含具体路径的校验错误——客户端必须重新读取秘密
+  或保持其不变。
 - 原始 YAML 中 `${ENV_VAR}` 不展开显示为真实值。
-- 保存时不把脱敏值写回文件；表单视图如果编辑秘密字段，必须明确输入新值。
 
 CLI 复用重构：
 
@@ -692,11 +702,12 @@ POST /api/system/actions/shutdown
 
 ```text
 GET  /api/config/current?redact=true
-GET  /api/config/schema?include_plugins=true
+GET  /api/config/document?redact=true
+GET  /api/config/schema?include_plugins=true&section=<name>
 POST /api/config/validate
 PUT  /api/config/current
 GET  /api/config/backups
-POST /api/config/backups/{backup_id}/restore
+POST /api/config/backups/{backup_name}/restore
 ```
 
 保存请求：
@@ -724,6 +735,32 @@ POST /api/config/backups/{backup_id}/restore
   }
 }
 ```
+
+已实现行为补充：
+
+- **配置路径发现**：Gateway 编辑/备份/恢复的是同一个 `config.yaml`，解析规则
+  与 CLI 完全一致——显式传入路径 > `$NAHIDA_CONFIG` > `./config.yaml`。
+  旧的 `CONFIG_YAML` 环境变量已废弃并被忽略。
+- **PATCH /api/config/current**：`changes` 中每条支持 `path`、`value`、
+  `remove: bool`、`secret_action: "keep"|"replace"|"clear"`。`keep` 跳过该
+  变更；`remove: true` 删除键/列表索引；`clear` 把值置为 `""`；否则写入
+  `value`。路径支持列表索引，例如 `providers.default.models[0]`。
+- **POST /api/config/validate**：请求体为 `{"content": "<yaml 文本>"}` 或
+  `{"data": {json 对象}}`（后者会序列化为 YAML 再校验）。响应为
+  `{errors, warnings, ok, issues: [{severity, path, message}]}`。
+- **GET /api/config/backups**：返回 `{"backups": [{name, path, size, mtime}]}`，
+  `size` 为字符串、`mtime` 为 ISO 时间戳。
+- **POST /api/config/backups/{backup_name}/restore**：请求体可选
+  `{"expected_checksum": "..."}`（与当前文件比对，不一致则拒绝，返回 HTTP
+  409 `{message, issues}`）。备份内容会重新走 `Settings` + `validate_settings()`
+  校验；恢复前会把当前文件再备份一次（恢复是可逆的，且不消耗备份配额）。
+  成功响应与保存一致（`saved` / `backup_path` / `checksum` /
+  `restart_required` / `validation`）。路径穿越防护：`backup_name` 必须与
+  `Path(...).name` 一致且文件存在。
+- **restore 同样触发 SSE `config.saved`**：与 PATCH/PUT 一致广播
+  `config.saved`（含 `backup_path` / `restart_required`），另写审计日志
+  `config.backup_restored`。
+- 保存（PUT / PATCH / restore）都通过 ruamel.yaml round-trip 保留注释与排版。
 
 ### 6.5 Usage ledger
 
@@ -802,8 +839,30 @@ GET /api/events/stream   # SSE
 - `config.saved`
 - `file.updated`
 - `node.heartbeat`
+- `process.started`
+- `process.stopped`
+- `process.failed`
 
 WebSocket 留给 gateway/node 远控协议，不急着和 UI metrics 混在一起。
+
+### 6.7 Processes（附属进程监管）
+
+[附属进程监管](process-supervisor.md) 的 WebUI 操作面。全部需要 admin
+Bearer token：
+
+```text
+GET  /api/processes               # 全部进程快照列表
+GET  /api/processes/{name}        # 单个进程详情
+GET  /api/processes/{name}/logs?stream=both|stdout|stderr&limit=200   # 环形缓冲日志
+POST /api/processes/{name}/start  # 启动
+POST /api/processes/{name}/stop   # 停止
+POST /api/processes/{name}/restart# 重启
+```
+
+- 未知进程名返回 404；supervisor 未初始化返回 503。
+- `ProcessInfo` 包含 `command` 字段；`logs` 的 `limit` 范围 1–10000。
+- SSE 事件 `process.started` / `process.stopped` / `process.failed` 驱动
+  WebUI「进程」页（`/processes`）自动刷新；列表轮询 5s、日志抽屉轮询 3s。
 
 ---
 

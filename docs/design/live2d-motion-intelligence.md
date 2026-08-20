@@ -366,6 +366,33 @@ sha256(
 
 缓存 value 保存 `MotionIntent` 或已验证的 `MotionPlan`。如果模型能力、primitive 版本、validator 版本变化，应主动失效。
 
+### 6.1.1 已实现：服务端 LLM motion planner（Python core）
+
+除桌面本地 planner（Rule / Embedding / LocalLlm）外，仓库已实现**服务端
+motion planner**：Python core 在 Agent 回复生成后，调用一个低成本 LLM 分析
+回复文本，为每一句生成情绪 / 动作 / 语音风格，产出与桌面端
+`displayPlan.ts` 兼容的 wire 格式，随 `agent.message.completed` 事件转发给
+Desktop Node。任何失败（超时、解析错误、模型不可用）都返回中性计划，**不会
+阻塞回复**。
+
+- 代码：`nahida_bot/agent/motion_planner.py`（`LLMMotionPlanner`，按
+  ModelRouter 解析 `cheap` 标签）、`nahida_bot/agent/motion_plan.py`。
+- 枚举：情绪 `neutral | happy | thinking | worried | error | offline`；
+  动作 `idle | nod | point | wave | notify | speaking | emerge | retreat`；
+  语音风格 `neutral | bright | calm | soft`。上限：≤ 12 段、单段 pause ≤
+  3000ms、单段文本 800 字符、总 4000 字符。
+- 配置（顶层 `motion_planner:`）：
+
+  | 键 | 类型 | 默认值 | 说明 |
+  |----|------|--------|------|
+  | `enabled` | `bool` | `false` | 是否启用 |
+  | `model_tag` | `str` | `"cheap"` | ModelRouter 解析的模型标签 |
+  | `timeout_seconds` | `float` | `15.0` | 单次规划超时（1–60） |
+
+- 作用域：仅在回复路由为 `node:...`（Desktop node 路径）时生效；
+  `outbound.extra["display_plan"]` 由 `node_event_bridge.py` 挂到
+  `agent.message.completed` 事件的 `display_plan` 字段。普通聊天频道不受影响。
+
 ### 6.3 MotionSynthesizer
 
 职责：
@@ -968,6 +995,9 @@ reward =
 4. 从第一版开始采集 JSONL 数据，为未来训练做准备。
 5. VLM/LLM 可用于弱标注和 A/B judge，但不作为在线实时 reward。
 6. RL 只作为后期可选优化，用于低层 skill policy，不用于首版动作选择。
+7. 已落地一条服务端 cheap-LLM 路径：`motion_planner`（见 6.1.1）负责在
+   Desktop 回复路径上生成 DisplayPlan，桌面本地 planner 继续负责表现层精修；
+   训练数据准备脚本见 `scripts/prepare_motion_training_data.py`。
 
 ## 14. 参考
 

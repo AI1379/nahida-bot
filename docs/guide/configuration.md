@@ -39,6 +39,8 @@ Nahida Bot 从 YAML 文件、`.env` 文件和环境变量读取配置。值的�
 | `webapi` | `object` | （见下文） | WebAPI 服务配置 |
 | `webui` | `object` | （见下文） | WebUI 控制台配置 |
 | `memory` | `object` | （见下文） | 长期记忆与 embedding 配置 |
+| `motion_planner` | `object` | （见下文） | Desktop DisplayPlan 服务端动作规划 |
+| `processes` | `object` | （见下文） | 附属进程监管（sidecar 进程） |
 | `enable_silent_reply` | `bool` | `true` | 全局开关：是否允许 Agent 以 `NO_REPLY` 静默回复 |
 
 ### 示例
@@ -156,6 +158,51 @@ models:
 | `anthropic` | `AnthropicProvider` | Anthropic Claude（独立协议） |
 | `minimax` | `MinimaxProvider` | Minimax（Anthropic 兼容端点） |
 | `openai-responses` | `OpenAIResponsesProvider` | OpenAI Responses API（`/v1/responses`），支持内置工具和有状态链式调用 |
+| `codex` | `CodexProvider` | ChatGPT Codex（订阅额度，OAuth 设备码登录） |
+
+`type: codex` 不需要 `api_key`：先运行 `nahida-bot auth login codex` 完成
+OAuth 设备码登录，refresh token 写入 SQLite，bot 启动时自动加载并按需刷新。
+非官方用法，仅面向 ChatGPT Plus/Pro 订阅者；账号存在被 OpenAI 风控的风险。
+
+```yaml
+codex:
+  type: codex
+  stream_responses: true
+  reasoning_effort: "medium"
+  models:
+    - name: "gpt-5.5"
+```
+
+高级覆盖项（可选环境变量）：
+
+| 变量 | 说明 |
+|------|------|
+| `NAHIDA_OPENAI_ORIGINATOR` | OAuth 归因字符串，默认 `"nahida-bot"` |
+| `NAHIDA_OPENAI_CLIENT_ID` | OAuth client id，默认内置；仅作为逃生阀 |
+
+### Provider 配额查询
+
+provider 条目可以声明 `quota`，用于查询 provider 侧的余额 / 订阅额度，配合
+聊天命令 `/quota [provider_id] [refresh|force|all]` 使用：
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `adapter` | `str` | `""` | 配额适配器：`deepseek`、`minimax-coding-plan`、`kimi`、`zhipu`、`json-v1` 等 |
+| `url` | `str` | `""` | 配额查询 API 地址（`json-v1` 需要） |
+| `api_key` | `str` | `""` | 配额 API 密钥（敏感字段，会被脱敏） |
+| `team` | `bool` | `false` | 是否查询团队额度 |
+| `organization_id` | `str` | `""` | 组织 ID |
+| `project_id` | `str` | `""` | 项目 ID |
+| `windows` | `list` | `[]` | `json-v1` 的窗口定义（used/limit/reset JSON 路径） |
+
+```yaml
+minimax:
+  type: minimax
+  api_key: "${MINIMAX_LLM_API_KEY:}"
+  base_url: "https://api.minimaxi.com/anthropic"
+  quota:
+    adapter: minimax-coding-plan
+```
 
 ### 示例
 
@@ -285,6 +332,32 @@ multimodal:
 
 ---
 
+## Motion Planner（Desktop DisplayPlan）
+
+在 `motion_planner` 键下配置服务端动作规划。启用后，Agent 回复会调用一个
+低成本 LLM 模型分析回复文本，为每一句生成情绪 / 动作 / 语音风格标签，
+结果挂在 `OutboundMessage.extra["display_plan"]` 上，并通过
+`agent.message.completed` 事件转发给 Desktop Node。任何失败都返回中性计划，
+不会阻塞回复。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `false` | 是否启用服务端 motion planner |
+| `model_tag` | `str` | `"cheap"` | 通过 ModelRouter 解析的模型标签 |
+| `timeout_seconds` | `float` | `15.0` | 单次规划调用的超时（秒），范围 1–60 |
+
+```yaml
+motion_planner:
+  enabled: true
+  model_tag: "cheap"
+  timeout_seconds: 15.0
+```
+
+仅在回复路由为 Desktop node 路径（`node:...`）时生效；普通聊天频道不受影响。
+生成的情绪 / 动作枚举见 [Live2D 动作智能层](../design/live2d-motion-intelligence.md)。
+
+---
+
 ## Context Budget
 
 在 `context` 键下配置。控制 prompt 上下文组装和 token 预算。
@@ -323,6 +396,96 @@ multimodal:
 | `memory_dreaming_session_limit` | `int` | `20` | 单次 dreaming 最多扫描的最近会话数 |
 | `memory_dreaming_recent_turn_limit` | `int` | `40` | 单个会话最多读取的最近 turns 数 |
 | `memory_dreaming_model` | `str` | `""` | dreaming 模型 spec；空则默认找 `memory` tag，失败后使用会话模型 |
+
+---
+
+## Processes（附属进程监管）
+
+在 `processes` 键下配置 sidecar 进程监管。被监管的进程在所有 Channel /
+插件启用**之前**就绪、在它们**之后**收尾，适合放需要先于 Channel 建立的
+SSH 隧道、frpc、cloudflared 等。进程默认**不继承** bot 进程环境，只有
+`PATH`、`LANG` 等少量白名单（Windows 额外含 `SYSTEMROOT`、`WINDIR`、
+`APPDATA`、`USERPROFILE`）加你声明的 `env` 会传入；密钥请放 `.env` 用
+`${VAR}` 引用。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `true` | 总开关；`false` 则不拉起任何进程 |
+| `defaults` | `object` | （见下文） | 所有 spec 的默认值，可被单项覆盖 |
+| `specs` | `dict` | `{}` | 进程声明，键名为 `[a-z0-9_-]+`，跨配置与插件唯一 |
+
+### `processes.defaults`
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `restart_policy` | `str` | `"on-failure"` | `no` / `on-failure` / `always` |
+| `backoff_initial_seconds` | `float` | `1.0` | 崩溃后首次重启等待（秒） |
+| `backoff_max_seconds` | `float` | `60.0` | 指数退避上限 |
+| `backoff_factor` | `float` | `2.0` | 退避倍率 |
+| `restart_max_attempts` | `int` | `0` | `0` = 不限；`>0` 触发熔断（停止自动重启） |
+| `restart_window_seconds` | `float` | `300.0` | 统计重启次数的滑动窗口 |
+| `shutdown_timeout_seconds` | `float` | `10.0` | SIGTERM 后多久 SIGKILL |
+| `startup_wait_seconds` | `float` | `0.0` | 启动后等待健康检查的宽限期 |
+| `log_buffer_lines` | `int` | `1000` | stdout/stderr 各自的环形缓冲行数 |
+
+### `processes.specs.<name>`
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `command` | `str` | （必填） | 启动命令 |
+| `args` | `list[str]` | `[]` | `shell: false` 时的 argv 列表 |
+| `shell` | `bool` | `true` | `true` 走 shell；`false` 把 `command` 当可执行文件、`args` 当参数 |
+| `env` | `dict[str,str]` | `{}` | 额外环境变量 |
+| `working_dir` | `str\|null` | `null` | 工作目录 |
+| `restart_policy` | `str\|null` | `null` | 覆盖 `defaults.restart_policy` |
+| `depends_on` | `list[str]` | `[]` | 同段内其他 spec 名，决定启动顺序（循环会被校验拒绝） |
+| `shutdown_timeout_seconds` | `float\|null` | `null` | 覆盖默认收尾超时 |
+| `startup_wait_seconds` | `float\|null` | `null` | 覆盖默认健康检查宽限 |
+| `health_check` | `object` | （见下文） | 健康探测 |
+
+`health_check` 字段：
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `type` | `str` | `"none"` | `tcp_port`（TCP 连上即健康）/ `none` |
+| `host` | `str` | `"127.0.0.1"` | 探测地址 |
+| `port` | `int` | `0` | 探测端口 |
+| `interval_seconds` | `float` | `15.0` | 探测间隔 |
+| `timeout_seconds` | `float` | `3.0` | 单次探测超时 |
+| `unhealthy_after` | `int` | `3` | 连续失败 N 次才判不健康并触发重启 |
+| `start_period_seconds` | `float` | `0.0` | 启动宽限期内失败不计入 |
+
+```yaml
+processes:
+  enabled: true
+  defaults:
+    restart_policy: "on-failure"
+    backoff_initial_seconds: 1.0
+    backoff_max_seconds: 60.0
+    backoff_factor: 2.0
+    restart_max_attempts: 0
+    shutdown_timeout_seconds: 10.0
+    log_buffer_lines: 1000
+  specs:
+    ssh-db-tunnel:
+      command: "ssh -N -L 3306:db.internal:3306 bastion@example.com"
+      shell: true
+      env:
+        SSH_KEY_PATH: "${SSH_KEY_PATH}"
+      restart_policy: "always"
+      health_check:
+        type: "tcp_port"
+        host: "127.0.0.1"
+        port: 3306
+        interval_seconds: 15.0
+        timeout_seconds: 3.0
+        unhealthy_after: 3
+        start_period_seconds: 0.0
+```
+
+完整的监管模型、生命周期顺序、事件与安全边界见
+[附属进程监管设计](../design/process-supervisor.md)。WebUI「进程」页与
+`/api/processes*` API 可查看状态和日志、启停重启进程。
 
 ---
 
@@ -406,6 +569,7 @@ multimodal:
 | `default_voice` | `str` | `""` | 未显式指定音色时使用的逻辑音色 |
 | `artifact_cache_dir` | `str` | `"./data/speech_cache"` | 合成音频缓存目录 |
 | `artifact_ttl_seconds` | `int` | `21600` | 音频缓存有效时间 |
+| `artifact_max_bytes` | `int` | `268435456` | 音频缓存总字节上限（256 MiB），超过后按 LRU 淘汰 |
 | `max_text_length` | `int` | `500` | 单次合成文本长度上限 |
 | `max_concurrency` | `int` | `1` | 最大并发合成数 |
 
@@ -449,6 +613,31 @@ MiniMax 后端还支持 `tts_path`、`trust_env`、`force_close_connections`、
 `aigc_watermark` 和 `extra_body`。`SpeechRequest.speed`、`pitch`、受支持的
 情绪 `style` 以及 `output_format` 会按请求覆盖对应默认值。API Key 应通过
 环境变量注入，不要写入 YAML。
+
+### Desktop / Gateway Node 协议
+
+`webapi.nodes` 控制 Gateway 与 Desktop App 等 Node 之间的 WebSocket 协议层
+（心跳、配对与 node token）。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `true` | 是否启用 Node 协议层 |
+| `heartbeat_interval_ms` | `int` | `15000` | Node 心跳发送间隔（毫秒） |
+| `heartbeat_timeout_ms` | `int` | `45000` | 心跳超时（毫秒），超时判定节点离线 |
+| `pairing_ttl_seconds` | `int` | `600` | 一次性配对 token 的有效期（秒） |
+| `node_token_ttl_seconds` | `int` | `0` | 长期 node token 有效期（秒）；`0` = 永不过期 |
+
+```yaml
+webapi:
+  enabled: true
+  auth_token: "${WEBAPI_AUTH_TOKEN}"
+  nodes:
+    enabled: true
+    heartbeat_interval_ms: 15000
+    heartbeat_timeout_ms: 45000
+    pairing_ttl_seconds: 600
+    node_token_ttl_seconds: 0
+```
 
 ---
 
@@ -553,6 +742,7 @@ telegram:
 | `enable_media_download_tool` | `bool` | `true` | 是否注册媒体下载工具 |
 | `resource_url_ttl_hint` | `int` | `300` | 临时 URL 的 TTL 提示（秒） |
 | `cache_media_on_receive` | `bool` | `true` | 收到消息时立即缓存媒体 |
+| `pending_file_ttl_seconds` | `float` | `600.0` | 待投递文件队列的 TTL（秒）；纯文件消息不会单独触发 Agent，文件会排队等下一个触发消息一并注入 |
 | `max_forward_depth` | `int` | `3` | 合并转发最大嵌套深度 |
 | `max_forward_messages` | `int` | `80` | 单次合并转发最大消息数 |
 | `forward_render_max_chars` | `int` | `12000` | 转发渲染的文本预算（字符） |
@@ -567,6 +757,138 @@ milky:
   group_trigger_mode: "mention"
   allowed_friends: []
   allowed_groups: []
+```
+
+### OneBot (v11)
+
+在 `onebot` 键下配置。目前仅支持 OneBot v11 正向 WebSocket 模式
+（`protocol_version: "v12"` 与 WebHook 模式未实现）。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `protocol_version` | `str` | `"v11"` | 仅支持 `v11`；`v12` 未实现 |
+| `ws_url` | `str` | `""` | 正向 WS 地址（必填），如 `ws://127.0.0.1:6700` |
+| `ws_access_token` | `str` | `""` | WS 鉴权 token |
+| `command_prefix` | `str` | `"/"` | 命令前缀 |
+| `group_trigger_mode` | `str` | `"mention"` | 群消息触发方式：`none` / `mention` / `command` / `always` |
+| `group_context_capture` | `bool` | `false` | 是否捕获群聊观察上下文 |
+| `reply_to_inbound` | `bool \| null` | `null` | 覆盖 `router.reply_to_inbound` |
+| `allowed_friends` | `list[str]` | `[]` | 好友白名单，空 = 不限制 |
+| `allowed_groups` | `list[str]` | `[]` | 群白名单，空 = 不限制 |
+| `reconnect_initial_delay` | `float` | `1.0` | 初始重连延迟（秒） |
+| `reconnect_max_delay` | `float` | `30.0` | 最大重连延迟（秒） |
+| `max_text_length` | `int` | `4000` | 出站文本最大长度 |
+| `split_long_text` | `bool` | `true` | 超长文本自动分段发送 |
+| `max_forward_depth` | `int` | `3` | 合并转发最大嵌套深度（0–10） |
+| `max_forward_messages` | `int` | `80` | 单次合并转发最大消息数 |
+| `forward_render_max_chars` | `int` | `12000` | 合并转发渲染的文本预算 |
+| `media_download_dir` | `str` | `"./data/temp/onebot"` | 媒体文件下载目录 |
+| `enable_media_download_tool` | `bool` | `true` | 是否注册媒体下载工具 |
+| `cache_media_on_receive` | `bool` | `true` | 收到消息时立即缓存媒体 |
+
+合并转发在收到后会被**解析**而非占位：通过 `get_forward_msg` 递归拉取，
+按 `- {sender_name}: {content}` 渲染，超过 `max_forward_depth` 时截断为
+`[Forward: {id}, messages={n}, truncated=true]`，超过
+`forward_render_max_chars` 时以 `[Truncated]` 标记截断；转发内部的图片、
+语音、视频、文件会提取为一等 `InboundAttachment`。
+
+### 示例
+
+```yaml
+onebot:
+  ws_url: "ws://127.0.0.1:6700"
+  ws_access_token: "${ONEBOT_ACCESS_TOKEN}"
+  group_trigger_mode: "mention"
+  allowed_friends: []
+  allowed_groups: []
+```
+
+---
+
+## 插件配置
+
+以下为常见内置插件的顶层配置块（同样通过 `extra="allow"` 机制注入）。
+
+### image_generation（图片生成）
+
+顶层 `image_generation:` 启用 `/draw`、`/生图` 命令和 `image_generate`
+工具。`backends` 是后端字典，`provider` 选择默认使用的后端名。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `provider` | `str` | `"default"` | 默认后端名 |
+| `backends` | `dict` | （见下文） | 后端配置 |
+| `output_dir` | `str` | `"generated/images"` | 输出目录（相对 workspace，不能越界） |
+| `auto_send` | `bool` | `true` | 生成后自动发送 |
+| `command_names` | `list[str]` | `["draw", "生图"]` | 注册的命令名 |
+| `caption_template` | `str` | `""` | 图片说明模板 |
+| `max_images_per_24h` | `int` | `0` | 每 24h 生成上限，`0` = 不限 |
+
+#### `openai-images`（OpenAI 兼容 Images API）
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `type` | `str` | `"openai-images"` | 后端类型 |
+| `base_url` | `str` | `"https://api.openai.com/v1"` | API 端点 |
+| `api_key` | `str` | `""` | API 密钥 |
+| `model` | `str` | `"gpt-image-1"` | 模型名 |
+| `size` | `str` | `"1024x1024"` | 图片尺寸 |
+| `quality` | `str` | `"auto"` | 质量 |
+| `timeout_seconds` | `float` | `120.0` | 生成超时 |
+| `download_timeout_seconds` | `float` | `60.0` | 下载超时 |
+| `max_concurrency` | `int` | `1` | 最大并发（1–16） |
+| `max_images_per_request` | `int` | `1` | 单请求最多图片（1–10） |
+
+#### `minimax`（MiniMax 图片生成）
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `type` | `str` | `"minimax"` | 后端类型 |
+| `base_url` | `str` | `"https://api.minimaxi.com"` | API 端点（`/v1/image_generation`） |
+| `api_key` | `str` | `""` | API 密钥 |
+| `model` | `str` | `"image-01"` | 模型名 |
+| `aspect_ratio` | `str` | `"1:1"` | 比例：`1:1`、`16:9`、`4:3`、`3:2`、`2:3`、`3:4`、`9:16`、`21:9` |
+| `width` / `height` | `int` | `0` | 尺寸；`0` 时用 `aspect_ratio`（`image-01` 需为 8 的倍数） |
+| `style_type` | `str` | `""` | 风格（`image-01-live`：漫画/元气/中世纪/水彩） |
+| `style_weight` | `float` | `0.8` | 风格强度（0.01–1.0） |
+| `response_format` | `str` | `"url"` | `url` 或 `b64_json`（映射为 `base64`） |
+| `seed` | `int\|null` | `null` | 随机种子 |
+| `prompt_optimizer` | `bool` | `false` | 提示词优化 |
+| `aigc_watermark` | `bool` | `false` | AIGC 水印 |
+| `max_images_per_request` | `int` | `1` | 单请求最多图片（1–9） |
+
+#### `codex-images`（ChatGPT Codex 订阅）
+
+复用 `type: codex` LLM provider 的 OAuth token 调用
+`chatgpt.com/backend-api/codex/images/generations`，走 Plus/Pro 订阅额度。
+前提是先运行 `nahida-bot auth login codex`。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `type` | `str` | `"codex-images"` | 后端类型 |
+| `provider_id` | `str` | `"codex"` | 必须匹配 `providers` 中 `type: codex` 的 key |
+| `base_url` | `str` | `"https://chatgpt.com/backend-api/codex"` | API 端点 |
+| `model` | `str` | `"gpt-image-2"` | 模型名 |
+| `size` / `quality` / `background` | `str` | `"auto"` | 生成参数 |
+| `timeout_seconds` | `float` | `180.0` | 生成超时 |
+| `max_images_per_request` | `int` | `1` | 单请求最多图片（1–10） |
+
+```yaml
+image_generation:
+  enabled: true
+  provider: codex
+  backends:
+    codex:
+      type: codex-images
+      provider_id: codex
+      model: "gpt-image-2"
+      size: "auto"
+      quality: "auto"
+      background: "auto"
+      timeout_seconds: 180
+  output_dir: "generated/images"
+  auto_send: true
+  max_images_per_24h: 20
 ```
 
 ---
@@ -595,8 +917,14 @@ milky:
 | `GITHUB_WEBHOOK_SECRET` | GitHub notifier 插件 | GitHub webhook 签名密钥 |
 | `GITHUB_TOKEN` | GitHub notifier 插件 | GitHub API token |
 | `MILKY_ACCESS_TOKEN` | Milky 频道 | 访问令牌 |
+| `ONEBOT_ACCESS_TOKEN` | OneBot 频道 | WS 访问令牌 |
 | `NAHIDA_CONFIG` | 配置加载器 | 覆盖 `config.yaml` 路径 |
 | `ENV_PATH` | 配置加载器 | 覆盖 `.env` 文件路径 |
+| `NAHIDA_OPENAI_ORIGINATOR` | Codex provider | OAuth 归因字符串，默认 `"nahida-bot"` |
+| `NAHIDA_OPENAI_CLIENT_ID` | Codex provider | OAuth client id（逃生阀） |
+| `NAHIDA_BOOTSTRAP_PROVIDER` | bootstrap | 非交互模式要配置的 provider 类型 |
+| `NAHIDA_BOOTSTRAP_PROVIDER_ID` | bootstrap | 非交互模式 provider ID，默认 `main` |
+| `NAHIDA_BOOTSTRAP_CHANNELS` | bootstrap | 非交互模式要接入的 channel 列表（逗号分隔） |
 
 变量通常存放在项目根目录的 `.env` 文件中。CLI 命令（`start`、`doctor`、
 `config` 等）会自动发现 `./config.yaml` 与 `./.env`，解析顺序见
@@ -687,6 +1015,25 @@ memory:
 scheduler:
   memory_dreaming_enabled: true
   memory_dreaming_model: "memory"
+
+processes:
+  enabled: true
+  defaults:
+    restart_policy: "on-failure"
+  specs:
+    ssh-db-tunnel:
+      command: "ssh -N -L 3306:db.internal:3306 bastion@example.com"
+      shell: true
+      restart_policy: "always"
+      health_check:
+        type: "tcp_port"
+        host: "127.0.0.1"
+        port: 3306
+
+motion_planner:
+  enabled: false
+  model_tag: "cheap"
+  timeout_seconds: 15.0
 ```
 
 ## 身份与管理员授权

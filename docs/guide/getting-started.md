@@ -96,19 +96,80 @@ uv run nahida-bot start
 ## CLI 命令
 
 ```bash
-nahida-bot version                # 显示版本信息
-nahida-bot bootstrap              # 交互式生成最小 config.yaml + .env
-nahida-bot start [--debug]        # 启动应用（含 Gateway + WebUI）
-nahida-bot doctor                 # 诊断检查（配置/数据库/就绪度）
-nahida-bot config schema          # 显示配置 schema（含插件 schema）
-nahida-bot config validate        # 校验配置文件
-nahida-bot auth login codex       # ChatGPT Codex OAuth 登录
-nahida-bot auth login deepseek-main  # 保存普通 provider API key
-nahida-bot auth list              # 查看 provider 认证状态
-nahida-bot auth logout codex      # 删除 auth CLI 保存的凭据
-nahida-bot webui hash-password    # 生成 WebUI 管理员密码哈希
-nahida-bot tokens                 # Token 用量统计
+nahida-bot version                     # 显示版本信息
+nahida-bot bootstrap                   # 交互式生成最小 config.yaml + .env
+nahida-bot start [--debug]             # 启动应用（含 Gateway + WebUI）
+nahida-bot doctor                      # 诊断检查（配置/数据库/就绪度）
+nahida-bot config schema               # 显示配置 schema（含插件 schema）
+nahida-bot config validate             # 校验配置文件
+nahida-bot auth login codex            # ChatGPT Codex OAuth 登录
+nahida-bot auth login deepseek-main    # 保存普通 provider API key
+nahida-bot auth list                   # 查看 provider 认证状态
+nahida-bot auth logout codex           # 删除 auth CLI 保存的凭据
+nahida-bot webui hash-password         # 生成 WebUI 管理员密码哈希
+nahida-bot tokens stats                # Token 用量统计（默认最近 7 天）
+nahida-bot tokens list                 # 最近的 token 用量事件
+nahida-bot tokens providers            # 按 provider 汇总用量
+nahida-bot tokens clear                # 清空 token 用量历史
 ```
+
+### start / doctor / bootstrap 通用选项
+
+`start`、`doctor` 和 `bootstrap` 都支持以下与配置文件发现相关的选项：
+
+| 选项 | 说明 |
+| ---- | ---- |
+| `--config-yaml` / `--config` / `-c` | 指定 YAML 配置文件路径 |
+| `--env` | 指定 `.env` 文件路径 |
+
+`start` 的其它选项：
+
+| 选项 | 说明 |
+| ---- | ---- |
+| `--debug` / `--no-debug` | 调试模式，未显式设置 `log_level` 时强制为 `DEBUG` |
+| `--log-file` | 覆盖 `log_file` |
+| `--log-file-level` | 覆盖 `log_file_level` |
+| `--log-file-max-bytes` | 日志轮转大小（字节），`0` 关闭轮转 |
+| `--log-file-backup-count` | 轮转保留的备份文件数 |
+| `--skip-preflight` | 跳过启动前的就绪检查 |
+
+默认情况下 `start` 会先做就绪检查：发现阻塞级别（`error`）的问题会打印
+并直接退出（退出码 1），仅警告（`warning`）则继续启动。
+
+`doctor` 会依次检查：Python >= 3.12、uv 是否安装、`config.yaml` 是否存在、
+`.env` 是否存在、配置能否加载、配置校验（含 SQLite 中已保存的 auth 凭据）、
+就绪度（至少一个可用 provider）、数据库路径可写、WebUI 前端是否已构建。
+任一检查失败时退出码为 1。
+
+`bootstrap` 在非交互模式下额外支持：
+
+| 环境变量 | 说明 |
+| ---- | ---- |
+| `NAHIDA_BOOTSTRAP_PROVIDER` | 要配置的 provider 类型（如 `siliconflow`） |
+| `NAHIDA_BOOTSTRAP_PROVIDER_ID` | provider ID，默认 `main` |
+| `NAHIDA_BOOTSTRAP_CHANNELS` | 逗号分隔的 channel 列表（如 `telegram`） |
+
+非交互模式下，`TELEGRAM_BOT_TOKEN`、`MILKY_ACCESS_TOKEN`、
+`ONEBOT_ACCESS_TOKEN` 以及 provider 的 key 环境变量（如
+`DEEPSEEK_LLM_API_KEY`）会从当前进程环境自动读取并写入 `.env`。bootstrap
+成功结束后会打印一张能力清单，按 `primary` / `vision` / `embedding` /
+`memory` 标签映射展示对话、图片理解、记忆向量检索、记忆整理等能力是否就绪。
+
+### auth / config / tokens 的选项
+
+- `auth` 下的 `login`、`logout`、`list` 以及 `config schema`、`config validate`
+  均接受 `--config-yaml` / `--config` / `-c` 选项；`nahida-bot auth ls` 是
+  `auth list` 的别名。
+- `config schema` 还支持：`--section/-s <name>`（只输出某个顶层块）、
+  `--format/-f table|json`（输出格式，默认 `table`）、`--providers`
+  （展开 provider 条目字段）、`--plugins/--no-plugins`（是否包含插件配置
+  条目，默认包含）。
+- `config validate` 的检查项：`default_provider` 可解析、model spec 可解析、
+  provider 凭据齐全（配置/环境变量或 SQLite auth 存储）、sqlite-vec 依赖与
+  维度、启用 fallback 模式时的多模态 fallback 模型。
+- `tokens` 组必须带子命令：`stats [--provider/-p <id>] [--days/-d <n>]`、
+  `list [--limit/-n <n>] [--provider/-p <id>]`、`providers`、
+  `clear [--force/-f]`。它们直接读取 SQLite，不要求 bot 正在运行。
 
 `nahida-bot auth` 专门管理 provider 凭据：Codex 使用设备码 OAuth，其他
 provider 会隐藏输入 API key 并保存到 SQLite。数据库中的 key 优先于
