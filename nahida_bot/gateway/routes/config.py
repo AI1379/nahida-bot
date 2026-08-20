@@ -293,6 +293,7 @@ async def get_config_backups(
 @router.post("/api/config/backups/{backup_name}/restore")
 async def restore_config_backup(
     backup_name: str,
+    request: Request,
     body: ConfigRestoreRequest | None = None,
     app=Depends(get_application),
 ):
@@ -320,6 +321,11 @@ async def restore_config_backup(
         )
 
     audit_log.audit("config.backup_restored", detail=f"backup={backup_name}")
+
+    broadcaster = getattr(request.app.state, "event_broadcaster", None)
+    if broadcaster is not None:
+        broadcaster.notify_config_saved(result.backup_path, result.restart_required)
+
     logger.info(
         "webapi.config_backup_restored",
         backup=backup_name,

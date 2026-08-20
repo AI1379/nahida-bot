@@ -2065,6 +2065,19 @@ providers:
     app = _make_mock_app()
     app._config_yaml_path = str(config_path)
     webapi = WebAPIApp(application=app, host="127.0.0.1", port=6185)
+
+    class _Broadcaster:
+        def __init__(self) -> None:
+            self.saved: list[tuple[str | None, bool]] = []
+
+        def notify_config_saved(
+            self, backup_path: str | None, restart_required: bool
+        ) -> None:
+            self.saved.append((backup_path, restart_required))
+
+    broadcaster = _Broadcaster()
+    webapi.fastapi_app.state.event_broadcaster = broadcaster
+
     transport = ASGITransport(app=webapi.fastapi_app)
 
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -2077,6 +2090,8 @@ providers:
             },
         )
         assert "debug: true" in config_path.read_text(encoding="utf-8")
+        patch_notifications = len(broadcaster.saved)
+        assert patch_notifications == 1
 
         backups = (await client.get("/api/config/backups")).json()["backups"]
         assert backups
@@ -2089,6 +2104,11 @@ providers:
     assert restored.status_code == 200
     assert restored.json()["saved"] is True
     assert config_path.read_text(encoding="utf-8") == original
+    # Restore notifies like a regular save.
+    assert len(broadcaster.saved) == patch_notifications + 1
+    backup_path, restart_required = broadcaster.saved[-1]
+    assert backup_path is not None
+    assert restart_required is True
 
     # Restoring again with the stale pre-restore checksum must conflict.
     async with AsyncClient(transport=transport, base_url="http://test") as client:
