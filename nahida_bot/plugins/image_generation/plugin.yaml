@@ -1,7 +1,7 @@
 id: image_generation
 name: "Image Generation"
 version: "0.1.0"
-description: "Generate images through an OpenAI-compatible Images API backend"
+description: "Generate images through OpenAI-compatible, MiniMax, or ChatGPT Codex image backends"
 entrypoint: "nahida_bot.plugins.image_generation.plugin:ImageGenerationPlugin"
 load_phase: "post-agent"
 enabled: false
@@ -100,32 +100,41 @@ config_schema:
             enum:
               - openai-images
               - minimax
+              - codex-images
             description: Backend protocol type.
+          provider_id:
+            type: string
+            default: "codex"
+            description: 'Key of the "type: codex" LLM provider whose OAuth token is reused (codex-images backend only).'
           base_url:
             type: string
             default: "https://api.openai.com/v1"
-            description: OpenAI-compatible API base URL, without the images path.
+            description: API base URL, without the images path. Defaults differ per backend type (codex-images uses https://chatgpt.com/backend-api/codex).
           api_key:
             type: string
             default: ""
             secret: true
-            description: API key for this image backend.
+            description: API key for this image backend. Not used by codex-images (it reuses the provider OAuth token).
           require_api_key:
             type: boolean
             default: true
-            description: Require a non-empty API key before sending requests.
+            description: Require a non-empty API key before sending requests. Ignored by codex-images.
           model:
             type: string
             default: "gpt-image-1"
-            description: Default image model.
+            description: Default image model. codex-images defaults to gpt-image-2.
           size:
             type: string
             default: "1024x1024"
-            description: Default image size.
+            description: Default image size. codex-images defaults to auto.
           quality:
             type: string
             default: "auto"
             description: Default image quality value passed to the backend.
+          background:
+            type: string
+            default: "auto"
+            description: Background override for compatible GPT Image backends (codex-images backend only).
           response_format:
             type: string
             default: ""
