@@ -14,7 +14,7 @@ const props = defineProps<{
 
 const store = useDesktopStore();
 const replyText = ref("");
-const recordsLocalStage = !isTauri();
+const rendersLocalStage = !isTauri();
 
 const activeSegment = computed(
   () => store.activePlan?.segments[store.currentSegmentIndex] ?? null,
@@ -43,6 +43,7 @@ function handleMotionExecuted(playback: MotionPlaybackSummary): void {
 <template>
   <section class="pet-runtime" aria-label="Pet runtime">
     <Live2DStage
+      v-if="rendersLocalStage"
       :emotion="store.currentEmotion"
       :expression-key="store.currentExpressionKey"
       :motion="store.currentMotion"
@@ -50,7 +51,7 @@ function handleMotionExecuted(playback: MotionPlaybackSummary): void {
       :model="store.model"
       :speaking="store.speaking"
       :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
-      :motion-telemetry-enabled="recordsLocalStage"
+      :motion-telemetry-enabled="true"
       playback-surface="runtime"
       :caption-text="activeSegment?.text ?? ''"
       :expression-map-version="store.expressionMapVersion"
@@ -61,6 +62,43 @@ function handleMotionExecuted(playback: MotionPlaybackSummary): void {
       @motions-loaded="store.setModelMotions"
       @motion-executed="handleMotionExecuted"
     />
+
+    <section
+      v-else
+      class="pet-runtime__renderer-status"
+      aria-label="Pet renderer status"
+    >
+      <div>
+        <p class="pet-runtime__renderer-eyebrow">Pet renderer</p>
+        <h2>Live2D is running in the pet window</h2>
+        <p>
+          The main window keeps this runtime view lightweight. Open Workbench
+          when you need a separate interactive preview.
+        </p>
+      </div>
+      <dl>
+        <div>
+          <dt>Status</dt>
+          <dd>{{ store.petRuntime.status }}</dd>
+        </div>
+        <div>
+          <dt>Render mode</dt>
+          <dd>{{ store.petRuntime.renderMode }}</dd>
+        </div>
+        <div>
+          <dt>Model</dt>
+          <dd>{{ store.model.name }}</dd>
+        </div>
+        <div>
+          <dt>Expression</dt>
+          <dd>{{ store.currentExpressionKey }}</dd>
+        </div>
+        <div>
+          <dt>Motion</dt>
+          <dd>{{ store.currentMotion }}</dd>
+        </div>
+      </dl>
+    </section>
 
     <MotionFeedbackPanel
       class="pet-runtime__motion-feedback"
