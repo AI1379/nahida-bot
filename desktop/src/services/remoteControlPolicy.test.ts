@@ -11,6 +11,10 @@ describe("remoteControlPolicy", () => {
       JSON.stringify(defaultRemoteControlPolicy),
     );
     expect(parsed.mode).toBe("disabled");
+    expect(parsed.computerUse).toEqual({
+      allowScreenCapture: false,
+      allowInput: false,
+    });
     expect(parsed.limits.timeoutMs).toBe(10_000);
   });
 
@@ -47,5 +51,14 @@ describe("remoteControlPolicy", () => {
         }),
       ),
     ).toThrow(/execution profile/);
+
+    expect(() =>
+      parseRemoteControlPolicy(
+        JSON.stringify({
+          ...defaultRemoteControlPolicy,
+          computerUse: { allowScreenCapture: true },
+        }),
+      )
+    ).toThrow(/computerUse/);
   });
 });

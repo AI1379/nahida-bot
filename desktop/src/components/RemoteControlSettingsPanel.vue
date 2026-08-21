@@ -16,6 +16,8 @@ const saving = ref(false);
 const message = ref(available ? "" : "Policy editing is available in the Tauri desktop app.");
 const failed = ref(false);
 const loadedMode = ref<RemoteControlMode>("disabled");
+const loadedAllowScreenCapture = ref(false);
+const loadedAllowInput = ref(false);
 const editedMode = computed<RemoteControlMode | null>(() => {
   try {
     return parseRemoteControlPolicy(source.value).mode;
@@ -24,6 +26,13 @@ const editedMode = computed<RemoteControlMode | null>(() => {
   }
 });
 const isFullAccess = computed(() => editedMode.value === "full_access");
+const editedComputerUse = computed(() => {
+  try {
+    return parseRemoteControlPolicy(source.value).computerUse;
+  } catch {
+    return null;
+  }
+});
 
 onMounted(() => {
   if (available) void loadPolicy();
@@ -36,6 +45,8 @@ async function loadPolicy() {
     const policy = await invoke<RemoteControlPolicy>("remote_control_policy_read");
     source.value = JSON.stringify(policy, null, 2);
     loadedMode.value = policy.mode;
+    loadedAllowScreenCapture.value = policy.computerUse.allowScreenCapture;
+    loadedAllowInput.value = policy.computerUse.allowInput;
     message.value = "Policy loaded from Rust-owned local storage.";
   } catch (error) {
     failed.value = true;
@@ -65,11 +76,33 @@ async function savePolicy() {
     message.value = "Full access was not enabled.";
     return;
   }
+  if (
+    policy.computerUse.allowScreenCapture &&
+    !loadedAllowScreenCapture.value &&
+    !window.confirm(
+      "Enable screen capture? Authorized remote actors will be able to capture all visible pixels across the virtual desktop, which may include sensitive information.",
+    )
+  ) {
+    message.value = "Screen capture was not enabled.";
+    return;
+  }
+  if (
+    policy.computerUse.allowInput &&
+    !loadedAllowInput.value &&
+    !window.confirm(
+      "Enable computer input? Authorized remote actors will be able to move the pointer, click, scroll, type text, and press keys on this computer.",
+    )
+  ) {
+    message.value = "Computer input was not enabled.";
+    return;
+  }
   saving.value = true;
   try {
     await invoke("remote_control_policy_save", { policy });
     source.value = JSON.stringify(policy, null, 2);
     loadedMode.value = policy.mode;
+    loadedAllowScreenCapture.value = policy.computerUse.allowScreenCapture;
+    loadedAllowInput.value = policy.computerUse.allowInput;
     message.value = "Local pre-authorization policy saved.";
   } catch (error) {
     failed.value = true;
@@ -147,6 +180,14 @@ function setMode(event: Event) {
         <code>rootId</code>, <code>offset</code>, and <code>maxBytes</code>;
         scoped mode requires a root id and relative path. The Gateway must inject
         <code>actorAccountKey</code> for both capabilities.
+      </p>
+      <p class="remote-control__note">
+        Computer Use is visual-only: it captures the virtual desktop and uses
+        normalized coordinates, without UI Automation or DOM access. Set
+        <code>computerUse.allowScreenCapture</code> and
+        <code>computerUse.allowInput</code> independently. Current staged state:
+        capture {{ editedComputerUse?.allowScreenCapture ? "on" : "off" }},
+        input {{ editedComputerUse?.allowInput ? "on" : "off" }}.
       </p>
       <div class="remote-control__actions">
         <button

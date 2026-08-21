@@ -18,6 +18,10 @@ export interface RemoteControlPolicy {
   allowedActorAccountKeys: string[];
   readRoots: RemoteControlReadRoot[];
   execProfiles: RemoteControlExecProfile[];
+  computerUse: {
+    allowScreenCapture: boolean;
+    allowInput: boolean;
+  };
   limits: {
     timeoutMs: number;
     outputLimitBytes: number;
@@ -34,6 +38,10 @@ export const defaultRemoteControlPolicy: RemoteControlPolicy = {
   allowedActorAccountKeys: [],
   readRoots: [],
   execProfiles: [],
+  computerUse: {
+    allowScreenCapture: false,
+    allowInput: false,
+  },
   limits: {
     timeoutMs: 10_000,
     outputLimitBytes: 262_144,
@@ -54,6 +62,7 @@ export function parseRemoteControlPolicy(source: string): RemoteControlPolicy {
     "allowedActorAccountKeys",
     "readRoots",
     "execProfiles",
+    "computerUse",
     "limits",
   ], "policy");
   const mode = usesLegacyEnabled
@@ -74,9 +83,19 @@ export function parseRemoteControlPolicy(source: string): RemoteControlPolicy {
   if (!Array.isArray(value.execProfiles) || !value.execProfiles.every(isExecProfile)) {
     throw new Error("Each execution profile is invalid.");
   }
+  if (!isComputerUsePolicy(value.computerUse)) {
+    throw new Error("computerUse is invalid.");
+  }
   if (!isLimits(value.limits)) throw new Error("limits is invalid.");
   const { enabled: _legacyEnabled, ...policy } = value;
   return { ...policy, mode } as unknown as RemoteControlPolicy;
+}
+
+function isComputerUsePolicy(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  requireExactKeys(value, ["allowScreenCapture", "allowInput"], "computerUse");
+  return typeof value.allowScreenCapture === "boolean" &&
+    typeof value.allowInput === "boolean";
 }
 
 function isRemoteControlMode(value: unknown): value is RemoteControlMode {
