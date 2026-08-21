@@ -15,6 +15,8 @@ from nahida_bot.gateway.node_protocol.sessions import NodeSession
 from nahida_bot.gateway.services.desktop_control import (
     DESKTOP_EXEC_CAPABILITY,
     DESKTOP_FILE_READ_CAPABILITY,
+    DESKTOP_INPUT_CAPABILITY,
+    DESKTOP_SCREENSHOT_CAPABILITY,
     MAX_DESKTOP_EXEC_ARGS,
     MAX_DESKTOP_EXEC_ARG_CHARS,
     MAX_DESKTOP_FILE_READ_BYTES,
@@ -166,6 +168,80 @@ async def test_file_read_sends_unified_payload_to_declared_capability() -> None:
         "maxBytes": 1024,
         "actorAccountKey": "milky:user:owner",
     }
+
+
+@pytest.mark.asyncio
+async def test_computer_use_sends_actor_bound_screenshot_and_input() -> None:
+    registry = NodeRegistry()
+    calls: list[tuple[str, NodeEnvelope]] = []
+    _register(
+        registry,
+        node_id="owner",
+        actor="milky:user:owner",
+        conversation="milky:private:owner",
+        capabilities=[DESKTOP_SCREENSHOT_CAPABILITY, DESKTOP_INPUT_CAPABILITY],
+        calls=calls,
+    )
+    service = DesktopControlService(registry, NodeInvoker(registry))
+
+    screenshot = await service.screenshot(
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+        caller="agent:chat:test",
+    )
+    input_result = await service.input(
+        action="click",
+        x=500,
+        y=250,
+        button="left",
+        clicks=1,
+        scroll_steps=0,
+        text="",
+        keys=[],
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+        caller="agent:chat:test",
+    )
+
+    assert screenshot.ok is True
+    assert input_result.ok is True
+    assert calls[0][1].payload is not None
+    assert calls[0][1].payload["capability"] == DESKTOP_SCREENSHOT_CAPABILITY
+    assert calls[0][1].payload["arguments"] == {"actorAccountKey": "milky:user:owner"}
+    assert calls[1][1].payload is not None
+    assert calls[1][1].payload["capability"] == DESKTOP_INPUT_CAPABILITY
+    assert calls[1][1].payload["arguments"] == {
+        "action": "click",
+        "x": 500,
+        "y": 250,
+        "button": "left",
+        "clicks": 1,
+        "scrollSteps": 0,
+        "text": "",
+        "keys": [],
+        "actorAccountKey": "milky:user:owner",
+    }
+
+
+@pytest.mark.asyncio
+async def test_computer_input_rejects_invalid_normalized_coordinates() -> None:
+    registry = NodeRegistry()
+    service = DesktopControlService(registry, NodeInvoker(registry))
+    result = await service.input(
+        action="click",
+        x=1001,
+        y=0,
+        button="left",
+        clicks=1,
+        scroll_steps=0,
+        text="",
+        keys=[],
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+        caller="agent:chat:test",
+    )
+    assert result.error_code == "invalid_arguments"
+    assert "x must be between" in result.error_message
 
 
 @pytest.mark.asyncio

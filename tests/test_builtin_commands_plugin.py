@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from nahida_bot.agent.media.cache import MediaCache
+from nahida_bot.agent.media.store import MediaStore
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.runtime_settings import merge_runtime_meta
@@ -74,6 +77,9 @@ class _FakeAPI:
         self.chat_history_calls: list[dict[str, Any]] = []
         self.desktop_announcement_service: Any | None = None
         self.desktop_control_service: Any | None = None
+        self.model_router: Any | None = None
+        self.media_store: MediaStore | None = None
+        self.image_fallback_model = ""
 
     def register_command(self, name: str, handler: Any, **kwargs: Any) -> None:
         self.commands[name] = (handler, kwargs)
@@ -119,6 +125,15 @@ class _FakeAPI:
             "handler": handler,
             "requires_admin": requires_admin,
         }
+
+    def get_model_router(self) -> Any | None:
+        return self.model_router
+
+    def get_media_store(self) -> MediaStore | None:
+        return self.media_store
+
+    def get_multimodal_image_fallback_model(self) -> str:
+        return self.image_fallback_model
 
     def register_channel(self, channel: Any) -> None:
         pass
@@ -292,6 +307,10 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "desktop_announce",
         "desktop_exec",
         "desktop_file_read",
+        "desktop_screenshot_capture",
+        "desktop_screen_observe",
+        "desktop_screenshot_send",
+        "desktop_input",
     } <= set(api.tools)
     assert api.tools["workspace_read"]["parameters"]["required"] == ["path"]
     assert api.tools["workspace_write"]["parameters"]["required"] == [
@@ -311,6 +330,10 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "workspace_write",
         "desktop_exec",
         "desktop_file_read",
+        "desktop_screenshot_capture",
+        "desktop_screen_observe",
+        "desktop_screenshot_send",
+        "desktop_input",
         "identity_manage",
         "read_chat_history",
         "search_chat_history",
@@ -343,6 +366,9 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     }
     exec_params = api.tools["desktop_exec"]["parameters"]
     read_params = api.tools["desktop_file_read"]["parameters"]
+    observe_params = api.tools["desktop_screen_observe"]["parameters"]
+    send_params = api.tools["desktop_screenshot_send"]["parameters"]
+    input_params = api.tools["desktop_input"]["parameters"]
     assert exec_params["required"] == ["program"]
     assert exec_params["properties"]["args"]["default"] == []
     assert exec_params["properties"]["cwd"]["default"] == ""
@@ -350,6 +376,21 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
     assert read_params["properties"]["root_id"]["default"] == ""
     assert read_params["properties"]["offset"]["default"] == 0
     assert read_params["properties"]["max_bytes"]["default"] == 65536
+    assert observe_params["properties"]["question"]["default"]
+    assert observe_params["properties"]["media_id"]["default"] == ""
+    assert send_params["properties"]["attachment_type"]["enum"] == [
+        "photo",
+        "document",
+    ]
+    assert input_params["required"] == ["action"]
+    assert input_params["properties"]["x"]["maximum"] == 1000
+    assert input_params["properties"]["action"]["enum"] == [
+        "click",
+        "key",
+        "move",
+        "scroll",
+        "type",
+    ]
     for parameters in (exec_params, read_params):
         assert parameters["additionalProperties"] is False
         assert {
@@ -474,6 +515,229 @@ async def test_desktop_control_tool_rejects_missing_actor() -> None:
         current_session.reset(token)
 
     assert '"code": "actor_unavailable"' in result
+
+
+@pytest.mark.asyncio
+async def test_desktop_input_uses_trusted_context() -> None:
+    api = _FakeAPI()
+    calls: list[dict[str, Any]] = []
+
+    class _ControlService:
+        async def input(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return SimpleNamespace(ok=True, payload={"applied": True})
+
+    api.desktop_control_service = _ControlService()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky",
+            chat_id="owner",
+            session_id="milky:private:owner",
+            conversation_id="milky:private:owner",
+            sender_account_key="milky:user:owner",
+        )
+    )
+    try:
+        result = await plugin._tool_desktop_input("click", x=500, y=250)
+    finally:
+        current_session.reset(token)
+
+    assert '"ok": true' in result
+    assert calls == [
+        {
+            "action": "click",
+            "x": 500,
+            "y": 250,
+            "button": "left",
+            "clicks": 1,
+            "scroll_steps": 0,
+            "text": "",
+            "keys": [],
+            "conversation_id": "milky:private:owner",
+            "actor_account_key": "milky:user:owner",
+            "caller": "agent:chat:milky:private:owner",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_desktop_screen_observe_sends_pixels_only_to_vision_model(
+    tmp_path: Path,
+) -> None:
+    api = _FakeAPI()
+    captured_messages: list[Any] = []
+    route_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    class _ControlService:
+        async def screenshot(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(
+                ok=True,
+                payload={
+                    "mimeType": "image/jpeg",
+                    "data": "aGVsbG8=",
+                    "imageWidth": 800,
+                    "imageHeight": 450,
+                    "capturedAtMs": 123,
+                    "coordinateSpace": {
+                        "type": "normalized",
+                        "minimum": 0,
+                        "maximum": 1000,
+                    },
+                },
+            )
+
+    class _Provider:
+        async def chat(self, **kwargs: Any) -> Any:
+            captured_messages.extend(kwargs["messages"])
+            return SimpleNamespace(content="Settings button at x=900, y=80.")
+
+    class _Router:
+        def resolve_for_task(self, *args: Any, **kwargs: Any) -> Any:
+            route_calls.append((args, kwargs))
+            return SimpleNamespace(
+                slot=SimpleNamespace(
+                    id="vision-provider",
+                    default_model="vision-model",
+                    provider=_Provider(),
+                ),
+                model="vision-model",
+            )
+
+    api.desktop_control_service = _ControlService()
+    api.model_router = _Router()
+    api.media_store = MediaStore(MediaCache(tmp_path / "media", ttl_seconds=90))
+    api.image_fallback_model = "configured-vision/model"
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky",
+            chat_id="owner",
+            session_id="milky:private:owner",
+            conversation_id="milky:private:owner",
+            sender_account_key="milky:user:owner",
+        )
+    )
+    try:
+        result = await plugin._tool_desktop_screen_observe("Locate Settings")
+    finally:
+        current_session.reset(token)
+
+    assert "Settings button" in result
+    assert "aGVsbG8=" not in result
+    assert len(captured_messages) == 1
+    assert [part.type for part in captured_messages[0].parts] == [
+        "text",
+        "image_base64",
+    ]
+    assert captured_messages[0].parts[1].data == "aGVsbG8="
+    assert route_calls == [
+        (
+            ("desktop_screen_observe",),
+            {
+                "explicit": "configured-vision/model",
+                "default_spec": "vision",
+                "fallback": "disabled",
+            },
+        )
+    ]
+    assert '"mediaId": "desktop-screenshot:' in result
+    assert '"expiresInSeconds": 90' in result
+
+
+@pytest.mark.asyncio
+async def test_desktop_screenshot_capture_and_send_reuse_actor_bound_media(
+    tmp_path: Path,
+) -> None:
+    api = _FakeAPI()
+    screenshot_calls = 0
+
+    class _ControlService:
+        async def screenshot(self, **kwargs: Any) -> Any:
+            nonlocal screenshot_calls
+            screenshot_calls += 1
+            return SimpleNamespace(
+                ok=True,
+                payload={
+                    "mimeType": "image/png",
+                    "data": "c2NyZWVuLXBpeGVscw==",
+                    "imageWidth": 1920,
+                    "imageHeight": 1080,
+                    "capturedAtMs": 456,
+                    "coordinateSpace": {
+                        "type": "normalized",
+                        "minimum": 0,
+                        "maximum": 1000,
+                    },
+                },
+            )
+
+    api.desktop_control_service = _ControlService()
+    api.media_store = MediaStore(MediaCache(tmp_path / "media", ttl_seconds=120))
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky",
+            chat_id="owner",
+            session_id="milky:private:owner",
+            chat_address=ChatAddress.parse("milky:private:owner"),
+            sender_account_key="milky:user:owner",
+        )
+    )
+    try:
+        captured = json.loads(await plugin._tool_desktop_screenshot_capture())
+        media_id = captured["media"]["mediaId"]
+        sent = json.loads(
+            await plugin._tool_desktop_screenshot_send(
+                media_id=media_id,
+                caption="当前桌面",
+                attachment_type="document",
+            )
+        )
+    finally:
+        current_session.reset(token)
+
+    assert screenshot_calls == 1
+    assert captured["ok"] is True
+    assert captured["media"]["expiresInSeconds"] == 120
+    assert "path" not in captured["media"]
+    assert "data" not in captured["media"]
+    assert sent["messageId"] == "msg-1"
+    assert len(api.sent_messages) == 1
+    target, message, channel = api.sent_messages[0]
+    assert (target, channel) == ("owner", "milky")
+    assert message.extra == {"chat_address": "milky:private:owner"}
+    assert len(message.attachments) == 1
+    attachment = message.attachments[0]
+    assert attachment.type == "document"
+    assert attachment.mime_type == "image/png"
+    assert attachment.caption == "当前桌面"
+    assert Path(attachment.path).read_bytes() == b"screen-pixels"
+
+
+@pytest.mark.asyncio
+async def test_desktop_screenshot_media_id_is_actor_bound(tmp_path: Path) -> None:
+    api = _FakeAPI()
+    api.desktop_control_service = SimpleNamespace()
+    api.media_store = MediaStore(MediaCache(tmp_path / "media"))
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="milky",
+            chat_id="other",
+            session_id="milky:private:other",
+            sender_account_key="milky:user:other",
+        )
+    )
+    try:
+        result = await plugin._tool_desktop_screenshot_send(
+            media_id="desktop-screenshot:not-this-actor:abc"
+        )
+    finally:
+        current_session.reset(token)
+
+    assert '"code": "media_forbidden"' in result
+    assert api.sent_messages == []
 
 
 @pytest.mark.asyncio

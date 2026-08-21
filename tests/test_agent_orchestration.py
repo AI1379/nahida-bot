@@ -610,6 +610,10 @@ def test_system_denylist_covers_nested_agent_and_delivery_tools() -> None:
     # Local Desktop control is never delegated to synthetic child runs.
     assert "desktop_exec" in denied
     assert "desktop_file_read" in denied
+    assert "desktop_screenshot_capture" in denied
+    assert "desktop_screen_observe" in denied
+    assert "desktop_screenshot_send" in denied
+    assert "desktop_input" in denied
     # Identity administration can never be delegated.
     assert "identity_manage" in denied
 

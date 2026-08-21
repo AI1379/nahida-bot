@@ -1576,6 +1576,18 @@ class RealBotAPI:
         app = self._event_bus.context.app
         return getattr(app, "media_store", None)
 
+    def get_multimodal_image_fallback_model(self) -> str:
+        """Return the configured image fallback model spec.
+
+        Desktop screenshot understanding shares this route with ordinary
+        inbound image handling, so a non-visual main model behaves consistently
+        across both flows.
+        """
+        app = self._event_bus.context.app
+        settings = getattr(app, "settings", None)
+        multimodal = getattr(settings, "multimodal", None)
+        return str(getattr(multimodal, "image_fallback_model", "") or "")
+
     async def query_provider_quota(
         self,
         provider_id: str = "",

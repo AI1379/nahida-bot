@@ -44,6 +44,11 @@ class LLMUsage:
 class MediaStorePort(Protocol):
     """Small media-store surface exposed to channel plugins."""
 
+    @property
+    def ttl_seconds(self) -> int:
+        """Configured lifetime of cached media entries."""
+        ...
+
     async def get_entry(self, cache_key: str) -> Any | None:
         """Return a live cached entry for ``cache_key``."""
         ...
@@ -457,6 +462,10 @@ class BotAPI(Protocol):
         Channel plugins use this so eager media downloads flow through the
         same key locks, TTL, and cleanup as the agent resolver.
         """
+        ...
+
+    def get_multimodal_image_fallback_model(self) -> str:
+        """Return the configured image fallback model spec, if any."""
         ...
 
     async def set_session_model(self, session_id: str, model_name: str) -> str | None:

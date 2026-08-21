@@ -10,6 +10,8 @@ from nahida_bot.gateway.services.node_registry import NodeRegistry
 
 DESKTOP_EXEC_CAPABILITY = "desktop.process.exec"
 DESKTOP_FILE_READ_CAPABILITY = "desktop.fs.read_text"
+DESKTOP_SCREENSHOT_CAPABILITY = "desktop.computer.screenshot"
+DESKTOP_INPUT_CAPABILITY = "desktop.computer.input"
 
 MAX_DESKTOP_PROGRAM_CHARS = 1024
 MAX_DESKTOP_ROOT_ID_CHARS = 128
@@ -19,6 +21,11 @@ MAX_DESKTOP_EXEC_ARGS_CHARS = 16_384
 MAX_DESKTOP_PATH_CHARS = 1024
 MAX_DESKTOP_FILE_OFFSET = 2**63 - 1
 MAX_DESKTOP_FILE_READ_BYTES = 1024 * 1024
+MAX_DESKTOP_TYPED_CHARS = 2000
+MAX_DESKTOP_HOTKEY_KEYS = 8
+MAX_DESKTOP_SCROLL_STEPS = 10
+DESKTOP_INPUT_ACTIONS = frozenset({"move", "click", "scroll", "type", "key"})
+DESKTOP_MOUSE_BUTTONS = frozenset({"left", "right", "middle"})
 
 
 @dataclass(slots=True, frozen=True)
@@ -111,6 +118,60 @@ class DesktopControlService:
                 "maxBytes": max_bytes,
                 "actorAccountKey": actor_account_key,
             },
+            conversation_id=conversation_id,
+            actor_account_key=actor_account_key,
+            caller=caller,
+        )
+
+    async def screenshot(
+        self,
+        *,
+        conversation_id: str,
+        actor_account_key: str,
+        caller: str,
+    ) -> DesktopControlResult:
+        return await self._invoke(
+            capability=DESKTOP_SCREENSHOT_CAPABILITY,
+            arguments={"actorAccountKey": actor_account_key},
+            conversation_id=conversation_id,
+            actor_account_key=actor_account_key,
+            caller=caller,
+        )
+
+    async def input(
+        self,
+        *,
+        action: str,
+        x: int | None,
+        y: int | None,
+        button: str,
+        clicks: int,
+        scroll_steps: int,
+        text: str,
+        keys: list[str],
+        conversation_id: str,
+        actor_account_key: str,
+        caller: str,
+    ) -> DesktopControlResult:
+        arguments: dict[str, Any] = {
+            "action": action,
+            "button": button,
+            "clicks": clicks,
+            "scrollSteps": scroll_steps,
+            "text": text,
+            "keys": list(keys),
+            "actorAccountKey": actor_account_key,
+        }
+        if x is not None:
+            arguments["x"] = x
+        if y is not None:
+            arguments["y"] = y
+        error = _validate_input_args(arguments)
+        if error is not None:
+            return _invalid(error)
+        return await self._invoke(
+            capability=DESKTOP_INPUT_CAPABILITY,
+            arguments=arguments,
             conversation_id=conversation_id,
             actor_account_key=actor_account_key,
             caller=caller,
@@ -211,6 +272,62 @@ def _validate_exec_args(args: object) -> str | None:
     return None
 
 
+def _validate_input_args(arguments: dict[str, Any]) -> str | None:
+    action = arguments.get("action")
+    if not isinstance(action, str) or action not in DESKTOP_INPUT_ACTIONS:
+        return "action must be move, click, scroll, type, or key"
+
+    x = arguments.get("x")
+    y = arguments.get("y")
+    if (x is None) != (y is None):
+        return "x and y must be supplied together"
+    if action in {"move", "click"} and (x is None or y is None):
+        return "x and y are required for this action"
+    for name, coordinate in (("x", x), ("y", y)):
+        if coordinate is not None and (
+            not isinstance(coordinate, int)
+            or isinstance(coordinate, bool)
+            or not 0 <= coordinate <= 1000
+        ):
+            return f"{name} must be between 0 and 1000"
+
+    button = arguments.get("button")
+    clicks = arguments.get("clicks")
+    scroll_steps = arguments.get("scrollSteps")
+    text = arguments.get("text")
+    keys = arguments.get("keys")
+    if action == "click":
+        if button not in DESKTOP_MOUSE_BUTTONS:
+            return "button must be left, right, or middle"
+        if (
+            not isinstance(clicks, int)
+            or isinstance(clicks, bool)
+            or not 1 <= clicks <= 2
+        ):
+            return "clicks must be 1 or 2"
+    if action == "scroll" and (
+        not isinstance(scroll_steps, int)
+        or isinstance(scroll_steps, bool)
+        or scroll_steps == 0
+        or abs(scroll_steps) > MAX_DESKTOP_SCROLL_STEPS
+    ):
+        return "scroll_steps must be between -10 and 10, excluding 0"
+    if action == "type" and (
+        not isinstance(text, str)
+        or not text
+        or len(text.encode("utf-16-le")) // 2 > MAX_DESKTOP_TYPED_CHARS
+    ):
+        return f"text must contain between 1 and {MAX_DESKTOP_TYPED_CHARS} UTF-16 units"
+    if action == "key":
+        if (
+            not isinstance(keys, list)
+            or not 1 <= len(keys) <= MAX_DESKTOP_HOTKEY_KEYS
+            or not all(isinstance(key, str) and key for key in keys)
+        ):
+            return f"keys must contain between 1 and {MAX_DESKTOP_HOTKEY_KEYS} strings"
+    return None
+
+
 def _invalid(message: str) -> DesktopControlResult:
     return DesktopControlResult(
         ok=False, error_code="invalid_arguments", error_message=message
@@ -220,11 +337,17 @@ def _invalid(message: str) -> DesktopControlResult:
 __all__ = [
     "DESKTOP_EXEC_CAPABILITY",
     "DESKTOP_FILE_READ_CAPABILITY",
+    "DESKTOP_INPUT_CAPABILITY",
+    "DESKTOP_SCREENSHOT_CAPABILITY",
+    "DESKTOP_INPUT_ACTIONS",
     "MAX_DESKTOP_EXEC_ARGS",
     "MAX_DESKTOP_EXEC_ARG_CHARS",
     "MAX_DESKTOP_FILE_READ_BYTES",
+    "MAX_DESKTOP_HOTKEY_KEYS",
     "MAX_DESKTOP_PATH_CHARS",
     "MAX_DESKTOP_PROGRAM_CHARS",
+    "MAX_DESKTOP_SCROLL_STEPS",
+    "MAX_DESKTOP_TYPED_CHARS",
     "DesktopControlResult",
     "DesktopControlService",
 ]

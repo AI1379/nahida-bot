@@ -37,6 +37,10 @@ PRIVILEGED_TOOLS: frozenset[str] = frozenset(
         "identity_manage",
         "desktop_exec",
         "desktop_file_read",
+        "desktop_screenshot_capture",
+        "desktop_screen_observe",
+        "desktop_screenshot_send",
+        "desktop_input",
     }
 )
 

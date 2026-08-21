@@ -235,9 +235,14 @@ def _api(
     memory_soft_scope: bool = False,
 ) -> tuple[RealBotAPI, _ChannelRegistry, ToolRegistry, CommandRegistry]:
     manifest = manifest or _manifest()
+    app = SimpleNamespace(
+        settings=SimpleNamespace(
+            multimodal=SimpleNamespace(image_fallback_model="vision-provider/model")
+        )
+    )
     event_bus = EventBus(
         EventContext(
-            app=cast(Any, SimpleNamespace()),
+            app=cast(Any, app),
             settings=cast(Any, SimpleNamespace()),
             logger=_Logger(),
         )
@@ -267,6 +272,12 @@ def _api(
         model_router=None,
     )
     return api, channel_registry, tool_registry, command_registry
+
+
+def test_get_multimodal_image_fallback_model(tmp_path: Path) -> None:
+    api, _, _, _ = _api(tmp_path)
+
+    assert api.get_multimodal_image_fallback_model() == "vision-provider/model"
 
 
 @pytest.mark.asyncio

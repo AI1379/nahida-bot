@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from nahida_bot.plugins.builtin.tools.context import (
     typed_address_from_session_context as _typed_address_from_session_context,
 )
 from nahida_bot.plugins.builtin.tools.cron import CronTools
+from nahida_bot.plugins.builtin.tools.desktop import DesktopTools
 from nahida_bot.plugins.builtin.tools.history import HistoryTools
 from nahida_bot.plugins.builtin.tools.memory import MemoryTools
 from nahida_bot.plugins.builtin.tools.message import AttachmentResolver, MessageTools
@@ -33,69 +33,17 @@ from nahida_bot.core.chat_address import (
     SessionKey,
     classify_session_key,
 )
-from nahida_bot.core.context import current_agent_run, current_session
+from nahida_bot.core.context import current_session
 from nahida_bot.core.events import AgentStopPayload, AgentStopRequested
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     runtime_settings_from_meta,
-)
-from nahida_bot.gateway.services.desktop_control import (
-    MAX_DESKTOP_EXEC_ARGS,
-    MAX_DESKTOP_EXEC_ARG_CHARS,
-    MAX_DESKTOP_FILE_READ_BYTES,
-    MAX_DESKTOP_PATH_CHARS,
-    MAX_DESKTOP_PROGRAM_CHARS,
 )
 
 _logger = structlog.get_logger(__name__)
 
 _MAX_EXEC_OUTPUT = 50_000
 _MAX_EXEC_TIMEOUT = 120
-_MAX_DESKTOP_TOOL_RESULT_CHARS = 70_000
-
-
-def _desktop_tool_error(code: str, message: str) -> str:
-    return _bounded_desktop_tool_json(
-        {"ok": False, "error": {"code": code or "failed", "message": message}}
-    )
-
-
-def _bounded_desktop_tool_json(value: dict[str, Any]) -> str:
-    try:
-        serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except (TypeError, ValueError):
-        serialized = json.dumps(
-            {
-                "ok": False,
-                "error": {
-                    "code": "invalid_desktop_response",
-                    "message": "Desktop returned a non-serializable response",
-                },
-            },
-            sort_keys=True,
-        )
-    if len(serialized) <= _MAX_DESKTOP_TOOL_RESULT_CHARS:
-        return serialized
-
-    preview_chars = _MAX_DESKTOP_TOOL_RESULT_CHARS // 2
-    while preview_chars > 0:
-        bounded = json.dumps(
-            {
-                "ok": bool(value.get("ok")),
-                "result": {
-                    "truncated": True,
-                    "preview": serialized[:preview_chars],
-                },
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        if len(bounded) <= _MAX_DESKTOP_TOOL_RESULT_CHARS:
-            return bounded
-        preview_chars //= 2
-    return _desktop_tool_error(
-        "response_too_large", "Desktop response exceeded the output limit"
-    )
 
 
 class BuiltinCommandsPlugin(Plugin):
@@ -105,6 +53,7 @@ class BuiltinCommandsPlugin(Plugin):
         super().__init__(api, manifest)
         self._agent_tools = AgentTools(api)
         self._cron_tools = CronTools(api)
+        self._desktop_tools = DesktopTools(api)
         self._history_tools = HistoryTools(api)
         self._memory_tools = MemoryTools(api)
         self._message_tools = MessageTools(api, manifest.config)
@@ -576,100 +525,12 @@ class BuiltinCommandsPlugin(Plugin):
         return f"Desktop announcement queued on {result.node_id}."
 
     def _register_desktop_control_tools(self) -> None:
-        self.api.register_tool(
-            "desktop_exec",
-            (
-                "Run a program on the current actor's Desktop. The same call is "
-                "adjudicated locally by Desktop mode: scoped mode interprets program "
-                "and cwd within its configured policy, while Full Access mode permits "
-                "full paths. This tool cannot select a node or capability. Available "
-                "in normal chat and scheduled CRON runs."
-            ),
-            {
-                "type": "object",
-                "properties": {
-                    "program": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": MAX_DESKTOP_PROGRAM_CHARS,
-                        "description": "Program identifier or path, interpreted by Desktop mode.",
-                    },
-                    "args": {
-                        "type": "array",
-                        "maxItems": MAX_DESKTOP_EXEC_ARGS,
-                        "items": {
-                            "type": "string",
-                            "maxLength": MAX_DESKTOP_EXEC_ARG_CHARS,
-                        },
-                        "default": [],
-                        "description": "Arguments passed to the approved profile.",
-                    },
-                    "cwd": {
-                        "type": "string",
-                        "maxLength": MAX_DESKTOP_PATH_CHARS,
-                        "default": "",
-                        "description": "Optional working directory interpreted by Desktop mode.",
-                    },
-                },
-                "required": ["program"],
-                "additionalProperties": False,
-            },
-            self._tool_desktop_exec,
-            requires_admin=True,
-        )
-        self.api.register_tool(
-            "desktop_file_read",
-            (
-                "Read a bounded byte range on the current actor's Desktop. The same "
-                "call is adjudicated locally by Desktop mode: scoped mode applies its "
-                "configured roots, while Full Access mode permits full paths. This "
-                "tool cannot select a node or capability. Available in normal chat "
-                "and scheduled CRON runs."
-            ),
-            {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": MAX_DESKTOP_PATH_CHARS,
-                        "description": "File path interpreted by Desktop mode.",
-                    },
-                    "root_id": {
-                        "type": "string",
-                        "maxLength": 128,
-                        "default": "",
-                        "description": "Optional Desktop-configured root identifier.",
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "default": 0,
-                        "description": "Zero-based byte offset.",
-                    },
-                    "max_bytes": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_DESKTOP_FILE_READ_BYTES,
-                        "default": 65536,
-                    },
-                },
-                "required": ["path"],
-                "additionalProperties": False,
-            },
-            self._tool_desktop_file_read,
-            requires_admin=True,
-        )
+        register_tool_definitions(self.api, self._desktop_tools.definitions())
 
     async def _tool_desktop_exec(
         self, program: str, args: list[str] | None = None, cwd: str = ""
     ) -> str:
-        return await self._invoke_desktop_control(
-            "exec",
-            program=program,
-            args=args or [],
-            cwd=cwd,
-        )
+        return await self._desktop_tools.exec(program, args, cwd)
 
     async def _tool_desktop_file_read(
         self,
@@ -678,41 +539,58 @@ class BuiltinCommandsPlugin(Plugin):
         offset: int = 0,
         max_bytes: int = 65536,
     ) -> str:
-        return await self._invoke_desktop_control(
-            "file_read",
+        return await self._desktop_tools.file_read(
             path=path,
             root_id=root_id,
             offset=offset,
             max_bytes=max_bytes,
         )
 
-    async def _invoke_desktop_control(self, operation: str, **arguments: Any) -> str:
-        run_ctx = current_agent_run.get()
-        if run_ctx is not None and run_ctx.depth > 0:
-            return _desktop_tool_error(
-                "subagent_denied", "Desktop control is unavailable to subagents"
-            )
-        ctx = current_session.get()
-        if ctx is None or not ctx.actor_account_key.strip():
-            return _desktop_tool_error(
-                "actor_unavailable", "trusted actor identity is unavailable"
-            )
-        service = getattr(self.api, "desktop_control_service", None)
-        if service is None:
-            return _desktop_tool_error(
-                "service_unavailable", "Desktop control service is unavailable"
-            )
+    async def _tool_desktop_screenshot_capture(self) -> str:
+        return await self._desktop_tools.screenshot_capture()
 
-        method = service.exec if operation == "exec" else service.file_read
-        result = await method(
-            **arguments,
-            conversation_id=ctx.effective_conversation_id,
-            actor_account_key=ctx.actor_account_key,
-            caller=f"agent:{ctx.origin or 'chat'}:{ctx.session_id}",
+    async def _tool_desktop_screen_observe(
+        self,
+        question: str = "Describe the visible desktop and actionable controls.",
+        media_id: str = "",
+    ) -> str:
+        return await self._desktop_tools.screen_observe(
+            question=question, media_id=media_id
         )
-        if not result.ok:
-            return _desktop_tool_error(result.error_code, result.error_message)
-        return _bounded_desktop_tool_json({"ok": True, "result": result.payload})
+
+    async def _tool_desktop_screenshot_send(
+        self,
+        media_id: str = "",
+        caption: str = "",
+        attachment_type: str = "photo",
+    ) -> str:
+        return await self._desktop_tools.screenshot_send(
+            media_id=media_id,
+            caption=caption,
+            attachment_type=attachment_type,
+        )
+
+    async def _tool_desktop_input(
+        self,
+        action: str,
+        x: int | None = None,
+        y: int | None = None,
+        button: str = "left",
+        clicks: int = 1,
+        scroll_steps: int = 0,
+        text: str = "",
+        keys: list[str] | None = None,
+    ) -> str:
+        return await self._desktop_tools.input(
+            action=action,
+            x=x,
+            y=y,
+            button=button,
+            clicks=clicks,
+            scroll_steps=scroll_steps,
+            text=text,
+            keys=keys or [],
+        )
 
     def _register_message_tool(self) -> None:
         register_tool_definitions(self.api, self._message_tools.message_definitions())

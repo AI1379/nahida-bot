@@ -28,6 +28,10 @@ SYSTEM_CHILD_TOOL_DENYLIST: frozenset[str] = frozenset(
         "desktop_announce",
         "desktop_exec",
         "desktop_file_read",
+        "desktop_screenshot_capture",
+        "desktop_screen_observe",
+        "desktop_screenshot_send",
+        "desktop_input",
         # Identity administration can never be delegated (#39 references the
         # authz module's non-delegable rule; mirror it here so the child tool
         # surface never includes the tool).
