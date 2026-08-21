@@ -1291,6 +1291,35 @@ CRON 专用提醒工具：`desktop_announce`（仅 `origin == "cron_trigger"` �
 消息最长 300 字符），由 `DesktopAnnouncementService.announce` 投递到绑定
 节点。
 
+### 10.4 纯视觉 Computer Use（Windows MVP）
+
+首版采用 observe → act 循环，不读取 UI Automation 节点树或 WebView DOM：
+
+1. `desktop_screenshot_capture()` 调用 `desktop.computer.screenshot`，Rust 使用
+   GDI 抓取整个虚拟桌面，在内存中缩放到最长边 1600px 并编码为 JPEG。Gateway
+   将解码后的图片写入带 TTL 的 `MediaStore`，返回绑定当前 actor 的 `media_id`。
+2. `desktop_screen_observe(question, media_id?)` 可复用已有截图；省略 `media_id`
+   时先抓取新图。Gateway 不把 base64 写入普通 tool transcript，而是按普通图片
+   相同的路由顺序使用 `multimodal.image_fallback_model`，未配置时再尝试 `vision`
+   tag，向视觉 provider 发起临时多模态请求并把文字观察结果交还主模型。因此主
+   模型本身可以没有视觉能力。
+3. `desktop_screenshot_send(media_id?, caption?, attachment_type?)` 可把同一缓存
+   截图作为 photo 或 document 发送到当前聊天；它不能选择其他聊天或 Desktop。
+4. 坐标统一为左上角原点的 0–1000 归一化空间；Agent 调用
+   `desktop_input` 执行一次 move/click/scroll/type/key 后重新观察。
+5. Rust 将归一化坐标映射到 Windows 虚拟桌面（支持副屏负坐标），鼠标和键盘
+   通过 `SendInput` 注入。非 Windows 平台当前返回 `platform_unsupported`。
+
+隐私与权限边界：Desktop 端不持久化截图；Gateway 只在统一媒体缓存中短期落盘，
+到期由现有清理任务删除。tool transcript 不含缓存路径或 base64；视觉调用失败时
+也不会把原始图像降级为文本 base64。`media_id` 含 actor scope，不能被另一个
+actor 复用。
+`computerUse.allowScreenCapture` 与 `computerUse.allowInput` 默认都为 `false`，
+设置页首次开启时分别确认。两项能力仍要求远控模式非 disabled、actor 在本地
+allowlist 中、Gateway 唯一绑定 Desktop、调用工具的账号具备 admin 权限，且
+subagent 永远不可调用。首版不自动处理验证码、登录、支付、发送消息等高影响
+动作的逐步确认；这些场景应保持关闭输入或由上层产品确认策略拦截。
+
 ## 11. Capability 模型
 
 Desktop Node 的能力应显式声明。
@@ -1306,6 +1335,8 @@ Desktop Node 的能力应显式声明。
 | `desktop.audio.play` | Gateway -> Desktop | 播放经过校验的 `SpeechArtifactRef` 或分段播放计划 |
 | `desktop.audio.stop` | Gateway -> Desktop | 停止当前音频播放 |
 | `desktop.notification.show` | Gateway -> Desktop | 展示系统通知 |
+| `desktop.computer.screenshot` | Gateway -> Desktop | 抓取虚拟桌面像素并返回单帧 JPEG；Gateway 可写入 TTL 媒体缓存 |
+| `desktop.computer.input` | Gateway -> Desktop | 注入归一化鼠标与受限键盘动作 |
 | `desktop.window.focus` | Gateway -> Desktop | 聚焦窗口 |
 | `desktop.window.set_interaction_mode` | Gateway -> Desktop | 切换 pet window 整窗点击穿透/交互模式 |
 | `desktop.window.set_render_mode` | Gateway -> Desktop | 切换 `suspended` / `idle` / `speaking` / `active` 渲染模式 |
@@ -1335,12 +1366,15 @@ Desktop Node 的能力应显式声明。
 - 录音、截屏、摄像头
 - 全局键盘监听
 
-其中**读取本机文件**（`desktop.fs.read_text`）与**执行命令**
-（`desktop.process.exec`）已通过 [10.3 远程控制模式](#103-远程控制模式)
-实现：默认关闭，`scoped`/`full_access` 两种模式按策略裁决，`allowed_actor`
-必须显式授权，每次调用由服务端路由到唯一绑定节点并受
-`AuthorizationGate` 管辖（工具标记 `requires_admin`）。写入本机文件、
-录音、截屏、摄像头与全局键盘监听仍不开放。
+其中**读取本机文件**（`desktop.fs.read_text`）、**执行命令**
+（`desktop.process.exec`）、**截屏**（`desktop.computer.screenshot`）与
+**鼠标/键盘输入**（`desktop.computer.input`）已通过
+[10.3 远程控制模式](#103-远程控制模式)
+与 [10.4 纯视觉 Computer Use](#104-纯视觉-computer-usewindows-mvp) 实现：
+默认关闭，`scoped`/`full_access` 两种模式按策略裁决，`allowed_actor` 必须
+显式授权，每次调用由服务端路由到唯一绑定节点并受 `AuthorizationGate`
+管辖（工具标记 `requires_admin`）。写入本机文件、录音、摄像头与全局键盘
+监听仍不开放。
 
 ## 12. 安全设计
 

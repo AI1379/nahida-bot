@@ -22,9 +22,12 @@ Nahida Bot 的 Gateway 已经具备 REST API + SSE 事件流，WebUI 只消费�
 
 非目标：
 
-- 不在首版承载音频、图片等大二进制。媒体走 `media_id` / Gateway Media API。
+- 不在通用 envelope 中承载音频、图片等大二进制。媒体走 `media_id` /
+  Gateway Media API；`desktop.computer.screenshot` 的单帧、限尺寸 JPEG
+  capability response 是 Windows Computer Use MVP 的受控例外。
 - 不在首版做复杂二进制协议或 protobuf 代码生成。
-- 不在首版开放高权限本机执行能力（文件读写、命令执行、录音、截屏等），这些必须显式授权。
+- 高权限本机能力不随协议默认开放。当前文件读取、命令执行、截屏和输入注入
+  仅在 admin + actor 唯一绑定 + Desktop 本地显式策略授权后开放；其余保持关闭。
 
 ## 2. 设计原则
 
@@ -592,12 +595,17 @@ fixtures 约定：
 
 ### 13.3 高风险能力
 
-V1 不开放以下高风险能力（显式声明、显式授权、可审计后才能逐步开放）：
+以下能力已在显式声明、双端授权和审计边界下分阶段开放：
 
-- 读取/写入本机文件
-- 执行命令
-- 录音、截屏、摄像头
-- 全局键盘监听
+- 只读文本文件与命令执行：受 Desktop `disabled/scoped/full_access` 模式裁决。
+- 单帧截屏与输入注入：另外受 `computerUse.allowScreenCapture` /
+  `computerUse.allowInput` 独立开关裁决；工具仅对 admin 开放且禁止 subagent。
+- 截屏响应只在 capability 调用中短暂承载 base64；Gateway 校验后将图片注册到
+  TTL `MediaStore`，对 Agent 仅暴露 actor-bound `media_id`。分析与发送可复用该
+  artifact，tool transcript 不记录原始像素或内部缓存路径。
+
+写入本机文件、录音、摄像头与全局键盘监听仍不开放。Computer Use 的像素、
+坐标和视觉模型链路详见 [Desktop 设计 10.4](../design/desktop-app.md#104-纯视觉-computer-usewindows-mvp)。
 
 ### 13.4 事件隐私
 

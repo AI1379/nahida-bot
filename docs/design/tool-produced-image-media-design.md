@@ -1,6 +1,8 @@
 # 工具产出图片的多模态读取设计与实现路径
 
-状态：部分实现。用户附件图片链路和 `image_understand` 已可用；工具产出图片的 media artifact 注册、自动注入和跨轮持久化仍待实现。
+状态：部分实现。用户附件图片链路和 `image_understand` 已可用；Desktop 截图已
+有受控、actor-bound、TTL media artifact 的专用实现，但通用工具产出图片的
+artifact 注册、自动注入和跨轮持久化仍待实现。
 
 背景日期：2026-05-14
 最近审计：2026-05-15
@@ -44,6 +46,9 @@
 - `image_understand` 工具已能读取当前 turn 附件和历史用户附件 metadata 中的图片。
 - 用户附件 metadata 会持久化 path、mime、尺寸、描述等信息，历史恢复时可重新构造 image part 或 image description。
 - OpenAI-compatible / OpenAI Responses 等 provider 已能序列化用户图片 part。
+- Desktop Computer Use 截图会进入 Gateway `MediaStore` 并返回 actor-bound
+  `media_id`；`desktop_screen_observe` 和 `desktop_screenshot_send` 可在 TTL 内
+  复用。该专用链路不会自动注入 AgentLoop，也不等同于通用 tool media registry。
 
 仍未实现：
 
