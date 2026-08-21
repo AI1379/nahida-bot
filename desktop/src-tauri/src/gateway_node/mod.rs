@@ -25,6 +25,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use url::Url;
 
+use crate::computer_use;
 use crate::remote_control;
 
 pub const FRONTEND_EVENT: &str = "nahida://gateway-node/event";
@@ -738,6 +739,29 @@ async fn handle_request(
         tauri::async_runtime::spawn(async move {
             let response =
                 match remote_control::execute(&direct_app, &payload.capability, payload.arguments)
+                    .await
+                {
+                    Ok(result) => build_response(request_id, true, Some(result), None),
+                    Err(error) => {
+                        let mut protocol = protocol_error(error.code, error.message, false);
+                        protocol.details = error.details;
+                        build_response(request_id, false, None, Some(protocol))
+                    }
+                };
+            let _ = response_tx.send(response).await;
+        });
+        return Ok(());
+    }
+
+    if matches!(
+        payload.capability.as_str(),
+        computer_use::SCREENSHOT_CAPABILITY | computer_use::INPUT_CAPABILITY
+    ) {
+        let response_tx = capability_response_tx.clone();
+        let direct_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let response =
+                match computer_use::execute(&direct_app, &payload.capability, payload.arguments)
                     .await
                 {
                     Ok(result) => build_response(request_id, true, Some(result), None),

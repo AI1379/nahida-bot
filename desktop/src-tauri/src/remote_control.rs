@@ -54,6 +54,15 @@ pub struct RemoteControlLimits {
     pub max_arg_bytes: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputerUsePolicy {
+    #[serde(default)]
+    pub allow_screen_capture: bool,
+    #[serde(default)]
+    pub allow_input: bool,
+}
+
 impl Default for RemoteControlLimits {
     fn default() -> Self {
         Self {
@@ -88,6 +97,8 @@ pub struct RemoteControlPolicy {
     #[serde(default)]
     pub exec_profiles: Vec<ExecProfile>,
     #[serde(default)]
+    pub computer_use: ComputerUsePolicy,
+    #[serde(default)]
     pub limits: RemoteControlLimits,
 }
 
@@ -98,6 +109,7 @@ impl Default for RemoteControlPolicy {
             allowed_actor_account_keys: Vec::new(),
             read_roots: Vec::new(),
             exec_profiles: Vec::new(),
+            computer_use: ComputerUsePolicy::default(),
             limits: RemoteControlLimits::default(),
         }
     }
@@ -122,6 +134,8 @@ impl<'de> Deserialize<'de> for RemoteControlPolicy {
             #[serde(default)]
             exec_profiles: Vec<ExecProfile>,
             #[serde(default)]
+            computer_use: ComputerUsePolicy,
+            #[serde(default)]
             limits: RemoteControlLimits,
         }
 
@@ -139,6 +153,7 @@ impl<'de> Deserialize<'de> for RemoteControlPolicy {
             allowed_actor_account_keys: stored.allowed_actor_account_keys,
             read_roots: stored.read_roots,
             exec_profiles: stored.exec_profiles,
+            computer_use: stored.computer_use,
             limits: stored.limits,
         })
     }
@@ -174,7 +189,7 @@ impl RemoteControlManager {
         })
     }
 
-    fn snapshot(&self) -> RemoteControlPolicy {
+    pub(crate) fn snapshot(&self) -> RemoteControlPolicy {
         self.policy
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -255,7 +270,7 @@ pub struct RemoteControlError {
 }
 
 impl RemoteControlError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -263,7 +278,7 @@ impl RemoteControlError {
         }
     }
 
-    fn detail(mut self, key: &str, value: impl Into<Value>) -> Self {
+    pub(crate) fn detail(mut self, key: &str, value: impl Into<Value>) -> Self {
         self.details.insert(key.to_string(), value.into());
         self
     }
@@ -574,7 +589,10 @@ async fn read_text(
     }))
 }
 
-fn authorize(policy: &RemoteControlPolicy, actor: &str) -> Result<(), RemoteControlError> {
+pub(crate) fn authorize(
+    policy: &RemoteControlPolicy,
+    actor: &str,
+) -> Result<(), RemoteControlError> {
     if policy.mode == RemoteControlMode::Disabled {
         return Err(RemoteControlError::new(
             "remote_control_disabled",
@@ -879,6 +897,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(policy.mode, RemoteControlMode::Scoped);
+        assert_eq!(policy.computer_use, ComputerUsePolicy::default());
         assert!(serde_json::to_value(policy)
             .unwrap()
             .get("enabled")

@@ -256,6 +256,22 @@ pub fn desktop_capabilities() -> Vec<NodeCapability> {
             description: "Read UTF-8 text under the local remote-control mode".to_string(),
             requires_user_approval: true,
         },
+        NodeCapability {
+            name: super::super::computer_use::SCREENSHOT_CAPABILITY.to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::High,
+            description: "Capture the virtual desktop for visual observation".to_string(),
+            requires_user_approval: true,
+        },
+        NodeCapability {
+            name: super::super::computer_use::INPUT_CAPABILITY.to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::High,
+            description: "Inject normalized pointer and keyboard input".to_string(),
+            requires_user_approval: true,
+        },
     ]
 }
 
@@ -358,6 +374,8 @@ mod tests {
         for name in [
             super::super::super::remote_control::PROCESS_CAPABILITY,
             super::super::super::remote_control::READ_TEXT_CAPABILITY,
+            super::super::super::computer_use::SCREENSHOT_CAPABILITY,
+            super::super::super::computer_use::INPUT_CAPABILITY,
         ] {
             let capability = desktop_capabilities()
                 .into_iter()
