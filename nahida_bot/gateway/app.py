@@ -185,6 +185,9 @@ class WebAPIApp:
         from nahida_bot.gateway.routes.messages import router as messages_router
         from nahida_bot.gateway.routes.memory import router as memory_router
         from nahida_bot.gateway.routes.plugins import router as plugins_router
+        from nahida_bot.gateway.routes.pomodoro import (
+            router as pomodoro_router,
+        )
         from nahida_bot.gateway.routes.processes import router as processes_router
         from nahida_bot.gateway.routes.sessions import router as sessions_router
         from nahida_bot.gateway.routes.skills import router as skills_router
@@ -261,6 +264,7 @@ class WebAPIApp:
         # from _get_services instead of a generic 404/405.
         app.include_router(speech_router, dependencies=[Depends(require_token)])
         app.include_router(speech_media_router, dependencies=[Depends(require_token)])
+        app.include_router(pomodoro_router, dependencies=[Depends(require_token)])
 
         if self.node_registry is not None:
             from nahida_bot.gateway.routes.nodes import (

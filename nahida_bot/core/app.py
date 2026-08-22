@@ -1098,6 +1098,15 @@ class Application:
         """
         return self._media_store
 
+    @property
+    def model_router(self):
+        """Unified ModelRouter (None until provider manager initialization).
+
+        Gateway-side text generation (e.g. dynamic pomodoro reminders)
+        resolves task-bound models through this router.
+        """
+        return self._model_router
+
     async def _plugin_temp_cleanup_once(self) -> None:
         """Purge expired plugin-managed temporary files."""
         service = self.temp_file_service

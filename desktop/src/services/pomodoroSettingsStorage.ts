@@ -35,6 +35,12 @@ export function sanitizePomodoroSettings(value: unknown): PomodoroSettings {
       1,
       60,
     ),
+    totalRounds: finiteDuration(
+      record.totalRounds,
+      pomodoroDefaults.totalRounds,
+      1,
+      16,
+    ),
     workStartText:
       typeof record.workStartText === "string" && record.workStartText.trim()
         ? record.workStartText.trim().slice(0, 200)
@@ -47,6 +53,18 @@ export function sanitizePomodoroSettings(value: unknown): PomodoroSettings {
       typeof record.breakEndText === "string" && record.breakEndText.trim()
         ? record.breakEndText.trim().slice(0, 200)
         : pomodoroDefaults.breakEndText,
+    roundsDoneText:
+      typeof record.roundsDoneText === "string" && record.roundsDoneText.trim()
+        ? record.roundsDoneText.trim().slice(0, 200)
+        : pomodoroDefaults.roundsDoneText,
+    speakReminders:
+      typeof record.speakReminders === "boolean"
+        ? record.speakReminders
+        : pomodoroDefaults.speakReminders,
+    dynamicText:
+      typeof record.dynamicText === "boolean"
+        ? record.dynamicText
+        : pomodoroDefaults.dynamicText,
   };
 }
 

@@ -241,6 +241,15 @@ pub fn desktop_capabilities() -> Vec<NodeCapability> {
             requires_user_approval: false,
         },
         NodeCapability {
+            name: "desktop.pomodoro.control".to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::Low,
+            description: "Start, stop, configure, or query the local pomodoro timer"
+                .to_string(),
+            requires_user_approval: false,
+        },
+        NodeCapability {
             name: super::super::remote_control::PROCESS_CAPABILITY.to_string(),
             version: PROTOCOL_VERSION.to_string(),
             direction: CapabilityDirection::GatewayToNode,
@@ -363,6 +372,18 @@ mod tests {
             .into_iter()
             .find(|capability| capability.name == "desktop.notification.announce")
             .expect("announce capability is registered");
+
+        assert_eq!(capability.direction, CapabilityDirection::GatewayToNode);
+        assert_eq!(capability.risk, CapabilityRisk::Low);
+        assert!(!capability.requires_user_approval);
+    }
+
+    #[test]
+    fn registers_pomodoro_control_capability() {
+        let capability = desktop_capabilities()
+            .into_iter()
+            .find(|capability| capability.name == "desktop.pomodoro.control")
+            .expect("pomodoro capability is registered");
 
         assert_eq!(capability.direction, CapabilityDirection::GatewayToNode);
         assert_eq!(capability.risk, CapabilityRisk::Low);

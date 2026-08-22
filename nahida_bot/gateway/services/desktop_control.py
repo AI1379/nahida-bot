@@ -12,6 +12,7 @@ DESKTOP_EXEC_CAPABILITY = "desktop.process.exec"
 DESKTOP_FILE_READ_CAPABILITY = "desktop.fs.read_text"
 DESKTOP_SCREENSHOT_CAPABILITY = "desktop.computer.screenshot"
 DESKTOP_INPUT_CAPABILITY = "desktop.computer.input"
+DESKTOP_POMODORO_CAPABILITY = "desktop.pomodoro.control"
 
 MAX_DESKTOP_PROGRAM_CHARS = 1024
 MAX_DESKTOP_ROOT_ID_CHARS = 128
@@ -24,8 +25,13 @@ MAX_DESKTOP_FILE_READ_BYTES = 1024 * 1024
 MAX_DESKTOP_TYPED_CHARS = 2000
 MAX_DESKTOP_HOTKEY_KEYS = 8
 MAX_DESKTOP_SCROLL_STEPS = 10
+MAX_DESKTOP_POMODORO_WORK_MINUTES = 120
+MAX_DESKTOP_POMODORO_BREAK_MINUTES = 60
+MAX_DESKTOP_POMODORO_ROUNDS = 16
+MAX_DESKTOP_POMODORO_TEXT_CHARS = 200
 DESKTOP_INPUT_ACTIONS = frozenset({"move", "click", "scroll", "type", "key"})
 DESKTOP_MOUSE_BUTTONS = frozenset({"left", "right", "middle"})
+DESKTOP_POMODORO_ACTIONS = frozenset({"start", "stop", "toggle", "status", "configure"})
 
 
 @dataclass(slots=True, frozen=True)
@@ -171,6 +177,98 @@ class DesktopControlService:
             return _invalid(error)
         return await self._invoke(
             capability=DESKTOP_INPUT_CAPABILITY,
+            arguments=arguments,
+            conversation_id=conversation_id,
+            actor_account_key=actor_account_key,
+            caller=caller,
+        )
+
+    async def pomodoro(
+        self,
+        *,
+        action: str,
+        work_minutes: int | None = None,
+        break_minutes: int | None = None,
+        total_rounds: int | None = None,
+        enabled: bool | None = None,
+        speak_reminders: bool | None = None,
+        dynamic_text: bool | None = None,
+        work_start_text: str | None = None,
+        break_start_text: str | None = None,
+        break_end_text: str | None = None,
+        rounds_done_text: str | None = None,
+        conversation_id: str,
+        actor_account_key: str,
+        caller: str,
+    ) -> DesktopControlResult:
+        error: str | None = None
+        if action not in DESKTOP_POMODORO_ACTIONS:
+            error = "action must be start, stop, toggle, status, or configure"
+        for name, minutes, maximum in (
+            ("work_minutes", work_minutes, MAX_DESKTOP_POMODORO_WORK_MINUTES),
+            ("break_minutes", break_minutes, MAX_DESKTOP_POMODORO_BREAK_MINUTES),
+            ("total_rounds", total_rounds, MAX_DESKTOP_POMODORO_ROUNDS),
+        ):
+            if (
+                error is None
+                and minutes is not None
+                and (
+                    not isinstance(minutes, int)
+                    or isinstance(minutes, bool)
+                    or not 1 <= minutes <= maximum
+                )
+            ):
+                error = f"{name} must be between 1 and {maximum}"
+        for name, value in (
+            ("enabled", enabled),
+            ("speak_reminders", speak_reminders),
+            ("dynamic_text", dynamic_text),
+        ):
+            if error is None and value is not None and not isinstance(value, bool):
+                error = f"{name} must be a boolean"
+        for name, text in (
+            ("work_start_text", work_start_text),
+            ("break_start_text", break_start_text),
+            ("break_end_text", break_end_text),
+            ("rounds_done_text", rounds_done_text),
+        ):
+            if error is not None:
+                break
+            if text is None:
+                continue
+            text_error = _validate_string(name, text, MAX_DESKTOP_POMODORO_TEXT_CHARS)
+            if text_error is not None:
+                error = text_error
+        if error is not None:
+            return _invalid(error)
+
+        arguments: dict[str, Any] = {
+            "action": action,
+            "actorAccountKey": actor_account_key,
+        }
+        if work_minutes is not None:
+            arguments["workMinutes"] = work_minutes
+        if break_minutes is not None:
+            arguments["breakMinutes"] = break_minutes
+        if total_rounds is not None:
+            arguments["totalRounds"] = total_rounds
+        if enabled is not None:
+            arguments["enabled"] = enabled
+        if speak_reminders is not None:
+            arguments["speakReminders"] = speak_reminders
+        if dynamic_text is not None:
+            arguments["dynamicText"] = dynamic_text
+        if work_start_text is not None:
+            arguments["workStartText"] = work_start_text
+        if break_start_text is not None:
+            arguments["breakStartText"] = break_start_text
+        if break_end_text is not None:
+            arguments["breakEndText"] = break_end_text
+        if rounds_done_text is not None:
+            arguments["roundsDoneText"] = rounds_done_text
+
+        return await self._invoke(
+            capability=DESKTOP_POMODORO_CAPABILITY,
             arguments=arguments,
             conversation_id=conversation_id,
             actor_account_key=actor_account_key,
@@ -338,13 +436,19 @@ __all__ = [
     "DESKTOP_EXEC_CAPABILITY",
     "DESKTOP_FILE_READ_CAPABILITY",
     "DESKTOP_INPUT_CAPABILITY",
+    "DESKTOP_POMODORO_CAPABILITY",
     "DESKTOP_SCREENSHOT_CAPABILITY",
     "DESKTOP_INPUT_ACTIONS",
+    "DESKTOP_POMODORO_ACTIONS",
     "MAX_DESKTOP_EXEC_ARGS",
     "MAX_DESKTOP_EXEC_ARG_CHARS",
     "MAX_DESKTOP_FILE_READ_BYTES",
     "MAX_DESKTOP_HOTKEY_KEYS",
     "MAX_DESKTOP_PATH_CHARS",
+    "MAX_DESKTOP_POMODORO_BREAK_MINUTES",
+    "MAX_DESKTOP_POMODORO_ROUNDS",
+    "MAX_DESKTOP_POMODORO_TEXT_CHARS",
+    "MAX_DESKTOP_POMODORO_WORK_MINUTES",
     "MAX_DESKTOP_PROGRAM_CHARS",
     "MAX_DESKTOP_SCROLL_STEPS",
     "MAX_DESKTOP_TYPED_CHARS",

@@ -88,6 +88,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       />
       <PomodoroSettingsPanel
         :settings="store.localConfig.pomodoro"
+        :state="store.pomodoroState"
         @update="store.updatePomodoroSettings"
         @start="props.runtime.startPomodoro"
         @stop="props.runtime.stopPomodoro"

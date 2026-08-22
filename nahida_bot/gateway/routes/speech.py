@@ -157,6 +157,88 @@ class _ConcurrencyScope:
         return semaphore
 
 
+async def synthesize_speech_job(
+    service: Any,
+    store: Any,
+    config: Any,
+    *,
+    text: str,
+    voice: str = "",
+    text_lang: str = "",
+    style: str = "",
+    speed: float = 0.0,
+    pitch: float = 0.0,
+    output_format: str = "",
+) -> SpeechJobResponse:
+    """Synthesize (or replay from cache) one speech job.
+
+    Shared by ``POST /api/speech/jobs`` and internal callers (e.g. the
+    pomodoro reminder generator) so the cache key — text + voice + provider
+    + style + speed + pitch + output_format — always matches what the
+    Desktop sends at playback time. Raises ``HTTPException`` 422/502 on
+    invalid length or TTS failure.
+    """
+    provider_hint = service.resolve_provider_type(voice)
+
+    cached = await store.find_cached(
+        text=text,
+        voice=voice,
+        provider=provider_hint,
+        style=style,
+        speed=speed,
+        pitch=pitch,
+        output_format=output_format,
+    )
+    if cached is not None:
+        public = cached.to_public_dict()
+        return SpeechJobResponse(
+            artifact_id=public["artifact_id"],
+            download_url=f"/api/media/speech/{public['artifact_id']}",
+            mime_type=public["mime_type"],
+            size_bytes=public["size_bytes"],
+            duration_ms=public["duration_ms"],
+            voice=public["voice"],
+            provider=public["provider"],
+            expires_at=public["expires_at"],
+        )
+
+    artifact = await _synthesize_with_limits(
+        service,
+        store,
+        config,
+        SpeechJobRequest(
+            text=text,
+            voice=voice,
+            text_lang=text_lang,
+            style=style,
+            speed=speed,
+            pitch=pitch,
+            output_format=output_format,
+        ),
+    )
+    stored = await store.put(
+        text=text,
+        voice=voice,
+        provider=artifact.provider or provider_hint,
+        style=style,
+        speed=speed,
+        pitch=pitch,
+        output_format=output_format,
+        artifact=artifact,
+    )
+    public = stored.to_public_dict()
+    return SpeechJobResponse(
+        artifact_id=public["artifact_id"],
+        download_url=f"/api/media/speech/{public['artifact_id']}",
+        mime_type=public["mime_type"],
+        size_bytes=public["size_bytes"],
+        duration_ms=public["duration_ms"],
+        voice=public["voice"],
+        provider=public["provider"],
+        expires_at=public["expires_at"],
+    )
+
+
 @router.post("/jobs", response_model=SpeechJobResponse)
 async def create_speech_job(
     body: SpeechJobRequest,
@@ -172,54 +254,17 @@ async def create_speech_job(
     # always hits default_voice. When persona-bound routing is implemented
     # the voice field should come from the credential's actor_account_key
     # or a session-level persona override.
-    # Resolve the provider type from voice + config so the cache key matches
-    # between find_cached and put (otherwise every call is a cache miss).
-    provider_hint = service.resolve_provider_type(body.voice)
-
-    # Cache hit → skip synthesis entirely (idempotent replay).
-    cached = await store.find_cached(
+    return await synthesize_speech_job(
+        service,
+        store,
+        config,
         text=body.text,
         voice=body.voice,
-        provider=provider_hint,
+        text_lang=body.text_lang,
         style=body.style,
         speed=body.speed,
         pitch=body.pitch,
         output_format=body.output_format,
-    )
-    if cached is not None:
-        public = cached.to_public_dict()
-        return SpeechJobResponse(
-            artifact_id=public["artifact_id"],
-            download_url=f"/api/media/speech/{public['artifact_id']}",
-            mime_type=public["mime_type"],
-            size_bytes=public["size_bytes"],
-            duration_ms=public["duration_ms"],
-            voice=public["voice"],
-            provider=public["provider"],
-            expires_at=public["expires_at"],
-        )
-
-    artifact = await _synthesize_with_limits(service, store, config, body)
-    stored = await store.put(
-        text=body.text,
-        voice=body.voice,
-        provider=artifact.provider or provider_hint,
-        style=body.style,
-        speed=body.speed,
-        pitch=body.pitch,
-        output_format=body.output_format,
-        artifact=artifact,
-    )
-    public = stored.to_public_dict()
-    return SpeechJobResponse(
-        artifact_id=public["artifact_id"],
-        download_url=f"/api/media/speech/{public['artifact_id']}",
-        mime_type=public["mime_type"],
-        size_bytes=public["size_bytes"],
-        duration_ms=public["duration_ms"],
-        voice=public["voice"],
-        provider=public["provider"],
-        expires_at=public["expires_at"],
     )
 
 
@@ -274,4 +319,4 @@ def _ext_for_mime(mime_type: str) -> str:
     return guessed.lstrip(".") if guessed else "wav"
 
 
-__all__ = ["router", "media_router"]
+__all__ = ["router", "media_router", "synthesize_speech_job"]

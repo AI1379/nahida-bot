@@ -22,6 +22,10 @@ from nahida_bot.gateway.services.desktop_control import (
     MAX_DESKTOP_FILE_READ_BYTES,
     MAX_DESKTOP_HOTKEY_KEYS,
     MAX_DESKTOP_PATH_CHARS,
+    MAX_DESKTOP_POMODORO_BREAK_MINUTES,
+    MAX_DESKTOP_POMODORO_ROUNDS,
+    MAX_DESKTOP_POMODORO_TEXT_CHARS,
+    MAX_DESKTOP_POMODORO_WORK_MINUTES,
     MAX_DESKTOP_PROGRAM_CHARS,
     MAX_DESKTOP_SCROLL_STEPS,
     MAX_DESKTOP_TYPED_CHARS,
@@ -268,6 +272,81 @@ class DesktopTools:
                 handler=self.input,
                 requires_admin=True,
             ),
+            PluginToolDefinition(
+                name="desktop_pomodoro",
+                description=(
+                    "Control the current actor's Desktop pomodoro timer. One "
+                    "round is a work phase plus a break phase; total_rounds "
+                    "rounds run automatically before the timer stops itself. "
+                    "Use action=start to begin (optionally with work_minutes/"
+                    "break_minutes/total_rounds to configure it first), stop "
+                    "to cancel, and status to read the current round and "
+                    "remaining time. Reminders pop the pet out with a bubble "
+                    "and spoken TTS when speak_reminders is true."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["start", "stop", "toggle", "status", "configure"],
+                        },
+                        "work_minutes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAX_DESKTOP_POMODORO_WORK_MINUTES,
+                        },
+                        "break_minutes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAX_DESKTOP_POMODORO_BREAK_MINUTES,
+                        },
+                        "total_rounds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": MAX_DESKTOP_POMODORO_ROUNDS,
+                            "description": (
+                                "How many work+break rounds one start runs "
+                                "before completing."
+                            ),
+                        },
+                        "enabled": {"type": "boolean"},
+                        "speak_reminders": {"type": "boolean"},
+                        "dynamic_text": {
+                            "type": "boolean",
+                            "description": (
+                                "When true the Gateway model writes each "
+                                "reminder line instead of the static texts."
+                            ),
+                        },
+                        "work_start_text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_DESKTOP_POMODORO_TEXT_CHARS,
+                        },
+                        "break_start_text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_DESKTOP_POMODORO_TEXT_CHARS,
+                        },
+                        "break_end_text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_DESKTOP_POMODORO_TEXT_CHARS,
+                            "description": "Reminder when a break ends but more rounds remain.",
+                        },
+                        "rounds_done_text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_DESKTOP_POMODORO_TEXT_CHARS,
+                            "description": "Reminder when the final round completes.",
+                        },
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                handler=self.pomodoro,
+            ),
         ]
 
     async def exec(
@@ -483,6 +562,35 @@ class DesktopTools:
             scroll_steps=scroll_steps,
             text=text,
             keys=keys or [],
+        )
+
+    async def pomodoro(
+        self,
+        action: str,
+        work_minutes: int | None = None,
+        break_minutes: int | None = None,
+        total_rounds: int | None = None,
+        enabled: bool | None = None,
+        speak_reminders: bool | None = None,
+        dynamic_text: bool | None = None,
+        work_start_text: str | None = None,
+        break_start_text: str | None = None,
+        break_end_text: str | None = None,
+        rounds_done_text: str | None = None,
+    ) -> str:
+        return await self._invoke(
+            "pomodoro",
+            action=action,
+            work_minutes=work_minutes,
+            break_minutes=break_minutes,
+            total_rounds=total_rounds,
+            enabled=enabled,
+            speak_reminders=speak_reminders,
+            dynamic_text=dynamic_text,
+            work_start_text=work_start_text,
+            break_start_text=break_start_text,
+            break_end_text=break_end_text,
+            rounds_done_text=rounds_done_text,
         )
 
     def _context(self) -> tuple[Any, Any] | str:

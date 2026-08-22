@@ -16,6 +16,7 @@ from nahida_bot.gateway.services.desktop_control import (
     DESKTOP_EXEC_CAPABILITY,
     DESKTOP_FILE_READ_CAPABILITY,
     DESKTOP_INPUT_CAPABILITY,
+    DESKTOP_POMODORO_CAPABILITY,
     DESKTOP_SCREENSHOT_CAPABILITY,
     MAX_DESKTOP_EXEC_ARGS,
     MAX_DESKTOP_EXEC_ARG_CHARS,
@@ -479,3 +480,115 @@ async def test_absolute_and_parent_paths_are_forwarded_for_desktop_mode_policy(
     assert calls[0][1].payload["arguments"]["cwd"] == cwd
     assert calls[1][1].payload is not None
     assert calls[1][1].payload["arguments"]["path"] == path
+
+
+@pytest.mark.asyncio
+async def test_pomodoro_sends_action_and_optional_configuration() -> None:
+    registry = NodeRegistry()
+    calls: list[tuple[str, NodeEnvelope]] = []
+    _register(
+        registry,
+        node_id="owner-desktop",
+        actor="milky:user:owner",
+        conversation="milky:private:owner",
+        capabilities=[DESKTOP_POMODORO_CAPABILITY],
+        calls=calls,
+    )
+    service = DesktopControlService(registry, NodeInvoker(registry))
+
+    result = await service.pomodoro(
+        action="start",
+        work_minutes=50,
+        break_minutes=10,
+        total_rounds=4,
+        speak_reminders=True,
+        work_start_text="专注开始！",
+        rounds_done_text="全部完成！",
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+        caller="agent:chat:test",
+    )
+
+    assert result.ok is True
+    assert calls[0][1].payload is not None
+    assert calls[0][1].payload["capability"] == DESKTOP_POMODORO_CAPABILITY
+    assert calls[0][1].payload["arguments"] == {
+        "action": "start",
+        "workMinutes": 50,
+        "breakMinutes": 10,
+        "totalRounds": 4,
+        "speakReminders": True,
+        "workStartText": "专注开始！",
+        "roundsDoneText": "全部完成！",
+        "actorAccountKey": "milky:user:owner",
+    }
+
+
+@pytest.mark.asyncio
+async def test_pomodoro_status_sends_minimal_payload() -> None:
+    registry = NodeRegistry()
+    calls: list[tuple[str, NodeEnvelope]] = []
+    _register(
+        registry,
+        node_id="owner-desktop",
+        actor="milky:user:owner",
+        conversation="milky:private:owner",
+        capabilities=[DESKTOP_POMODORO_CAPABILITY],
+        calls=calls,
+    )
+    service = DesktopControlService(registry, NodeInvoker(registry))
+
+    result = await service.pomodoro(
+        action="status",
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+        caller="agent:chat:test",
+    )
+
+    assert result.ok is True
+    assert calls[0][1].payload is not None
+    assert calls[0][1].payload["arguments"] == {
+        "action": "status",
+        "actorAccountKey": "milky:user:owner",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"action": "explode"},
+        {"action": "start", "work_minutes": 0},
+        {"action": "start", "work_minutes": 121},
+        {"action": "configure", "break_minutes": 61},
+        {"action": "configure", "total_rounds": 0},
+        {"action": "configure", "total_rounds": 17},
+        {"action": "configure", "enabled": "yes"},
+        {"action": "configure", "speak_reminders": 1},
+        {"action": "configure", "work_start_text": ""},
+        {"action": "configure", "work_start_text": "x" * 201},
+    ],
+)
+async def test_pomodoro_rejects_invalid_arguments(kwargs: dict[str, Any]) -> None:
+    registry = NodeRegistry()
+    calls: list[tuple[str, NodeEnvelope]] = []
+    _register(
+        registry,
+        node_id="owner-desktop",
+        actor="milky:user:owner",
+        conversation="milky:private:owner",
+        capabilities=[DESKTOP_POMODORO_CAPABILITY],
+        calls=calls,
+    )
+    service = DesktopControlService(registry, NodeInvoker(registry))
+
+    result = await service.pomodoro(
+        **kwargs,
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+        caller="agent:chat:test",
+    )
+
+    assert result.ok is False
+    assert result.error_code == "invalid_arguments"
+    assert calls == []
