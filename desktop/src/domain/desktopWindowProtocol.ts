@@ -26,4 +26,6 @@ export type PetWindowCommand =
   /** Cursor is over the visible pet; re-arms auto retreat / chat timeouts. */
   | { type: "pointer_activity" }
   /** The pet window finished its emerge/retreat slide animation. */
-  | { type: "transition_done"; phase: "emerge" | "retreat" };
+  | { type: "transition_done"; phase: "emerge" | "retreat" }
+  /** The model was double-clicked while interactive; raise the main window. */
+  | { type: "open_main_window" };

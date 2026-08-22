@@ -2,9 +2,13 @@ mod computer_use;
 mod gateway_node;
 mod motion_dataset;
 mod remote_control;
+#[cfg(windows)]
+mod pet_mouse_hook;
 mod secure_storage;
 
-use tauri::{Manager, WindowEvent};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 
 #[tauri::command]
 fn runtime_mode() -> &'static str {
@@ -99,6 +103,18 @@ fn suppress_nc_paint(window: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 fn suppress_nc_paint(_window: &tauri::WebviewWindow) {}
 
+/// Bring the main window back from the tray. Must go through the Tauri
+/// APIs (not raw ShowWindow) so tao's visibility bookkeeping stays in
+/// sync; a raw show would leave tao believing the window is hidden and
+/// a later `hide()` would be diffed away into a no-op.
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// Invoked by the frontend right after toggling click-through, because tao
 /// re-applies the caption styles on that change.
 #[tauri::command]
@@ -110,6 +126,11 @@ fn polish_pet_window(window: tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // tokio-tungstenite pulls rustls without a default crypto provider;
+    // select ring up front so the first TLS connect doesn't panic on
+    // provider resolution.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .manage(gateway_node::GatewayNodeManager::default())
@@ -141,6 +162,36 @@ pub fn run() {
                 suppress_nc_paint(&pet);
                 strip_window_chrome(&pet);
             }
+            #[cfg(windows)]
+            pet_mouse_hook::install(app);
+            let show_main =
+                MenuItem::with_id(app, "show-main", "打开主窗口", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_main, &quit])?;
+            let mut tray = TrayIconBuilder::with_id("nahida-tray")
+                .tooltip("Nahida Desktop")
+                .menu(&menu)
+                // Right click opens the menu; left click reopens the main window.
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show-main" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -151,7 +202,26 @@ pub fn run() {
                     strip_window_chrome(&pet);
                 }
             }
+            // Closing hides to the tray so the gateway node and pet runtime
+            // keep running; quitting goes through the tray menu instead.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run Nahida Desktop");
+        .build(tauri::generate_context!())
+        .expect("failed to run Nahida Desktop")
+        .run(|_app, event| {
+            // The last window going away requests an uncoded exit; stay
+            // resident in the tray. The tray quit item calls app.exit(0),
+            // which carries a code and is allowed through.
+            match event {
+                RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+                RunEvent::Exit => {
+                    #[cfg(windows)]
+                    pet_mouse_hook::uninstall();
+                }
+                _ => {}
+            }
+        });
 }

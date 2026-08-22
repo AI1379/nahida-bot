@@ -2153,6 +2153,7 @@ dependencies = [
  "futures-util",
  "image",
  "keyring",
+ "rustls",
  "serde",
  "serde_json",
  "tauri",
@@ -3025,7 +3026,9 @@ version = "0.23.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
 dependencies = [
+ "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

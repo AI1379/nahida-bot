@@ -5,6 +5,7 @@ import {
   watch,
 } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { desktopWindowDefaults } from "@/config/desktopRuntimeDefaults";
 import type {
@@ -157,6 +158,17 @@ export function useDesktopRuntimeController(
     clearTimer(autoRetreatTimer);
     transitionTimer = null;
     autoRetreatTimer = null;
+  }
+
+  async function openMainWindow() {
+    try {
+      const appWindow = getCurrentWindow();
+      await appWindow.unminimize();
+      await appWindow.show();
+      await appWindow.setFocus();
+    } catch {
+      // Browser dev mode has no native windows to manage.
+    }
   }
 
   function startEventSource(
@@ -440,6 +452,9 @@ export function useDesktopRuntimeController(
         break;
       case "pointer_activity":
         schedulePetState(store.petRuntime.status);
+        break;
+      case "open_main_window":
+        void openMainWindow();
         break;
       case "transition_done":
         if (command.phase === "emerge") {

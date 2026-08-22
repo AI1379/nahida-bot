@@ -67,6 +67,18 @@ function submitReply() {
   replyText.value = "";
 }
 
+// The window only receives DOM events while interactive (chat mode);
+// click-through double-clicks are caught by the native mouse hook.
+function handleStageDoubleClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (
+    target?.closest(".pet-window__composer, .pet-window__motion-feedback")
+  ) {
+    return;
+  }
+  void sendPetWindowCommand({ type: "open_main_window" });
+}
+
 function handleMotionExecuted(playback: MotionPlaybackSummary): void {
   store.rememberMotionPlayback(playback);
   void publishMotionPlayback(playback).catch(() => undefined);
@@ -124,6 +136,7 @@ onBeforeUnmount(() => {
     class="pet-window"
     :data-status="store.petRuntime.status"
     :data-interactive="interactive"
+    @dblclick="handleStageDoubleClick"
   >
     <Live2DStage
       :emotion="store.currentEmotion"
