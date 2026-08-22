@@ -25,6 +25,7 @@ const live2dStage = ref<{
   replayNormalizedClip: (clip: NormalizedMotionClip) => boolean;
 } | null>(null);
 const replayStatus = ref("");
+const replayedPlanId = ref("");
 
 const activeSegment = computed(
   () => store.activePlan?.segments[store.currentSegmentIndex] ?? null,
@@ -42,6 +43,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
   replayStatus.value = applied
     ? `Replaying ${playback.primitive} from ${new Date(playback.timestamp).toLocaleString()}.`
     : "Live2D is not ready to replay this motion yet.";
+  replayedPlanId.value = applied ? playback.motionPlanId : "";
 }
 </script>
 
@@ -112,6 +114,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
         :recent="store.recentMotionPlaybacks"
         :feedback-enabled="store.localConfig.motionDataCollectionEnabled"
         :replay-status="replayStatus"
+        :replayed-plan-id="replayedPlanId"
         @replay="replayMotion"
       />
       <TranscriptPanel :entries="store.transcript" />

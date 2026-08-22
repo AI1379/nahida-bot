@@ -176,6 +176,34 @@ def test_prepare_excludes_previews_and_negative_curve_targets() -> None:
     ]
 
 
+def test_prepare_excludes_feedback_rated_from_a_workbench_replay() -> None:
+    decision = _intent("pet-decision")
+    execution = _execution("pet-decision")
+    execution["playbackSurface"] = "pet"
+    feedback = {
+        "schemaVersion": 1,
+        "type": "motion_preference",
+        "timestamp": "2026-08-12T00:00:02Z",
+        "preferenceId": "workbench-replay-feedback",
+        "candidateA": execution["motionPlanId"],
+        "labels": ["good"],
+        "playbackSurface": "pet",
+        "ratedSurface": "workbench",
+        "replayOf": execution["motionPlanId"],
+    }
+
+    prepared = prepare_datasets(
+        {
+            "decisions": [decision],
+            "executions": [execution],
+            "preferences": [feedback],
+        }
+    )
+
+    assert prepared["manifest"]["plannerSampleCount"] == 1
+    assert prepared["feedback"] == []
+
+
 def test_prepare_does_not_supervise_an_uncorrected_bad_decision() -> None:
     decision = _intent("bad-decision")
     execution = _execution("bad-decision")

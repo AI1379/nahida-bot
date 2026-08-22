@@ -107,6 +107,10 @@ export interface MotionPreferenceRecord extends MotionDatasetRecordBase {
   notes?: string;
   correction?: MotionPreferenceCorrection;
   playbackSurface?: MotionPlaybackSurface;
+  /** Surface where the user actually observed and rated the candidate. */
+  ratedSurface?: MotionPlaybackSurface;
+  /** Original motion plan replayed before this rating, when applicable. */
+  replayOf?: string;
 }
 
 export interface MotionPreferenceRetractionRecord

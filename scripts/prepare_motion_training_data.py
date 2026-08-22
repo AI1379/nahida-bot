@@ -253,6 +253,8 @@ def _active_preferences(records: Iterable[dict]) -> list[dict]:
         for record in records
         if record.get("type") == "motion_preference"
         and str(record.get("preferenceId")) not in retracted_ids
+        and record.get("ratedSurface", record.get("playbackSurface"))
+        not in EXCLUDED_PLAYBACK_SURFACES
     ]
 
 

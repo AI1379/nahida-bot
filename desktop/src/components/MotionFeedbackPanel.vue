@@ -25,6 +25,8 @@ const props = withDefaults(defineProps<{
   collapsible?: boolean;
   initiallyCollapsed?: boolean;
   replayable?: boolean;
+  ratingSurface?: MotionPlaybackSummary["surface"];
+  replayOf?: string;
 }>(), {
   compact: false,
   collapsible: false,
@@ -132,6 +134,8 @@ async function saveFeedback(
       labels: [label],
       correction,
       playbackSurface: playback.surface,
+      ratedSurface: props.ratingSurface ?? playback.surface,
+      replayOf: props.replayOf,
     };
     await preferenceStore.record(record);
     currentPreference.value = record;

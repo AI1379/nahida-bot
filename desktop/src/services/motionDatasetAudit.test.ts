@@ -164,4 +164,28 @@ describe("auditMotionDataset", () => {
     expect(report.counts.preferences).toBe(0);
     expect(report.distinctIntentCount).toBe(1);
   });
+
+  it("excludes feedback rated from a Workbench replay of a pet motion", () => {
+    const report = auditMotionDataset({
+      decisions: [decision("pet-decision", "explain", "pet")],
+      executions: [execution("pet-decision", "pet")],
+      preferences: [
+        {
+          schemaVersion: 1,
+          type: "motion_preference",
+          timestamp,
+          preferenceId: "replayed-preference",
+          assistantText: "这条动作在工作台重放。",
+          candidateA: "pet-decision-plan",
+          labels: ["good"],
+          playbackSurface: "pet",
+          ratedSurface: "workbench",
+          replayOf: "pet-decision-plan",
+        },
+      ],
+    });
+
+    expect(report.counts.executions).toBe(1);
+    expect(report.counts.preferences).toBe(0);
+  });
 });

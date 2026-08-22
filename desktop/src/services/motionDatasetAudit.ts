@@ -179,7 +179,8 @@ export function auditMotionDataset(
     trainingExecutions.map((record) => record.motionPlanId),
   );
   const activePreferences = activeMotionPreferences(valid.preferences).filter(
-    (record) => isTrainingSurface(record.playbackSurface),
+    (record) =>
+      isTrainingSurface(record.ratedSurface ?? record.playbackSurface),
   );
   const linkedPreferences = activePreferences.filter((record, index) => {
     const linked = motionPlanIds.has(record.candidateA) &&

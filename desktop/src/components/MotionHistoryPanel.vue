@@ -12,6 +12,7 @@ const props = defineProps<{
   recent: MotionPlaybackSummary[];
   feedbackEnabled: boolean;
   replayStatus?: string;
+  replayedPlanId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -144,6 +145,12 @@ onMounted(() => void refresh());
       <MotionFeedbackPanel
         :playback="selected"
         :enabled="props.feedbackEnabled"
+        rating-surface="workbench"
+        :replay-of="
+          props.replayedPlanId === selected?.motionPlanId
+            ? props.replayedPlanId
+            : undefined
+        "
       />
     </div>
   </section>
