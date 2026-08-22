@@ -1,5 +1,7 @@
 import type { RenderMode } from "@/domain/runtime";
 
+export type Live2DRendererProfile = "pet" | "preview";
+
 export const live2dRuntimeDefaults = {
   fpsByMode: {
     suspended: 0,
@@ -29,6 +31,38 @@ export const live2dRuntimeDefaults = {
     mouthFormScale: 0.25,
   },
 } as const;
+
+export const live2dRendererProfiles = {
+  pet: {
+    maxDevicePixelRatio: live2dRuntimeDefaults.canvas.maxDevicePixelRatio,
+    fpsByMode: live2dRuntimeDefaults.fpsByMode,
+  },
+  preview: {
+    maxDevicePixelRatio: 1,
+    fpsByMode: {
+      suspended: 0,
+      idle: 10,
+      speaking: 24,
+      active: 30,
+    },
+  },
+} as const satisfies Record<
+  Live2DRendererProfile,
+  {
+    maxDevicePixelRatio: number;
+    fpsByMode: Record<RenderMode, number>;
+  }
+>;
+
+export function resolveLive2DTargetFps(
+  profile: Live2DRendererProfile,
+  mode: RenderMode,
+  motionBoosted: boolean,
+): number {
+  if (mode === "suspended") return 0;
+  const fpsByMode = live2dRendererProfiles[profile].fpsByMode;
+  return motionBoosted ? fpsByMode.active : fpsByMode[mode];
+}
 
 export const presentationTimingDefaults = {
   minimumSegmentDurationMs: 1400,

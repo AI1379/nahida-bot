@@ -9,6 +9,7 @@ import type {
 } from "@/domain/motionTelemetry";
 import type { NormalizedMotionClip } from "@/domain/normalizedPose";
 import type { RenderMode } from "@/domain/runtime";
+import type { Live2DRendererProfile } from "@/config/desktopRuntimeDefaults";
 import type {
   Live2DExpressionOption,
   Live2DModelManifest,
@@ -27,6 +28,7 @@ const props = withDefaults(defineProps<{
   expressionKey: string;
   motion: DisplayMotion;
   renderMode: RenderMode;
+  rendererProfile?: Live2DRendererProfile;
   model: Live2DModelManifest;
   speaking: boolean;
   lipSyncEnergy?: number | null;
@@ -45,6 +47,7 @@ const props = withDefaults(defineProps<{
   motionDataCollectionEnabled: true,
   motionTelemetryEnabled: true,
   playbackSurface: "runtime",
+  rendererProfile: "pet",
 });
 
 const emit = defineEmits<{
@@ -106,7 +109,9 @@ async function performLive2DLoad(generation: number): Promise<void> {
   if (!host || generation !== loadGeneration) return;
   const { WebLive2DRenderer } = await import("@/renderers/live2dRenderer");
   if (generation !== loadGeneration) return;
-  const live2dRenderer = new WebLive2DRenderer(host);
+  const live2dRenderer = new WebLive2DRenderer(host, {
+    profile: props.rendererProfile,
+  });
   const presentationController = new Live2DPresentationController(
     live2dRenderer,
     {

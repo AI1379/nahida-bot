@@ -23,6 +23,11 @@ const proximityWatcher = new PetProximityWatcher();
 const interactive = computed(
   () => store.petRuntime.interactionMode === "interactive",
 );
+const petRenderMode = computed(() =>
+  store.petRuntime.status === "hidden"
+    ? "suspended"
+    : store.petRuntime.renderMode,
+);
 const latestPlayback = computed(
   () => store.recentMotionPlaybacks[0] ?? null,
 );
@@ -142,7 +147,8 @@ onBeforeUnmount(() => {
       :emotion="store.currentEmotion"
       :expression-key="store.currentExpressionKey"
       :motion="store.currentMotion"
-      :render-mode="store.petRuntime.renderMode"
+      :render-mode="petRenderMode"
+      renderer-profile="pet"
       :model="store.model"
       :speaking="store.speaking"
       :lip-sync-energy="lipSyncEnergy"

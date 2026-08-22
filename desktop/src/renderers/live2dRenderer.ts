@@ -1,7 +1,12 @@
 import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d-display/cubism4";
 
-import { live2dRuntimeDefaults } from "@/config/desktopRuntimeDefaults";
+import {
+  live2dRendererProfiles,
+  live2dRuntimeDefaults,
+  resolveLive2DTargetFps,
+  type Live2DRendererProfile,
+} from "@/config/desktopRuntimeDefaults";
 import type { RenderMode } from "@/domain/runtime";
 import type { Live2DModelManifest } from "@/domain/live2d";
 import {
@@ -56,6 +61,10 @@ export interface Live2DRenderer {
   dispose(): void;
 }
 
+export interface Live2DRendererOptions {
+  profile?: Live2DRendererProfile;
+}
+
 type Live2DModelInstance = Awaited<ReturnType<typeof Live2DModel.from>>;
 
 export type {
@@ -79,6 +88,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
   private externalLipSyncValue = 0;
   private activeMotionClipId: string | null = null;
   private readonly host: HTMLElement;
+  private readonly profile: Live2DRendererProfile;
   private readonly parameterOverrides = new Map<number, DebugOverride>();
   private readonly partOpacityOverrides = new Map<number, DebugOverride>();
   private readonly runtimeParameterOverrides = new Map<
@@ -86,8 +96,9 @@ export class WebLive2DRenderer implements Live2DRenderer {
     RuntimeParameterOverride
   >();
 
-  constructor(host: HTMLElement) {
+  constructor(host: HTMLElement, options: Live2DRendererOptions = {}) {
     this.host = host;
+    this.profile = options.profile ?? "pet";
     window.PIXI = PIXI;
     Live2DModel.registerTicker(PIXI.Ticker);
   }
@@ -106,7 +117,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
       powerPreference: live2dRuntimeDefaults.canvas.powerPreference,
       resolution: Math.min(
         window.devicePixelRatio || 1,
-        live2dRuntimeDefaults.canvas.maxDevicePixelRatio,
+        live2dRendererProfiles[this.profile].maxDevicePixelRatio,
       ),
       resizeTo: this.host,
     });
@@ -201,10 +212,11 @@ export class WebLive2DRenderer implements Live2DRenderer {
 
   private applyTickerFps(): void {
     if (!this.app) return;
-    const fps =
-      this.motionBoostUntil > performance.now()
-        ? live2dRuntimeDefaults.fpsByMode.active
-        : live2dRuntimeDefaults.fpsByMode[this.renderMode];
+    const fps = resolveLive2DTargetFps(
+      this.profile,
+      this.renderMode,
+      this.motionBoostUntil > performance.now(),
+    );
     if (fps <= 0) {
       this.app.ticker.stop();
       return;

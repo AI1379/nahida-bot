@@ -24,11 +24,17 @@ const props = withDefaults(defineProps<{
   compact?: boolean;
   collapsible?: boolean;
   initiallyCollapsed?: boolean;
+  replayable?: boolean;
 }>(), {
   compact: false,
   collapsible: false,
   initiallyCollapsed: false,
+  replayable: false,
 });
+
+const emit = defineEmits<{
+  replay: [playback: MotionPlaybackSummary];
+}>();
 
 const feedbackOptions: Array<{
   value: MotionPreferenceLabel;
@@ -189,6 +195,13 @@ watch(
         <span v-else>Use the pet normally; the latest reply will appear here.</span>
       </div>
       <div class="motion-feedback__header-actions">
+        <button
+          v-if="props.replayable && props.playback && !collapsed"
+          type="button"
+          @click="emit('replay', props.playback)"
+        >
+          Replay
+        </button>
         <button
           v-if="currentPreference && !collapsed"
           type="button"

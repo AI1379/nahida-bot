@@ -53,6 +53,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       :expression-key="store.currentExpressionKey"
       :motion="store.currentMotion"
       :render-mode="previewRenderMode"
+      renderer-profile="preview"
       :model="store.model"
       :speaking="store.speaking"
       :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
