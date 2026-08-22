@@ -704,6 +704,8 @@ telegram:
 
 会话地址映射：私信 → `discord:private:<dm_channel_id>`，服务器文字频道 → `discord:channel:<channel_id>`，Thread/论坛帖 → `discord:thread:<thread_id>`（每个 Thread 独立会话）。
 
+已注册的 `/` 命令会自动同步为 Discord 原生 slash command（服务器级、即时生效；插件启停后自动重推）。带 `choices`/`completer` 参数元数据的命令（如 `/model`）在 Discord 里获得原生参数自动补全；slash 调用与文本 `/` 调用走同一套 handler。
+
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
 | `bot_token` | `str` | `""` | Discord Bot token（必填），可回退到 `DISCORD_BOT_TOKEN` 环境变量 |
@@ -714,6 +716,7 @@ telegram:
 | `allowed_guilds` | `list[str]` | `[]` | 服务器（guild）ID 白名单，空 = 不限制；私信不受此限制 |
 | `allowed_dm_users` | `list[str]` | `[]` | 私信用户 ID 白名单，空 = 不限制 |
 | `blocked_channels` | `list[str]` | `[]` | 在允许的服务器内排除特定频道/Thread |
+| `register_slash_commands` | `bool` | `true` | 将已注册命令同步为 Discord 原生 slash command |
 | `message_max_length` | `int` | `2000` | 出站消息拆分长度上限（Discord 硬限制 2000） |
 | `send_retry_attempts` | `int` | `3` | 发送限流时的重试次数 |
 | `media_download_dir` | `str` | `"./data/temp/media"` | 媒体文件下载目录 |

@@ -392,6 +392,8 @@ telegram:
 #   allowed_guilds: []                 # 服务器 ID 白名单；空列表表示不限制（DM 不受此限制）
 #   allowed_dm_users: []               # 私信用户 ID 白名单；空列表表示不限制
 #   blocked_channels: []               # 在允许的服务器内排除特定频道/Thread
+#   register_slash_commands: true       # 将已注册的 / 命令同步为 Discord 原生 slash command
+#                                       # （服务器级、即时生效；带 choices/completer 的参数获得原生补全）
 #   media_download_dir: "./data/temp/media"
 
 # ── Agent Loop ──────────────────────────────────────────

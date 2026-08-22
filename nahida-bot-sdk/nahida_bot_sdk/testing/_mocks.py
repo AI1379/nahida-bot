@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import tempfile
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Awaitable, Callable, Coroutine
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ import structlog
 
 from nahida_bot_sdk.api import ManagedTempFile
 from nahida_bot_sdk.chat_address import ChatAddress
+from nahida_bot_sdk.commands import CommandArgument
 from nahida_bot_sdk.messaging import AttentionFrame, InboundMessage, OutboundMessage
 from nahida_bot_sdk.plugin import bind_decorated_registrations
 
@@ -166,6 +168,7 @@ class MockBotAPI:
         *,
         description: str = "",
         aliases: list[str] | None = None,
+        arguments: Sequence[CommandArgument] | None = None,
     ) -> None:
         pass
 
@@ -401,6 +404,7 @@ class RecordingMockBotAPI(MockBotAPI):
         *,
         description: str = "",
         aliases: list[str] | None = None,
+        arguments: Sequence[CommandArgument] | None = None,
     ) -> None:
         names = [name, *(aliases or [])]
         seen: set[str] = set()
@@ -730,6 +734,7 @@ class ConsoleMockBotAPI:
         *,
         description: str = "",
         aliases: list[str] | None = None,
+        arguments: Sequence[CommandArgument] | None = None,
     ) -> None:
         names = [name, *(aliases or [])]
         seen: set[str] = set()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections.abc import Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -24,7 +25,13 @@ from nahida_bot_sdk.messaging import (
 )
 
 if TYPE_CHECKING:
-    from nahida_bot_sdk.commands import CommandHandlerResult, CommandInfo
+    from nahida_bot_sdk.commands import (
+        CommandArgument,
+        CommandHandlerResult,
+        CommandInfo,
+        CompletionChoice,
+        CompletionQuery,
+    )
     from nahida_bot_sdk.plugin import MemoryRef, SessionInfo
 
 
@@ -409,6 +416,7 @@ class BotAPI(Protocol):
         *,
         description: str = "",
         aliases: list[str] | None = None,
+        arguments: Sequence[CommandArgument] | None = None,
     ) -> None:
         """Register a /command that is matched from incoming messages."""
         ...
@@ -441,6 +449,12 @@ class BotAPI(Protocol):
 
     def list_commands(self) -> list[CommandInfo]:
         """List registered commands."""
+        ...
+
+    async def complete_command_argument(
+        self, query: CompletionQuery
+    ) -> list[CompletionChoice]:
+        """Run autocomplete for one command argument."""
         ...
 
     def list_models(self) -> list[dict[str, str]]:

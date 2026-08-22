@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from nahida_bot_sdk.api import BotAPI
+from nahida_bot_sdk.commands import CommandArgument
 from nahida_bot_sdk.manifest import PluginManifest
 
 # ── Registration decorators ─────────────────────────────────
@@ -17,6 +19,7 @@ def register_command(
     *,
     description: str = "",
     aliases: list[str] | None = None,
+    arguments: Sequence[CommandArgument] | None = None,
 ) -> Callable:
     """Decorator to mark a method as a slash-command handler.
 
@@ -40,6 +43,7 @@ def register_command(
             "name": name,
             "description": description,
             "aliases": aliases or [],
+            "arguments": tuple(arguments or ()),
         }
         return func
 
@@ -128,6 +132,7 @@ class _CommandDeclaration:
     method_name: str
     description: str
     aliases: tuple[str, ...]
+    arguments: tuple[CommandArgument, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -151,6 +156,7 @@ class _BoundCommandRegistration:
     handler: Callable[..., Awaitable[Any]]
     description: str
     aliases: tuple[str, ...]
+    arguments: tuple[CommandArgument, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)
@@ -185,6 +191,7 @@ def bind_decorated_registrations(plugin: Any, api: BotAPI | None = None) -> None
             command.handler,
             description=command.description,
             aliases=list(command.aliases),
+            arguments=list(command.arguments),
         )
     for tool in plugin._iter_decorated_tools():
         target_api.register_tool(
@@ -274,6 +281,7 @@ class Plugin(ABC):
                         method_name=attr_name,
                         description=str(cmd_meta.get("description", "")),
                         aliases=aliases,
+                        arguments=tuple(cmd_meta.get("arguments", ())),
                     )
                     command_names_by_method[attr_name] = command_names
                     for command_name in command_names:
@@ -338,6 +346,7 @@ class Plugin(ABC):
                     handler=handler,
                     description=declaration.description,
                     aliases=declaration.aliases,
+                    arguments=declaration.arguments,
                 )
             )
         return tuple(registrations)

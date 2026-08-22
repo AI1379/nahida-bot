@@ -73,6 +73,13 @@ class DiscordPluginConfig(BaseModel):
         le=2000,
         description="Discord message character limit used for outbound splitting.",
     )
+    register_slash_commands: bool = Field(
+        default=True,
+        description=(
+            "Register native Discord slash commands for registered bot commands "
+            "(guild-scoped, synced on gateway ready and on plugin changes)."
+        ),
+    )
     send_retry_attempts: int = Field(default=3, ge=1)
     media_download_dir: str = Field(default="./data/temp/media")
 

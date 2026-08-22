@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Union
 
 from nahida_bot_sdk.messaging import OutboundMessage
 
@@ -33,6 +35,59 @@ class CommandResult:
 CommandHandlerResult = str | OutboundMessage | CommandResult | None
 
 
+# ── Argument completion (channel-agnostic) ────────────────────
+#
+# Completers MUST be fast local lookups (registry/config queries).
+# Discord answers autocomplete interactions with no defer and a 3s
+# deadline; slow completers degrade to empty suggestions.
+
+
+@dataclass(slots=True, frozen=True)
+class CompletionQuery:
+    """One autocomplete request for a command argument."""
+
+    command: str
+    argument: str
+    partial: str = ""  # text the user already typed into the field
+    filled: Mapping[str, str] = field(default_factory=dict)  # other args already set
+    session_id: str = ""
+    user_id: str = ""
+    is_admin: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class CompletionChoice:
+    """One candidate value for an autocomplete response."""
+
+    value: str  # text filled into the field when chosen
+    display: str = ""  # UI label; defaults to value
+    description: str = ""  # one-line hint shown next to the label
+
+
+CompletionChoiceLike = Union[CompletionChoice, str]
+CompleterFn = Callable[[CompletionQuery], Awaitable[Sequence[CompletionChoiceLike]]]
+
+
+@dataclass(slots=True, frozen=True)
+class CommandArgument:
+    """Declarative metadata for one command argument.
+
+    Powers native command UIs (Discord slash options) and autocomplete.
+    Text invocation (``/model name``) is unaffected: handlers keep
+    parsing the freeform args string.
+    """
+
+    name: str
+    description: str = ""
+    type: str = "string"  # string / int / float / bool / user / channel
+    required: bool = False
+    # Static or lazy enum; filtered by ``partial`` prefix automatically.
+    choices: Union[tuple[str, ...], Callable[[], Sequence[str]], None] = None
+    # Dynamic completion; takes precedence over ``choices``. Receives the
+    # raw query (responsible for its own filtering).
+    completer: CompleterFn | None = None
+
+
 @dataclass(slots=True, frozen=True)
 class CommandInfo:
     """Public metadata about a registered command."""
@@ -41,6 +96,7 @@ class CommandInfo:
     description: str
     aliases: tuple[str, ...]
     plugin_id: str
+    arguments: tuple[CommandArgument, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

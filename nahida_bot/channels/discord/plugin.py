@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,9 +30,16 @@ from nahida_bot.channels.discord.message_converter import (
     DiscordMessageConverter,
 )
 from nahida_bot.core.chat_address import ChatAddress, normalize_target_type
-from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
+from nahida_bot.core.events import (
+    MessageObserved,
+    MessagePayload,
+    MessageReceived,
+    PluginDisabled,
+    PluginEnabled,
+)
 from nahida_bot.core.group_policy import GroupInteractionPolicy
 from nahida_bot.core.router import MessageRouter
+from nahida_bot_sdk.commands import CommandInfo, CompletionQuery
 
 from nahida_bot.plugins.base import (
     Attachment,
@@ -117,6 +126,8 @@ class DiscordPlugin(Plugin):
         assert self._transport is not None, "Transport not ready — on_load failed?"
         self._gateway_task = asyncio.create_task(self._gateway_loop())
         self._register_download_tool()
+        self.api.subscribe(PluginEnabled, self._on_plugin_state_changed)
+        self.api.subscribe(PluginDisabled, self._on_plugin_state_changed)
         logger.info("discord.gateway_started")
 
     async def on_disable(self) -> None:
@@ -152,12 +163,20 @@ class DiscordPlugin(Plugin):
     # ── Inbound ───────────────────────────────────────────
 
     async def handle_inbound_event(self, event: dict[str, Any]) -> None:
-        """Convert a Discord message event dict to InboundMessage and publish.
+        """Dispatch a transport event dict.
 
-        Guild allow-lists and the group interaction policy are applied here,
-        before any event is published.
+        ``message`` events are normalized and published; ``interaction``
+        events drive native slash commands; ``ready`` triggers the
+        application-command sync.
         """
-        if event.get("kind") != "message":
+        kind = event.get("kind")
+        if kind == "interaction":
+            await self._handle_interaction_event(event.get("interaction") or {})
+            return
+        if kind == "ready":
+            await self._sync_application_commands()
+            return
+        if kind != "message":
             logger.debug("discord.event_ignored", reason="unknown_kind")
             return
         message = event.get("message")
@@ -237,6 +256,153 @@ class DiscordPlugin(Plugin):
         ):
             return "channel_blocked"
         return ""
+
+    # ── Interactions (native slash commands) ─────────────
+
+    async def _handle_interaction_event(self, interaction: dict[str, Any]) -> None:
+        interaction_type = interaction.get("type")
+        if interaction_type == 4:
+            await self._handle_autocomplete(interaction)
+        elif interaction_type == 2:
+            await self._handle_command_invocation(interaction)
+        else:
+            logger.debug(
+                "discord.interaction_ignored",
+                reason="unsupported_type",
+                interaction_type=interaction_type,
+            )
+
+    async def _handle_autocomplete(self, interaction: dict[str, Any]) -> None:
+        """Answer an autocomplete interaction within Discord's 3s deadline."""
+        if self._transport is None:
+            return
+        focused = next(
+            (o for o in interaction.get("options", []) if o.get("focused")), None
+        )
+        if focused is None:
+            return
+        filled = {
+            o["name"]: o["value"]
+            for o in interaction.get("options", [])
+            if not o.get("focused")
+        }
+        query = CompletionQuery(
+            command=str(interaction.get("command_name", "")),
+            argument=str(focused.get("name", "")),
+            partial=str(focused.get("value", "")),
+            filled=filled,
+            user_id=str((interaction.get("user") or {}).get("id", "")),
+        )
+        choices = []
+        try:
+            choices = await asyncio.wait_for(
+                self.api.complete_command_argument(query), timeout=2.5
+            )
+        except TimeoutError:  # no suggestion beats a timed-out interaction
+            pass
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "discord.autocomplete_failed",
+                command=query.command,
+                argument=query.argument,
+            )
+        payload = [
+            {
+                "name": (choice.display or choice.value)[:100] or "...",
+                "value": choice.value[:100],
+            }
+            for choice in choices[:25]
+        ]
+        try:
+            await self._transport.respond_autocomplete(interaction["_object"], payload)
+        except Exception:  # noqa: BLE001 - deadline may already have passed
+            logger.warning("discord.autocomplete_response_failed")
+
+    async def _handle_command_invocation(self, interaction: dict[str, Any]) -> None:
+        """Translate a slash-command invocation into a normal inbound message.
+
+        Options are re-joined in Discord's order so the freeform args string
+        matches text invocation (``/model deepseek-main``), and a synthetic
+        bot mention makes the explicit invocation pass group trigger policy.
+        """
+        if self._transport is None:
+            return
+        command_name = str(interaction.get("command_name", ""))
+        if not command_name:
+            return
+        values = [str(o.get("value", "")) for o in interaction.get("options", [])]
+        content = "/" + command_name + (f" {' '.join(values)}" if values else "")
+
+        guild_id = str(interaction.get("guild_id", "") or "")
+        channel_id = str(interaction.get("channel_id", "") or "")
+        user = interaction.get("user") or {}
+        mentions = []
+        if self._converter.bot_user_id:
+            mentions = [
+                {
+                    "id": self._converter.bot_user_id,
+                    "name": self._converter.bot_username or self._converter.bot_user_id,
+                }
+            ]
+        message = {
+            "id": f"interaction-{interaction.get('id', '')}",
+            "type": "default",
+            "content": content,
+            "timestamp": time.time(),
+            "author": {
+                "id": str(user.get("id", "0")),
+                "name": str(user.get("name", "") or ""),
+                "display_name": str(user.get("display_name", "") or ""),
+                "bot": bool(user.get("bot", False)),
+            },
+            "guild_id": guild_id,
+            "channel": {
+                "id": channel_id,
+                "type": "text" if guild_id else "dm",
+                "name": "",
+                "guild_id": guild_id,
+                "parent_id": "",
+            },
+            "mentions": mentions,
+            "mention_everyone": False,
+            "attachments": [],
+            "embed_count": 0,
+            "reference_message_id": "",
+        }
+        try:
+            await self._transport.defer_interaction(interaction["_object"])
+        except Exception:  # noqa: BLE001 - already acked or expired
+            logger.debug("discord.interaction_defer_failed")
+        await self.handle_inbound_event({"kind": "message", "message": message})
+
+    # ── Application command sync ─────────────────────────
+
+    async def _sync_application_commands(self) -> None:
+        """Push registered bot commands as guild slash commands.
+
+        Guild-scoped registration takes effect instantly; the sync runs on
+        gateway ready and whenever plugins (un)register commands.
+        """
+        if not self.config.register_slash_commands or self._transport is None:
+            return
+        try:
+            infos = self.api.list_commands()
+            payload = build_slash_payloads(infos)
+            guilds = self.config.allowed_guilds or self._transport.guild_ids()
+            for guild_id in guilds:
+                await self._transport.sync_guild_commands(guild_id, payload)
+            logger.info(
+                "discord.commands_synced",
+                commands=len(payload),
+                guilds=len(guilds),
+            )
+        except Exception:  # noqa: BLE001 - sync must not take the channel down
+            logger.exception("discord.commands_sync_failed")
+
+    async def _on_plugin_state_changed(self, event: Any) -> None:
+        """Resync slash commands when another plugin's commands change."""
+        if self._gateway_task is not None:
+            asyncio.create_task(self._sync_application_commands())
 
     # ── Outbound ──────────────────────────────────────────
 
@@ -582,6 +748,63 @@ def _retry_after_seconds(exc: Exception) -> float | None:
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return None
+
+
+# Discord command/option names: lowercase ascii letters, digits, - and _.
+_DISCORD_NAME_RE = re.compile(r"^[-_a-z0-9]{1,32}$")
+
+# nahida-bot argument types → Discord application-command option types.
+_OPTION_TYPE_MAP = {
+    "string": 3,
+    "int": 4,
+    "bool": 5,
+    "user": 6,
+    "channel": 7,
+    "float": 10,
+}
+
+
+def build_slash_payloads(infos: list[CommandInfo]) -> list[dict[str, Any]]:
+    """Build Discord application-command payloads from command metadata.
+
+    Commands or options whose names do not satisfy Discord's naming rules
+    are skipped (with a log) — text invocation keeps working for them.
+    """
+    payloads: list[dict[str, Any]] = []
+    for info in infos:
+        if not _DISCORD_NAME_RE.match(info.name):
+            logger.warning("discord.command_name_skipped", command=info.name)
+            continue
+        options: list[dict[str, Any]] = []
+        for argument in info.arguments:
+            if not _DISCORD_NAME_RE.match(argument.name):
+                logger.warning(
+                    "discord.option_name_skipped",
+                    command=info.name,
+                    option=argument.name,
+                )
+                continue
+            option: dict[str, Any] = {
+                "name": argument.name,
+                "description": (argument.description or "...")[:100],
+                "type": _OPTION_TYPE_MAP.get(argument.type, 3),
+                "required": argument.required,
+            }
+            if argument.completer is not None or argument.choices is not None:
+                # Static choices register as native autocomplete too, so the
+                # enum is offered by Discord's UI without a round trip.
+                option["autocomplete"] = True
+            options.append(option)
+        payload: dict[str, Any] = {
+            "name": info.name,
+            "description": (info.description or "...")[:100],
+            "type": 1,  # CHAT_INPUT (slash) command
+            "dm_permission": True,
+        }
+        if options:
+            payload["options"] = options
+        payloads.append(payload)
+    return payloads
 
 
 def _basename(value: str) -> str:

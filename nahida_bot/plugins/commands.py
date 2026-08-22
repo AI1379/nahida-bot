@@ -12,12 +12,20 @@ import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+import structlog
+
 from nahida_bot_sdk.commands import (  # noqa: F401
+    CommandArgument,
     CommandHandlerResult,
     CommandInfo,
     CommandMatch,
     CommandResult,
+    CompletionChoice,
+    CompletionChoiceLike,
+    CompletionQuery,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -29,6 +37,7 @@ class CommandEntry:
     description: str
     aliases: tuple[str, ...]
     plugin_id: str
+    arguments: tuple[CommandArgument, ...] = ()
 
     def to_info(self) -> CommandInfo:
         """Return public metadata for this command."""
@@ -37,6 +46,7 @@ class CommandEntry:
             description=self.description,
             aliases=self.aliases,
             plugin_id=self.plugin_id,
+            arguments=self.arguments,
         )
 
 
@@ -140,3 +150,45 @@ class CommandMatcher:
             return CommandMatch(matched=False)
 
         return CommandMatch(matched=True, name=command_name, args=args)
+
+
+# ── Argument completion ───────────────────────────────────────
+
+
+async def run_argument_completion(
+    argument: CommandArgument, query: CompletionQuery
+) -> list[CompletionChoice]:
+    """Run completion for one argument according to its declaration.
+
+    ``choices`` (static or lazy) are prefix-filtered by ``partial``;
+    a ``completer`` receives the raw query and does its own filtering.
+    Exceptions never propagate — a failing completer yields no suggestions.
+    """
+    try:
+        if argument.completer is not None:
+            raw = await argument.completer(query)
+            return [_coerce_choice(item) for item in raw]
+        if argument.choices is not None:
+            values = (
+                argument.choices() if callable(argument.choices) else argument.choices
+            )
+            partial = query.partial.strip().lower()
+            candidates = [
+                value
+                for value in (str(v) for v in values)
+                if not partial or value.lower().startswith(partial)
+            ]
+            return [CompletionChoice(value=value) for value in sorted(candidates)]
+    except Exception:  # noqa: BLE001 - completion must never raise
+        logger.exception(
+            "command.completion_failed",
+            command=query.command,
+            argument=query.argument,
+        )
+    return []
+
+
+def _coerce_choice(item: CompletionChoiceLike) -> CompletionChoice:
+    if isinstance(item, CompletionChoice):
+        return item
+    return CompletionChoice(value=str(item))

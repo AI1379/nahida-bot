@@ -16,3 +16,4 @@ permissions:
 config:
   group_trigger_mode: "mention"
   group_context_capture: false
+  register_slash_commands: true

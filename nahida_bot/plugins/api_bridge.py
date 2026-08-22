@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
 
 import structlog
@@ -28,7 +29,13 @@ from nahida_bot.core.runtime_settings import (
     merge_runtime_meta,
     runtime_meta_from_session_meta,
 )
-from nahida_bot.plugins.commands import CommandEntry, CommandHandlerResult, CommandInfo
+from nahida_bot.plugins.commands import (
+    CommandEntry,
+    CommandHandlerResult,
+    CommandInfo,
+    run_argument_completion,
+)
+from nahida_bot_sdk.commands import CommandArgument, CompletionChoice, CompletionQuery
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, PromptSupplementEntry, ToolEntry
 from nahida_bot_sdk.plugin import bind_decorated_registrations
@@ -784,6 +791,7 @@ class RealBotAPI:
         *,
         description: str = "",
         aliases: list[str] | None = None,
+        arguments: Sequence[CommandArgument] | None = None,
     ) -> None:
         alias_tuple = tuple(aliases or [])
         command_names = (name, *alias_tuple)
@@ -808,6 +816,7 @@ class RealBotAPI:
             description=description,
             aliases=alias_tuple,
             plugin_id=self._plugin_id,
+            arguments=tuple(arguments or ()),
         )
         for command_name in command_names:
             self._registered_command_names[command_name] = name
@@ -1288,6 +1297,23 @@ class RealBotAPI:
     def list_commands(self) -> list[CommandInfo]:
         """List registered commands without exposing registry internals."""
         return [entry.to_info() for entry in self._command_registry.all_commands()]
+
+    async def complete_command_argument(
+        self, query: CompletionQuery
+    ) -> list[CompletionChoice]:
+        """Run autocomplete for one command argument.
+
+        Returns an empty list for unknown commands or arguments; completion
+        failures never raise (channels answer native autocomplete UIs with
+        tight deadlines).
+        """
+        entry = self._command_registry.get(query.command)
+        if entry is None:
+            return []
+        for argument in entry.arguments:
+            if argument.name == query.argument:
+                return await run_argument_completion(argument, query)
+        return []
 
     def list_models(self) -> list[dict[str, str]]:
         """List all available provider+model combinations."""

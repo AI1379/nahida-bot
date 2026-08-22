@@ -92,6 +92,7 @@ class MockBotAPI:
         *,
         description: str = "",
         aliases: list[str] | None = None,
+        arguments: list[Any] | None = None,
     ) -> None:
         pass
 
@@ -128,6 +129,9 @@ class MockBotAPI:
         return {"active": False, "state": "idle", "pending_messages": 0}
 
     def list_commands(self) -> list[Any]:
+        return []
+
+    async def complete_command_argument(self, query: Any) -> list[Any]:
         return []
 
     def list_models(self) -> list[dict[str, str]]:
@@ -196,7 +200,32 @@ class RecordingMockBotAPI(MockBotAPI):
         self.registered_channels: list[Any] = []
         self.registered_webhooks: dict[str, dict[str, Any]] = {}
         self.registered_prompt_supplements: dict[str, dict[str, Any]] = {}
+        self.registered_commands: dict[str, dict[str, Any]] = {}
+        self.command_infos: list[Any] = []
+        self.completion_results: list[Any] = []
         self._plugin_data: dict[str, Any] = {}
+
+    def list_commands(self) -> list[Any]:
+        return list(self.command_infos)
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable[..., Awaitable[Any]],
+        *,
+        description: str = "",
+        aliases: list[str] | None = None,
+        arguments: list[Any] | None = None,
+    ) -> None:
+        self.registered_commands[name] = {
+            "handler": handler,
+            "description": description,
+            "aliases": aliases or [],
+            "arguments": list(arguments or []),
+        }
+
+    async def complete_command_argument(self, query: Any) -> list[Any]:
+        return list(self.completion_results)
 
     def register_tool(
         self,

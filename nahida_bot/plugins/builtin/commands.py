@@ -8,6 +8,8 @@ from typing import Any
 
 import structlog
 
+from nahida_bot_sdk.commands import CommandArgument, CompletionChoice, CompletionQuery
+
 from nahida_bot.plugins.base import (
     BotAPI,
     InboundMessage,
@@ -102,7 +104,16 @@ class BuiltinCommandsPlugin(Plugin):
             description="Show provider-reported balances and subscription quotas",
         )
         self.api.register_command(
-            "model", self._cmd_model, description="List or switch model (/model [name])"
+            "model",
+            self._cmd_model,
+            description="List or switch model (/model [name])",
+            arguments=[
+                CommandArgument(
+                    name="name",
+                    description="Model to switch to (omit to list available models)",
+                    completer=self._complete_model_names,
+                )
+            ],
         )
         self.api.register_command(
             "reasoning",
@@ -112,6 +123,17 @@ class BuiltinCommandsPlugin(Plugin):
                 "(/reasoning on|off|effort <level>|reset)"
             ),
             aliases=["think"],
+            arguments=[
+                CommandArgument(
+                    name="action",
+                    description="on / off / effort / reset",
+                    choices=("on", "off", "effort", "reset"),
+                ),
+                CommandArgument(
+                    name="level",
+                    description="Effort level for 'effort' (e.g. low / medium / high)",
+                ),
+            ],
         )
         self.api.register_command(
             "help", self._cmd_help, description="List available commands"
@@ -131,6 +153,11 @@ class BuiltinCommandsPlugin(Plugin):
             "agent_stop",
             self._cmd_agent_stop,
             description="Stop a running subagent task (/agent_stop <task_id>)",
+            arguments=[
+                CommandArgument(
+                    name="task_id", description="Task id to stop", required=True
+                )
+            ],
         )
         self.api.register_command(
             "agent_wait",
@@ -141,6 +168,14 @@ class BuiltinCommandsPlugin(Plugin):
             "cron",
             self._cmd_cron,
             description="Manage scheduled tasks (/cron list|cancel|delete <id>)",
+            arguments=[
+                CommandArgument(
+                    name="action",
+                    description="list / cancel / delete",
+                    choices=("list", "cancel", "delete"),
+                ),
+                CommandArgument(name="id", description="Task id for cancel/delete"),
+            ],
         )
         self.api.register_command(
             "stop",
@@ -152,6 +187,14 @@ class BuiltinCommandsPlugin(Plugin):
             "identity",
             self._cmd_identity,
             description="Show your resolved identity (/identity whoami)",
+            arguments=[
+                CommandArgument(
+                    name="action", description="whoami", choices=("whoami",)
+                ),
+                CommandArgument(
+                    name="args", description="Action arguments (create/link/remove)"
+                ),
+            ],
         )
 
     def _register_workspace_tools(self) -> None:
@@ -924,6 +967,26 @@ class BuiltinCommandsPlugin(Plugin):
         if state == "done":
             return "done (awaiting cleanup)"
         return f"unknown ({state})"
+
+    async def _complete_model_names(
+        self, query: CompletionQuery
+    ) -> list[CompletionChoice]:
+        """Suggest available models from the provider registry (fast, local)."""
+        partial = query.partial.strip().lower()
+        choices: list[CompletionChoice] = []
+        for entry in self.api.list_models():
+            model = entry.get("model", "")
+            provider = entry.get("provider_id", "")
+            if partial and not model.lower().startswith(partial):
+                continue
+            choices.append(
+                CompletionChoice(
+                    value=model,
+                    display=model,
+                    description=provider,
+                )
+            )
+        return choices[:25]
 
     async def _cmd_model(
         self, *, args: str, inbound: InboundMessage, session_id: str

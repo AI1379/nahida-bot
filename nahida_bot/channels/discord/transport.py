@@ -90,6 +90,51 @@ def message_to_event(message: Any) -> dict[str, Any]:
     }
 
 
+def interaction_to_event(interaction: Any) -> dict[str, Any]:
+    """Convert a ``discord.Interaction`` into a plain dict event payload.
+
+    The live interaction object rides along under ``_object`` so the plugin
+    can ask the transport to respond (defer / autocomplete) within
+    Discord's deadline; it must never reach message conversion.
+    """
+    data = getattr(interaction, "data", None) or {}
+    user = getattr(interaction, "user", None)
+    options = []
+    for option in data.get("options", []) or []:
+        options.append(
+            {
+                "name": str(option.get("name", "")),
+                "value": _stringify_option_value(option.get("value", "")),
+                "focused": bool(option.get("focused", False)),
+            }
+        )
+    return {
+        "kind": "interaction",
+        "interaction": {
+            "id": str(interaction.id),
+            "type": int(getattr(getattr(interaction, "type", None), "value", 0) or 0),
+            "command_name": str(data.get("name", "") or ""),
+            "options": options,
+            "guild_id": str(interaction.guild_id) if interaction.guild_id else "",
+            "channel_id": str(interaction.channel_id) if interaction.channel_id else "",
+            "user": {
+                "id": str(getattr(user, "id", "") or ""),
+                "name": str(getattr(user, "name", "") or ""),
+                "display_name": str(getattr(user, "display_name", "") or ""),
+                "bot": bool(getattr(user, "bot", False)),
+            },
+            "token": str(getattr(interaction, "token", "") or ""),
+            "_object": interaction,
+        },
+    }
+
+
+def _stringify_option_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 class _Client(discord.Client):
     """Gateway client that forwards every message as a dict event."""
 
@@ -107,6 +152,7 @@ class _Client(discord.Client):
             bot_id=getattr(user, "id", ""),
             guilds=len(self.guilds),
         )
+        await self._emit({"kind": "ready"})
 
     async def on_message(self, message: discord.Message) -> None:
         if self.user is not None and message.author.id == self.user.id:
@@ -116,10 +162,23 @@ class _Client(discord.Client):
         except Exception:  # noqa: BLE001 - a malformed event must not kill the loop
             logger.exception("discord.event_convert_failed", message_id=str(message.id))
             return
+        await self._emit(event, message_id=str(message.id))
+
+    async def on_interaction(self, interaction: discord.Interaction) -> None:
+        try:
+            event = interaction_to_event(interaction)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "discord.event_convert_failed", message_id=str(interaction.id)
+            )
+            return
+        await self._emit(event, message_id=str(interaction.id))
+
+    async def _emit(self, event: dict[str, Any], *, message_id: str = "") -> None:
         try:
             await self._on_event(event)
         except Exception:  # noqa: BLE001
-            logger.exception("discord.event_handler_failed", message_id=str(message.id))
+            logger.exception("discord.event_handler_failed", message_id=message_id)
 
 
 class DiscordTransport:
@@ -206,3 +265,34 @@ class DiscordTransport:
             "type": _channel_type_name(channel),
             "guild_id": str(guild.id) if guild is not None else "",
         }
+
+    # ── Application commands / interactions ───────────────
+
+    def guild_ids(self) -> list[str]:
+        """Ids of guilds the bot is currently in (gateway cache)."""
+        return [str(guild.id) for guild in self._client.guilds]
+
+    async def sync_guild_commands(
+        self, guild_id: str, payload: list[dict[str, Any]]
+    ) -> None:
+        """Bulk-overwrite the guild's application commands (instant effect)."""
+        application_id = self._client.application_id
+        if application_id is None:
+            raise RuntimeError("Cannot sync commands before the gateway is ready")
+        await self._client.http.bulk_upsert_guild_commands(
+            application_id, int(guild_id), payload
+        )
+
+    async def defer_interaction(self, interaction_object: Any) -> None:
+        """Ack a command interaction (holds Discord's 3s deadline)."""
+        await interaction_object.response.defer(thinking=True)
+
+    async def respond_autocomplete(
+        self, interaction_object: Any, choices: list[dict[str, str]]
+    ) -> None:
+        """Answer an autocomplete interaction with value/name pairs."""
+        from discord import app_commands
+
+        await interaction_object.response.autocomplete(
+            [app_commands.Choice(name=c["name"], value=c["value"]) for c in choices]
+        )

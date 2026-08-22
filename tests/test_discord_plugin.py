@@ -44,14 +44,6 @@ def _make_manifest(**overrides: object) -> PluginManifest:
 class FakeTransport:
     """Test double for DiscordTransport — no discord.py involved."""
 
-    def __init__(self) -> None:
-        self.login_result: dict[str, str] = {"id": "999", "username": "nahidabot"}
-        self.login_calls = 0
-        self.closed = False
-        self.sent_texts: list[dict[str, str]] = []
-        self.sent_files: list[dict[str, str]] = []
-        self.text_errors: list[Exception] = []
-
     async def login(self) -> dict[str, str]:
         self.login_calls += 1
         return dict(self.login_result)
@@ -86,6 +78,39 @@ class FakeTransport:
 
     async def fetch_channel_info(self, channel_id: str) -> dict[str, Any]:
         return {"id": channel_id, "name": "general", "type": "text"}
+
+    # ── interaction / slash-command surface ──────────────
+
+    def __init__(self) -> None:
+        self.login_result: dict[str, str] = {"id": "999", "username": "nahidabot"}
+        self.login_calls = 0
+        self.closed = False
+        self.sent_texts: list[dict[str, str]] = []
+        self.sent_files: list[dict[str, str]] = []
+        self.text_errors: list[Exception] = []
+        self.deferred_interactions: list[str] = []
+        self.autocomplete_responses: list[tuple[str, list[dict[str, str]]]] = []
+        self.synced_commands: dict[str, list[dict[str, Any]]] = {}
+        self.known_guilds: list[str] = []
+        self.sync_error: Exception | None = None
+
+    def guild_ids(self) -> list[str]:
+        return list(self.known_guilds)
+
+    async def sync_guild_commands(
+        self, guild_id: str, payload: list[dict[str, Any]]
+    ) -> None:
+        if self.sync_error is not None:
+            raise self.sync_error
+        self.synced_commands[guild_id] = payload
+
+    async def defer_interaction(self, interaction_object: Any) -> None:
+        self.deferred_interactions.append(str(interaction_object.id))
+
+    async def respond_autocomplete(
+        self, interaction_object: Any, choices: list[dict[str, str]]
+    ) -> None:
+        self.autocomplete_responses.append((str(interaction_object.id), choices))
 
 
 def _guild_event(content: str = "hello", **overrides: Any) -> dict[str, Any]:
@@ -611,3 +636,216 @@ class TestDiscordConfigExposure:
         api, plugin = _make_plugin()
         assert isinstance(plugin.config, DiscordPluginConfig)
         assert plugin.config.group_trigger_mode == "mention"
+
+
+def _interaction_event(
+    interaction_type: int = 2,
+    command: str = "model",
+    options: list[dict[str, Any]] | None = None,
+    *,
+    channel_id: str = "111",
+    guild_id: str = "777",
+) -> dict[str, Any]:
+    obj = SimpleNamespace(id=5001, token="interaction-token")
+    return {
+        "kind": "interaction",
+        "interaction": {
+            "id": "5001",
+            "type": interaction_type,
+            "command_name": command,
+            "options": options or [],
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "user": {
+                "id": "42",
+                "name": "alice",
+                "display_name": "Alice",
+                "bot": False,
+            },
+            "token": "interaction-token",
+            "_object": obj,
+        },
+    }
+
+
+class TestDiscordSlashCommandInvocation:
+    async def test_command_interaction_publishes_with_bot_mention(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(
+            _interaction_event(
+                options=[{"name": "name", "value": "deepseek-main", "focused": False}]
+            )
+        )
+
+        assert transport.deferred_interactions == ["5001"]
+        assert len(api.published_events) == 1
+        published = api.published_events[0]
+        assert isinstance(published, MessageReceived)
+        # Options re-joined into the freeform args string.
+        assert published.payload.message.text == "/model deepseek-main"
+        # Explicit invocation counts as addressing the bot → passes mention mode.
+        assert published.payload.message.mentions_bot is True
+        assert published.payload.session_id == "discord:channel:111"
+
+    async def test_dm_command_interaction_uses_private_session(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(
+            _interaction_event(guild_id="", channel_id="500")
+        )
+
+        assert len(api.published_events) == 1
+        assert api.published_events[0].payload.session_id == "discord:private:500"
+        assert api.published_events[0].payload.message.is_group is False
+
+    async def test_interaction_respects_guild_allowlist(self) -> None:
+        api, plugin, transport = await _loaded_plugin(
+            config={"allowed_guilds": ["888"]}
+        )
+        await plugin.handle_inbound_event(_interaction_event())
+
+        assert api.published_events == []
+
+    async def test_interaction_without_name_ignored(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event(command="", options=[]))
+
+        assert api.published_events == []
+        assert transport.deferred_interactions == []
+
+    async def test_unsupported_interaction_type_ignored(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event(interaction_type=3))
+
+        assert api.published_events == []
+        assert transport.autocomplete_responses == []
+
+
+class TestDiscordAutocomplete:
+    async def test_autocomplete_responds_with_choices(self) -> None:
+        from nahida_bot_sdk.commands import CompletionChoice
+
+        api, plugin, transport = await _loaded_plugin()
+        api.completion_results = [
+            CompletionChoice(
+                value="deepseek-main", display="deepseek-main", description="deepseek"
+            ),
+            CompletionChoice(value="gpt-4o"),
+        ]
+        await plugin.handle_inbound_event(
+            _interaction_event(
+                interaction_type=4,
+                options=[
+                    {"name": "name", "value": "deep", "focused": True},
+                    {"name": "other", "value": "x", "focused": False},
+                ],
+            )
+        )
+
+        assert len(transport.autocomplete_responses) == 1
+        interaction_id, choices = transport.autocomplete_responses[0]
+        assert interaction_id == "5001"
+        assert choices == [
+            {"name": "deepseek-main", "value": "deepseek-main"},
+            {"name": "gpt-4o", "value": "gpt-4o"},
+        ]
+
+    async def test_autocomplete_truncates_to_25(self) -> None:
+        from nahida_bot_sdk.commands import CompletionChoice
+
+        api, plugin, transport = await _loaded_plugin()
+        api.completion_results = [CompletionChoice(value=f"m{i}") for i in range(40)]
+        await plugin.handle_inbound_event(
+            _interaction_event(
+                interaction_type=4,
+                options=[{"name": "name", "value": "", "focused": True}],
+            )
+        )
+
+        assert len(transport.autocomplete_responses) == 1
+        assert len(transport.autocomplete_responses[0][1]) == 25
+
+    async def test_autocomplete_without_focused_option_ignored(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(
+            _interaction_event(interaction_type=4, options=[])
+        )
+
+        assert transport.autocomplete_responses == []
+
+    async def test_slow_completion_returns_empty_not_error(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+
+        async def slow_complete(query: Any) -> list[Any]:
+            await asyncio.sleep(5)
+            return []
+
+        api.complete_command_argument = slow_complete  # type: ignore[method-assign]
+        await plugin.handle_inbound_event(
+            _interaction_event(
+                interaction_type=4,
+                options=[{"name": "name", "value": "", "focused": True}],
+            )
+        )
+
+        assert transport.autocomplete_responses == [("5001", [])]
+
+
+class TestDiscordCommandSync:
+    async def test_ready_event_syncs_guild_commands(self) -> None:
+        from nahida_bot_sdk.commands import CommandArgument, CommandInfo
+
+        api, plugin, transport = await _loaded_plugin()
+        transport.known_guilds = ["777", "778"]
+        api.command_infos = [
+            CommandInfo(
+                name="model",
+                description="List or switch model",
+                aliases=(),
+                plugin_id="builtin",
+                arguments=[
+                    CommandArgument(
+                        name="name", description="model", completer=None, choices=("a",)
+                    )
+                ],
+            ),
+            CommandInfo(
+                name="NotDiscordSafe",  # uppercase → skipped
+                description="x",
+                aliases=(),
+                plugin_id="builtin",
+            ),
+        ]
+
+        await plugin.handle_inbound_event({"kind": "ready"})
+
+        assert set(transport.synced_commands) == {"777", "778"}
+        payload = transport.synced_commands["777"]
+        assert [cmd["name"] for cmd in payload] == ["model"]
+        model = payload[0]
+        assert model["options"][0]["autocomplete"] is True
+        assert model["options"][0]["type"] == 3
+
+    async def test_sync_respects_allowed_guilds(self) -> None:
+        api, plugin, transport = await _loaded_plugin(
+            config={"allowed_guilds": ["888"]}
+        )
+        transport.known_guilds = ["777", "888"]
+
+        await plugin.handle_inbound_event({"kind": "ready"})
+
+        assert set(transport.synced_commands) == {"888"}
+
+    async def test_sync_disabled_by_config(self) -> None:
+        api, plugin, transport = await _loaded_plugin(
+            config={"register_slash_commands": False}
+        )
+
+        await plugin.handle_inbound_event({"kind": "ready"})
+
+        assert transport.synced_commands == {}
+
+    async def test_sync_failure_does_not_raise(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        transport.sync_error = RuntimeError("rate limited")
+
+        await plugin.handle_inbound_event({"kind": "ready"})  # must not raise
