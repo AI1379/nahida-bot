@@ -1,5 +1,6 @@
 import {
   computed,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   watch,
@@ -13,6 +14,7 @@ import type {
   PetWindowCommand,
 } from "@/domain/desktopWindowProtocol";
 import { petRuntimeNeedsEmerge } from "@/domain/petRuntimeMachine";
+import type { DesktopEvent } from "@/domain/runtime";
 import {
   listenForPetCommands,
   publishLipSyncEnergy,
@@ -22,20 +24,33 @@ import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator"
 import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
 import { GatewayAudioAdapter } from "@/services/gatewayAudioAdapter";
 import { PomodoroService } from "@/services/pomodoroService";
+import type {
+  PomodoroPhase,
+  PomodoroReminderKind,
+} from "@/services/pomodoroService";
+import { fetchGeneratedPomodoroReminder } from "@/services/pomodoroTextService";
+import {
+  applyPomodoroCapability,
+  POMODORO_CONTROL_CAPABILITY,
+} from "@/services/pomodoroCapability";
 import type { AudioPlaybackAdapter, AudioPlaybackRequest } from "@/services/audioPlaybackAdapter";
+import { isAudioPlaybackAborted } from "@/services/audioPlaybackAdapter";
 import {
   completeGatewayPairing,
   pairDevice,
   type PairDeviceResult,
   type PairingCompleteResult,
 } from "@/services/gatewayPairing";
+import { addPairedActorToRemoteControlPolicy } from "@/services/remoteControlPolicy";
 import {
   createDesktopEventSource,
   type DesktopEventSource,
   type DesktopEventSourceOptions,
+  type MessageSubmitResult,
 } from "@/runtime/desktopEventSource";
 import type { useDesktopStore } from "@/stores/desktop";
 import { isGatewayConnectionConfigured } from "@/domain/gatewayConnection";
+import { gatewayWsUrlToHttpBase } from "@/domain/gatewayConnection";
 
 type DesktopStore = ReturnType<typeof useDesktopStore>;
 
@@ -50,7 +65,7 @@ export interface DesktopRuntimeActions {
     adminBearerToken?: string,
     actorAccountKey?: string,
   ): Promise<PairDeviceResult>;
-  submitUserMessage(text: string): void;
+  submitUserMessage(text: string): Promise<MessageSubmitResult>;
   submitMockLlmResult(rawOutput: string): void;
   /** Start/restart the local pomodoro timer. */
   startPomodoro(): void;
@@ -76,12 +91,13 @@ export function useDesktopRuntimeController(
     localConfigVersion: store.localConfigVersion,
     expressionMapVersion: store.expressionMapVersion,
     motionMapVersion: store.motionMapVersion,
+    turns: store.turns,
+    activeMotionFeedbackPlaybackId: store.activeMotionFeedbackPlaybackId,
   }));
 
   let transitionTimer: ReturnType<typeof setTimeout> | null = null;
   let autoRetreatTimer: ReturnType<typeof setTimeout> | null = null;
   let unlistenPetCommands: UnlistenFn | null = null;
-  let scheduledPresentationId: string | null = null;
   // `eventSource` is the live source the controller is currently bound to.
   // It starts as the injected one (legacy path) or whatever the persisted
   // connection mode requires, and gets swapped whenever the user changes
@@ -123,7 +139,8 @@ export function useDesktopRuntimeController(
       if (gatewayTtsAdapter.isAvailable()) {
         try {
           return await gatewayTtsAdapter.fetch(request, signal);
-        } catch {
+        } catch (error) {
+          if (isAudioPlaybackAborted(error)) throw error;
           return systemSpeechAdapter.fetch(request, signal);
         }
       }
@@ -138,9 +155,19 @@ export function useDesktopRuntimeController(
   const speechPlayback = new SpeechPlaybackCoordinator(
     speechPlaybackAdapter,
     {
-      onSegmentStart(presentation, index, _segment, mode) {
+      onPresentationStart(presentation) {
+        store.startPresentation(presentation);
+      },
+      async onSegmentStart(presentation, index, _segment, mode, durationMs) {
         if (store.activePresentation?.id !== presentation.id) return;
-        store.setSegment(index, mode === "audio");
+        store.setSegment(index, mode === "audio", durationMs);
+        store.markPresentationTurn(presentation.id, "playing");
+        // Commit the segment and its real audio duration to the pet window
+        // before the audio element begins consuming the segment.
+        await publishRuntimeSnapshot(runtimeSnapshot.value).catch(
+          () => undefined,
+        );
+        await nextTick();
       },
       onSegmentFallback(presentation, index) {
         if (store.activePresentation?.id !== presentation.id) return;
@@ -148,7 +175,24 @@ export function useDesktopRuntimeController(
       },
       onPresentationComplete(presentation) {
         if (store.activePresentation?.id !== presentation.id) return;
+        store.markPresentationTurn(presentation.id, "completed");
         store.finishPresentation();
+      },
+      onPresentationInterrupted(presentation) {
+        store.markPresentationTurn(presentation.id, "completed");
+        if (store.activePresentation?.id === presentation.id) {
+          store.finishPresentation();
+        }
+      },
+      onPresentationError(presentation, error) {
+        store.markPresentationTurn(
+          presentation.id,
+          "failed",
+          `Playback failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (store.activePresentation?.id === presentation.id) {
+          store.finishPresentation();
+        }
       },
     },
   );
@@ -176,7 +220,24 @@ export function useDesktopRuntimeController(
     options?: DesktopEventSourceOptions,
   ) {
     if (!source) return;
-    source.start((event) => store.applyDesktopEvent(event), options);
+    source.start(handleDesktopEvent, options);
+  }
+
+  function handleDesktopEvent(event: DesktopEvent): unknown {
+    if (
+      event.type === "capability.invoked" &&
+      event.capability === POMODORO_CONTROL_CAPABILITY
+    ) {
+      return applyPomodoroCapability(
+        {
+          service: pomodoroService,
+          getSettings: () => store.localConfig.pomodoro,
+          updateSettings: (settings) => store.updatePomodoroSettings(settings),
+        },
+        event.arguments,
+      );
+    }
+    return store.applyDesktopEvent(event);
   }
 
   function stopEventSource() {
@@ -199,8 +260,8 @@ export function useDesktopRuntimeController(
 
   function disconnectMockBackend() {
     stopEventSource();
-    store.activePlan = null;
-    store.activePresentation = null;
+    speechPlayback.stop();
+    store.clearPresentations();
     store.clearPendingAfterEmerge();
   }
 
@@ -218,8 +279,8 @@ export function useDesktopRuntimeController(
   function disconnectGateway() {
     stopEventSource();
     store.setGatewayConnectionStatus("disconnected");
-    store.activePlan = null;
-    store.activePresentation = null;
+    speechPlayback.stop();
+    store.clearPresentations();
     store.clearPendingAfterEmerge();
   }
 
@@ -260,9 +321,12 @@ export function useDesktopRuntimeController(
         defaultSessionId:
           result.conversationId ?? store.gatewayConnection.defaultSessionId,
       });
+      const whitelistNote = result.actorAccountKey
+        ? await describeWhitelistUpdate(result.actorAccountKey)
+        : "";
       store.setGatewayPairingState({
         status: "success",
-        message: `Paired as ${result.nodeId}.`,
+        message: `Paired as ${result.nodeId}${whitelistNote}.`,
       });
     } else {
       store.setGatewayPairingState({
@@ -271,6 +335,20 @@ export function useDesktopRuntimeController(
       });
     }
     return result;
+  }
+
+  /**
+   * Best-effort: append the paired actor to the local remote-control
+   * whitelist so remote exec works once a mode is enabled. Failures become
+   * a message suffix, never a pairing failure.
+   */
+  async function describeWhitelistUpdate(actorAccountKey: string): Promise<string> {
+    const update = await addPairedActorToRemoteControlPolicy(actorAccountKey);
+    if (update.added) return "; actor added to the remote-control whitelist";
+    if (update.error) {
+      return `; remote-control whitelist not updated (${update.error})`;
+    }
+    return "";
   }
 
   async function pairDeviceFromForm(
@@ -305,12 +383,16 @@ export function useDesktopRuntimeController(
       const authHint = result.usedAdminBearer
         ? " (via admin token)"
         : " (no admin token required)";
-      const actorHint = actorAccountKey?.trim()
-        ? ` bound to ${actorAccountKey.trim()}`
+      const boundActor = result.actorAccountKey ?? actorAccountKey?.trim();
+      const actorHint = boundActor
+        ? ` bound to ${boundActor}`
         : " without an actor binding (chat submit will be rejected)";
+      const whitelistNote = boundActor
+        ? await describeWhitelistUpdate(boundActor)
+        : "";
       store.setGatewayPairingState({
         status: "success",
-        message: `Paired as ${result.nodeId}${authHint}${actorHint}.`,
+        message: `Paired as ${result.nodeId}${authHint}${actorHint}${whitelistNote}.`,
       });
     } else {
       store.setGatewayPairingState({
@@ -321,17 +403,56 @@ export function useDesktopRuntimeController(
     return result;
   }
 
-  function submitUserMessage(text: string) {
+  async function submitUserMessage(text: string): Promise<MessageSubmitResult> {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      return { ok: false, error: "Message is empty.", retryable: false };
+    }
+    const at = new Date().toISOString();
+    const requestedSessionId =
+      store.gatewayConnection.mode === "gateway"
+        ? store.gatewayConnection.defaultSessionId || store.sessionId
+        : store.sessionId;
+    store.sessionId = requestedSessionId;
+    const turn = store.beginUserTurn(trimmed, requestedSessionId, at);
     store.applyDesktopEvent({
       type: "user.message.submitted",
       source: "local",
-      at: new Date().toISOString(),
-      sessionId: store.sessionId,
+      at,
+      sessionId: requestedSessionId,
       text: trimmed,
     });
-    eventSource?.submitUserMessage(trimmed, store.sessionId);
+    if (!eventSource) {
+      const result: MessageSubmitResult = {
+        ok: false,
+        error: "Desktop event source is unavailable.",
+        retryable: true,
+      };
+      store.markTurnFailed(turn.id, result.error);
+      return result;
+    }
+    let result: MessageSubmitResult;
+    try {
+      result = await eventSource.submitUserMessage(trimmed, requestedSessionId);
+    } catch (error) {
+      result = {
+        ok: false,
+        error: `Failed to submit message: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        retryable: true,
+      };
+    }
+    if (result.ok) {
+      if (result.sessionId !== turn.sessionId) {
+        store.updateTurn(turn.id, { sessionId: result.sessionId });
+        store.sessionId = result.sessionId;
+      }
+      store.markTurnAccepted(turn.id);
+    } else {
+      store.markTurnFailed(turn.id, result.error);
+    }
+    return result;
   }
 
   function submitMockLlmResult(rawOutput: string) {
@@ -343,7 +464,79 @@ export function useDesktopRuntimeController(
   const pomodoroService = new PomodoroService({
     getSettings: () => store.localConfig.pomodoro,
     onTick: (event) => store.applyDesktopEvent(event),
+    onStateChange: (state) => {
+      store.setPomodoroState(state);
+      schedulePomodoroPrefetch(state);
+    },
+    getReminderText: (kind) =>
+      store.localConfig.pomodoro.dynamicText
+        ? pomodoroGeneratedTexts.get(kind) ?? null
+        : null,
   });
+
+  // Dynamic reminder lines are generated + pre-synthesized on the Gateway
+  // during the current phase's runway so the next transition plays instantly.
+  const pomodoroGeneratedTexts = new Map<PomodoroReminderKind, string>();
+  const pomodoroRecentTexts: string[] = [];
+  let pomodoroPrefetchController: AbortController | null = null;
+
+  function schedulePomodoroPrefetch(state: {
+    phase: PomodoroPhase;
+    round: number;
+    totalRounds: number;
+  }): void {
+    if (state.phase === "working") {
+      void prefetchPomodoroReminders(["break-start"]);
+    } else if (state.phase === "breaking") {
+      const kinds: PomodoroReminderKind[] =
+        state.round >= state.totalRounds
+          ? ["rounds-done"]
+          : ["break-end", "work-start"];
+      void prefetchPomodoroReminders(kinds);
+    }
+  }
+
+  async function prefetchPomodoroReminders(
+    kinds: PomodoroReminderKind[],
+  ): Promise<void> {
+    if (!store.localConfig.pomodoro.dynamicText) return;
+    const bearer = store.gatewayConnection.adminBearerToken;
+    const httpBase = gatewayWsUrlToHttpBase(
+      store.gatewayConnection.gatewayWsUrl,
+    );
+    if (!bearer || !httpBase) return;
+
+    pomodoroPrefetchController?.abort();
+    const controller = new AbortController();
+    pomodoroPrefetchController = controller;
+    const synthesize = store.gatewayConnection.ttsSource !== "system";
+
+    await Promise.all(
+      kinds.map(async (kind) => {
+        try {
+          const reminder = await fetchGeneratedPomodoroReminder({
+            httpBase,
+            bearer,
+            kind,
+            avoid: [...pomodoroRecentTexts],
+            synthesize,
+            signal: controller.signal,
+          });
+          if (controller.signal.aborted) return;
+          pomodoroGeneratedTexts.set(kind, reminder.text);
+          pomodoroRecentTexts.push(reminder.text);
+          if (pomodoroRecentTexts.length > 12) {
+            pomodoroRecentTexts.shift();
+          }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            return;
+          }
+          // Silent fallback: the static settings text is used instead.
+        }
+      }),
+    );
+  }
 
   function startPomodoro() {
     pomodoroService.start();
@@ -357,13 +550,8 @@ export function useDesktopRuntimeController(
     pomodoroService.toggle();
   }
 
-  function scheduleActivePresentation() {
-    const presentation = store.activePresentation;
-    if (!presentation) {
-      scheduledPresentationId = null;
-      speechPlayback.stop();
-      return;
-    }
+  function schedulePendingPresentations() {
+    if (!store.pendingPresentations.length) return;
     if (petRuntimeNeedsEmerge(store.petRuntime.status)) {
       if (
         store.petRuntime.status === "retreating" ||
@@ -373,9 +561,9 @@ export function useDesktopRuntimeController(
       }
       return;
     }
-    if (scheduledPresentationId === presentation.id) return;
-    scheduledPresentationId = presentation.id;
-    speechPlayback.play(presentation);
+    for (const presentation of store.takePendingPresentations()) {
+      speechPlayback.play(presentation);
+    }
   }
 
   function schedulePetState(status: typeof store.petRuntime.status) {
@@ -469,10 +657,12 @@ export function useDesktopRuntimeController(
   watch(
     () =>
       [
-        store.activePresentation?.id ?? null,
+        store.pendingPresentations
+          .map((presentation) => presentation.id)
+          .join("|"),
         store.petRuntime.status,
       ] as const,
-    () => scheduleActivePresentation(),
+    () => schedulePendingPresentations(),
     { immediate: true },
   );
 
@@ -517,6 +707,7 @@ export function useDesktopRuntimeController(
     speechPlayback.dispose();
     gatewayTtsAdapter.dispose();
     pomodoroService.dispose();
+    pomodoroPrefetchController?.abort();
     clearPetStateTimers();
     unlistenPetCommands?.();
     stopEventSource();

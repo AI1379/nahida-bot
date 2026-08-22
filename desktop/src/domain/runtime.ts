@@ -76,6 +76,8 @@ export type DesktopEvent =
 
 export interface PresentationPlan {
   id: string;
+  /** Local conversation turn correlated with this presentation, when known. */
+  turnId?: string;
   source: DesktopEventSource;
   targetSessionId?: string;
   displayPlan: DisplayPlan;
@@ -95,6 +97,8 @@ export interface PetRuntimeState {
   motion: DisplayMotion;
   speaking: boolean;
   currentSegmentIndex: number;
+  /** Actual synthesized audio duration for the current segment when known. */
+  segmentDurationMs: number | null;
   activePresentationId: string | null;
   bubbleText: string;
   clickThrough: boolean;
@@ -111,6 +115,7 @@ export function createInitialPetRuntimeState(): PetRuntimeState {
     motion: "idle",
     speaking: false,
     currentSegmentIndex: 0,
+    segmentDurationMs: null,
     activePresentationId: null,
     bubbleText: "",
     clickThrough: true,

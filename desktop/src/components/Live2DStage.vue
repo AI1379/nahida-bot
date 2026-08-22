@@ -31,6 +31,7 @@ const props = withDefaults(defineProps<{
   rendererProfile?: Live2DRendererProfile;
   model: Live2DModelManifest;
   speaking: boolean;
+  motionDurationMs?: number | null;
   lipSyncEnergy?: number | null;
   motionDataCollectionEnabled?: boolean;
   motionTelemetryEnabled?: boolean;
@@ -44,6 +45,7 @@ const props = withDefaults(defineProps<{
   debugEnabled: true,
   devChrome: true,
   lipSyncEnergy: null,
+  motionDurationMs: null,
   motionDataCollectionEnabled: true,
   motionTelemetryEnabled: true,
   playbackSurface: "runtime",
@@ -67,6 +69,7 @@ const debugOpen = ref(
 );
 const debugSnapshot = ref<Live2DDebugSnapshot | null>(null);
 let loadGeneration = 0;
+let motionGeneration = 0;
 let loadQueue = Promise.resolve();
 
 const expressionLabel = computed(() => {
@@ -132,7 +135,13 @@ async function performLive2DLoad(generation: number): Promise<void> {
       emotion: props.emotion,
       motion: props.motion,
       renderMode: props.renderMode,
-      assistantText: props.captionText,
+      assistantText:
+        props.motion === "idle" ||
+        props.motion === "emerge" ||
+        props.motion === "retreat"
+          ? ""
+          : props.captionText,
+      motionDurationMs: props.motionDurationMs ?? undefined,
     });
     if (generation !== loadGeneration) {
       presentationController.dispose();
@@ -247,11 +256,29 @@ watch(
 );
 
 watch(
-  () => [props.motion, props.motionMapVersion, props.captionText] as const,
+  () => [
+    props.motion,
+    props.motionMapVersion,
+    props.captionText,
+    props.motionDurationMs,
+  ] as const,
   () => {
+    const generation = ++motionGeneration;
+    const assistantText =
+      props.motion === "idle" ||
+      props.motion === "emerge" ||
+      props.motion === "retreat"
+        ? ""
+        : props.captionText;
     void controller.value
-      ?.playMotion(props.motion, props.emotion, props.captionText)
+      ?.playMotion(
+        props.motion,
+        props.emotion,
+        assistantText,
+        props.motionDurationMs ?? undefined,
+      )
       .then(() => {
+        if (generation !== motionGeneration) return;
         refreshDebugSnapshot();
       })
       .catch(() => {});
@@ -296,6 +323,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   loadGeneration += 1;
+  motionGeneration += 1;
   controller.value?.dispose();
   controller.value = null;
   renderer.value = null;

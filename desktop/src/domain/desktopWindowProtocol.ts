@@ -1,6 +1,7 @@
 import type { LocalDesktopConfig } from "./config";
 import type { DisplayPlan } from "./displayPlan";
 import type { PetRuntimeState, PresentationPlan } from "./runtime";
+import type { TurnRecord } from "./conversation";
 
 export interface DesktopRuntimeSnapshot {
   connected: boolean;
@@ -12,6 +13,8 @@ export interface DesktopRuntimeSnapshot {
   localConfigVersion: number;
   expressionMapVersion: number;
   motionMapVersion: number;
+  turns?: TurnRecord[];
+  activeMotionFeedbackPlaybackId?: string | null;
 }
 
 export type PetWindowCommand =

@@ -4,6 +4,7 @@ import type { Live2DModelManifest } from "@/domain/live2d";
 import type { MotionDriver } from "@/domain/motionDriver";
 import type {
   MotionCache,
+  MotionMixer,
   MotionTelemetry,
 } from "@/domain/motionRuntime";
 import type {
@@ -232,7 +233,7 @@ describe("Live2DPresentationController", () => {
     });
     controller.setManifest({ ...manifest, motionMap: {} });
 
-    await controller.playMotion("speaking", "neutral", "我来解释一下。 ");
+    await controller.playMotion("speaking", "neutral", "我来解释一下。 ", 4321);
 
     expect(playbacks).toHaveLength(1);
     expect(playbacks[0]).toMatchObject({
@@ -240,7 +241,84 @@ describe("Live2DPresentationController", () => {
       surface: "pet",
       primitive: "explain-small",
       normalizedClip: { frames: expect.any(Array) },
+      intent: { durationMs: 4321 },
     });
+  });
+
+  it("discards an older async motion result after a newer request starts", async () => {
+    const renderer = new FakeRenderer();
+    const gate: { release?: () => void } = {};
+    let cacheReads = 0;
+    const cache: MotionCache = {
+      async get() {
+        cacheReads += 1;
+        if (cacheReads === 1) {
+          await new Promise<void>((resolve) => {
+            gate.release = resolve;
+          });
+        }
+        return null;
+      },
+      async set() {},
+      async clear() {},
+    };
+    const controller = new Live2DPresentationController(renderer, {
+      motionCache: cache,
+    });
+    controller.setManifest({ ...manifest, motionMap: {} });
+
+    const stale = controller.playMotion("speaking", "neutral", "旧回复");
+    await Promise.resolve();
+    await controller.playMotion("idle");
+    const appliedAfterNewRequest = renderer.normalizedMotions.length;
+    gate.release?.();
+    await stale;
+
+    expect(renderer.normalizedMotions).toHaveLength(appliedAfterNewRequest);
+    controller.dispose();
+  });
+
+  it("mixes persistent idle and speech layers instead of replacing the mixer input", async () => {
+    const renderer = new FakeRenderer();
+    const sources: string[][] = [];
+    const mixer: MotionMixer = {
+      id: "capturing-mixer",
+      version: "1",
+      mix(layers) {
+        sources.push(layers.map((layer) => layer.source));
+        return layers.at(-1)?.clip ?? null;
+      },
+    };
+    const controller = new Live2DPresentationController(renderer, {
+      motionMixer: mixer,
+    });
+    controller.setManifest({ ...manifest, motionMap: {} });
+
+    await controller.playMotion("idle");
+    await controller.playMotion("speaking");
+
+    expect(sources.at(-1)).toEqual(expect.arrayContaining(["idle", "speech"]));
+    controller.dispose();
+  });
+
+  it("does not collect idle or window-transition motions as rateable data", async () => {
+    const renderer = new FakeRenderer();
+    let callCount = 0;
+    const telemetry: MotionTelemetry = {
+      async recordDecision() { callCount += 1; },
+      async recordExecution() { callCount += 1; },
+      async recordInvalid() { callCount += 1; },
+    };
+    const controller = new Live2DPresentationController(renderer, {
+      motionTelemetry: telemetry,
+    });
+    controller.setManifest({ ...manifest, motionMap: {} });
+
+    await controller.playMotion("idle", "neutral", "上一条气泡文本");
+    await controller.playMotion("emerge", "happy", "上一条气泡文本");
+
+    expect(callCount).toBe(0);
+    controller.dispose();
   });
 
   it("does not invoke telemetry when local data collection is disabled", async () => {

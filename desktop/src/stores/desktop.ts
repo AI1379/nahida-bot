@@ -26,6 +26,7 @@ import {
 import type {
   DesktopEvent,
   PetRuntimeState,
+  PresentationPlan,
 } from "@/domain/runtime";
 import {
   petRuntimeNeedsEmerge,
@@ -50,6 +51,7 @@ import {
   clearPersistedPomodoroSettings,
   sanitizePomodoroSettings,
 } from "@/services/pomodoroSettingsStorage";
+import type { PomodoroState } from "@/services/pomodoroService";
 import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { clearPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import {
@@ -61,7 +63,12 @@ import {
 } from "@/services/desktopSettingsStorage";
 import type { MotionMap } from "@/services/modelMappingStorage";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
+import type { TurnRecord, TurnStatus } from "@/domain/conversation";
 import { mergeRecentMotionPlaybacks } from "@/services/motionPlaybackHistory";
+import {
+  readConversationHistory,
+  writeConversationHistory,
+} from "@/services/conversationStorage";
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
 import {
   nextCustomExpressionKeyword,
@@ -69,10 +76,14 @@ import {
   withModelConfig,
 } from "./desktop/modelConfig";
 import { createDesktopState } from "./desktop/state";
-import type { GatewayPairingState, TranscriptEntry } from "./desktop/state";
+import type {
+  GatewayPairingState,
+  TranscriptEntry,
+} from "./desktop/state";
 import { createEmptyPendingAfterEmerge } from "./desktop/state";
 
 export type { TranscriptEntry } from "./desktop/state";
+export type { TurnRecord, TurnStatus } from "@/domain/conversation";
 
 function createTranscriptEntry(
   role: TranscriptEntry["role"],
@@ -107,6 +118,15 @@ export const useDesktopStore = defineStore("desktop", {
         state.localConfig.modelConfigs[manifest.id] ??
         modelMappingConfigFromManifest(manifest);
       return configuredModelFromManifest(manifest, modelConfig);
+    },
+    currentSessionTurns(state): TurnRecord[] {
+      return state.turns.filter((turn) => turn.sessionId === state.sessionId);
+    },
+    latestMotionFeedbackPlayback(state): MotionPlaybackSummary | null {
+      return state.recentMotionPlaybacks.find(
+        (playback) =>
+          playback.motionPlanId === state.activeMotionFeedbackPlaybackId,
+      ) ?? null;
     },
   },
   actions: {
@@ -148,6 +168,12 @@ export const useDesktopStore = defineStore("desktop", {
       this.localConfigVersion += 1;
       this.gatewayConnectionVersion += 1;
 
+      try {
+        this.turns = await readConversationHistory();
+      } catch (error) {
+        this.persistenceError = `Could not read conversation history: ${persistenceErrorMessage(error)}`;
+      }
+
       let settingsSaved = false;
       try {
         await writeDesktopSettings(this.localConfig, this.gatewayConnection);
@@ -172,6 +198,161 @@ export const useDesktopStore = defineStore("desktop", {
         clearPersistedPomodoroSettings();
         clearPersistedModelMappings();
       }
+    },
+    persistConversationHistory() {
+      void writeConversationHistory(this.turns).catch((error) => {
+        this.persistenceError = `Could not save conversation history: ${persistenceErrorMessage(error)}`;
+      });
+    },
+    beginUserTurn(
+      text: string,
+      sessionId: string,
+      at = new Date().toISOString(),
+    ): TurnRecord {
+      const turn: TurnRecord = {
+        id: crypto.randomUUID(),
+        sessionId,
+        userText: text,
+        assistantText: "",
+        status: "submitting",
+        createdAt: at,
+        updatedAt: at,
+      };
+      this.turns.unshift(turn);
+      this.turns = this.turns.slice(0, 200);
+      this.transcript.unshift(createTranscriptEntry("user", text, at));
+      this.persistConversationHistory();
+      return turn;
+    },
+    updateTurn(
+      turnId: string,
+      patch: Partial<
+        Pick<
+          TurnRecord,
+          "sessionId" | "assistantText" | "status" | "presentationId" | "error"
+        >
+      >,
+    ): TurnRecord | null {
+      const turn = this.turns.find((candidate) => candidate.id === turnId);
+      if (!turn) return null;
+      Object.assign(turn, patch, { updatedAt: new Date().toISOString() });
+      this.persistConversationHistory();
+      return turn;
+    },
+    markTurnAccepted(turnId: string) {
+      const turn = this.turns.find((candidate) => candidate.id === turnId);
+      if (!turn || turn.status !== "submitting") return turn ?? null;
+      return this.updateTurn(turnId, { status: "accepted", error: undefined });
+    },
+    markTurnFailed(turnId: string, error: string) {
+      return this.updateTurn(turnId, { status: "failed", error });
+    },
+    failPendingGatewayTurns(error: string) {
+      let changed = false;
+      const updatedAt = new Date().toISOString();
+      for (const turn of this.turns) {
+        if (
+          turn.status !== "submitting" &&
+          turn.status !== "accepted" &&
+          turn.status !== "generating"
+        ) continue;
+        turn.status = "failed";
+        turn.error = error;
+        turn.updatedAt = updatedAt;
+        changed = true;
+      }
+      if (changed) this.persistConversationHistory();
+    },
+    findPendingTurn(
+      sessionId: string,
+      statuses: readonly TurnStatus[],
+    ): TurnRecord | null {
+      const allowed = new Set(statuses);
+      for (let index = this.turns.length - 1; index >= 0; index -= 1) {
+        const turn = this.turns[index];
+        if (turn?.sessionId === sessionId && allowed.has(turn.status)) return turn;
+      }
+      return null;
+    },
+    markNextTurnGenerating(sessionId: string): TurnRecord | null {
+      const turn = this.findPendingTurn(sessionId, ["submitting", "accepted"]);
+      return turn ? this.updateTurn(turn.id, { status: "generating" }) : null;
+    },
+    receiveAssistantTurn(
+      sessionId: string,
+      assistantText: string,
+      presentationId: string,
+      ttsEnabled: boolean,
+      at: string,
+    ): TurnRecord {
+      const pending = this.findPendingTurn(sessionId, [
+        "generating",
+        "accepted",
+        "submitting",
+      ]);
+      if (pending) {
+        return this.updateTurn(pending.id, {
+          assistantText,
+          presentationId,
+          status: ttsEnabled ? "synthesizing" : "playing",
+          error: undefined,
+        })!;
+      }
+      const turn: TurnRecord = {
+        id: crypto.randomUUID(),
+        sessionId,
+        userText: "",
+        assistantText,
+        status: ttsEnabled ? "synthesizing" : "playing",
+        presentationId,
+        createdAt: at,
+        updatedAt: at,
+      };
+      this.turns.unshift(turn);
+      this.persistConversationHistory();
+      return turn;
+    },
+    markPresentationTurn(
+      presentationId: string,
+      status: TurnStatus,
+      error?: string,
+    ) {
+      const turn = this.turns.find(
+        (candidate) => candidate.presentationId === presentationId,
+      );
+      return turn
+        ? this.updateTurn(turn.id, { status, error })
+        : null;
+    },
+    enqueuePresentation(presentation: PresentationPlan) {
+      if (presentation.interruption === "replace") {
+        this.pendingPresentations = [];
+      }
+      if (
+        presentation.dedupeKey &&
+        (this.activePresentation?.dedupeKey === presentation.dedupeKey ||
+          this.pendingPresentations.some(
+            (candidate) => candidate.dedupeKey === presentation.dedupeKey,
+          ))
+      ) {
+        return false;
+      }
+      this.pendingPresentations.push(presentation);
+      return true;
+    },
+    takePendingPresentations(): PresentationPlan[] {
+      const pending = [...this.pendingPresentations];
+      this.pendingPresentations = [];
+      return pending;
+    },
+    startPresentation(presentation: PresentationPlan) {
+      this.activePresentation = presentation;
+      this.activePlan = presentation.displayPlan;
+    },
+    clearPresentations() {
+      this.pendingPresentations = [];
+      this.activePresentation = null;
+      this.activePlan = null;
     },
     async persistDesktopSettings() {
       try {
@@ -250,7 +431,12 @@ export const useDesktopStore = defineStore("desktop", {
     },
     requestPetRetreat() {
       const changed = this.transitionPetRuntime("retreat");
-      if (changed) this.clearPendingAfterEmerge();
+      if (changed) {
+        if (this.pendingAfterEmerge.action.type === "presentation") {
+          this.pendingPresentations = [];
+        }
+        this.clearPendingAfterEmerge();
+      }
       return changed;
     },
     completePetRetreat() {
@@ -260,7 +446,12 @@ export const useDesktopStore = defineStore("desktop", {
     },
     requestPetHide() {
       const changed = this.transitionPetRuntime("hide");
-      if (changed) this.clearPendingAfterEmerge();
+      if (changed) {
+        if (this.pendingAfterEmerge.action.type === "presentation") {
+          this.pendingPresentations = [];
+        }
+        this.clearPendingAfterEmerge();
+      }
       return changed;
     },
     enterPetChat() {
@@ -323,6 +514,7 @@ export const useDesktopStore = defineStore("desktop", {
       this.wakePet();
     },
     applyPreviewMotion(motion: DisplayMotion) {
+      this.clearActiveMotionFeedbackCandidate();
       const speaking = motion !== "idle";
       if (speaking) {
         this.transitionPetRuntime("speak");
@@ -350,6 +542,11 @@ export const useDesktopStore = defineStore("desktop", {
       }
       this.expressionMapVersion = snapshot.expressionMapVersion;
       this.motionMapVersion = snapshot.motionMapVersion;
+      if (snapshot.turns) this.turns = snapshot.turns;
+      if (snapshot.activeMotionFeedbackPlaybackId !== undefined) {
+        this.activeMotionFeedbackPlaybackId =
+          snapshot.activeMotionFeedbackPlaybackId;
+      }
       this.syncPetRuntime(snapshot.petRuntime);
     },
     updateTtsSettings(settings: LocalDesktopConfig["ttsSettings"]) {
@@ -364,6 +561,10 @@ export const useDesktopStore = defineStore("desktop", {
         this.recentMotionPlaybacks,
         [playback],
       );
+      this.activeMotionFeedbackPlaybackId = playback.motionPlanId;
+    },
+    clearActiveMotionFeedbackCandidate() {
+      this.activeMotionFeedbackPlaybackId = null;
     },
     mergeRecentMotionPlaybackHistory(playbacks: MotionPlaybackSummary[]) {
       this.recentMotionPlaybacks = mergeRecentMotionPlaybacks(
@@ -383,6 +584,9 @@ export const useDesktopStore = defineStore("desktop", {
         ...this.localConfig,
         pomodoro,
       });
+    },
+    setPomodoroState(state: PomodoroState) {
+      this.pomodoroState = state;
     },
     updatePetTriggerSettings(settings: LocalDesktopConfig["petTriggers"]) {
       const petTriggers = sanitizePetTriggerSettings(
@@ -472,7 +676,7 @@ export const useDesktopStore = defineStore("desktop", {
         },
       });
     },
-    setSegment(index: number, speaking = true) {
+    setSegment(index: number, speaking = true, durationMs?: number) {
       if (!this.activePlan) return;
       const segment = this.activePlan.segments[index];
       if (!segment) return;
@@ -495,6 +699,10 @@ export const useDesktopStore = defineStore("desktop", {
         motion: segment.motion ?? (speaking ? "speaking" : "idle"),
         speaking,
         currentSegmentIndex: index,
+        segmentDurationMs:
+          typeof durationMs === "number" && Number.isFinite(durationMs)
+            ? Math.max(0, durationMs)
+            : null,
         activePresentationId: this.activePresentation?.id ?? null,
         bubbleText: segment.text,
         lastEventAt: new Date().toISOString(),
@@ -507,9 +715,13 @@ export const useDesktopStore = defineStore("desktop", {
       this.syncPetRuntime({
         motion: "idle",
         speaking: false,
+        segmentDurationMs: null,
         activePresentationId: null,
+        bubbleText: "",
         lastEventAt: new Date().toISOString(),
       });
+      this.activePresentation = null;
+      this.activePlan = null;
     },
     finishSpeaking() {
       this.finishPresentation();
@@ -706,6 +918,9 @@ export const useDesktopStore = defineStore("desktop", {
               ),
             );
           } else {
+            this.failPendingGatewayTurns(
+              event.reason || "The connection closed before the reply completed.",
+            );
             this.clearPendingAfterEmerge();
             if (event.reason) {
               this.gatewayConnectionError = event.reason;
@@ -726,29 +941,35 @@ export const useDesktopStore = defineStore("desktop", {
           break;
         case "message.started":
           this.sessionId = event.sessionId;
-          this.activePlan = null;
-          this.activePresentation = null;
+          this.markNextTurnGenerating(event.sessionId);
           this.clearPendingAfterEmerge();
-          if (this.petRuntime.speaking) {
-            this.transitionPetRuntime("finish_speaking");
-          }
           if (this.petRuntime.status === "hidden") {
             this.requestPetEmerge();
           }
-          this.syncPetRuntime({
-            emotion: "thinking",
-            expressionKey: "thinking",
-            motion: "idle",
-            speaking: false,
-            lastEventAt: event.at,
-          });
+          if (!this.petRuntime.speaking) {
+            this.syncPetRuntime({
+              emotion: "thinking",
+              expressionKey: "thinking",
+              motion: "idle",
+              speaking: false,
+              lastEventAt: event.at,
+            });
+          }
           break;
         case "message.completed": {
-          const presentation = presentationPlanFromDesktopEvent(event);
-          if (!presentation) return;
+          const plannedPresentation = presentationPlanFromDesktopEvent(event);
+          if (!plannedPresentation) return;
           this.sessionId = event.sessionId;
-          this.activePresentation = presentation;
-          this.activePlan = presentation.displayPlan;
+          this.clearActiveMotionFeedbackCandidate();
+          const turn = this.receiveAssistantTurn(
+            event.sessionId,
+            plannedPresentation.displayPlan.text,
+            plannedPresentation.id,
+            plannedPresentation.ttsEnabled,
+            event.at,
+          );
+          const presentation = { ...plannedPresentation, turnId: turn.id };
+          this.enqueuePresentation(presentation);
           this.transcript.unshift(
             createTranscriptEntry("assistant",
               presentation.displayPlan.text,
@@ -764,10 +985,10 @@ export const useDesktopStore = defineStore("desktop", {
           break;
         }
         case "notification.error": {
+          this.clearActiveMotionFeedbackCandidate();
           const presentation = presentationPlanFromDesktopEvent(event);
-          this.activePresentation = presentation;
-          this.activePlan = presentation?.displayPlan ?? this.activePlan;
           if (presentation) {
+            this.enqueuePresentation(presentation);
             if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
               this.queueErrorAfterEmerge();
             } else {
@@ -789,18 +1010,16 @@ export const useDesktopStore = defineStore("desktop", {
           break;
         }
         case "notification.reminder": {
+          this.clearActiveMotionFeedbackCandidate();
           const presentation = presentationPlanFromDesktopEvent(event);
           if (!presentation) break;
           if (petRuntimeNeedsEmerge(this.petRuntime.status)) {
-            this.activePresentation = presentation;
-            this.activePlan = presentation.displayPlan;
+            this.enqueuePresentation(presentation);
             this.queuePresentationStart();
           } else if (this.petRuntime.speaking || this.petRuntime.status === "chat") {
-            this.activePresentation = presentation;
-            this.activePlan = presentation.displayPlan;
+            this.enqueuePresentation(presentation);
           } else {
-            this.activePresentation = presentation;
-            this.activePlan = presentation.displayPlan;
+            this.enqueuePresentation(presentation);
             this.transitionPetRuntime("speak");
             this.syncPetRuntime({
               emotion: "happy",
@@ -818,7 +1037,16 @@ export const useDesktopStore = defineStore("desktop", {
         }
         case "user.message.submitted":
           this.sessionId = event.sessionId;
-          this.transcript.unshift(createTranscriptEntry("user", event.text, event.at));
+          if (
+            !this.turns.some(
+              (turn) =>
+                turn.sessionId === event.sessionId &&
+                turn.userText === event.text &&
+                turn.createdAt === event.at,
+            )
+          ) {
+            this.beginUserTurn(event.text, event.sessionId, event.at);
+          }
           this.enterPetChat();
           this.syncPetRuntime({
             emotion: "thinking",

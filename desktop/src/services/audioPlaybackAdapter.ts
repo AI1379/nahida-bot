@@ -16,6 +16,8 @@ export interface AudioPlaybackRequest {
 }
 
 export interface PreloadedAudioHandle {
+  /** Provider-reported artifact duration, used to time motion planning. */
+  durationMs?: number;
   play(signal: AbortSignal): Promise<void>;
   dispose(): void;
 }
@@ -26,9 +28,8 @@ export interface AudioPlaybackAdapter {
   stop(): void;
   /**
    * Fetch audio without playing it. Returns a handle that can be played
-   * later via {@link PreloadedAudioHandle.play}. The caller can preload
-   * multiple segments upfront, then play them sequentially so that text
-   * display and audio playback start at the same time.
+   * later via {@link PreloadedAudioHandle.play}. The caller may fetch the next
+   * segment while the current handle is playing.
    */
   fetch(
     request: AudioPlaybackRequest,

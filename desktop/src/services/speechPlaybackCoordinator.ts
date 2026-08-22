@@ -13,12 +13,16 @@ import {
 export type SegmentPlaybackMode = "audio" | "timed";
 
 export interface SpeechPlaybackCallbacks {
+  onPresentationStart?: (
+    presentation: PresentationPlan,
+  ) => void | Promise<void>;
   onSegmentStart?: (
     presentation: PresentationPlan,
     index: number,
     segment: DisplaySegment,
     mode: SegmentPlaybackMode,
-  ) => void;
+    durationMs: number,
+  ) => void | Promise<void>;
   onSegmentFallback?: (
     presentation: PresentationPlan,
     index: number,
@@ -26,10 +30,20 @@ export interface SpeechPlaybackCallbacks {
     error: unknown,
   ) => void;
   onPresentationComplete?: (presentation: PresentationPlan) => void;
+  onPresentationInterrupted?: (presentation: PresentationPlan) => void;
+  onPresentationError?: (
+    presentation: PresentationPlan,
+    error: unknown,
+  ) => void;
 }
 
 interface QueuedPresentation {
   presentation: PresentationPlan;
+}
+
+interface SegmentAudioPreparation {
+  handle: PreloadedAudioHandle | null;
+  error?: unknown;
 }
 
 function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -124,7 +138,11 @@ export class SpeechPlaybackCoordinator {
           this.callbacks.onPresentationComplete?.(item.presentation);
         }
       } catch (error) {
-        if (!isAudioPlaybackAborted(error)) throw error;
+        if (isAudioPlaybackAborted(error)) {
+          this.callbacks.onPresentationInterrupted?.(item.presentation);
+        } else {
+          this.callbacks.onPresentationError?.(item.presentation, error);
+        }
       } finally {
         this.activeDedupeKey = null;
         if (this.activeAbortController === controller) {
@@ -146,73 +164,123 @@ export class SpeechPlaybackCoordinator {
     signal: AbortSignal,
   ): Promise<void> {
     if (signal.aborted) return;
-    const preloaded = await this.preloadSegments(presentation, signal);
+    await this.callbacks.onPresentationStart?.(presentation);
+    const segments = presentation.displayPlan.segments;
+    let pendingPreparation: Promise<SegmentAudioPreparation> | null =
+      segments.length
+        ? this.prepareSegment(presentation, segments[0]!, signal)
+        : null;
 
-    for (
-      let index = 0;
-      index < presentation.displayPlan.segments.length;
-      index += 1
-    ) {
-      const segment = presentation.displayPlan.segments[index];
-      if (!segment) continue;
-
-      const handle = preloaded[index];
-      const mode = handle ? "audio" : "timed";
-      this.callbacks.onSegmentStart?.(
-        presentation,
-        index,
-        segment,
-        mode,
-      );
-
-      if (handle) {
-        try {
-          await handle.play(signal);
-        } catch (error) {
-          if (isAudioPlaybackAborted(error)) throw error;
-          this.callbacks.onSegmentFallback?.(
-            presentation,
-            index,
-            segment,
-            error,
-          );
-          await abortableDelay(estimatedSegmentDuration(segment), signal);
-        } finally {
-          handle.dispose();
-        }
-      } else {
-        await abortableDelay(estimatedSegmentDuration(segment), signal);
+    try {
+      for (let index = 0; index < segments.length; index += 1) {
+        const segment = segments[index];
+        if (!segment || !pendingPreparation) continue;
+        const preparation = await pendingPreparation;
+        const handle = preparation.handle;
+        const durationMs =
+          handle?.durationMs ?? estimatedSegmentDuration(segment);
+        const nextSegment = segments[index + 1];
+        pendingPreparation = nextSegment
+          ? this.prepareSegment(presentation, nextSegment, signal)
+          : null;
+        await this.playPreparedSegment(
+          presentation,
+          index,
+          segment,
+          preparation,
+          durationMs,
+          signal,
+        );
       }
-
-      await abortableDelay(segment.pauseAfterMs ?? 0, signal);
+    } finally {
+      if (pendingPreparation) {
+        try {
+          (await pendingPreparation).handle?.dispose();
+        } catch {
+          // An aborted in-flight fetch has no handle to release.
+        }
+      }
     }
   }
 
-  private async preloadSegments(
+  private async playPreparedSegment(
     presentation: PresentationPlan,
+    index: number,
+    segment: DisplaySegment,
+    preparation: SegmentAudioPreparation,
+    durationMs: number,
     signal: AbortSignal,
-  ): Promise<(PreloadedAudioHandle | null)[]> {
-    const results: (PreloadedAudioHandle | null)[] = [];
-    for (const segment of presentation.displayPlan.segments) {
-      if (
-        presentation.ttsEnabled &&
-        Boolean(segment.voice) &&
-        this.adapter.isAvailable()
-      ) {
-        try {
-          const handle = await this.adapter.fetch(
-            { text: segment.text, voice: segment.voice },
-            signal,
-          );
-          results.push(handle);
-        } catch {
-          results.push(null);
-        }
-      } else {
-        results.push(null);
-      }
+  ): Promise<void> {
+    const handle = preparation.handle;
+    if (preparation.error) {
+      this.callbacks.onSegmentFallback?.(
+        presentation,
+        index,
+        segment,
+        preparation.error,
+      );
     }
-    return results;
+    await this.callbacks.onSegmentStart?.(
+      presentation,
+      index,
+      segment,
+      handle ? "audio" : "timed",
+      durationMs,
+    );
+    if (handle) {
+      await this.playAudioHandle(presentation, index, segment, handle, signal);
+    } else {
+      await abortableDelay(durationMs, signal);
+    }
+    await abortableDelay(segment.pauseAfterMs ?? 0, signal);
+  }
+
+  private async playAudioHandle(
+    presentation: PresentationPlan,
+    index: number,
+    segment: DisplaySegment,
+    handle: PreloadedAudioHandle,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      await handle.play(signal);
+    } catch (error) {
+      if (isAudioPlaybackAborted(error)) throw error;
+      this.callbacks.onSegmentFallback?.(
+        presentation,
+        index,
+        segment,
+        error,
+      );
+      await abortableDelay(estimatedSegmentDuration(segment), signal);
+    } finally {
+      handle.dispose();
+    }
+  }
+
+  private async prepareSegment(
+    presentation: PresentationPlan,
+    segment: DisplaySegment,
+    signal: AbortSignal,
+  ): Promise<SegmentAudioPreparation> {
+    if (
+      !presentation.ttsEnabled ||
+      !segment.voice ||
+      !this.adapter.isAvailable()
+    ) {
+      return { handle: null };
+    }
+    try {
+      return {
+        handle: await this.adapter.fetch(
+          { text: segment.text, voice: segment.voice },
+          signal,
+        ),
+      };
+    } catch (error) {
+      if (isAudioPlaybackAborted(error)) throw error;
+      return { handle: null, error };
+    }
   }
 
   private abortActive(): void {

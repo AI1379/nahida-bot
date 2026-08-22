@@ -73,6 +73,23 @@ class BlockingAudioPlaybackAdapter extends FakeAudioPlaybackAdapter {
   }
 }
 
+class DeferredSecondFetchAdapter extends FakeAudioPlaybackAdapter {
+  releaseSecondFetch: (() => void) | null = null;
+
+  override async fetch(
+    request: AudioPlaybackRequest,
+    _signal: AbortSignal,
+  ): Promise<PreloadedAudioHandle> {
+    if (request.text === "second") {
+      await new Promise<void>((resolve) => {
+        this.releaseSecondFetch = resolve;
+      });
+    }
+    const handle = await super.fetch(request, _signal);
+    return { ...handle, durationMs: request.text === "first" ? 4321 : 1200 };
+  }
+}
+
 function presentation(
   id: string,
   segments: DisplayPlan["segments"],
@@ -130,6 +147,35 @@ describe("SpeechPlaybackCoordinator", () => {
       [1, "audio"],
     ]);
     expect(completed).toEqual(["voice"]);
+  });
+
+  it("starts the first segment while the next segment is still being fetched", async () => {
+    const adapter = new DeferredSecondFetchAdapter();
+    const durations: number[] = [];
+    const coordinator = new SpeechPlaybackCoordinator(adapter, {
+      onSegmentStart(_item, _index, _segment, _mode, durationMs) {
+        durations.push(durationMs);
+      },
+    });
+
+    coordinator.play(
+      presentation("streamed", [
+        { text: "first", voice: { speed: 1 } },
+        { text: "second", voice: { speed: 1 } },
+      ]),
+    );
+    await vi.waitFor(() => {
+      expect(adapter.requests.map((request) => request.text)).toEqual(["first"]);
+      expect(adapter.releaseSecondFetch).not.toBeNull();
+    });
+
+    expect(durations).toEqual([4321]);
+    adapter.releaseSecondFetch?.();
+    await coordinator.whenIdle();
+    expect(adapter.requests.map((request) => request.text)).toEqual([
+      "first",
+      "second",
+    ]);
   });
 
   it("keeps subtitle-only segments visible for the fallback duration", async () => {

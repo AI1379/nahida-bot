@@ -19,6 +19,19 @@ export type DesktopEventHandler = (
 ) => unknown;
 const gatewayNodeEventName = "nahida://gateway-node/event";
 
+export type MessageSubmitResult =
+  | { ok: true; sessionId: string; requestId?: string }
+  | { ok: false; error: string; retryable: boolean };
+
+interface GatewayNodeSubmitResponse {
+  id?: string;
+  ok?: boolean;
+  error?: {
+    message?: string;
+    retryable?: boolean;
+  };
+}
+
 export interface DesktopEventSourceOptions {
   connection?: GatewayConnectionSettings;
 }
@@ -29,12 +42,16 @@ export interface DesktopEventSource {
     options?: DesktopEventSourceOptions,
   ): void;
   stop(): void;
-  submitUserMessage(text: string, sessionId?: string): void;
+  submitUserMessage(
+    text: string,
+    sessionId?: string,
+  ): Promise<MessageSubmitResult>;
   submitMockLlmResult(rawOutput: string): void;
 }
 
 export class MockDesktopEventSource implements DesktopEventSource {
   private unsubscribe: (() => void) | null = null;
+  private active = false;
 
   start(handler: DesktopEventHandler): void {
     if (this.unsubscribe) return;
@@ -45,16 +62,32 @@ export class MockDesktopEventSource implements DesktopEventSource {
       }
     });
     mockBackend.connect();
+    this.active = true;
   }
 
   stop(): void {
     mockBackend.disconnect();
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.active = false;
   }
 
-  submitUserMessage(text: string): void {
+  async submitUserMessage(
+    text: string,
+    sessionId?: string,
+  ): Promise<MessageSubmitResult> {
+    if (!this.active) {
+      return {
+        ok: false,
+        error: "Mock backend is disconnected.",
+        retryable: true,
+      };
+    }
     mockBackend.submitUserMessage(text);
+    return {
+      ok: true,
+      sessionId: sessionId || "desktop:local",
+    };
   }
 
   submitMockLlmResult(rawOutput: string): void {
@@ -109,22 +142,52 @@ export class TauriGatewayNodeEventSource implements DesktopEventSource {
     this.status = null;
   }
 
-  submitUserMessage(text: string, sessionId?: string): void {
+  async submitUserMessage(
+    text: string,
+    sessionId?: string,
+  ): Promise<MessageSubmitResult> {
     const targetSessionId =
       this.status?.defaultSessionId || sessionId || this.status?.sessionId;
     if (!targetSessionId) {
       this.emitLocalError("No gateway session id is configured for desktop input.");
-      return;
+      return {
+        ok: false,
+        error: "No gateway session id is configured for desktop input.",
+        retryable: false,
+      };
     }
 
-    void invoke("gateway_node_submit_input", {
-      input: {
+    try {
+      const envelope = await invoke<GatewayNodeSubmitResponse>(
+        "gateway_node_submit_input",
+        {
+          input: {
+            sessionId: targetSessionId,
+            text,
+          },
+        },
+      );
+      if (envelope.ok !== true) {
+        const error =
+          envelope.error?.message ||
+          "Gateway returned an invalid or rejected message response.";
+        this.emitLocalError(`Failed to submit message: ${error}`);
+        return {
+          ok: false,
+          error,
+          retryable: envelope.error?.retryable ?? false,
+        };
+      }
+      return {
+        ok: true,
         sessionId: targetSessionId,
-        text,
-      },
-    }).catch((error: unknown) => {
-      this.emitLocalError(`Failed to submit message: ${String(error)}`);
-    });
+        requestId: envelope.id,
+      };
+    } catch (error) {
+      const message = `Failed to submit message: ${String(error)}`;
+      this.emitLocalError(message);
+      return { ok: false, error: message, retryable: true };
+    }
   }
 
   submitMockLlmResult(): void {
@@ -302,8 +365,8 @@ export class UnsupportedGatewayEventSource implements DesktopEventSource {
     this.emitted = false;
   }
 
-  submitUserMessage(): void {
-    // No-op: gateway mode unavailable.
+  async submitUserMessage(): Promise<MessageSubmitResult> {
+    return { ok: false, error: this.reason, retryable: false };
   }
 
   submitMockLlmResult(): void {

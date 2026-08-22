@@ -94,6 +94,7 @@ describe("desktop store pet transitions", () => {
       displayPlan,
     });
     store.completePetEmerge();
+    store.startPresentation(store.takePendingPresentations()[0]!);
     store.setSegment(0, true);
 
     expect(store.petRuntime.status).toBe("chat");
@@ -114,6 +115,7 @@ describe("desktop store pet transitions", () => {
       sessionId: "test-session",
       displayPlan,
     });
+    store.startPresentation(store.takePendingPresentations()[0]!);
     store.setSegment(0, false);
 
     expect(store.petRuntime.status).toBe("emerged");
@@ -211,6 +213,72 @@ describe("desktop store pet transitions", () => {
     expect(store.petRuntime.emotion).toBe("offline");
   });
 
+  it("keeps a submitted turn visible through generation, voice, and completion", () => {
+    const store = useDesktopStore();
+    const at = "2026-08-22T00:00:00.000Z";
+    const turn = store.beginUserTurn("你好", "session-turn", at);
+
+    store.markTurnAccepted(turn.id);
+    store.applyDesktopEvent({
+      type: "message.started",
+      source: "gateway",
+      at,
+      sessionId: "session-turn",
+    });
+    store.applyDesktopEvent({
+      type: "message.completed",
+      source: "gateway",
+      at,
+      sessionId: "session-turn",
+      displayPlan: {
+        version: "1.0",
+        text: "你好呀",
+        segments: [
+          {
+            text: "你好呀",
+            emotion: "happy",
+            motion: "wave",
+            voice: { style: "bright" },
+          },
+        ],
+      },
+    });
+
+    const presentation = store.takePendingPresentations()[0]!;
+    expect(store.turns[0]).toMatchObject({
+      id: turn.id,
+      userText: "你好",
+      assistantText: "你好呀",
+      status: "synthesizing",
+      presentationId: presentation.id,
+    });
+    store.completePetEmerge();
+    store.startPresentation(presentation);
+    store.setSegment(0, true, 2345);
+    store.markPresentationTurn(presentation.id, "playing");
+    expect(store.petRuntime.segmentDurationMs).toBe(2345);
+    store.markPresentationTurn(presentation.id, "completed");
+    store.finishPresentation();
+
+    expect(store.turns[0]?.status).toBe("completed");
+    expect(store.activePresentation).toBeNull();
+    expect(store.activePlan).toBeNull();
+  });
+
+  it("preserves a failed submission as a visible turn with its reason", () => {
+    const store = useDesktopStore();
+    store.sessionId = "session-turn";
+    const turn = store.beginUserTurn("发送失败", "session-turn");
+
+    store.markTurnFailed(turn.id, "Gateway rejected the message");
+
+    expect(store.currentSessionTurns[0]).toMatchObject({
+      userText: "发送失败",
+      status: "failed",
+      error: "Gateway rejected the message",
+    });
+  });
+
   it("enters an explicit auth-required state for rejected credentials", () => {
     const store = useDesktopStore();
 
@@ -252,7 +320,7 @@ describe("desktop store pet transitions", () => {
     );
 
     expect(result).toEqual({ ok: true, result: { applied: true } });
-    expect(store.activePresentation).toMatchObject({
+    expect(store.pendingPresentations[0]).toMatchObject({
       bubbleText: "Stand up and stretch",
       interruption: "queue",
       ttsEnabled: true,
@@ -281,7 +349,7 @@ describe("desktop store pet transitions", () => {
         error: { code: "invalid_arguments", retryable: false },
       });
     }
-    expect(store.activePresentation).toBeNull();
+    expect(store.pendingPresentations).toHaveLength(0);
     expect(store.transcript).toHaveLength(0);
   });
 

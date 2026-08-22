@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import GatewayConnectionPanel from "@/components/GatewayConnectionPanel.vue";
+import PomodoroSettingsPanel from "@/components/PomodoroSettingsPanel.vue";
 import RemoteControlSettingsPanel from "@/components/RemoteControlSettingsPanel.vue";
 import PetTriggerSettingsPanel from "@/components/PetTriggerSettingsPanel.vue";
 import MotionDataPanel from "@/components/MotionDataPanel.vue";
@@ -15,6 +16,10 @@ const store = useDesktopStore();
 
 function updateTtsSettings(next: typeof store.localConfig.ttsSettings) {
   store.updateTtsSettings(next);
+}
+
+function updatePomodoroSettings(next: typeof store.localConfig.pomodoro) {
+  store.updatePomodoroSettings(next);
 }
 
 function updateMotionDataCollectionEnabled(enabled: boolean) {
@@ -56,6 +61,14 @@ function updatePetTriggerSettings(next: typeof store.localConfig.petTriggers) {
         />
 
         <RemoteControlSettingsPanel />
+
+        <PomodoroSettingsPanel
+          :settings="store.localConfig.pomodoro"
+          :state="store.pomodoroState"
+          @update="updatePomodoroSettings"
+          @start="props.runtime.startPomodoro"
+          @stop="props.runtime.stopPomodoro"
+        />
 
         <PetTriggerSettingsPanel
           :settings="store.localConfig.petTriggers"

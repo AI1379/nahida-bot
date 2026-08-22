@@ -18,6 +18,7 @@ import { useDesktopStore } from "@/stores/desktop";
 
 const store = useDesktopStore();
 const replyText = ref("");
+const latestTurn = computed(() => store.currentSessionTurns[0] ?? null);
 const windowController = new PetWindowController();
 const proximityWatcher = new PetProximityWatcher();
 const interactive = computed(
@@ -29,7 +30,7 @@ const petRenderMode = computed(() =>
     : store.petRuntime.renderMode,
 );
 const latestPlayback = computed(
-  () => store.recentMotionPlaybacks[0] ?? null,
+  () => store.latestMotionFeedbackPlayback,
 );
 let unlistenRuntimeSnapshots: UnlistenFn | null = null;
 let unlistenLipSyncEnergy: UnlistenFn | null = null;
@@ -152,6 +153,7 @@ onBeforeUnmount(() => {
       renderer-profile="pet"
       :model="store.model"
       :speaking="store.speaking"
+      :motion-duration-ms="store.petRuntime.segmentDurationMs"
       :lip-sync-energy="lipSyncEnergy"
       :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
       playback-surface="pet"
@@ -178,6 +180,13 @@ onBeforeUnmount(() => {
       class="pet-window__composer"
       @submit.prevent="submitReply"
     >
+      <span
+        v-if="latestTurn && latestTurn.status !== 'completed'"
+        class="pet-window__message-status"
+        :data-status="latestTurn.status"
+      >
+        {{ latestTurn.status === "failed" ? latestTurn.error : latestTurn.status }}
+      </span>
       <input
         v-model="replyText"
         type="text"

@@ -74,8 +74,6 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     request: AudioPlaybackRequest,
     signal: AbortSignal,
   ): Promise<PreloadedAudioHandle> {
-    this.stop();
-
     const bearer = this.getAdminBearer();
     if (!bearer) {
       throw new Error("Admin API token is required for gateway TTS.");
@@ -110,9 +108,11 @@ export class GatewayAudioAdapter implements AudioPlaybackAdapter {
     let energyMonitor: MediaElementEnergyMonitor | null = null;
 
     return {
+      durationMs: jobResp.duration_ms,
       play: async (playSignal: AbortSignal) => {
         if (disposed) throw new AudioPlaybackAbortedError();
         if (playSignal.aborted) throw new AudioPlaybackAbortedError();
+        this.stop();
         const abortController = new AbortController();
         energyMonitor = this.createEnergyMonitor(audio);
         this.active = { audio, abortController, energyMonitor };

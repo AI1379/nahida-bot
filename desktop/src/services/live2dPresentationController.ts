@@ -35,6 +35,7 @@ import type { PetRuntimeStatus, RenderMode } from "@/domain/runtime";
 import type { Live2DRenderer } from "@/renderers/live2dRenderer";
 import { adaptDisplaySegmentToMotionIntent } from "@/services/displayPlanMotionAdapter";
 import { LocalMotionTelemetry } from "@/services/motionDatasetStorage";
+import { MotionLayerScheduler } from "@/services/motionLayerScheduler";
 import { createMotionCacheKey, PersistentMotionCache } from "@/services/motionCache";
 import { PriorityMotionMixer } from "@/services/priorityMotionMixer";
 import {
@@ -80,6 +81,7 @@ export interface Live2DPresentationState {
   motion: DisplayMotion;
   renderMode: RenderMode;
   assistantText?: string;
+  motionDurationMs?: number;
 }
 
 interface MotionExecutionTelemetryInput {
@@ -124,13 +126,14 @@ export class Live2DPresentationController {
   private renderMode: RenderMode = "idle";
   private motionIntentCounter = 0;
   private readonly motionSessionId = createMotionSessionId();
-  private motionSequence = 0;
+  private motionRequestGeneration = 0;
   private audioEnergy = 0;
   private activeMotionPlanId: string | null = null;
   private recentIntents: MotionIntent[] = [];
   private readonly motionCache: MotionCache;
   private readonly motionDriver: MotionDriver;
   private readonly motionMixer: MotionMixer;
+  private readonly motionLayerScheduler: MotionLayerScheduler;
   private readonly motionPlanner: MotionPlanner;
   private readonly motionSynthesizer: MotionSynthesizer;
   private readonly motionTelemetry: MotionTelemetry;
@@ -149,6 +152,10 @@ export class Live2DPresentationController {
     this.motionCache = options.motionCache ?? new PersistentMotionCache();
     this.motionValidator = options.motionValidator ?? new RuleMotionValidator();
     this.motionMixer = options.motionMixer ?? new PriorityMotionMixer();
+    this.motionLayerScheduler = new MotionLayerScheduler(
+      this.motionMixer,
+      this.renderer,
+    );
     this.motionPlanner = options.motionPlanner ?? new RuleMotionPlanner();
     this.motionSynthesizer =
       options.motionSynthesizer ?? new PrimitiveMotionSynthesizer();
@@ -182,6 +189,7 @@ export class Live2DPresentationController {
       state.motion,
       state.emotion,
       state.assistantText,
+      state.motionDurationMs,
     );
     return {
       expression,
@@ -220,16 +228,20 @@ export class Live2DPresentationController {
     motion: DisplayMotion,
     emotion: DisplayEmotion = "neutral",
     assistantText = "",
+    durationMs?: number,
   ): Promise<Live2DMotionResolution> {
+    const requestGeneration = ++this.motionRequestGeneration;
     this.activeMotionPlanId = null;
     const attempts: Live2DMotionAttempt[] = [];
     const mappedTarget = this.manifest?.motionMap[motion] ?? null;
 
     if (motion === "idle") {
+      this.motionLayerScheduler.clear();
       this.renderer.clearRuntimeMotion();
     }
 
     if (mappedTarget?.source === "none") {
+      this.motionLayerScheduler.clear();
       this.renderer.clearRuntimeMotion();
       attempts.push({
         source: "none",
@@ -245,11 +257,20 @@ export class Live2DPresentationController {
     }
 
     if (mappedTarget?.source === "model") {
+      this.motionLayerScheduler.clear();
       this.renderer.clearRuntimeMotion();
       const applied = await this.renderer.playModelMotion(
         mappedTarget.group,
         mappedTarget.index,
       );
+      if (!this.isMotionRequestCurrent(requestGeneration)) {
+        return {
+          requestedMotion: motion,
+          mappedTarget,
+          attempts,
+          appliedSource: "none",
+        };
+      }
       attempts.push({
         source: "model",
         label: `${mappedTarget.group} #${mappedTarget.index}`,
@@ -269,8 +290,10 @@ export class Live2DPresentationController {
       const applied = await this.tryProceduralMotion(
         mappedTarget.motion,
         emotion,
-        assistantText,
+        this.semanticMotionText(motion, assistantText),
         attempts,
+        durationMs,
+        requestGeneration,
       );
       if (applied) {
         return {
@@ -289,8 +312,10 @@ export class Live2DPresentationController {
       (await this.tryProceduralMotion(
         motion,
         emotion,
-        assistantText,
+        this.semanticMotionText(motion, assistantText),
         attempts,
+        durationMs,
+        requestGeneration,
       ))
     ) {
       return {
@@ -325,6 +350,7 @@ export class Live2DPresentationController {
   }
 
   dispose(): void {
+    this.motionLayerScheduler.clear();
     this.renderer.dispose();
     this.manifest = null;
   }
@@ -334,6 +360,7 @@ export class Live2DPresentationController {
   }
 
   async playPrimitive(primitive: MotionPrimitiveName): Promise<boolean> {
+    const requestGeneration = ++this.motionRequestGeneration;
     this.activeMotionPlanId = null;
     const intent: MotionIntent = {
       id: this.nextMotionIntentId("debug"),
@@ -347,7 +374,15 @@ export class Live2DPresentationController {
       priority: "background",
       tags: ["debug", `primitive:${primitive}`],
     };
-    return this.driveProceduralMotion(intent, primitive, "", "debug");
+    return this.driveProceduralMotion(
+      intent,
+      primitive,
+      "",
+      "debug",
+      false,
+      primitive,
+      requestGeneration,
+    );
   }
 
   private expressionCandidates(
@@ -400,6 +435,8 @@ export class Live2DPresentationController {
     emotion: DisplayEmotion,
     assistantText: string,
     attempts: Live2DMotionAttempt[],
+    durationMs: number | undefined,
+    requestGeneration: number,
   ): Promise<boolean> {
     const primitive = displayMotionPrimitiveMap[motion];
     const adapted = adaptDisplaySegmentToMotionIntent(
@@ -409,7 +446,10 @@ export class Live2DPresentationController {
         segmentIndex: 0,
         totalSegments: 1,
         speaking: motion === "speaking",
-        durationMs: motionPrimitiveDefaultDurationMs(primitive),
+        durationMs:
+          typeof durationMs === "number" && Number.isFinite(durationMs)
+            ? Math.max(100, durationMs)
+            : motionPrimitiveDefaultDurationMs(primitive),
       },
     );
     const resolved = await this.resolveMotionIntent(
@@ -417,7 +457,9 @@ export class Live2DPresentationController {
       assistantText,
       primitive,
       motion === "idle" || motion === "speaking",
+      requestGeneration,
     );
+    if (!this.isMotionRequestCurrent(requestGeneration)) return false;
     const applied = await this.driveProceduralMotion(
       resolved.intent,
       motion === "idle" || motion === "speaking" ? undefined : primitive,
@@ -425,6 +467,7 @@ export class Live2DPresentationController {
       undefined,
       resolved.cacheHit,
       primitive,
+      requestGeneration,
     );
     attempts.push({
       source: "procedural",
@@ -441,6 +484,7 @@ export class Live2DPresentationController {
     source: MotionLayerSource = this.layerSourceForIntent(intent),
     cacheHit = false,
     fallbackPrimitive: MotionPrimitiveName = primitiveHint ?? "idle-breathe",
+    requestGeneration = this.motionRequestGeneration,
   ): Promise<boolean> {
     const previousPose = this.renderer.getNormalizedPose();
     const profile = createDefaultModelPerformanceProfile(
@@ -455,6 +499,7 @@ export class Live2DPresentationController {
         audioEnergy: this.audioEnergy,
         modelProfile: activeProfile,
       });
+      if (!this.isMotionRequestCurrent(requestGeneration)) return false;
       const primitiveSegment = motionPlan.segments.find(
         (segment) =>
           segment.type === "primitive" && isMotionPrimitiveName(segment.name),
@@ -472,6 +517,7 @@ export class Live2DPresentationController {
         fallbackPrimitive,
       );
     }
+    if (!this.isMotionRequestCurrent(requestGeneration)) return false;
     const selectedPrimitive =
       primitiveHint ?? plannedPrimitive ?? fallbackPrimitive;
     if (plannedPrimitive !== selectedPrimitive) {
@@ -503,6 +549,7 @@ export class Live2DPresentationController {
           },
         }),
       );
+      if (!this.isMotionRequestCurrent(requestGeneration)) return false;
       const drivenPrimitive = isMotionPrimitiveName(result.primitive)
         ? result.primitive
         : (primitiveHint ?? fallbackPrimitive);
@@ -513,7 +560,12 @@ export class Live2DPresentationController {
           })
         : null;
       if (validation?.clip) {
-        const applied = this.playMixedClip(intent, validation.clip, source);
+        const applied = this.playMixedClip(
+          intent,
+          validation.clip,
+          source,
+          requestGeneration,
+        );
         if (applied) this.activeMotionPlanId = motionPlan.id;
         if (applied) {
           this.recordExecution({
@@ -560,7 +612,12 @@ export class Live2DPresentationController {
       clip: safeClip,
       warnings: validation?.warnings ?? [],
     };
-    const applied = this.playMixedClip(intent, safeClip, "safety");
+    const applied = this.playMixedClip(
+      intent,
+      safeClip,
+      "safety",
+      requestGeneration,
+    );
     const safePlan = createPrimitiveMotionPlan(
       { ...intent, durationMs: safeClip.durationMs, loopable: true },
       { previousPose, audioEnergy: this.audioEnergy, modelProfile: activeProfile },
@@ -604,16 +661,10 @@ export class Live2DPresentationController {
     intent: MotionIntent,
     clip: Parameters<Live2DRenderer["playNormalizedMotion"]>[0],
     source: MotionLayerSource,
+    requestGeneration: number,
   ): boolean {
-    const mixed = this.motionMixer.mix([
-      {
-        id: `${intent.id}:layer`,
-        source,
-        sequence: ++this.motionSequence,
-        clip,
-      },
-    ]);
-    return mixed ? this.renderer.playNormalizedMotion(mixed) : false;
+    if (!this.isMotionRequestCurrent(requestGeneration)) return false;
+    return this.motionLayerScheduler.play(intent.id, source, clip);
   }
 
   private layerSourceForIntent(intent: MotionIntent): MotionLayerSource {
@@ -630,7 +681,7 @@ export class Live2DPresentationController {
     cacheHit: boolean,
     modelProfileVersion: string,
   ): void {
-    if (!this.motionDataCollectionEnabled()) return;
+    if (!this.motionDataCollectionEnabled() || !assistantText.trim()) return;
     this.ignoreTelemetryFailure(
       this.motionTelemetry.recordDecision({
         schemaVersion: 1,
@@ -653,7 +704,9 @@ export class Live2DPresentationController {
   }
 
   private recordExecution(input: MotionExecutionTelemetryInput): void {
-    if (!this.motionDataCollectionEnabled()) return;
+    if (!this.motionDataCollectionEnabled() || !input.assistantText.trim()) {
+      return;
+    }
     const record: MotionExecutionRecord = {
       schemaVersion: 1,
       type: "motion_execution",
@@ -679,23 +732,21 @@ export class Live2DPresentationController {
       playbackSurface: this.playbackSurface,
     };
     this.ignoreTelemetryFailure(this.motionTelemetry.recordExecution(record));
-    if (input.assistantText.trim()) {
-      this.onMotionExecuted?.({
-        schemaVersion: 1,
-        timestamp: record.timestamp,
-        decisionId: record.decisionId,
-        motionPlanId: record.motionPlanId,
-        assistantText: input.assistantText,
-        surface: this.playbackSurface,
-        intent: record.intent,
-        modelId: record.modelId,
-        primitive: record.primitive,
-        validationStatus: record.validationStatus,
-        fallbackUsed: record.fallbackUsed,
-        motionPlan: record.motionPlan,
-        normalizedClip: record.normalizedClip,
-      });
-    }
+    this.onMotionExecuted?.({
+      schemaVersion: 1,
+      timestamp: record.timestamp,
+      decisionId: record.decisionId,
+      motionPlanId: record.motionPlanId,
+      assistantText: input.assistantText,
+      surface: this.playbackSurface,
+      intent: record.intent,
+      modelId: record.modelId,
+      primitive: record.primitive,
+      validationStatus: record.validationStatus,
+      fallbackUsed: record.fallbackUsed,
+      motionPlan: record.motionPlan,
+      normalizedClip: record.normalizedClip,
+    });
   }
 
   private recordInvalid(
@@ -704,7 +755,7 @@ export class Live2DPresentationController {
     reason: string,
     details: Record<string, unknown>,
   ): void {
-    if (!this.motionDataCollectionEnabled()) return;
+    if (!this.motionDataCollectionEnabled() || !assistantText.trim()) return;
     this.ignoreTelemetryFailure(
       this.motionTelemetry.recordInvalid({
         schemaVersion: 1,
@@ -728,6 +779,7 @@ export class Live2DPresentationController {
     assistantText: string,
     primitive: MotionPrimitiveName,
     allowSemanticPlanning: boolean,
+    requestGeneration: number,
   ): Promise<{ intent: MotionIntent; cacheHit: boolean }> {
     if (!assistantText.trim()) return { intent, cacheHit: false };
     const profileVersion =
@@ -748,6 +800,9 @@ export class Live2DPresentationController {
     });
     try {
       const cached = await this.motionCache.get(key);
+      if (!this.isMotionRequestCurrent(requestGeneration)) {
+        return { intent, cacheHit: false };
+      }
       if (cached) {
         const resolved = { ...cached.intent, id: intent.id, source: "cache" as const };
         this.rememberIntent(resolved);
@@ -765,6 +820,9 @@ export class Live2DPresentationController {
             speechDurationEstimateMs: intent.durationMs,
           })
         : intent;
+      if (!this.isMotionRequestCurrent(requestGeneration)) {
+        return { intent, cacheHit: false };
+      }
       const resolved = { ...planned, id: intent.id };
       await this.motionCache.set({
         key,
@@ -776,6 +834,9 @@ export class Live2DPresentationController {
         intent: resolved,
         createdAt: new Date().toISOString(),
       });
+      if (!this.isMotionRequestCurrent(requestGeneration)) {
+        return { intent, cacheHit: false };
+      }
       this.rememberIntent(resolved);
       return { intent: resolved, cacheHit: false };
     } catch {
@@ -787,6 +848,16 @@ export class Live2DPresentationController {
 
   private rememberIntent(intent: MotionIntent): void {
     this.recentIntents = [...this.recentIntents.slice(-7), intent];
+  }
+
+  private isMotionRequestCurrent(generation: number): boolean {
+    return generation === this.motionRequestGeneration;
+  }
+
+  private semanticMotionText(motion: DisplayMotion, assistantText: string): string {
+    return motion === "idle" || motion === "emerge" || motion === "retreat"
+      ? ""
+      : assistantText;
   }
 
   private driverRuntimeStatus(primitive: MotionPrimitiveName): PetRuntimeStatus {

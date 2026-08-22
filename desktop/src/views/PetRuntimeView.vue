@@ -4,6 +4,7 @@ import { isTauri } from "@tauri-apps/api/core";
 
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionFeedbackPanel from "@/components/MotionFeedbackPanel.vue";
+import RuntimeConversationPanel from "@/components/RuntimeConversationPanel.vue";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
@@ -14,6 +15,8 @@ const props = defineProps<{
 
 const store = useDesktopStore();
 const replyText = ref("");
+const submitting = ref(false);
+const replayedPlanId = ref("");
 const recordsLocalStage = !isTauri();
 const live2dStage = ref<{
   replayNormalizedClip: (
@@ -25,7 +28,7 @@ const activeSegment = computed(
   () => store.activePlan?.segments[store.currentSegmentIndex] ?? null,
 );
 const latestPlayback = computed(
-  () => store.recentMotionPlaybacks[0] ?? null,
+  () => store.latestMotionFeedbackPlayback,
 );
 const previewRenderMode = computed(() =>
   store.petRuntime.renderMode === "suspended"
@@ -33,11 +36,13 @@ const previewRenderMode = computed(() =>
     : store.petRuntime.renderMode,
 );
 
-function submitReply() {
+async function submitReply() {
   const trimmed = replyText.value.trim();
-  if (!trimmed) return;
-  props.runtime.submitUserMessage(trimmed);
-  replyText.value = "";
+  if (!trimmed || submitting.value) return;
+  submitting.value = true;
+  const result = await props.runtime.submitUserMessage(trimmed);
+  if (result.ok) replyText.value = "";
+  submitting.value = false;
 }
 
 function handleMotionExecuted(playback: MotionPlaybackSummary): void {
@@ -45,7 +50,9 @@ function handleMotionExecuted(playback: MotionPlaybackSummary): void {
 }
 
 function replayMotion(playback: MotionPlaybackSummary): void {
-  live2dStage.value?.replayNormalizedClip(playback.normalizedClip);
+  if (live2dStage.value?.replayNormalizedClip(playback.normalizedClip)) {
+    replayedPlanId.value = playback.motionPlanId;
+  }
 }
 </script>
 
@@ -60,6 +67,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       renderer-profile="preview"
       :model="store.model"
       :speaking="store.speaking"
+      :motion-duration-ms="store.petRuntime.segmentDurationMs"
       :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
       :motion-telemetry-enabled="recordsLocalStage"
       playback-surface="runtime"
@@ -73,12 +81,19 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       @motion-executed="handleMotionExecuted"
     />
 
+    <RuntimeConversationPanel
+      :session-id="store.sessionId"
+      :turns="store.currentSessionTurns"
+    />
+
     <MotionFeedbackPanel
       class="pet-runtime__motion-feedback"
       :playback="latestPlayback"
       :enabled="store.localConfig.motionDataCollectionEnabled"
       compact
       replayable
+      rating-surface="runtime"
+      :replay-of="replayedPlanId === latestPlayback?.motionPlanId ? replayedPlanId : undefined"
       @replay="replayMotion"
     />
 
@@ -86,11 +101,14 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       <input
         v-model="replyText"
         type="text"
-        :disabled="!store.connected"
-        placeholder="Reply"
+        :disabled="!store.connected || submitting"
+        placeholder="Message Nahida"
       />
-      <button type="submit" :disabled="!store.connected || !replyText.trim()">
-        Send
+      <button
+        type="submit"
+        :disabled="!store.connected || submitting || !replyText.trim()"
+      >
+        {{ submitting ? "Sending…" : "Send" }}
       </button>
     </form>
   </section>

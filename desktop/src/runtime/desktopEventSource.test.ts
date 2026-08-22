@@ -105,6 +105,52 @@ describe("TauriGatewayNodeEventSource", () => {
     );
   });
 
+  it("returns the Gateway protocol rejection instead of treating invoke resolution as success", async () => {
+    mocks.listen.mockResolvedValue(vi.fn());
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "gateway_node_connect") {
+        return {
+          connected: true,
+          registered: true,
+          nodeId: "desktop-local",
+          gatewayUrl: "ws://127.0.0.1:6185/api/nodes/ws",
+          defaultSessionId: "session-1",
+        };
+      }
+      if (command === "gateway_node_submit_input") {
+        return {
+          id: "request-1",
+          ok: false,
+          error: {
+            message: "actor binding is required",
+            retryable: false,
+          },
+        };
+      }
+      return undefined;
+    });
+    const source = new TauriGatewayNodeEventSource();
+    source.start(vi.fn(), {
+      connection: {
+        ...defaultGatewayConnectionSettings,
+        mode: "gateway",
+        nodeToken: "nt_abc.def",
+      },
+    });
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "gateway_node_connect",
+        expect.any(Object),
+      );
+    });
+
+    await expect(source.submitUserMessage("hello", "session-1")).resolves.toEqual({
+      ok: false,
+      error: "actor binding is required",
+      retryable: false,
+    });
+  });
+
   it("reports capability success only after the renderer handler returns", async () => {
     let listener: ((event: { payload: unknown }) => void) | undefined;
     mocks.listen.mockImplementation(async (_name, handler) => {

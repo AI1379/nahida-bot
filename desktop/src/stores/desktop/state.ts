@@ -21,6 +21,9 @@ import {
 } from "@/services/modelMappingStorage";
 import { readPersistedTtsSettings } from "@/services/ttsSettingsStorage";
 import { readPersistedPomodoroSettings } from "@/services/pomodoroSettingsStorage";
+import { idlePomodoroState } from "@/services/pomodoroService";
+import type { PomodoroState } from "@/services/pomodoroService";
+import type { TurnRecord } from "@/domain/conversation";
 import { readPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
 import type { GatewayConnectionStatus } from "@/domain/gatewayConnection";
@@ -93,13 +96,17 @@ export function createDesktopState() {
     expressionMapVersion: 0,
     motionMapVersion: 0,
     transcript: [] as TranscriptEntry[],
+    turns: [] as TurnRecord[],
+    pendingPresentations: [] as PresentationPlan[],
     recentMotionPlaybacks: [] as MotionPlaybackSummary[],
+    activeMotionFeedbackPlaybackId: null as string | null,
     pendingAfterEmerge: createEmptyPendingAfterEmerge(),
     gatewayConnection,
     gatewayConnectionVersion: 0,
     gatewayConnectionStatus: "disconnected" as GatewayConnectionStatus,
     gatewayConnectionError: null as string | null,
     gatewayPairing: { status: "idle" } as GatewayPairingState,
+    pomodoroState: { ...idlePomodoroState } as PomodoroState,
     persistenceError: null as string | null,
   };
 }
