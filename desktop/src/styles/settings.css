@@ -481,6 +481,21 @@
   justify-self: start;
 }
 
+.pet-trigger-settings__body {
+  gap: 14px;
+  padding: 16px 18px 18px;
+}
+
+.pet-trigger-settings__body > label {
+  gap: 7px;
+}
+
+.pet-trigger-settings__note {
+  border-radius: 9px;
+  padding: 10px 11px;
+  line-height: 1.5;
+}
+
 .tts-settings__warning,
 .tts-settings__note,
 .remote-control__warning,

@@ -85,8 +85,21 @@ export const desktopWindowDefaults = {
    * reports `transition_done` (e.g. browser dev mode without Tauri).
    */
   transitionFallbackMs: 1200,
-  autoRetreatMs: 8000,
   errorRetreatMs: 10000,
+} as const;
+
+/**
+ * User-tunable pet trigger parameters (surfaced in desktop settings and
+ * persisted with LocalDesktopConfig). Everything else — poll cadence,
+ * throttles, animation timing — stays an internal constant.
+ */
+export const petTriggerDefaults = {
+  /** Cursor distance (physical px) that wakes the hidden pet into peek. */
+  wakeDistancePx: 96,
+  /** Cursor distance (physical px) beyond which a peeking pet hides again. */
+  hideDistancePx: 220,
+  /** Retreat to the edge after the pet stayed emerged for this long. */
+  autoRetreatMs: 8000,
   /** Exit chat (and click-through again) after this much inactivity. */
   chatIdleTimeoutMs: 45000,
 } as const;

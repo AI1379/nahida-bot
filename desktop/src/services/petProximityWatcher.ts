@@ -7,7 +7,11 @@ import {
 } from "@tauri-apps/api/window";
 
 import { petProximityDefaults } from "@/config/desktopRuntimeDefaults";
-import { proximityIntent, type ProximityIntent } from "@/domain/petProximity";
+import {
+  proximityIntent,
+  type ProximityIntent,
+  type ProximityThresholds,
+} from "@/domain/petProximity";
 import type { PetRuntimeStatus } from "@/domain/runtime";
 
 /**
@@ -25,13 +29,14 @@ export class PetProximityWatcher {
 
   start(
     getStatus: () => PetRuntimeStatus,
+    getThresholds: () => ProximityThresholds,
     onIntent: (intent: ProximityIntent) => void,
   ): void {
     if (!isTauri() || this.timer !== null) return;
     this.timer = setInterval(() => {
       if (this.polling) return;
       this.polling = true;
-      void this.poll(getStatus)
+      void this.poll(getStatus, getThresholds)
         .then((intent) => {
           if (intent === null) return;
           if (intent === "activity") {
@@ -62,6 +67,7 @@ export class PetProximityWatcher {
 
   private async poll(
     getStatus: () => PetRuntimeStatus,
+    getThresholds: () => ProximityThresholds,
   ): Promise<ProximityIntent | null> {
     const status = getStatus();
     if (status === "emerging" || status === "retreating" || status === "error") {
@@ -87,7 +93,7 @@ export class PetProximityWatcher {
         width: monitor.workArea.size.width,
         height: monitor.workArea.size.height,
       },
-      petProximityDefaults,
+      getThresholds(),
     );
   }
 }

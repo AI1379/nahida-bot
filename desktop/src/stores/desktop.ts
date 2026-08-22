@@ -55,6 +55,7 @@ import { clearPersistedGatewayConnection } from "@/services/gatewayConnectionSto
 import {
   readDesktopSettings,
   readSecureTokens,
+  sanitizePetTriggerSettings,
   writeDesktopSettings,
   writeSecureTokens,
 } from "@/services/desktopSettingsStorage";
@@ -381,6 +382,16 @@ export const useDesktopStore = defineStore("desktop", {
       this.commitLocalConfig({
         ...this.localConfig,
         pomodoro,
+      });
+    },
+    updatePetTriggerSettings(settings: LocalDesktopConfig["petTriggers"]) {
+      const petTriggers = sanitizePetTriggerSettings(
+        settings,
+        this.localConfig.petTriggers,
+      );
+      this.commitLocalConfig({
+        ...this.localConfig,
+        petTriggers,
       });
     },
     commitGatewayConnection(settings: GatewayConnectionSettings) {

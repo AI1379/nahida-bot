@@ -5,6 +5,7 @@ import type {
   LocalDesktopConfig,
   ModelMappingConfig,
   PerformanceMode,
+  PetTriggerSettings,
   PetWindowEdge,
 } from "@/domain/config";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
@@ -122,6 +123,40 @@ function sanitizeModelConfig(
   };
 }
 
+export function sanitizePetTriggerSettings(
+  value: unknown,
+  fallback: PetTriggerSettings,
+): PetTriggerSettings {
+  if (!isRecord(value)) return { ...fallback };
+  const wakeDistancePx = finiteNumber(
+    value.wakeDistancePx,
+    fallback.wakeDistancePx,
+    8,
+    240,
+  );
+  return {
+    wakeDistancePx,
+    // Keep the hysteresis gap positive: hide must trigger farther away
+    // than wake, or a peeking pet would flip straight back to hidden.
+    hideDistancePx: Math.max(
+      wakeDistancePx + 1,
+      finiteNumber(value.hideDistancePx, fallback.hideDistancePx, 8, 480),
+    ),
+    autoRetreatMs: finiteNumber(
+      value.autoRetreatMs,
+      fallback.autoRetreatMs,
+      1000,
+      600000,
+    ),
+    chatIdleTimeoutMs: finiteNumber(
+      value.chatIdleTimeoutMs,
+      fallback.chatIdleTimeoutMs,
+      5000,
+      3600000,
+    ),
+  };
+}
+
 export function sanitizeLocalDesktopConfig(
   value: unknown,
   fallback: LocalDesktopConfig,
@@ -196,6 +231,10 @@ export function sanitizeLocalDesktopConfig(
       record.pomodoro === undefined
         ? { ...fallback.pomodoro }
         : sanitizePomodoroSettings(record.pomodoro),
+    petTriggers:
+      record.petTriggers === undefined
+        ? { ...fallback.petTriggers }
+        : sanitizePetTriggerSettings(record.petTriggers, fallback.petTriggers),
     motionDataCollectionEnabled:
       typeof record.motionDataCollectionEnabled === "boolean"
         ? record.motionDataCollectionEnabled

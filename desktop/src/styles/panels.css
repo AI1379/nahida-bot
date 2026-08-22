@@ -115,6 +115,39 @@
   background: var(--surface-muted);
 }
 
+.pet-trigger-settings__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 14px 14px;
+}
+
+.pet-trigger-settings__body > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pet-trigger-settings__body > label {
+  display: grid;
+  gap: 6px;
+}
+
+.pet-trigger-settings__body label > span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pet-trigger-settings__note {
+  margin: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+}
+
 .expression-map__list,
 .motion-map__list {
   display: grid;

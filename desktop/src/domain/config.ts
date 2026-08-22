@@ -10,6 +10,7 @@ import type {
 } from "./live2d";
 import {
   desktopWindowDefaults,
+  petTriggerDefaults,
   ttsDefaults,
 } from "@/config/desktopRuntimeDefaults";
 
@@ -62,6 +63,17 @@ export interface PomodoroSettings {
   breakEndText: string;
 }
 
+export interface PetTriggerSettings {
+  /** Cursor distance (physical px) that wakes the hidden pet into peek. */
+  wakeDistancePx: number;
+  /** Cursor distance (physical px) beyond which a peeking pet hides again. */
+  hideDistancePx: number;
+  /** Retreat to the edge after the pet stayed emerged for this long. */
+  autoRetreatMs: number;
+  /** Exit chat (and click-through again) after this much inactivity. */
+  chatIdleTimeoutMs: number;
+}
+
 export const pomodoroDefaults: PomodoroSettings = {
   enabled: false,
   workDurationMinutes: 25,
@@ -78,6 +90,7 @@ export interface LocalDesktopConfig {
   performanceMode: PerformanceMode;
   ttsSettings: TtsSettings;
   pomodoro: PomodoroSettings;
+  petTriggers: PetTriggerSettings;
   motionDataCollectionEnabled: boolean;
 }
 
@@ -128,6 +141,7 @@ export function createDefaultLocalDesktopConfig(
     performanceMode: desktopWindowDefaults.performanceMode,
     ttsSettings: { ...ttsDefaults },
     pomodoro: { ...pomodoroDefaults },
+    petTriggers: { ...petTriggerDefaults },
     motionDataCollectionEnabled: true,
   };
 }

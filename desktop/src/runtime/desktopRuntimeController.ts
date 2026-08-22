@@ -403,7 +403,7 @@ export function useDesktopRuntimeController(
     if (status === "emerged") {
       autoRetreatTimer = setTimeout(
         () => store.requestPetRetreat(),
-        desktopWindowDefaults.autoRetreatMs,
+        store.localConfig.petTriggers.autoRetreatMs,
       );
       return;
     }
@@ -419,7 +419,7 @@ export function useDesktopRuntimeController(
     if (status === "chat") {
       autoRetreatTimer = setTimeout(
         () => store.exitPetChat(),
-        desktopWindowDefaults.chatIdleTimeoutMs,
+        store.localConfig.petTriggers.chatIdleTimeoutMs,
       );
     }
   }
@@ -478,8 +478,14 @@ export function useDesktopRuntimeController(
 
   watch(
     // lastEventAt re-arms the timers when activity happens without a status
-    // change (e.g. a reply playing inside chat keeps the chat session alive).
-    () => [store.petRuntime.status, store.petRuntime.lastEventAt] as const,
+    // change (e.g. a reply playing inside chat keeps the chat session alive);
+    // petTriggers re-arms them when the user edits the trigger settings.
+    () =>
+      [
+        store.petRuntime.status,
+        store.petRuntime.lastEventAt,
+        store.localConfig.petTriggers,
+      ] as const,
     ([status]) => schedulePetState(status),
     { immediate: true },
   );

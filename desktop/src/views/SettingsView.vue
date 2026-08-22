@@ -2,6 +2,7 @@
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import GatewayConnectionPanel from "@/components/GatewayConnectionPanel.vue";
 import RemoteControlSettingsPanel from "@/components/RemoteControlSettingsPanel.vue";
+import PetTriggerSettingsPanel from "@/components/PetTriggerSettingsPanel.vue";
 import MotionDataPanel from "@/components/MotionDataPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
@@ -18,6 +19,10 @@ function updateTtsSettings(next: typeof store.localConfig.ttsSettings) {
 
 function updateMotionDataCollectionEnabled(enabled: boolean) {
   store.updateMotionDataCollectionEnabled(enabled);
+}
+
+function updatePetTriggerSettings(next: typeof store.localConfig.petTriggers) {
+  store.updatePetTriggerSettings(next);
 }
 </script>
 
@@ -51,6 +56,11 @@ function updateMotionDataCollectionEnabled(enabled: boolean) {
         />
 
         <RemoteControlSettingsPanel />
+
+        <PetTriggerSettingsPanel
+          :settings="store.localConfig.petTriggers"
+          @update="updatePetTriggerSettings"
+        />
 
         <MotionDataPanel
           :enabled="store.localConfig.motionDataCollectionEnabled"

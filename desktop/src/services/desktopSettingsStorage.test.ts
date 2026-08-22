@@ -62,6 +62,11 @@ describe("desktop settings persistence", () => {
           enabled: true,
           workDurationMinutes: 45,
         },
+        petTriggers: {
+          ...fallback.petTriggers,
+          wakeDistancePx: 140,
+          autoRetreatMs: 30000,
+        },
       },
       fallback,
     );
@@ -78,6 +83,8 @@ describe("desktop settings persistence", () => {
     expect(restored.ttsSettings.rate).toBe(1.25);
     expect(restored.pomodoro.enabled).toBe(true);
     expect(restored.pomodoro.workDurationMinutes).toBe(45);
+    expect(restored.petTriggers.wakeDistancePx).toBe(140);
+    expect(restored.petTriggers.autoRetreatMs).toBe(30000);
   });
 
   it("keeps fallback coordinates and nested settings for partial snapshots", () => {
@@ -89,5 +96,30 @@ describe("desktop settings persistence", () => {
 
     expect(restored.windowState.x).toBeNull();
     expect(restored.ttsSettings.rate).toBe(1.15);
+    expect(restored.petTriggers).toEqual(fallback.petTriggers);
+  });
+
+  it("clamps unsafe pet trigger values and keeps the hysteresis gap", () => {
+    const fallback = defaultLocalConfig();
+    const restored = sanitizeLocalDesktopConfig(
+      {
+        petTriggers: {
+          wakeDistancePx: 9999,
+          hideDistancePx: 10,
+          autoRetreatMs: 50,
+          chatIdleTimeoutMs: Number.NaN,
+        },
+      },
+      fallback,
+    );
+
+    expect(restored.petTriggers.wakeDistancePx).toBe(240);
+    expect(restored.petTriggers.hideDistancePx).toBeGreaterThan(
+      restored.petTriggers.wakeDistancePx,
+    );
+    expect(restored.petTriggers.autoRetreatMs).toBe(1000);
+    expect(restored.petTriggers.chatIdleTimeoutMs).toBe(
+      fallback.petTriggers.chatIdleTimeoutMs,
+    );
   });
 });

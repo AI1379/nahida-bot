@@ -123,6 +123,7 @@ onMounted(async () => {
   }
   proximityWatcher.start(
     () => store.petRuntime.status,
+    () => store.localConfig.petTriggers,
     handleProximityIntent,
   );
 });
