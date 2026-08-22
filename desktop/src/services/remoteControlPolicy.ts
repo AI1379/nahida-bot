@@ -1,3 +1,5 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
+
 export interface RemoteControlReadRoot {
   id: string;
   path: string;
@@ -159,4 +161,247 @@ function requireExactKeys(
   const missing = expected.find((key) => !(key in value));
   if (unexpected) throw new Error(`${label} has unknown field ${unexpected}.`);
   if (missing) throw new Error(`${label} is missing ${missing}.`);
+}
+
+/**
+ * Hard caps mirrored from `remote_control.rs`. Rust remains the enforcer;
+ * these exist so the form can pre-validate and set input min/max attributes.
+ */
+export const REMOTE_CONTROL_HARD_LIMITS = {
+  timeoutMs: 30_000,
+  outputLimitBytes: 1_048_576,
+  fileLimitBytes: 1_048_576,
+  maxAdditionalArgs: 64,
+  maxTotalArgs: 128,
+  maxArgBytes: 8_192,
+  maxActors: 32,
+  maxRoots: 32,
+  maxProfiles: 64,
+} as const;
+
+export function validateRemoteControlPolicy(
+  policy: RemoteControlPolicy,
+): string | null {
+  const limits = policy.limits;
+  const range = (
+    name: string,
+    value: number,
+    minimum: number,
+    maximum: number,
+  ): string | null =>
+    !Number.isSafeInteger(value) || value < minimum || value > maximum
+      ? `${name} must be between ${minimum} and ${maximum}`
+      : null;
+
+  let error = range(
+    "limits.timeoutMs",
+    limits.timeoutMs,
+    1,
+    REMOTE_CONTROL_HARD_LIMITS.timeoutMs,
+  );
+  if (error) return error;
+  error = range(
+    "limits.outputLimitBytes",
+    limits.outputLimitBytes,
+    1,
+    REMOTE_CONTROL_HARD_LIMITS.outputLimitBytes,
+  );
+  if (error) return error;
+  error = range("limits.stdoutLimitBytes", limits.stdoutLimitBytes, 1, limits.outputLimitBytes);
+  if (error) return error;
+  error = range("limits.stderrLimitBytes", limits.stderrLimitBytes, 1, limits.outputLimitBytes);
+  if (error) return error;
+  if (limits.stdoutLimitBytes + limits.stderrLimitBytes > limits.outputLimitBytes) {
+    return "stdout and stderr limits together exceed limits.outputLimitBytes";
+  }
+  error = range(
+    "limits.fileLimitBytes",
+    limits.fileLimitBytes,
+    1,
+    REMOTE_CONTROL_HARD_LIMITS.fileLimitBytes,
+  );
+  if (error) return error;
+  if (
+    !Number.isSafeInteger(limits.maxAdditionalArgs) ||
+    limits.maxAdditionalArgs < 0 ||
+    limits.maxAdditionalArgs > REMOTE_CONTROL_HARD_LIMITS.maxAdditionalArgs
+  ) {
+    return `limits.maxAdditionalArgs must be between 0 and ${REMOTE_CONTROL_HARD_LIMITS.maxAdditionalArgs}`;
+  }
+  error = range(
+    "limits.maxArgBytes",
+    limits.maxArgBytes,
+    1,
+    REMOTE_CONTROL_HARD_LIMITS.maxArgBytes,
+  );
+  if (error) return error;
+
+  if (policy.allowedActorAccountKeys.length > REMOTE_CONTROL_HARD_LIMITS.maxActors) {
+    return `allowedActorAccountKeys exceeds ${REMOTE_CONTROL_HARD_LIMITS.maxActors} entries`;
+  }
+  for (const actor of policy.allowedActorAccountKeys) {
+    if (!actor.trim() || actor !== actor.trim()) {
+      return "allowedActorAccountKeys may not contain blank or padded values";
+    }
+  }
+  if (policy.readRoots.length > REMOTE_CONTROL_HARD_LIMITS.maxRoots) {
+    return `readRoots exceeds ${REMOTE_CONTROL_HARD_LIMITS.maxRoots} entries`;
+  }
+  if (policy.execProfiles.length > REMOTE_CONTROL_HARD_LIMITS.maxProfiles) {
+    return `execProfiles exceeds ${REMOTE_CONTROL_HARD_LIMITS.maxProfiles} entries`;
+  }
+
+  const seenRootIds = new Set<string>();
+  for (const root of policy.readRoots) {
+    if (!root.id.trim() || root.id !== root.id.trim() || seenRootIds.has(root.id)) {
+      return "read root ids must be non-empty, trimmed, and unique";
+    }
+    seenRootIds.add(root.id);
+    if (!root.path.trim() || !isAbsoluteLocalPath(root.path)) {
+      return `read root ${root.id} must have an absolute path`;
+    }
+  }
+
+  const seenProfileIds = new Set<string>();
+  for (const profile of policy.execProfiles) {
+    if (
+      !profile.id.trim() ||
+      profile.id !== profile.id.trim() ||
+      seenProfileIds.has(profile.id)
+    ) {
+      return "execution profile ids must be non-empty, trimmed, and unique";
+    }
+    seenProfileIds.add(profile.id);
+    if (!profile.program.trim() || !isAbsoluteLocalPath(profile.program)) {
+      return `execution profile ${profile.id} program must be an absolute path`;
+    }
+    if (isForbiddenInterpreter(profile.program)) {
+      return `execution profile ${profile.id} uses a forbidden interpreter`;
+    }
+    if (profile.fixedArgs.length > REMOTE_CONTROL_HARD_LIMITS.maxTotalArgs) {
+      return `execution profile ${profile.id} has too many fixed arguments`;
+    }
+    for (const argument of profile.fixedArgs) {
+      if (
+        argument.includes("\0") ||
+        argument.length > limits.maxArgBytes
+      ) {
+        return `execution profile ${profile.id} has an invalid fixed argument`;
+      }
+    }
+    if (!seenRootIds.has(profile.cwdRootId)) {
+      return `execution profile ${profile.id} references an unknown cwdRootId`;
+    }
+  }
+  return null;
+}
+
+const FORBIDDEN_INTERPRETER_EXTENSIONS = new Set([
+  "bat",
+  "cmd",
+  "ps1",
+  "vbs",
+  "vbe",
+  "js",
+  "jse",
+  "wsf",
+  "wsh",
+]);
+
+const FORBIDDEN_INTERPRETER_NAMES = new Set([
+  "cmd",
+  "powershell",
+  "pwsh",
+  "wscript",
+  "cscript",
+  "sh",
+  "bash",
+  "zsh",
+  "fish",
+  "python",
+  "python3",
+  "pythonw",
+  "node",
+  "deno",
+  "bun",
+  "ruby",
+  "perl",
+  "php",
+  "lua",
+]);
+
+function isForbiddenInterpreter(program: string): boolean {
+  const fileName = program.trim().split(/[\\/]/).pop() ?? "";
+  const dot = fileName.lastIndexOf(".");
+  if (dot > 0) {
+    const extension = fileName.slice(dot + 1).toLowerCase();
+    if (FORBIDDEN_INTERPRETER_EXTENSIONS.has(extension)) return true;
+  }
+  const withoutExe = fileName.toLowerCase().replace(/\.exe$/, "");
+  return FORBIDDEN_INTERPRETER_NAMES.has(withoutExe);
+}
+
+function isAbsoluteLocalPath(value: string): boolean {
+  return /^([A-Za-z]:[\\/]|\\\\|\/)/.test(value);
+}
+
+export type ActorMergeResult =
+  | { status: "added"; policy: RemoteControlPolicy }
+  | { status: "present" }
+  | { status: "rejected"; reason: string };
+
+export function mergeActorIntoPolicy(
+  policy: RemoteControlPolicy,
+  actorAccountKey: string,
+): ActorMergeResult {
+  const trimmed = actorAccountKey.trim();
+  if (!trimmed) return { status: "rejected", reason: "actor key is empty" };
+  if (policy.allowedActorAccountKeys.includes(trimmed)) {
+    return { status: "present" };
+  }
+  if (policy.allowedActorAccountKeys.length >= REMOTE_CONTROL_HARD_LIMITS.maxActors) {
+    return {
+      status: "rejected",
+      reason: `whitelist already holds ${REMOTE_CONTROL_HARD_LIMITS.maxActors} actors`,
+    };
+  }
+  return {
+    status: "added",
+    policy: {
+      ...policy,
+      allowedActorAccountKeys: [...policy.allowedActorAccountKeys, trimmed],
+    },
+  };
+}
+
+export interface ActorWhitelistUpdate {
+  added: boolean;
+  error?: string;
+}
+
+/**
+ * Append a paired actor key to the local remote-control whitelist.
+ * Never throws: pairing success must not depend on this side effect.
+ */
+export async function addPairedActorToRemoteControlPolicy(
+  actorAccountKey: string,
+): Promise<ActorWhitelistUpdate> {
+  if (!isTauri()) return { added: false, error: "not in the desktop app" };
+  try {
+    const current = await invoke<RemoteControlPolicy>(
+      "remote_control_policy_read",
+    );
+    const merged = mergeActorIntoPolicy(current, actorAccountKey);
+    if (merged.status === "present") return { added: false };
+    if (merged.status === "rejected") {
+      return { added: false, error: merged.reason };
+    }
+    await invoke("remote_control_policy_save", { policy: merged.policy });
+    return { added: true };
+  } catch (error) {
+    return {
+      added: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }

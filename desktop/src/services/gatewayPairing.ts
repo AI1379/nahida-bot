@@ -83,6 +83,8 @@ export interface PairDeviceSuccess {
   nodeToken: string;
   nodeId: string;
   conversationId?: string;
+  /** Server-confirmed actor binding minted into the node token. */
+  actorAccountKey?: string;
   /** The admin bearer was used to mint the pairing token; not persisted. */
   usedAdminBearer: boolean;
 }
@@ -472,6 +474,9 @@ export async function pairDevice(
       completeResult.conversationId ??
       options.conversationId?.trim() ??
       defaultDesktopConversationId(nodeId),
+    actorAccountKey:
+      completeResult.actorAccountKey ?? options.actorAccountKey?.trim() ??
+      undefined,
     usedAdminBearer: needsBearer,
   };
 }
