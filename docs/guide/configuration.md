@@ -698,6 +698,36 @@ telegram:
   allowed_chats: []
 ```
 
+### Discord
+
+在 `discord` 键下配置。基于 discord.py 网关连接；需先在 [Discord Developer Portal](https://discord.com/developers/applications) 创建 Bot 并**手动开启 Message Content Intent**（Privileged Intent），再执行 `uv sync --group discord`。
+
+会话地址映射：私信 → `discord:private:<dm_channel_id>`，服务器文字频道 → `discord:channel:<channel_id>`，Thread/论坛帖 → `discord:thread:<thread_id>`（每个 Thread 独立会话）。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `bot_token` | `str` | `""` | Discord Bot token（必填），可回退到 `DISCORD_BOT_TOKEN` 环境变量 |
+| `proxy` | `str` | `""` | HTTP/SOCKS 代理地址（国内部署通常需要），可回退到 `DISCORD_PROXY` 环境变量 |
+| `group_trigger_mode` | `str` | `"mention"` | 服务器频道/Thread 内的触发方式：`none` / `mention`（@bot）/ `command`（命令前缀或 @bot）/ `always`；私信始终响应 |
+| `group_context_capture` | `bool` | `false` | `true` 时未触发的服务器消息记录为观察上下文 |
+| `reply_to_inbound` | `bool \| null` | `null` | 是否覆盖 `router.reply_to_inbound`；`null`/省略表示跟随全局 |
+| `allowed_guilds` | `list[str]` | `[]` | 服务器（guild）ID 白名单，空 = 不限制；私信不受此限制 |
+| `allowed_dm_users` | `list[str]` | `[]` | 私信用户 ID 白名单，空 = 不限制 |
+| `blocked_channels` | `list[str]` | `[]` | 在允许的服务器内排除特定频道/Thread |
+| `message_max_length` | `int` | `2000` | 出站消息拆分长度上限（Discord 硬限制 2000） |
+| `send_retry_attempts` | `int` | `3` | 发送限流时的重试次数 |
+| `media_download_dir` | `str` | `"./data/temp/media"` | 媒体文件下载目录 |
+
+### 示例
+
+```yaml
+discord:
+  bot_token: "${DISCORD_BOT_TOKEN}"
+  proxy: "${DISCORD_PROXY:}"
+  group_trigger_mode: "mention"
+  allowed_guilds: []
+```
+
 ### Milky (QQ)
 
 在 `milky` 键下配置。需要先启动 Lagrange.Milky 实例。
@@ -905,6 +935,8 @@ image_generation:
 | 变量 | 使用者 | 说明 |
 |------|--------|------|
 | `TELEGRAM_BOT_TOKEN` | Telegram 频道 | Bot API token |
+| `DISCORD_BOT_TOKEN` | Discord 频道 | Bot token |
+| `DISCORD_PROXY` | Discord 频道 | HTTP/SOCKS 代理地址 |
 | `DEEPSEEK_LLM_API_KEY` | DeepSeek provider | API 密钥 |
 | `DEEPSEEK_LLM_BASE_URL` | DeepSeek provider | API 基础 URL |
 | `SILICONFLOW_LLM_API_KEY` | SiliconFlow provider | API 密钥 |

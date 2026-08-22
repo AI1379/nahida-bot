@@ -31,6 +31,7 @@ nahida_bot/
     telegram/      #   Telegram Bot
     milky/         #   Milky QQ（Lagrange.Milky）
     onebot/        #   OneBot v11（NapCat/Lagrange/LLOneBot）
+    discord/       #   Discord Bot（discord.py）
   plugins/         # 插件体系
     manager.py / loader.py / registry.py / api_bridge.py / commands.py
     builtin/       #   核心命令、工具（workspace/memory/exec/web_fetch/plan/agent…）
@@ -73,7 +74,7 @@ nahida_bot/
    `nahida_bot/plugins/base.py` 再导出）。标准接口：`handle_inbound_event`、
    `send_message`、`get_user_info` 等，并声明支持的通信方式（WebSocket / HTTP / SSE）。
 
-2. **内置 Channel** 在 `nahida_bot/channels/{telegram,milky,onebot}/` 下，以普通插件
+2. **内置 Channel** 在 `nahida_bot/channels/{telegram,milky,onebot,discord}/` 下，以普通插件
    形式被 `PluginManager` 发现与加载（`discover_builtin_channels` 开关），享有权限隔离
    与生命周期管理。OneBot 目前仅 v11 落地，v12 为预留空模块。
 

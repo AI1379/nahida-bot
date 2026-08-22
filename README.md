@@ -18,7 +18,7 @@
 - **Workspace-native（专属花盆）**：文件就是上下文，工作空间（Workspace）作为一等公民被温柔对待。
 - **Plugin-driven（百变衣橱）**：不需要在核心代码里硬编码，想要什么新能力？装个插件就好啦！
 - **Multi-Provider（万叶一心）**：支持 OpenAI Compatible（含 Responses API）、DeepSeek、Anthropic Claude、GLM、Groq、Minimax 等多种 LLM 后端，运行时随心切换~
-- **Multi-Channel（千风引路）**：Telegram Bot + Milky QQ（Lagrange.Milky）+ OneBot v11（NapCat/Lagrange/LLOneBot），统一的消息标准化与 ChannelService 协议~
+- **Multi-Channel（千风引路）**：Telegram Bot + Milky QQ（Lagrange.Milky）+ OneBot v11（NapCat/Lagrange/LLOneBot）+ Discord（discord.py），统一的消息标准化与 ChannelService 协议~
 - **Desktop Pet（梦中之相）**：Tauri + Rust + Vue 3 + Live2D（PixiJS）打造的边缘隐藏式桌宠，鼠标靠近 / Gateway 推送 / CRON 到点时从屏幕角落唤出，还能本地 TTS 发声~
 - **Multimodal（万象识图）**：原生 vision 图片理解 or 自动 fallback 描述 or image_understand 工具，三种模式自适应~
 - **Memory & Retrieval（梦境刻录）**：SQLite 会话记忆 + FTS 关键词检索 + 向量检索 + 混合检索 + LLM 记忆巩固；独立的 Document Store 让知识库与记忆各自安家~
@@ -32,7 +32,7 @@
 
 ## 📈 成长进度（项目状态）
 
-目前小吉祥草王已完成 **Phase 4 全闭环 + WebUI 主体 + Desktop 桌宠 + OneBot Channel**：Telegram / Milky QQ / OneBot 三 Channel、Multi-Provider、内置命令/工具/插件体系、Subagent 编排、Multimodal、Scheduler 与 Memory Dreaming、知识库与生图插件、Gateway REST API、WebUI 运维面板（Vue 3）、Desktop Live2D 桌宠、SSE 实时事件、登录及权限体系均已可用。
+目前小吉祥草王已完成 **Phase 4 全闭环 + WebUI 主体 + Desktop 桌宠 + OneBot Channel**：Telegram / Milky QQ / OneBot / Discord 四 Channel、Multi-Provider、内置命令/工具/插件体系、Subagent 编排、Multimodal、Scheduler 与 Memory Dreaming、知识库与生图插件、Gateway REST API、WebUI 运维面板（Vue 3）、Desktop Live2D 桌宠、SSE 实时事件、登录及权限体系均已可用。
 
 ### 🌟 已点亮的命座 ✅
 
@@ -141,6 +141,9 @@ uv sync --extra document-import
 
 # 如需 Telegram Channel，安装可选依赖
 uv sync --group telegram
+
+# 如需 Discord Channel，安装可选依赖（还需在开发者后台开启 Message Content Intent）
+uv sync --group discord
 
 # WebUI 前端（可选，但推荐）
 pnpm install          # 安装 workspace 依赖（含 webui / desktop / docs）

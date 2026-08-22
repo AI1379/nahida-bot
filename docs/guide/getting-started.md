@@ -22,6 +22,9 @@ uv sync --extra document-import
 # 如需 Telegram Channel，安装可选依赖
 uv sync --group telegram
 
+# 如需 Discord Channel，安装可选依赖
+uv sync --group discord
+
 # WebUI 前端（可选，但推荐）
 pnpm install          # 安装 workspace 依赖
 pnpm webui:build      # 输出到 webui/dist/，Gateway 启动时自动挂载

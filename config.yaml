@@ -378,6 +378,22 @@ telegram:
 #   forward_render_max_chars: 12000
 #   scene_cache_size: 4096
 
+# Discord Channel（可选）
+# 启用前需在 Discord Developer Portal 创建 Bot、开启 Message Content Intent
+# （Privileged Intent，必须在后台手动开启），并执行 `uv sync --group discord`。
+#
+# discord:
+#   enabled: true
+#   bot_token: "${DISCORD_BOT_TOKEN:}"
+#   # proxy: "${DISCORD_PROXY:}"       # HTTP/SOCKS 代理（国内部署通常需要）
+#   group_trigger_mode: "mention"      # 服务器频道/Thread 内默认 @bot 触发
+#   group_context_capture: false
+#   reply_to_inbound: null
+#   allowed_guilds: []                 # 服务器 ID 白名单；空列表表示不限制（DM 不受此限制）
+#   allowed_dm_users: []               # 私信用户 ID 白名单；空列表表示不限制
+#   blocked_channels: []               # 在允许的服务器内排除特定频道/Thread
+#   media_download_dir: "./data/temp/media"
+
 # ── Agent Loop ──────────────────────────────────────────
 # 控制 Agent 循环的行为：迭代轮数、超时、重试策略等。
 # 以下均为默认值，不写则使用默认值。

@@ -1,0 +1,18 @@
+id: discord
+name: "Discord Channel"
+version: "0.1.0"
+description: "Discord Bot channel via discord.py gateway"
+entrypoint: "nahida_bot.channels.discord.plugin:DiscordPlugin"
+enabled: false
+
+permissions:
+  network:
+    outbound:
+      - "discord.com"
+      - "gateway.discord.gg"
+      - "cdn.discordapp.com"
+    inbound: true
+
+config:
+  group_trigger_mode: "mention"
+  group_context_capture: false
