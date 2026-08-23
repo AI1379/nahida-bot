@@ -16,6 +16,7 @@ from nahida_bot.agent.storage.models import (
 )
 from nahida_bot.agent.storage.repository import SQLiteDocumentRepository
 from nahida_bot.agent.storage.tokenization import (
+    alias_terms,
     build_fts_and_query,
     build_fts_query,
     tokenize_for_fts,
@@ -256,17 +257,23 @@ class SQLiteDocumentStore(DocumentStore):
     # ── FTS Search ────────────────────────────────────────
 
     async def search(self, query: str, *, limit: int = 10) -> list[SearchResult]:
-        """FTS search with a precision-first AND tier and OR fallback.
+        """FTS search with alias expansion, AND tier, and OR fallback.
 
-        With more than one term, the conjunction form is tried first: any
-        document containing *every* term strictly dominates the OR results
-        for that query, eliminating single-term keyword collisions for exact
-        queries (「七七 角色故事3」). CJK content frequently has zero
-        documents containing all terms of a broad query (issue #49 probes),
-        so the OR form takes over when AND matches nothing — recall is never
-        sacrificed for precision.
+        Alias expansion adds same-entity surface forms detected in the query
+        (草神 → 纳西妲) to the OR form only — never to the AND form, which
+        would then require documents to contain every alias. With more than
+        one term, the conjunction of the *original* terms is tried first: any
+        document containing every term strictly dominates partial matches,
+        eliminating single-term keyword collisions for exact queries
+        (「七七 角色故事3」). CJK content frequently has zero documents
+        containing all terms of a broad query (issue #49 probes), so the OR
+        form takes over when AND matches nothing — recall is never sacrificed
+        for precision.
         """
         fts_query = build_fts_query(query)
+        alias_extras = alias_terms(query)
+        if alias_extras:
+            fts_query = " OR ".join([fts_query, *alias_extras])
         if not fts_query:
             # No query — list recent documents instead.
             rows = await self._repo.list_documents(limit=limit)

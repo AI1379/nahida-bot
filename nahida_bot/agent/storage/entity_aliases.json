@@ -1,0 +1,30 @@
+{
+  "_comment": "Entity alias groups for KB query expansion. Each group lists surface forms of the SAME entity (strict co-reference: alternate names, codenames, short forms) — never merely related entities, so 往生堂 does not map to 胡桃 and 虚空终端 does not map to 世界树. When any member appears in a query, the others are added to the OR side of the FTS query (never the AND side, so precision is unaffected).",
+  "groups": [
+    ["纳西妲", "草神", "小吉祥草王", "布耶尔", "库塞拉"],
+    ["钟离", "岩神", "岩王帝君", "摩拉克斯"],
+    ["温迪", "风神", "巴巴托斯"],
+    ["雷电将军", "雷神", "巴尔泽布"],
+    ["芙宁娜", "水神", "芙卡洛斯"],
+    ["玛薇卡", "火神"],
+    ["达达利亚", "公子"],
+    ["阿蕾奇诺", "仆人"],
+    ["流浪者", "散兵"],
+    ["魈", "降魔大圣"],
+    ["阿贝多", "白垩之子"],
+    ["优菈", "浪花骑士"],
+    ["莫娜", "占星术士"],
+    ["琴", "蒲公英骑士"],
+    ["菲谢尔", "断罪皇女"],
+    ["八重神子", "八重"],
+    ["枫原万叶", "万叶"],
+    ["神里绫华", "绫华"],
+    ["神里绫人", "绫人"],
+    ["荒泷一斗", "一斗"],
+    ["鹿野院平藏", "平藏"],
+    ["珊瑚宫心海", "心海"],
+    ["梦见月瑞希", "瑞希"],
+    ["九条裟罗", "裟罗"],
+    ["坎瑞亚", "黑日王朝"]
+  ]
+}

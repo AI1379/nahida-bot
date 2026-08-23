@@ -1,0 +1,68 @@
+# Domain lexicon for jieba (one term per line, '#' starts a comment).
+# These terms are fragmented by jieba's default dictionary (纳西妲 -> 纳西+妲,
+# 世界树 -> 世界+树), which made them unmatchable as whole tokens in FTS
+# (issue #49: 世界树/纳西妲 had zero FTS hits). jieba.add_word with a high
+# frequency makes lcut_for_search emit BOTH granularities, so index/query
+# stay compatible across a re-tokenization.
+#
+# Regenerate candidates with:
+#   uv run python - <<'EOF'
+#   import re, sqlite3, jieba
+#   con = sqlite3.connect("<db>")
+#   names = {re.sub(r"_\d+$", "", s) for (s,) in con.execute(
+#       "SELECT DISTINCT source_id FROM <collection>_docs")}
+#   print([n for n in sorted(names)
+#          if 2 <= len(n) <= 12 and n not in jieba.lcut_for_search(n)])
+#   EOF
+# then curate by hand (drop junk titles, add world-building terms).
+七国
+世界树
+九条裟罗
+伊涅芙
+优菈
+八重神子
+兹白
+哥伦比娅
+埃洛伊
+基尼奇
+塔利雅
+大慈树王
+娜维娅
+小吉祥草王
+希格雯
+愚人众
+教令院
+枫丹科学院
+枫原万叶
+梦见月瑞希
+欧洛伦
+法尔伽
+烟绯
+玛拉妮
+玛薇卡
+珊瑚宫心海
+珐露珊
+班尼特
+琉璃亭
+璃月
+白垩之子
+神里绫人
+纳西妲
+绮良良
+罗莎莉亚
+茜特菈莉
+荒泷一斗
+莱欧斯利
+菈乌玛
+菲林斯
+虚空系统
+达达利亚
+迪奥娜
+那维莱特
+阿蕾奇诺
+阿贝多
+降临者
+雷电将军
+魔神战争
+鹿野院平藏
+黑土之灾
