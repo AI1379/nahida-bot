@@ -70,7 +70,7 @@ class NoopVectorIndex:
     async def search(
         self, query_embedding: list[float], *, limit: int
     ) -> list[VectorHit]:
-        return None
+        return []
 
     async def count(self) -> int:
         """Return the number of records currently in the index."""
