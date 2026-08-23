@@ -290,17 +290,32 @@ class SQLiteDocumentRepository:
         *,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search documents via FTS5 BM25 ranking."""
+        """Search documents via FTS5 BM25 ranking.
+
+        Scores are reported as ``-bm25()`` — positive, larger-is-better — so
+        every retrieval mode (FTS / RRF / vector) shares one score direction
+        and a ``min_score`` threshold means the same thing everywhere. FTS5's
+        raw ``bm25()`` is negative with *more negative = better*, which used
+        to invert threshold semantics and drop the strongest matches
+        (issue #49).
+
+        Structural nodes (``document`` / ``section``) are excluded: their
+        content is just the heading/file name, and BM25 length normalization
+        makes those ~5-char nodes dominate any query that touches their
+        terms. They remain stored for ``context_read`` tree expansion — only
+        retrieval ranking skips them.
+        """
         rows = await self._engine.fetch_all(
             f"SELECT d.doc_id, d.title, d.content, d.status, d.metadata_json, "
             f"d.retrieval_text, d.path, d.source_id, d.chunk_index, "
             f"d.parent_id, d.root_id, d.node_type, "
-            f"d.created_at, d.updated_at, bm25({self._fts_table}) AS score "
+            f"d.created_at, d.updated_at, -bm25({self._fts_table}) AS score "
             f"FROM {self._fts_table} "
             f"JOIN {self._docs_table} d ON d.doc_id = {self._fts_table}.doc_id "
             f"WHERE {self._fts_table} MATCH ? "
             "AND d.status = 'active' "
-            "ORDER BY score ASC, d.updated_at DESC "
+            "AND d.node_type = 'passage' "
+            "ORDER BY score DESC, d.updated_at DESC "
             "LIMIT ?",
             (fts_query, limit),
         )
@@ -548,8 +563,13 @@ class SQLiteDocumentRepository:
         model: str,
         dimensions: int,
         limit: int = 1000,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """List embeddings for active documents."""
+        """List embeddings for active documents.
+
+        ``offset`` pages through the result set so callers can stream a full
+        index rebuild in bounded-memory batches (the JSON payloads are large).
+        """
         rows = await self._engine.fetch_all(
             f"SELECT e.embedding_id, e.doc_id, e.provider_id, e.model, "
             f"e.dimensions, e.content_hash, e.embedding_json, e.created_at "
@@ -557,8 +577,8 @@ class SQLiteDocumentRepository:
             f"JOIN {self._docs_table} d ON d.doc_id = e.doc_id "
             "WHERE d.status = 'active' "
             "AND e.provider_id = ? AND e.model = ? AND e.dimensions = ? "
-            "ORDER BY e.created_at DESC LIMIT ?",
-            (provider_id, model, dimensions, limit),
+            "ORDER BY e.embedding_id ASC LIMIT ? OFFSET ?",
+            (provider_id, model, dimensions, limit, offset),
         )
         return [
             {
@@ -594,6 +614,25 @@ class SQLiteDocumentRepository:
             (provider_id, model),
         )
         return {(str(row["doc_id"]), str(row["content_hash"])) for row in rows}
+
+    async def list_all_embedding_ids(
+        self,
+        *,
+        provider_id: str,
+        model: str,
+    ) -> list[str]:
+        """Return every embedding id persisted for a provider+model.
+
+        The authoritative id set used to reconcile the derived vector index:
+        rows present in the index but missing here are stale and get deleted;
+        a count mismatch triggers a replay of these rows into the index.
+        """
+        rows = await self._engine.fetch_all(
+            f"SELECT embedding_id FROM {self._emb_table} "
+            "WHERE provider_id = ? AND model = ?",
+            (provider_id, model),
+        )
+        return [str(row["embedding_id"]) for row in rows]
 
     async def delete_embeddings(self, embedding_ids: list[str]) -> int:
         """Delete embeddings by their ids."""

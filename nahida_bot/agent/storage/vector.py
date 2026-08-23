@@ -49,6 +49,14 @@ class VectorIndex(Protocol):
         """Search vectors by similarity."""
         ...
 
+    async def count(self) -> int:
+        """Return the number of records currently in the index."""
+        ...
+
+    async def embedding_ids(self) -> set[str]:
+        """Return the ids of all records currently in the index."""
+        ...
+
 
 class NoopVectorIndex:
     """Vector index that intentionally stores nothing."""
@@ -62,7 +70,15 @@ class NoopVectorIndex:
     async def search(
         self, query_embedding: list[float], *, limit: int
     ) -> list[VectorHit]:
-        return []
+        return None
+
+    async def count(self) -> int:
+        """Return the number of records currently in the index."""
+        return 0
+
+    async def embedding_ids(self) -> set[str]:
+        """Return the ids of all records currently in the index."""
+        return set()
 
 
 class SQLiteVecIndex:
@@ -231,6 +247,28 @@ class SQLiteVecIndex:
             await self._engine.db.commit()
         self._ready = False
 
+    async def count(self) -> int:
+        """Return the number of vectors currently in the index.
+
+        Used by embedding backfill to reconcile the index against the
+        authoritative ``{collection}_doc_embeddings`` table: an index that was
+        wiped or recreated empty must be detected and rebuilt, not silently
+        treated as complete.
+        """
+        self._require_ready()
+        row = await self._engine.fetch_one(
+            f"SELECT COUNT(*) AS n FROM {self._map_table}"
+        )
+        return int(row["n"]) if row is not None else 0
+
+    async def embedding_ids(self) -> set[str]:
+        """Return all embedding ids present in the index (map table)."""
+        self._require_ready()
+        rows = await self._engine.fetch_all(
+            f"SELECT embedding_id FROM {self._map_table}"
+        )
+        return {str(row["embedding_id"]) for row in rows}
+
     def _require_ready(self) -> None:
         if not self._ready:
             raise RuntimeError("SQLiteVecIndex.setup() must be called before use")
@@ -261,10 +299,26 @@ def reciprocal_rank_fusion(
     *,
     k: int = 60,
     limit: int = 10,
+    weights: list[float] | None = None,
 ) -> list[tuple[str, float]]:
-    """Fuse ranked item id lists with reciprocal rank fusion."""
+    """Fuse ranked item id lists with reciprocal rank fusion.
+
+    ``weights`` assigns a multiplier per list (same length as ``ranked_lists``);
+    ``None`` keeps the historical equal weighting. Hybrid KB retrieval passes a
+    lower weight for the FTS leg: BM25 keyword collisions are cheap to produce
+    (one shared term is enough with OR queries) while embedding rank-1 hits are
+    the semantic gold — under equal weights the two tie at exactly ``1/(k+1)``
+    and stable sorting lets the FTS list win every tie, so the vector channel
+    can interleave but never outrank keyword junk (issue #49).
+    """
+    if weights is not None and len(weights) != len(ranked_lists):
+        raise ValueError(
+            f"weights length ({len(weights)}) must match "
+            f"ranked_lists length ({len(ranked_lists)})"
+        )
     scores: dict[str, float] = {}
-    for ranked in ranked_lists:
+    for list_index, ranked in enumerate(ranked_lists):
+        weight = weights[list_index] if weights is not None else 1.0
         for rank, item_id in enumerate(ranked, start=1):
-            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
+            scores[item_id] = scores.get(item_id, 0.0) + weight / (k + rank)
     return sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]

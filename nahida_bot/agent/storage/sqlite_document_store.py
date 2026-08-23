@@ -26,6 +26,27 @@ from nahida_bot.db.engine import DatabaseEngine
 
 logger = structlog.get_logger(__name__)
 
+# Hybrid fusion tuning (issue #49). Each leg over-fetches by this factor so
+# fusion sees a real candidate pool instead of two pre-truncated top-k lists;
+# the FTS leg is weighted below the vector leg because BM25 keyword collisions
+# are cheap to produce while an embedding rank-1 hit is the semantic answer.
+_HYBRID_CANDIDATE_FACTOR = 10
+_RRF_FTS_WEIGHT = 0.6
+_RRF_VECTOR_WEIGHT = 1.0
+
+# Batch size for the index-rebuild path that replays persisted embeddings.
+_INDEX_REBUILD_BATCH = 500
+
+
+def _passages_only(results: list[SearchResult]) -> list[SearchResult]:
+    """Drop structural (title-only) nodes from a result list, keeping order.
+
+    ``document`` / ``section`` nodes carry no answer content — only the
+    heading or file name — so they waste top-k slots wherever they surface
+    (FTS excludes them in SQL; vector hydration filters here).
+    """
+    return [r for r in results if r.node_type == "passage"]
+
 
 def _row_to_item(row: dict[str, Any]) -> DocumentItem:
     """Convert a repository row dict into a DocumentItem."""
@@ -270,6 +291,9 @@ class SQLiteDocumentStore(DocumentStore):
         query_embedding = embedded[0].embedding
 
         if vector_index is not None:
+            # Over-fetch 3x: structural (title-only) nodes are filtered after
+            # hydration, and the index has no node_type column to filter
+            # earlier, so headroom keeps a full page of passages.
             hits = await vector_index.search(
                 query_embedding, limit=max(limit * 3, limit)
             )
@@ -283,7 +307,7 @@ class SQLiteDocumentStore(DocumentStore):
                 )
                 for row in rows
             ]
-            return results[:limit]
+            return _passages_only(results)[:limit]
 
         # Fallback: cosine similarity over stored embeddings.
         rows = await self._repo.list_embeddings(
@@ -302,15 +326,19 @@ class SQLiteDocumentStore(DocumentStore):
             ),
             key=lambda item: item[1],
             reverse=True,
-        )[:limit]
+        )[: max(limit * 2, limit)]
         doc_rows = await self._repo.get_documents_by_ids(
             [doc_id for doc_id, _score in ranked]
         )
         score_by_id = {doc_id: score for doc_id, score in ranked}
-        return [
-            _row_to_search_result(row, score=score_by_id.get(str(row["doc_id"]), 0.0))
-            for row in doc_rows
-        ]
+        return _passages_only(
+            [
+                _row_to_search_result(
+                    row, score=score_by_id.get(str(row["doc_id"]), 0.0)
+                )
+                for row in doc_rows
+            ]
+        )[:limit]
 
     # ── Hybrid Search ─────────────────────────────────────
 
@@ -322,12 +350,32 @@ class SQLiteDocumentStore(DocumentStore):
         limit: int = 10,
         vector_index: VectorIndex | None = None,
     ) -> list[SearchResult]:
-        fts_results = await self.search(query, limit=limit)
+        """Fuse FTS and vector rankings over an amplified candidate pool.
+
+        Two properties matter here (issue #49, verified against production
+        data): each leg must fetch far more candidates than the final ``limit``
+        — otherwise the correct chunk never enters fusion because it sits at
+        FTS rank 8+ while only the final top-k is fetched — and the FTS leg
+        must carry a lower RRF weight, because BM25 keyword collisions are
+        cheap while an embedding rank-1 hit is the semantic answer. Under
+        equal weights the two tie at exactly ``1/(k+1)`` and stable sorting
+        lets FTS junk win every tie.
+        """
+        candidate_limit = max(limit * _HYBRID_CANDIDATE_FACTOR, limit)
+        fts_results = await self.search(query, limit=candidate_limit)
         vector_results = await self.search_vector(
-            query, provider, limit=limit, vector_index=vector_index
+            query, provider, limit=candidate_limit, vector_index=vector_index
         )
 
         if not vector_results:
+            # Degrading to FTS is correct, but it must be visible: a silently
+            # empty vector channel (wiped index, provider outage) is exactly
+            # how #49's "semantic layer does nothing" state went unnoticed.
+            logger.warning(
+                "document_store.hybrid_vector_empty",
+                collection=self.collection,
+                fallback="fts",
+            )
             return fts_results
         if not fts_results:
             return vector_results
@@ -338,6 +386,7 @@ class SQLiteDocumentStore(DocumentStore):
                 [r.doc_id for r in vector_results],
             ],
             limit=limit,
+            weights=[_RRF_FTS_WEIGHT, _RRF_VECTOR_WEIGHT],
         )
         rows = await self._repo.get_documents_by_ids(
             [doc_id for doc_id, _score in fused]
@@ -413,6 +462,13 @@ class SQLiteDocumentStore(DocumentStore):
         the given provider and model are skipped (``content_hash`` dedup), so the
         expensive embedding call only runs for new or changed content. This makes
         the backfill idempotent across calls and process restarts.
+
+        When nothing needs (re-)embedding but a vector index is attached and out
+        of sync with the persisted embeddings, the index is rebuilt from the
+        stored vectors — no embedding API calls. Without this, a wiped or
+        recreated-empty index would never refill (every document is "already
+        embedded"), which is exactly how #49's silent FTS-only degradation
+        happened after a manual index cleanup.
         """
         rows = await self._repo.list_documents(limit=limit)
         items = [_row_to_item(row) for row in rows]
@@ -426,23 +482,103 @@ class SQLiteDocumentStore(DocumentStore):
             if (item.doc_id, memory_text_hash(text)) in existing:
                 continue
             pending.append((item, text))
-        if not pending:
-            return BackfillResult(added=0, needed=0)
-        results = await provider.embed_texts([text for _, text in pending])
         added = 0
-        for (item, text), result in zip(pending, results, strict=False):
-            if not result.embedding:
-                continue
-            await self.put_embedding(
-                item.doc_id,
-                result.embedding,
-                provider_id=result.provider_id,
-                model=result.model,
-                content_hash=memory_text_hash(text),
-                vector_index=vector_index,
+        if pending:
+            results = await provider.embed_texts([text for _, text in pending])
+            for (item, text), result in zip(pending, results, strict=False):
+                if not result.embedding:
+                    continue
+                await self.put_embedding(
+                    item.doc_id,
+                    result.embedding,
+                    provider_id=result.provider_id,
+                    model=result.model,
+                    content_hash=memory_text_hash(text),
+                    vector_index=vector_index,
+                )
+                added += 1
+            needed = len(pending)
+        else:
+            needed = 0
+            if (
+                vector_index is not None
+                and existing
+                and callable(getattr(vector_index, "count", None))
+                and callable(getattr(vector_index, "embedding_ids", None))
+            ):
+                await self._rebuild_vector_index_if_stale(
+                    provider, vector_index, expected_keys=existing
+                )
+        return BackfillResult(added=added, needed=needed)
+
+    async def _rebuild_vector_index_if_stale(
+        self,
+        provider: EmbeddingProvider,
+        vector_index: VectorIndex,
+        *,
+        expected_keys: set[tuple[str, str]],
+    ) -> None:
+        """Replay persisted embeddings into the index when counts diverge.
+
+        The ``{collection}_doc_embeddings`` table is authoritative; the index is
+        derived and disposable. Rebuild streams rows in batches so a 14k×4096
+        collection fits in bounded memory, and clears index rows whose
+        embedding ids no longer exist in the table (documents deleted or
+        re-embedded since).
+        """
+        expected_ids = {
+            embedding_id
+            for embedding_id in await self._repo.list_all_embedding_ids(
+                provider_id=provider.provider_id, model=provider.model
             )
-            added += 1
-        return BackfillResult(added=added, needed=len(pending))
+        }
+        if not expected_ids:
+            return
+        index_count = await vector_index.count()
+        if index_count == len(expected_ids):
+            return
+        logger.warning(
+            "document_store.vector_index_stale",
+            collection=self.collection,
+            index_rows=index_count,
+            embedding_rows=len(expected_ids),
+            action="rebuild_from_embeddings",
+        )
+        dimensions = provider.dimensions
+        if dimensions <= 0:
+            logger.warning(
+                "document_store.vector_index_rebuild_skipped",
+                collection=self.collection,
+                reason="unknown_embedding_dimensions",
+            )
+            return
+        indexed_ids = await vector_index.embedding_ids()
+        stale_ids = sorted(indexed_ids - expected_ids)
+        if stale_ids:
+            await vector_index.delete(stale_ids)
+        offset = 0
+        while True:
+            batch = await self._repo.list_embeddings(
+                provider_id=provider.provider_id,
+                model=provider.model,
+                dimensions=dimensions,
+                limit=_INDEX_REBUILD_BATCH,
+                offset=offset,
+            )
+            if not batch:
+                break
+            records = [
+                VectorRecord(
+                    embedding_id=row["embedding_id"],
+                    item_id=row["doc_id"],
+                    embedding=row["embedding"],
+                )
+                for row in batch
+            ]
+            await vector_index.upsert(records)
+            offset += len(batch)
+            if len(batch) < _INDEX_REBUILD_BATCH:
+                break
 
 
 def _row_to_search_result(row: dict[str, Any], *, score: float = 0.0) -> SearchResult:
