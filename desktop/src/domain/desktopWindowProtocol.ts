@@ -2,6 +2,7 @@ import type { LocalDesktopConfig } from "./config";
 import type { DisplayPlan } from "./displayPlan";
 import type { PetRuntimeState, PresentationPlan } from "./runtime";
 import type { TurnRecord } from "./conversation";
+import type { PomodoroState } from "@/services/pomodoroService";
 
 export interface DesktopRuntimeSnapshot {
   connected: boolean;
@@ -15,6 +16,12 @@ export interface DesktopRuntimeSnapshot {
   motionMapVersion: number;
   turns?: TurnRecord[];
   activeMotionFeedbackPlaybackId?: string | null;
+  /**
+   * Pomodoro timer state for the pet window badge. Only changes on phase
+   * transitions; the remaining seconds are re-derived locally from
+   * `expiresAt`, so this never republishes once per second.
+   */
+  pomodoro?: PomodoroState;
 }
 
 export type PetWindowCommand =

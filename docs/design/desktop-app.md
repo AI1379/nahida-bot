@@ -1217,7 +1217,7 @@ Desktop Gateway Client 可以先复用：
 | `/api/events/stream` | 接收实时事件 |
 | `/api/speech/jobs` | 提交统一 TTS 合成任务并获取 job/artifact 状态 |
 | `/api/media/speech/{artifact_id}` | 从 Gateway 下载受鉴权的缓存音频 |
-| `/api/pomodoro/reminders` | 用任务模型生成一句番茄钟提醒文案，并可选预热 TTS 缓存 |
+| `/api/generate/text` | 通用一次性文本生成（当前唯一调用方是番茄钟动态文案）：服务端注入 workspace 人设前缀（system 基线 + AGENTS/SOUL/USER.md），客户端上传任务指令，可选预热 TTS 缓存 |
 
 `/api/speech/jobs` 与 `/api/media/speech/{artifact_id}` 已实现：
 
@@ -1337,7 +1337,7 @@ Desktop Node 的能力应显式声明。
 | `desktop.audio.stop` | Gateway -> Desktop | 停止当前音频播放 |
 | `desktop.notification.show` | Gateway -> Desktop | 展示系统通知 |
 | `desktop.notification.announce` | Gateway -> Desktop | 在桌宠上排队并语音播报提醒 |
-| `desktop.pomodoro.control` | Gateway -> Desktop | start/stop/toggle/status/configure 本地番茄钟；`workMinutes`/`breakMinutes`/`totalRounds`/提醒文案/`enabled`/`speakReminders`/`dynamicText` 可选，configure 先落盘再生效。agent 工具 `desktop_pomodoro` 走此能力 |
+| `desktop.pomodoro.control` | Gateway -> Desktop | start/stop/toggle/status/configure 本地番茄钟；`workMinutes`/`breakMinutes`/`totalRounds`/提醒文案/`enabled`/`speakReminders`/`dynamicText`/`dynamicTextModel` 可选，configure 先落盘再生效。agent 工具 `desktop_pomodoro` 走此能力 |
 | `desktop.computer.screenshot` | Gateway -> Desktop | 抓取虚拟桌面像素并返回单帧 JPEG；Gateway 可写入 TTL 媒体缓存 |
 | `desktop.computer.input` | Gateway -> Desktop | 注入归一化鼠标与受限键盘动作 |
 | `desktop.window.focus` | Gateway -> Desktop | 聚焦窗口 |
@@ -1618,8 +1618,9 @@ Gateway 需要保存或维护：
 - `PresentationPlanner` 已覆盖 message completed / error 基线、通知合并优先级（`notification.reminder` / `notification.error`）与番茄钟事件；Gateway 音频走 `/api/speech/jobs` + `/api/media/speech/{artifact_id}`（见 10.1）。
 - 番茄钟运行状态（phase/expiresAt/剩余秒数）由 `PomodoroService.onStateChange` 推送到 desktop store；Workbench 与 Settings 面板按实际运行状态显示 Start/Stop、阶段徽标和倒计时，`enabled` 只作为提醒总开关（关闭时同时停表）。提醒 dedupeKey 按提醒类型区分（`work-start` / `break-start` / `break-end`），避免 break 提醒与 work 提醒撞 key 被播放协调器去重吞掉。
 - 番茄钟提醒默认带 `ttsEnabled`（`speakReminders` 设置，默认开）：planner 给 reminder segment 加 voice，按 TTS 来源设置走系统语音或 Gateway `/api/speech/jobs` 合成。Agent 可经 `desktop_pomodoro` 工具 → `desktop.pomodoro.control` capability 控制番茄钟（低风险、无需审批）。
-- 动态文案（`dynamicText` 设置，默认关）：开启后每个阶段开始时 Desktop 在 runway 内调 `POST /api/pomodoro/reminders`（带最近用过的 `avoid` 列表防重复）预取下阶段文案；Gateway 用 `pomodoro_reminder` 任务模型生成一句 ≤40 字提醒，并按与播放侧完全一致的参数（style=neutral）预合成 TTS，触发时刻 `/api/speech/jobs` 直接缓存命中，无需实时合成。生成失败、未配置模型或未连接 Gateway 时回退固定文案。阶段含 `rounds_done`（全部轮次完成）。
+- 动态文案（`dynamicText` 设置，默认关）：开启后每个阶段开始时 Desktop 在 runway 内调 `POST /api/generate/text`（通用生成端点，带最近用过的 `avoid` 列表防重复）预取下阶段文案；任务指令（场景 + ≤40 字等输出要求）由 Desktop 组装，**人设由服务端注入**——system 基线 + 目标 workspace 的 `AGENTS.md`/`SOUL.md`/`USER.md`，与 agent 对话同一灵魂；按与播放侧完全一致的参数（style=neutral）预合成 TTS，触发时刻 `/api/speech/jobs` 直接缓存命中。**生成模型由 Desktop 决定**：设置项 `dynamicTextModel`（model spec：tag 如 `primary`/`cheap`，或固定模型 `provider/model`/裸模型名）随请求体 `model` 字段发送；优先级为请求 `model` → 服务器 `webapi.generate.model` → `primary` tag → `default_provider` 兜底，写错的 spec 会静默穿过落到下一级。生成失败、未配置模型或未连接 Gateway 时回退固定文案。阶段含 `rounds_done`（全部轮次完成）。
 - 轮数（`totalRounds` 设置，1–16，默认 1）：一次 start = `totalRounds` 个 work+break 轮，break 结束后自动进入下一轮，最后一轮结束用 `roundsDoneText` 提醒并自动停表；`PomodoroState` 暴露 `round`/`totalRounds`，运行中改设置不影响本次运行的轮数。
+- pet 窗口常驻番茄钟徽标（`PomodoroBadge`）：`pomodoroState` 随 `DesktopRuntimeSnapshot`（可选字段 `pomodoro`，旧发布端不带时 pet 侧保留现值）下发，只在 phase 切换时变化；徽标在非 idle 时显示于桌宠头顶（脉冲圆点 + 阶段文案 + `mm:ss` + 轮次，working 绿 / breaking 蓝配色与设置面板一致，phase 切换重放入场动画），剩余秒数由 pet 窗口本地按 `expiresAt` 每秒派生，快照不逐秒重发；桌宠 hidden/retreating 时隐藏。
 - TTS 来源可选 `system | gateway | auto`：gateway 模式经 Gateway 合成并缓存到本地 blob。
 
 验收口径：本地番茄钟或 mock 通知能触发桌宠唤出、气泡、可选 TTS、口型、表情和动作；TTS 失败不会影响文本展示。

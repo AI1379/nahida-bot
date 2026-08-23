@@ -93,6 +93,7 @@ export function useDesktopRuntimeController(
     motionMapVersion: store.motionMapVersion,
     turns: store.turns,
     activeMotionFeedbackPlaybackId: store.activeMotionFeedbackPlaybackId,
+    pomodoro: store.pomodoroState,
   }));
 
   let transitionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -520,6 +521,7 @@ export function useDesktopRuntimeController(
             kind,
             avoid: [...pomodoroRecentTexts],
             synthesize,
+            model: store.localConfig.pomodoro.dynamicTextModel,
             signal: controller.signal,
           });
           if (controller.signal.aborted) return;

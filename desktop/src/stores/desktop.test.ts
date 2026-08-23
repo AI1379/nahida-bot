@@ -153,6 +153,47 @@ describe("desktop store pet transitions", () => {
     expect(store.localConfig.performanceMode).toBe("active");
   });
 
+  it("applies the pomodoro state carried by runtime snapshots", () => {
+    const store = useDesktopStore();
+    const running: NonNullable<DesktopRuntimeSnapshot["pomodoro"]> = {
+      phase: "working",
+      round: 2,
+      totalRounds: 4,
+      startedAt: "2026-08-23T00:00:00.000Z",
+      expiresAt: "2026-08-23T00:20:00.000Z",
+      remainingSeconds: 1200,
+    };
+
+    store.applyRuntimeSnapshot({
+      connected: true,
+      sessionId: "test-session",
+      activePlan: null,
+      activePresentation: null,
+      petRuntime: store.petRuntime,
+      localConfig: store.localConfig,
+      localConfigVersion: store.localConfigVersion,
+      expressionMapVersion: store.expressionMapVersion,
+      motionMapVersion: store.motionMapVersion,
+      pomodoro: running,
+    });
+
+    expect(store.pomodoroState).toEqual(running);
+
+    store.applyRuntimeSnapshot({
+      connected: true,
+      sessionId: "test-session",
+      activePlan: null,
+      activePresentation: null,
+      petRuntime: store.petRuntime,
+      localConfig: store.localConfig,
+      localConfigVersion: store.localConfigVersion,
+      expressionMapVersion: store.expressionMapVersion,
+      motionMapVersion: store.motionMapVersion,
+    });
+
+    expect(store.pomodoroState).toEqual(running);
+  });
+
   it("persists gateway connection updates and bumps the revision", () => {
     const store = useDesktopStore();
     const initialVersion = store.gatewayConnectionVersion;

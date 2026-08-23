@@ -4,6 +4,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionFeedbackPanel from "@/components/MotionFeedbackPanel.vue";
+import PomodoroBadge from "@/components/PomodoroBadge.vue";
 import type { ProximityIntent } from "@/domain/petProximity";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import {
@@ -163,6 +164,11 @@ onBeforeUnmount(() => {
       :debug-enabled="false"
       :dev-chrome="false"
       @motion-executed="handleMotionExecuted"
+    />
+
+    <PomodoroBadge
+      class="pet-window__pomodoro"
+      :state="store.pomodoroState"
     />
 
     <MotionFeedbackPanel

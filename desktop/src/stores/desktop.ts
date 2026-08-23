@@ -547,6 +547,7 @@ export const useDesktopStore = defineStore("desktop", {
         this.activeMotionFeedbackPlaybackId =
           snapshot.activeMotionFeedbackPlaybackId;
       }
+      if (snapshot.pomodoro) this.pomodoroState = snapshot.pomodoro;
       this.syncPetRuntime(snapshot.petRuntime);
     },
     updateTtsSettings(settings: LocalDesktopConfig["ttsSettings"]) {

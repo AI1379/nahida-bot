@@ -237,6 +237,75 @@
   color: #9a3838;
 }
 
+.pet-window__pomodoro {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+}
+
+.pet-window[data-status="hidden"] .pet-window__pomodoro,
+.pet-window[data-status="retreating"] .pet-window__pomodoro {
+  display: none;
+}
+
+.pomodoro-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgb(167 195 174 / 72%);
+  border-radius: 999px;
+  padding: 4px 12px;
+  background: rgb(250 253 249 / 92%);
+  color: #2b3b30;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 8px 20px rgb(22 32 26 / 14%);
+  animation: pomodoro-badge-pop 240ms ease-out;
+}
+
+.pomodoro-badge[data-phase="working"] {
+  border-color: #a5cdb1;
+  background: rgb(234 247 238 / 92%);
+  color: #1f6b41;
+}
+
+.pomodoro-badge[data-phase="breaking"] {
+  border-color: #b7c6de;
+  background: rgb(237 242 250 / 92%);
+  color: #33517d;
+}
+
+.pomodoro-badge__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: runtime-status-pulse 1.2s ease-in-out infinite;
+}
+
+.pomodoro-badge__countdown {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.pomodoro-badge__round {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+@keyframes pomodoro-badge-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 @media (max-width: 920px) {
   .runtime-conversation {
     top: 12px;
