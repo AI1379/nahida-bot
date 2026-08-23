@@ -47,6 +47,13 @@ port: 6185
 #         backend: "minimax"
 #         voice_id: "your-activated-minimax-voice-id"
 #     default_voice: "nahida"
+#   # 通用文本生成（POST /api/generate/text，番茄钟动态文案走这里）：
+#   # Desktop 端设置里可指定生成模型（随请求发送）；下面的 model 仅作为
+#   # 请求未指定时的服务器端默认（tag 或固定模型均可），
+#   # 再往下兜底 primary tag → default_provider。人设前缀（SOUL.md 等）
+#   # 由服务端从 workspace 注入，无需在此配置。
+#   # generate:
+#   #   model: "primary"
 
 # ── 数据库 ────────────────────────────────────────────
 db_path: "./data/nahida.db"

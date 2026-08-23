@@ -161,6 +161,7 @@ class WebAPIApp:
             self._application, "speech_artifact_store", None
         )
         app.state.speech_config = self._application.settings.webapi.speech
+        app.state.generate_config = self._application.settings.webapi.generate
 
         app.add_middleware(
             CORSMiddleware,
@@ -178,6 +179,9 @@ class WebAPIApp:
         from nahida_bot.gateway.routes.cron import router as cron_router
         from nahida_bot.gateway.routes.events import router as events_router
         from nahida_bot.gateway.routes.files import router as files_router
+        from nahida_bot.gateway.routes.generate import (
+            router as generate_router,
+        )
         from nahida_bot.gateway.routes.health import router as health_router
         from nahida_bot.gateway.routes.kb import router as kb_router
         from nahida_bot.gateway.routes.identity import router as identity_router
@@ -185,9 +189,6 @@ class WebAPIApp:
         from nahida_bot.gateway.routes.messages import router as messages_router
         from nahida_bot.gateway.routes.memory import router as memory_router
         from nahida_bot.gateway.routes.plugins import router as plugins_router
-        from nahida_bot.gateway.routes.pomodoro import (
-            router as pomodoro_router,
-        )
         from nahida_bot.gateway.routes.processes import router as processes_router
         from nahida_bot.gateway.routes.sessions import router as sessions_router
         from nahida_bot.gateway.routes.skills import router as skills_router
@@ -264,7 +265,7 @@ class WebAPIApp:
         # from _get_services instead of a generic 404/405.
         app.include_router(speech_router, dependencies=[Depends(require_token)])
         app.include_router(speech_media_router, dependencies=[Depends(require_token)])
-        app.include_router(pomodoro_router, dependencies=[Depends(require_token)])
+        app.include_router(generate_router, dependencies=[Depends(require_token)])
 
         if self.node_registry is not None:
             from nahida_bot.gateway.routes.nodes import (

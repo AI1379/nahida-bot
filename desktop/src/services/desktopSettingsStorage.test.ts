@@ -61,6 +61,8 @@ describe("desktop settings persistence", () => {
           ...fallback.pomodoro,
           enabled: true,
           workDurationMinutes: 45,
+          dynamicText: true,
+          dynamicTextModel: "  zai/glm-5.2  ",
         },
         petTriggers: {
           ...fallback.petTriggers,
@@ -83,6 +85,8 @@ describe("desktop settings persistence", () => {
     expect(restored.ttsSettings.rate).toBe(1.25);
     expect(restored.pomodoro.enabled).toBe(true);
     expect(restored.pomodoro.workDurationMinutes).toBe(45);
+    expect(restored.pomodoro.dynamicText).toBe(true);
+    expect(restored.pomodoro.dynamicTextModel).toBe("zai/glm-5.2");
     expect(restored.petTriggers.wakeDistancePx).toBe(140);
     expect(restored.petTriggers.autoRetreatMs).toBe(30000);
   });

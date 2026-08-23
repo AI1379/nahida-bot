@@ -65,6 +65,10 @@ export function sanitizePomodoroSettings(value: unknown): PomodoroSettings {
       typeof record.dynamicText === "boolean"
         ? record.dynamicText
         : pomodoroDefaults.dynamicText,
+    dynamicTextModel:
+      typeof record.dynamicTextModel === "string"
+        ? record.dynamicTextModel.trim().slice(0, 128)
+        : pomodoroDefaults.dynamicTextModel,
   };
 }
 

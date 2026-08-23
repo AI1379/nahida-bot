@@ -71,6 +71,18 @@ export function applyPomodoroCapability(
     patch[field] = value;
   }
 
+  // Unlike the static texts, the model spec may be empty (clears back to
+  // the Gateway-side default chain).
+  if (args.dynamicTextModel !== undefined) {
+    const model = args.dynamicTextModel;
+    if (typeof model !== "string" || model.length > 128) {
+      return invalid(
+        "dynamicTextModel must be a string of at most 128 characters",
+      );
+    }
+    patch.dynamicTextModel = model.trim();
+  }
+
   if (Object.keys(patch).length > 0) {
     context.updateSettings({ ...context.getSettings(), ...patch });
   }

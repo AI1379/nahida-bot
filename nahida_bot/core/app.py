@@ -1103,8 +1103,8 @@ class Application:
     def model_router(self):
         """Unified ModelRouter (None until provider manager initialization).
 
-        Gateway-side text generation (e.g. dynamic pomodoro reminders)
-        resolves task-bound models through this router.
+        Gateway-side text generation (``POST /api/generate``) resolves
+        task-bound models through this router.
         """
         return self._model_router
 

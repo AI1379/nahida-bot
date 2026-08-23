@@ -502,6 +502,8 @@ async def test_pomodoro_sends_action_and_optional_configuration() -> None:
         break_minutes=10,
         total_rounds=4,
         speak_reminders=True,
+        dynamic_text=True,
+        dynamic_text_model="zai/glm-5.2",
         work_start_text="专注开始！",
         rounds_done_text="全部完成！",
         conversation_id="milky:private:owner",
@@ -518,10 +520,39 @@ async def test_pomodoro_sends_action_and_optional_configuration() -> None:
         "breakMinutes": 10,
         "totalRounds": 4,
         "speakReminders": True,
+        "dynamicText": True,
+        "dynamicTextModel": "zai/glm-5.2",
         "workStartText": "专注开始！",
         "roundsDoneText": "全部完成！",
         "actorAccountKey": "milky:user:owner",
     }
+
+
+@pytest.mark.asyncio
+async def test_pomodoro_allows_empty_dynamic_text_model() -> None:
+    registry = NodeRegistry()
+    calls: list[tuple[str, NodeEnvelope]] = []
+    _register(
+        registry,
+        node_id="owner-desktop",
+        actor="milky:user:owner",
+        conversation="milky:private:owner",
+        capabilities=[DESKTOP_POMODORO_CAPABILITY],
+        calls=calls,
+    )
+    service = DesktopControlService(registry, NodeInvoker(registry))
+
+    result = await service.pomodoro(
+        action="configure",
+        dynamic_text_model="",
+        conversation_id="milky:private:owner",
+        actor_account_key="milky:user:owner",
+        caller="agent:chat:test",
+    )
+
+    assert result.ok is True
+    assert calls[0][1].payload is not None
+    assert calls[0][1].payload["arguments"]["dynamicTextModel"] == ""
 
 
 @pytest.mark.asyncio
@@ -567,6 +598,7 @@ async def test_pomodoro_status_sends_minimal_payload() -> None:
         {"action": "configure", "speak_reminders": 1},
         {"action": "configure", "work_start_text": ""},
         {"action": "configure", "work_start_text": "x" * 201},
+        {"action": "configure", "dynamic_text_model": "m" * 129},
     ],
 )
 async def test_pomodoro_rejects_invalid_arguments(kwargs: dict[str, Any]) -> None:

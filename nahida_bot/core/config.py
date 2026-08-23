@@ -197,6 +197,21 @@ class WebApiSpeechConfigModel(BaseModel):
     max_concurrency: int = Field(default=1, ge=1, le=16)
 
 
+class WebApiGenerateConfigModel(BaseModel):
+    """Server-side defaults for ``POST /api/generate`` (persona-grounded
+    one-shot text generation).
+
+    ``model`` is the server-side default model spec, used when the client
+    request does not carry one: a tag such as ``"primary"``/``"cheap"``, a
+    concrete ``provider_id/model_name``, or a bare model name. Empty =
+    resolve the ``primary`` tag, falling back to the default provider.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    model: str = ""
+
+
 class WebAPIConfigModel(BaseModel):
     """WebAPI service configuration."""
 
@@ -209,6 +224,7 @@ class WebAPIConfigModel(BaseModel):
     port: int = 0
     nodes: NodeProtocolConfigModel = NodeProtocolConfigModel()
     speech: WebApiSpeechConfigModel = WebApiSpeechConfigModel()
+    generate: WebApiGenerateConfigModel = WebApiGenerateConfigModel()
 
 
 class WebUIAuthConfigModel(BaseModel):

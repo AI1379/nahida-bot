@@ -29,6 +29,7 @@ MAX_DESKTOP_POMODORO_WORK_MINUTES = 120
 MAX_DESKTOP_POMODORO_BREAK_MINUTES = 60
 MAX_DESKTOP_POMODORO_ROUNDS = 16
 MAX_DESKTOP_POMODORO_TEXT_CHARS = 200
+MAX_DESKTOP_POMODORO_MODEL_CHARS = 128
 DESKTOP_INPUT_ACTIONS = frozenset({"move", "click", "scroll", "type", "key"})
 DESKTOP_MOUSE_BUTTONS = frozenset({"left", "right", "middle"})
 DESKTOP_POMODORO_ACTIONS = frozenset({"start", "stop", "toggle", "status", "configure"})
@@ -193,6 +194,7 @@ class DesktopControlService:
         enabled: bool | None = None,
         speak_reminders: bool | None = None,
         dynamic_text: bool | None = None,
+        dynamic_text_model: str | None = None,
         work_start_text: str | None = None,
         break_start_text: str | None = None,
         break_end_text: str | None = None,
@@ -239,6 +241,13 @@ class DesktopControlService:
             text_error = _validate_string(name, text, MAX_DESKTOP_POMODORO_TEXT_CHARS)
             if text_error is not None:
                 error = text_error
+        if error is None and dynamic_text_model is not None:
+            # May be empty (clears the Desktop back to the gateway default).
+            if len(dynamic_text_model) > MAX_DESKTOP_POMODORO_MODEL_CHARS:
+                error = (
+                    "dynamic_text_model must be at most "
+                    f"{MAX_DESKTOP_POMODORO_MODEL_CHARS} characters"
+                )
         if error is not None:
             return _invalid(error)
 
@@ -258,6 +267,8 @@ class DesktopControlService:
             arguments["speakReminders"] = speak_reminders
         if dynamic_text is not None:
             arguments["dynamicText"] = dynamic_text
+        if dynamic_text_model is not None:
+            arguments["dynamicTextModel"] = dynamic_text_model
         if work_start_text is not None:
             arguments["workStartText"] = work_start_text
         if break_start_text is not None:

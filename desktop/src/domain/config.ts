@@ -73,6 +73,13 @@ export interface PomodoroSettings {
    * phase runway. Falls back to the static texts on any failure.
    */
   dynamicText: boolean;
+  /**
+   * Model spec sent with dynamic reminder requests: a Gateway tag such as
+   * "primary"/"cheap" or a fixed "provider/model" / bare model name.
+   * Empty = the Gateway-side default (webapi.generate.model, then the
+   * primary tag, then the default provider).
+   */
+  dynamicTextModel: string;
 }
 
 export interface PetTriggerSettings {
@@ -97,6 +104,7 @@ export const pomodoroDefaults: PomodoroSettings = {
   roundsDoneText: "番茄轮次全部完成啦，辛苦了，好好放松一下吧～",
   speakReminders: true,
   dynamicText: false,
+  dynamicTextModel: "",
 };
 
 export interface LocalDesktopConfig {

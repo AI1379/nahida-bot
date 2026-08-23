@@ -105,7 +105,8 @@ function changeText(
     | "workStartText"
     | "breakStartText"
     | "breakEndText"
-    | "roundsDoneText",
+    | "roundsDoneText"
+    | "dynamicTextModel",
   event: Event,
 ) {
   update({ [key]: (event.target as HTMLInputElement).value });
@@ -166,6 +167,17 @@ function changeText(
           </label>
         </div>
       </div>
+
+      <label v-if="props.settings.dynamicText" class="pomodoro-settings__field">
+        <span>Dynamic text model</span>
+        <input
+          type="text"
+          :value="props.settings.dynamicTextModel"
+          maxlength="128"
+          placeholder="primary / cheap / provider-model — empty = Gateway default"
+          @change="(e) => changeText('dynamicTextModel', e)"
+        />
+      </label>
 
       <label class="pomodoro-settings__field">
         <span>Work (minutes)</span>
@@ -246,7 +258,8 @@ function changeText(
         changes pop the pet out with a bubble; turning it off while running
         also stops the timer. Dynamic text lets the Gateway model write each
         reminder line ahead of time and falls back to the texts below when
-        offline.
+        offline. The model field takes a Gateway tag (primary, cheap) or a
+        fixed provider/model; leave it empty to use the Gateway default.
       </p>
     </div>
   </section>

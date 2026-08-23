@@ -23,6 +23,7 @@ from nahida_bot.gateway.services.desktop_control import (
     MAX_DESKTOP_HOTKEY_KEYS,
     MAX_DESKTOP_PATH_CHARS,
     MAX_DESKTOP_POMODORO_BREAK_MINUTES,
+    MAX_DESKTOP_POMODORO_MODEL_CHARS,
     MAX_DESKTOP_POMODORO_ROUNDS,
     MAX_DESKTOP_POMODORO_TEXT_CHARS,
     MAX_DESKTOP_POMODORO_WORK_MINUTES,
@@ -319,6 +320,15 @@ class DesktopTools:
                                 "reminder line instead of the static texts."
                             ),
                         },
+                        "dynamic_text_model": {
+                            "type": "string",
+                            "maxLength": MAX_DESKTOP_POMODORO_MODEL_CHARS,
+                            "description": (
+                                "Model spec for dynamic reminders: a tag "
+                                "(primary, cheap) or provider/model. Empty "
+                                "string clears back to the Gateway default."
+                            ),
+                        },
                         "work_start_text": {
                             "type": "string",
                             "minLength": 1,
@@ -573,6 +583,7 @@ class DesktopTools:
         enabled: bool | None = None,
         speak_reminders: bool | None = None,
         dynamic_text: bool | None = None,
+        dynamic_text_model: str | None = None,
         work_start_text: str | None = None,
         break_start_text: str | None = None,
         break_end_text: str | None = None,
@@ -587,6 +598,7 @@ class DesktopTools:
             enabled=enabled,
             speak_reminders=speak_reminders,
             dynamic_text=dynamic_text,
+            dynamic_text_model=dynamic_text_model,
             work_start_text=work_start_text,
             break_start_text=break_start_text,
             break_end_text=break_end_text,

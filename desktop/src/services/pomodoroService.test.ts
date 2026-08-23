@@ -366,6 +366,33 @@ describe("applyPomodoroCapability", () => {
     expect(result.ok).toBe(true);
     expect(settings.dynamicText).toBe(true);
   });
+
+  it("configures dynamicTextModel, including an empty clear value", () => {
+    const { context, settings } = createContext();
+
+    const result = applyPomodoroCapability(context, {
+      action: "configure",
+      dynamicTextModel: "  zai/glm-5.2  ",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(settings.dynamicTextModel).toBe("zai/glm-5.2");
+
+    const cleared = applyPomodoroCapability(context, {
+      action: "configure",
+      dynamicTextModel: "",
+    });
+
+    expect(cleared.ok).toBe(true);
+    expect(settings.dynamicTextModel).toBe("");
+
+    const rejected = applyPomodoroCapability(context, {
+      action: "configure",
+      dynamicTextModel: 42,
+    });
+
+    expect(rejected.ok).toBe(false);
+  });
 });
 
 describe("fetchGeneratedPomodoroReminder", () => {
@@ -375,17 +402,17 @@ describe("fetchGeneratedPomodoroReminder", () => {
     kind: "break-start" as const,
     avoid: ["上一句", "再上一句"],
     synthesize: true,
+    model: "  zai/glm-5.2  ",
   };
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the phase, avoid list and synthesize flag", async () => {
+  it("posts the task prompt, avoid list, model spec and synthesize flag", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          phase: "break_start",
           text: "休息一下吧，伸展一下肩膀～",
           speech: { artifact_id: "art-9" },
         }),
@@ -399,16 +426,19 @@ describe("fetchGeneratedPomodoroReminder", () => {
     expect(result.text).toBe("休息一下吧，伸展一下肩膀～");
     expect(result.artifactId).toBe("art-9");
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://127.0.0.1:6185/api/pomodoro/reminders");
+    expect(url).toBe("http://127.0.0.1:6185/api/generate/text");
     expect(init.method).toBe("POST");
     expect((init.headers as Record<string, string>).authorization).toBe(
       "Bearer token-1",
     );
-    expect(JSON.parse(String(init.body))).toEqual({
-      phase: "break_start",
-      avoid: ["上一句", "再上一句"],
-      synthesize: true,
-    });
+    const body = JSON.parse(String(init.body));
+    expect(body.max_chars).toBe(40);
+    expect(body.avoid).toEqual(["上一句", "再上一句"]);
+    expect(body.model).toBe("zai/glm-5.2");
+    expect(body.synthesize).toBe(true);
+    expect(body.style).toBe("neutral");
+    expect(body.prompt).toContain("专注时段结束、休息时段刚刚开始");
+    expect(body.prompt).toContain("不要使用引号");
   });
 
   it("rejects on HTTP errors and malformed payloads", async () => {
