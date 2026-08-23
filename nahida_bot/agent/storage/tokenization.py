@@ -62,12 +62,31 @@ def tokenize_for_fts(text: str) -> str:
     return " ".join(extract_keywords(text))
 
 
-def build_fts_query(query: str) -> str:
-    """Build a safe OR query for pre-tokenized FTS fields."""
-    tokens = extract_keywords(query)
+def fts_terms(query: str) -> list[str]:
+    """Return the cleaned, quoted FTS terms for a query string.
+
+    Shared by the OR and AND query builders so both forms see exactly the
+    same term set (index side and query side tokenize identically).
+    """
     quoted: list[str] = []
-    for token in tokens:
+    for token in extract_keywords(query):
         cleaned = _FTS_SPECIAL.sub(" ", token).strip()
         if cleaned:
             quoted.append(f'"{cleaned}"')
-    return " OR ".join(quoted)
+    return quoted
+
+
+def build_fts_query(query: str) -> str:
+    """Build a safe OR query for pre-tokenized FTS fields."""
+    return " OR ".join(fts_terms(query))
+
+
+def build_fts_and_query(query: str) -> str:
+    """Build a conjunction query requiring every query term.
+
+    Used as a precision-first tier before the OR fallback: keyword-exact
+    queries ("七七 角色故事3") rank their true target without keyword
+    collisions, while broad semantic queries that match nothing under AND
+    fall through to OR (issue #49 root cause 5).
+    """
+    return " AND ".join(fts_terms(query))

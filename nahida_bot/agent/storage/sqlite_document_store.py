@@ -15,7 +15,11 @@ from nahida_bot.agent.storage.models import (
     SearchResult,
 )
 from nahida_bot.agent.storage.repository import SQLiteDocumentRepository
-from nahida_bot.agent.storage.tokenization import build_fts_query, tokenize_for_fts
+from nahida_bot.agent.storage.tokenization import (
+    build_fts_and_query,
+    build_fts_query,
+    tokenize_for_fts,
+)
 from nahida_bot.agent.storage.vector import (
     VectorIndex,
     VectorRecord,
@@ -252,12 +256,27 @@ class SQLiteDocumentStore(DocumentStore):
     # ── FTS Search ────────────────────────────────────────
 
     async def search(self, query: str, *, limit: int = 10) -> list[SearchResult]:
+        """FTS search with a precision-first AND tier and OR fallback.
+
+        With more than one term, the conjunction form is tried first: any
+        document containing *every* term strictly dominates the OR results
+        for that query, eliminating single-term keyword collisions for exact
+        queries (「七七 角色故事3」). CJK content frequently has zero
+        documents containing all terms of a broad query (issue #49 probes),
+        so the OR form takes over when AND matches nothing — recall is never
+        sacrificed for precision.
+        """
         fts_query = build_fts_query(query)
         if not fts_query:
             # No query — list recent documents instead.
             rows = await self._repo.list_documents(limit=limit)
         else:
-            rows = await self._repo.search_documents_fts(fts_query, limit=limit)
+            rows: list[dict[str, Any]] = []
+            and_query = build_fts_and_query(query)
+            if " AND " in and_query:
+                rows = await self._repo.search_documents_fts(and_query, limit=limit)
+            if not rows:
+                rows = await self._repo.search_documents_fts(fts_query, limit=limit)
         return [
             SearchResult(
                 doc_id=str(row["doc_id"]),

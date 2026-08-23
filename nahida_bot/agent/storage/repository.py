@@ -304,12 +304,17 @@ class SQLiteDocumentRepository:
         makes those ~5-char nodes dominate any query that touches their
         terms. They remain stored for ``context_read`` tree expansion — only
         retrieval ranking skips them.
+
+        Title terms weigh 3x content terms: a chunk whose *section heading*
+        carries the query is a structural hit, while the same term buried in
+        body text is far weaker evidence (``title_index`` is the first
+        indexed column; ``doc_id`` is UNINDEXED so weights start there).
         """
         rows = await self._engine.fetch_all(
             f"SELECT d.doc_id, d.title, d.content, d.status, d.metadata_json, "
             f"d.retrieval_text, d.path, d.source_id, d.chunk_index, "
             f"d.parent_id, d.root_id, d.node_type, "
-            f"d.created_at, d.updated_at, -bm25({self._fts_table}) AS score "
+            f"d.created_at, d.updated_at, -bm25({self._fts_table}, 3.0, 1.0) AS score "
             f"FROM {self._fts_table} "
             f"JOIN {self._docs_table} d ON d.doc_id = {self._fts_table}.doc_id "
             f"WHERE {self._fts_table} MATCH ? "

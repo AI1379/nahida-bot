@@ -149,6 +149,65 @@ async def test_fts_scores_are_positive_descending() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fts_and_tier_eliminates_keyword_collisions() -> None:
+    """Multi-term queries require every term before falling back to OR.
+
+    The collision doc matches one query term only; under the old OR-only
+    form it ranked alongside the target. The AND tier must keep it out.
+    """
+    engine, store = await _make_store()
+    try:
+        await store.put(
+            "target",
+            "qiqi story chapter cold zombie apothecary",
+            title="qiqi story",
+            node_type="passage",
+        )
+        await store.put(
+            "collision",
+            "story about a completely different clerk",
+            title="collision",
+            node_type="passage",
+        )
+        # All terms present in target; collision lacks "qiqi".
+        results = await store.search("qiqi story", limit=5)
+        assert [r.doc_id for r in results] == ["target"]
+
+        # A broad query no document fully satisfies falls back to the OR
+        # form: partial matches return, ranked by term coverage (target
+        # matches two terms, collision one).
+        results = await store.search("qiqi story pharmacist", limit=5)
+        assert results[0].doc_id == "target"
+        assert {r.doc_id for r in results} == {"target", "collision"}
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_fts_title_match_outranks_body_match() -> None:
+    engine, store = await _make_store()
+    try:
+        # Same term in body vs in title: the title hit must rank first
+        # (bm25 column weights: title_index 3x content_index).
+        await store.put(
+            "body_hit",
+            "goro mentions kokomi once in passing",
+            title="unrelated diary",
+            node_type="passage",
+        )
+        await store.put(
+            "title_hit",
+            "a short entry",
+            title="kokomi notes",
+            node_type="passage",
+        )
+        results = await store.search("kokomi", limit=5)
+        assert results[0].doc_id == "title_hit"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_fts_excludes_title_only_structural_nodes() -> None:
     engine, store = await _make_store()
     try:
