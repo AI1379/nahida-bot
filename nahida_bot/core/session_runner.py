@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, AbstractSet, Any, cast
+from typing import TYPE_CHECKING, AbstractSet, Any, Callable, cast
 
 import structlog
 
@@ -30,6 +30,7 @@ from nahida_bot.agent.retrieval import (
     RetrievalScope,
     RetrievalService,
 )
+from nahida_bot.agent.retrieval.adapters import _document_result_to_retrieval
 from nahida_bot.agent.storage.tokenization import build_fts_query
 from nahida_bot.identity.policy import (
     memory_read_request_from_context,
@@ -274,6 +275,7 @@ class SessionRunner:
         enable_silent_reply: bool = True,
         document_store_manager: Any | None = None,
         kb_auto_recall_config: Any | None = None,
+        kb_plugin_resolver: Callable[[], Any] | None = None,
         transcript_projector: TranscriptProjector | None = None,
     ) -> None:
         self._agent = agent_loop
@@ -306,6 +308,7 @@ class SessionRunner:
         self._enable_silent_reply = enable_silent_reply
         self._document_store_manager = document_store_manager
         self._kb_auto_recall_config = kb_auto_recall_config
+        self._kb_plugin_resolver = kb_plugin_resolver
         self._transcript_projector = transcript_projector
         self._run_tracker = ActiveRunTracker()
 
@@ -1794,10 +1797,18 @@ class SessionRunner:
     ) -> ContextMessage | None:
         """Load a small relevant KB context block for the current turn.
 
-        Searches every KB collection with a tiny per-collection budget (FTS-only),
-        merges results across collections by score, and wraps the top entries as a
+        Searches every KB collection with a tiny per-collection budget, merges
+        results across collections by score, and wraps the top entries as a
         lightweight system-level ``ContextMessage``.  Returns ``None`` when KB
-        auto-recall is disabled, the manager is unavailable, or nothing is found.
+        auto-recall is disabled, the manager is unavailable, or nothing is
+        found.
+
+        When the KnowledgeBasePlugin is loaded (``kb_plugin_resolver``), the
+        search is delegated to it so auto-recall uses the same hybrid
+        retrieval path as ``kb_search`` — the old FTS-only hardcoding here is
+        what made #49's semantic layer invisible to actual conversations.
+        The direct-adapter FTS path remains as a fallback when the plugin is
+        not available.
         """
         manager = self._document_store_manager
         cfg = self._kb_auto_recall_config
@@ -1812,10 +1823,17 @@ class SessionRunner:
         if not query.strip():
             return None
 
-        # FTS-only: keep it fast and low-cost for the automatic path.
-        fts_query = build_fts_query(query)
-        if not fts_query:
-            return None
+        kb_plugin = None
+        if self._kb_plugin_resolver is not None:
+            try:
+                kb_plugin = self._kb_plugin_resolver()
+            except Exception:
+                kb_plugin = None
+        if kb_plugin is None:
+            # Cheap precheck for the FTS-only fallback path; the plugin path
+            # builds its own FTS query internally.
+            if not build_fts_query(query):
+                return None
 
         # Search every collection with a tiny per-collection budget, then merge.
         all_results: list[RetrievalResult] = []
@@ -1823,6 +1841,29 @@ class SessionRunner:
             for name in manager.list_collections():
                 store = manager.get(name)
                 if store is None:
+                    continue
+                if kb_plugin is not None:
+                    try:
+                        raw_hits = await kb_plugin.search_documents(
+                            name, query, limit=limit
+                        )
+                    except LookupError:
+                        continue
+                    except Exception:
+                        logger.debug(
+                            "session_runner.kb_auto_recall_collection_failed",
+                            collection=name,
+                        )
+                        continue
+                    hits = [
+                        _document_result_to_retrieval(
+                            hit, collection_name=name, mode="hybrid"
+                        )
+                        for hit in raw_hits
+                    ]
+                    if cfg.min_score != float("-inf"):
+                        hits = [r for r in hits if r.score >= cfg.min_score]
+                    all_results.extend(hits)
                     continue
                 adapter = DocumentStoreRetrievalAdapter(
                     collection_name=name,
@@ -1859,9 +1900,12 @@ class SessionRunner:
         if not all_results:
             return None
 
-        # FTS BM25 scores are ascending (smaller = more relevant); sort
-        # accordingly so the best (most negative) hits come first.
-        all_results.sort(key=lambda r: r.score)
+        # All retrieval modes now report larger-is-better scores (FTS returns
+        # -bm25, hybrid returns weighted RRF); sort descending so the best hits
+        # come first. Scores from different modes/collections are not strictly
+        # comparable, but every collection uses the same mode, so this orders
+        # correctly within a collection and approximately across them.
+        all_results.sort(key=lambda r: r.score, reverse=True)
         # Dedup by (collection, doc_id) — collections are physically isolated
         # tables so doc_ids can collide across collections.
         seen: set[str] = set()
@@ -1916,7 +1960,7 @@ class SessionRunner:
             source="knowledge_base",
             content="\n".join(lines),
             metadata={
-                "kb_backend": "fts",
+                "kb_backend": "hybrid" if kb_plugin is not None else "fts",
                 "kb_count": len(lines) - 2,
             },
         )

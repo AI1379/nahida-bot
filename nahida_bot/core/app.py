@@ -723,6 +723,7 @@ class Application:
             enable_silent_reply=self.settings.enable_silent_reply,
             document_store_manager=self.document_store_manager,
             kb_auto_recall_config=self.settings.kb_auto_recall,
+            kb_plugin_resolver=self._kb_plugin_resolver,
             transcript_projector=transcript_projector,
         )
 
@@ -1322,6 +1323,20 @@ class Application:
     def is_initialized(self) -> bool:
         """Check if application is initialized."""
         return self._initialized
+
+    def _kb_plugin_resolver(self) -> Any | None:
+        """Return the loaded KnowledgeBasePlugin instance, if any.
+
+        KB auto-recall delegates its search to the plugin so both paths share
+        one hybrid retrieval implementation. The lookup is lazy because the
+        plugin loads in the ``post-agent`` phase, after SessionRunner is built.
+        """
+        if self.plugin_manager is None:
+            return None
+        record = self.plugin_manager.get_record("knowledge_base")
+        if record is None:
+            return None
+        return record.instance
 
     @property
     def is_started(self) -> bool:

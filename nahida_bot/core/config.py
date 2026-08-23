@@ -289,9 +289,11 @@ class MemoryConfig(BaseModel):
 class KBAutoRecallConfig(BaseModel):
     """Lightweight KB auto-recall configuration (§3.1 trigger).
 
-    When enabled, a small FTS search runs across all KB collections before
-    each agent turn and injects top results as context — like Memory does,
-    but with stricter defaults (fewer items, fewer chars, FTS-only).
+    When enabled, a small search runs across all KB collections before each
+    agent turn and injects top results as context — like Memory does, but
+    with stricter defaults (fewer items, fewer chars). Retrieval goes through
+    the KnowledgeBasePlugin when loaded (hybrid: FTS + vector RRF fusion)
+    and falls back to direct FTS otherwise.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -299,12 +301,13 @@ class KBAutoRecallConfig(BaseModel):
     enabled: bool = False
     max_items: int = Field(default=2, ge=0)
     max_chars: int = Field(default=2000, ge=0)
-    # Off by default: FTS BM25 scores are *negative* (more negative = better),
-    # so a finite magnitude threshold is mode-dependent and fragile — the
-    # per-collection top-1 + cross-collection merge already picks the best
-    # hits. Set a finite value only if you understand the BM25 scale (a value
-    # like -10 would otherwise *drop* the strongest matches, since they score
-    # below -10). float('-inf') disables filtering.
+    # All retrieval modes report larger-is-better scores now (FTS returns
+    # -bm25, hybrid returns weighted RRF). float('-inf') disables filtering.
+    # Note the scales still differ per mode (BM25 ~0-20 vs RRF ~0.01-0.03),
+    # so a finite threshold mostly makes sense once you know which mode your
+    # deployment runs. Legacy configs that predate the direction fix may
+    # carry negative values like -10.0: those now keep every positive-scored
+    # hit, which is the safe no-op behavior.
     min_score: float = Field(default=float("-inf"))
 
 
