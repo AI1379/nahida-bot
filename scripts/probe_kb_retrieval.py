@@ -47,8 +47,7 @@ def load_probes() -> tuple[str, list[tuple[str, str, str]]]:
     """Return (collection, [(label, query, selector_sql), ...])."""
     data = json.loads(EVAL_FILE.read_text(encoding="utf-8"))
     probes = [
-        (str(p["label"]), str(p["query"]), str(p["selector"]))
-        for p in data["probes"]
+        (str(p["label"]), str(p["query"]), str(p["selector"])) for p in data["probes"]
     ]
     return str(data["collection"]), probes
 
@@ -88,6 +87,15 @@ def _load_pseudo_embedding(db_path: Path, collection: str, doc_id: str) -> list[
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", required=True, help="Path to the nahida database")
+    parser.add_argument(
+        "--kb-dir",
+        default="",
+        help=(
+            "Split-layout directory holding per-collection kb files "
+            "(#26). When given, the probe runs against "
+            "--kb-dir/{collection}.db and --db is only used to locate the data."
+        ),
+    )
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
 
@@ -100,8 +108,16 @@ async def main() -> None:
     # Always probe a throwaway copy — DatabaseEngine opens read-write and
     # runs migrations; an archive snapshot must never be touched directly.
     work = Path(tempfile.gettempdir()) / "kb-probe-work.db"
-    print(f"[probe] copying {archive} -> {work} (engine runs on the copy only)")
-    shutil.copyfile(archive, work)
+    source = archive
+    if args.kb_dir:
+        source = (Path(args.kb_dir).resolve()) / f"{collection}.db"
+        if not source.is_file():
+            sys.exit(
+                f"collection database not found: {source} "
+                "(migrate first with scripts/migrate_kb_storage_split.py)"
+            )
+    print(f"[probe] copying {source} -> {work} (engine runs on the copy only)")
+    shutil.copyfile(source, work)
 
     engine = DatabaseEngine(work)
     await engine.initialize()

@@ -82,20 +82,27 @@ class SQLiteVecIndex:
         dimensions: int,
         table_name: str = "memory_embedding_vec",
         map_table: str = "memory_vec_map",
+        metric: str = "cosine",
     ) -> None:
         self._engine = engine
         self._dimensions = dimensions
         self._table_name = table_name
         self._map_table = map_table
+        self._metric = metric
         self._ready = False
 
     async def setup(self) -> None:
         await self._load_extension()
 
+        # ``distance_metric=cosine`` matches the JSON backend's cosine ranking.
+        # Tables created before this option existed (or with another metric)
+        # are left untouched by IF NOT EXISTS; rebuilding the index is the
+        # migration path (#26 storage split does exactly that).
         async with self._engine.write_lock:
             await self._engine.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS {self._table_name} "
-                f"USING vec0(embedding float[{self._dimensions}])"
+                f"USING vec0(embedding float[{self._dimensions}] "
+                f"distance_metric={self._metric})"
             )
             await self._engine.execute(
                 f"CREATE TABLE IF NOT EXISTS {self._map_table} ("

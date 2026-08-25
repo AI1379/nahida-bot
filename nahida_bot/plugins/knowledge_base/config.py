@@ -63,6 +63,16 @@ class KBConfig(BaseModel):
         default=5,
         description="Maximum documents returned by kb_search.",
     )
+    storage_dir: str = Field(
+        default="",
+        description=(
+            "Directory for per-collection KB database files (issue #26 split "
+            "layout). Each collection becomes {storage_dir}/{name}.db holding "
+            "its docs, FTS, embedding JSON, and vec index; the main db keeps "
+            "only bot-core data. Empty (default) keeps the legacy layout with "
+            "KB tables in the main db."
+        ),
+    )
     retrieval: KBRetrievalConfig = KBRetrievalConfig()
     embedding: KBEmbeddingConfig = KBEmbeddingConfig()
 

@@ -326,10 +326,27 @@ class Application:
 
         self._agent_run_store = SQLiteAgentRunStore(engine)
 
-        # Document store manager — reusable collection storage for KB and plugins
+        # Document store manager — reusable collection storage for KB and plugins.
+        # Issue #26 split layout: a configured knowledge_base.storage_dir moves
+        # every collection into its own SQLite file under that directory;
+        # empty/absent keeps the legacy layout (KB tables in the main db).
         from nahida_bot.agent.storage.manager import DocumentStoreManager
 
-        self.document_store_manager = DocumentStoreManager(engine)
+        kb_settings = getattr(self.settings, "knowledge_base", None)
+        kb_storage_dir = (
+            str(kb_settings.get("storage_dir", "") or "").strip()
+            if isinstance(kb_settings, dict)
+            else ""
+        )
+        self.document_store_manager = DocumentStoreManager(
+            engine,
+            storage_dir=kb_storage_dir or None,
+        )
+        if kb_storage_dir:
+            logger.info(
+                "application.kb_storage_split",
+                storage_dir=kb_storage_dir,
+            )
 
         logger.info("application.memory_initialized", db_path=db_path)
 

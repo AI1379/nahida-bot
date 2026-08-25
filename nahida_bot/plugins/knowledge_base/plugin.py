@@ -1107,7 +1107,7 @@ class KnowledgeBasePlugin(Plugin):
             return None
 
         index = SQLiteVecIndex(
-            manager.engine,
+            manager.engine_for(collection_name),
             dimensions=dimensions,
             table_name=f"kb_{collection_name}_embedding_vec",
             map_table=f"kb_{collection_name}_vec_map",
@@ -1153,7 +1153,13 @@ class KnowledgeBasePlugin(Plugin):
         vector_index = self._vector_indexes.pop(collection_name, None)
         if vector_index is None:
             manager = self._require_manager()
-            engine = getattr(manager, "engine", None)
+            engine_for = getattr(manager, "engine_for", None)
+            engine: Any | None
+            engine = (
+                engine_for(collection_name)
+                if callable(engine_for)
+                else getattr(manager, "engine", None)
+            )
             if engine is None:
                 return
             vector_index = SQLiteVecIndex(

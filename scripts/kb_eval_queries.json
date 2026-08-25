@@ -75,7 +75,7 @@
     {
       "label": "probe1 纳西妲对旅行者的态度 (#49)",
       "query": "纳西妲 对 旅行者 的态度",
-      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%纳西妲%' AND title LIKE '%配音%' AND content LIKE '%旅行者%' AND status='active' LIMIT 1"
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%纳西妲%' AND title LIKE '%配音%' AND content LIKE '%旅行者%' AND status='active' AND length(content)>20"
     },
     {
       "label": "probe2 世界树净善宫五百年 (#49)",
