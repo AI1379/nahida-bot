@@ -1,0 +1,86 @@
+{
+  "description": "KB retrieval gold eval set (kb-direction.md §4). Queries marked -real are verbatim user questions from the 2026-08-22 production snapshot; -kw are keyword-style probes from the #49 validation notes. selector SQL returns one or more ideal-answer doc_ids from {collection}_docs; every returned id counts as a hit. Selectors match on source_id/title/content patterns (not doc_id) so the set survives re-ingestion.",
+  "collection": "Teyvat",
+  "probes": [
+    {
+      "label": "real01 八重神子命座",
+      "query": "八重神子的命座效果是什么？查一下？",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%八重神子%' AND title LIKE '命之座%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real02 雷电将军圣遗物要求",
+      "query": "那雷神这样是不是没有什么圣遗物要求？",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%雷电将军%' AND title LIKE '推荐装备%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real03 夜兰首次卡池",
+      "query": "我记得夜兰第1次是和谁一起出的来着？",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%夜兰%' AND title LIKE '角色宣发时间轴%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real04 宵宫配装",
+      "query": "宵宫为什么不用弓藏",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%宵宫%' AND title LIKE '推荐装备%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real05 温迪专武对比",
+      "query": "用新版温迪专武和新版大月卡哪个更好",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%温迪%' AND title LIKE '推荐装备%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real06 迪希雅命座",
+      "query": "我说迪希雅厨子命座不如我高有没有懂的",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%迪希雅%' AND title LIKE '命之座%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real07 卡维与艾尔海森关系",
+      "query": "卡维和艾尔海森是男同事吗？",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%卡维%' AND content LIKE '%艾尔海森%' AND (title LIKE '配音展示%' OR title LIKE '%故事%' OR title LIKE '更多描述%') AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real08 赛诺笑话",
+      "query": "来点赛诺笑话",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%赛诺%' AND content LIKE '%笑话%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real09 克洛琳德配队",
+      "query": "克洛琳德替代月感电队伍里的谁呢",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%克洛琳德%' AND (title LIKE '推荐装备%' OR title='攻略推荐') AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "real10 夜兰循环配队",
+      "query": "水神会对夜兰的循环有帮助吗？",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%夜兰%' AND title LIKE '推荐装备%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "kw01 钟离元素爆发",
+      "query": "钟离 元素爆发",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%钟离%' AND title='天赋3（元素爆发）' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "kw02 芙宁娜剧情",
+      "query": "芙宁娜 剧情",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%芙宁娜%' AND title LIKE '角色故事%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "kw03 七七角色故事3",
+      "query": "七七 角色故事3",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%七七%' AND title LIKE '角色故事3%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "kw04 草神净善宫(别名)",
+      "query": "草神 净善宫",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%纳西妲%' AND content LIKE '%净善宫%' AND status='active' AND length(content)>20"
+    },
+    {
+      "label": "probe1 纳西妲对旅行者的态度 (#49)",
+      "query": "纳西妲 对 旅行者 的态度",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%纳西妲%' AND title LIKE '%配音%' AND content LIKE '%旅行者%' AND status='active' LIMIT 1"
+    },
+    {
+      "label": "probe2 世界树净善宫五百年 (#49)",
+      "query": "世界树 净善宫 五百年",
+      "selector": "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%纳西妲%' AND title='角色关联语音 (part 4)' AND status='active'"
+    }
+  ]
+}

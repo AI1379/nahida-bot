@@ -1,9 +1,11 @@
 """Probe KB retrieval against a real database using stored embeddings.
 
-Reproduces the two issue #49 probe queries against the production-shaped
-data without calling any embedding API: the query embedding is taken from a
-chosen "ideal answer" chunk's stored vector (a pseudo-query), so the vector
-leg behaves exactly as it would with a perfect semantic query embedding.
+Runs the gold eval set (``scripts/kb_eval_queries.json``, kb-direction.md §4)
+against production-shaped data without calling any embedding API: the query
+embedding is taken from a chosen "ideal answer" chunk's stored vector (a
+pseudo-query), so the vector leg behaves exactly as it would with a perfect
+semantic query embedding. A probe's selector may match several ideal chunks —
+any of them counts as a hit.
 
 The probe always works on a throwaway copy of the database: DatabaseEngine
 opens read-write and runs schema migrations, which must never touch an
@@ -11,6 +13,9 @@ archive snapshot directly.
 
 Usage:
     uv run python scripts/probe_kb_retrieval.py --db data/nahida-server-20260822.db
+
+Output ends with a summary (top1/top3/top5 hit counts over the eval set) —
+the baseline/regression report for #26 migrations and retrieval changes.
 """
 
 from __future__ import annotations
@@ -35,28 +40,17 @@ from nahida_bot.agent.storage.sqlite_document_store import (  # noqa: E402
 from nahida_bot.agent.storage.vector import SQLiteVecIndex  # noqa: E402
 from nahida_bot.db.engine import DatabaseEngine  # noqa: E402
 
-COLLECTION = "Teyvat"
+EVAL_FILE = Path(__file__).resolve().parent / "kb_eval_queries.json"
 
-# (label, raw query, ideal-answer chunk selector SQL)
-PROBES = [
-    (
-        "探针1 纳西妲对旅行者的态度",
-        "纳西妲 对 旅行者 的态度",
-        (
-            "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%纳西妲%' "
-            "AND title LIKE '%配音%' AND content LIKE '%旅行者%' "
-            "AND status='active' LIMIT 1"
-        ),
-    ),
-    (
-        "探针2 世界树 净善宫 五百年",
-        "世界树 净善宫 五百年",
-        (
-            "SELECT doc_id FROM Teyvat_docs WHERE source_id LIKE '%纳西妲%' "
-            "AND title='角色关联语音 (part 4)' AND status='active'"
-        ),
-    ),
-]
+
+def load_probes() -> tuple[str, list[tuple[str, str, str]]]:
+    """Return (collection, [(label, query, selector_sql), ...])."""
+    data = json.loads(EVAL_FILE.read_text(encoding="utf-8"))
+    probes = [
+        (str(p["label"]), str(p["query"]), str(p["selector"]))
+        for p in data["probes"]
+    ]
+    return str(data["collection"]), probes
 
 
 class PseudoQueryProvider:
@@ -79,11 +73,11 @@ class PseudoQueryProvider:
         ]
 
 
-def _load_pseudo_embedding(db_path: Path, doc_id: str) -> list[float]:
+def _load_pseudo_embedding(db_path: Path, collection: str, doc_id: str) -> list[float]:
     con = sqlite3.connect(str(db_path))
     try:
         row = con.execute(
-            "SELECT embedding_json FROM Teyvat_doc_embeddings WHERE doc_id = ?",
+            f"SELECT embedding_json FROM {collection}_doc_embeddings WHERE doc_id = ?",
             (doc_id,),
         ).fetchone()
         return json.loads(row[0])
@@ -97,6 +91,8 @@ async def main() -> None:
     parser.add_argument("--limit", type=int, default=5)
     args = parser.parse_args()
 
+    collection, probes = load_probes()
+
     archive = Path(args.db).resolve()
     if not archive.is_file():
         sys.exit(f"database not found: {archive}")
@@ -109,14 +105,16 @@ async def main() -> None:
 
     engine = DatabaseEngine(work)
     await engine.initialize()
-    store = SQLiteDocumentStore(engine, collection=COLLECTION)
+    store = SQLiteDocumentStore(engine, collection=collection)
     vector_index = SQLiteVecIndex(
         engine,
         dimensions=4096,
-        table_name=f"kb_{COLLECTION}_embedding_vec",
-        map_table=f"kb_{COLLECTION}_vec_map",
+        table_name=f"kb_{collection}_embedding_vec",
+        map_table=f"kb_{collection}_vec_map",
     )
     await vector_index.setup()
+
+    ranks: list[tuple[str, int | None]] = []
 
     try:
         probe_con = sqlite3.connect(str(work))
@@ -124,41 +122,59 @@ async def main() -> None:
 
         def info(doc_id: str) -> str:
             row = probe_con.execute(
-                "SELECT source_id, title, node_type FROM Teyvat_docs WHERE doc_id=?",
+                f"SELECT source_id, title, node_type FROM {collection}_docs WHERE doc_id=?",
                 (doc_id,),
             ).fetchone()
             if row is None:
                 return str(doc_id)
             return f"{row['source_id']} > {row['title']} [{row['node_type']}]"
 
-        for label, query, selector in PROBES:
-            row = probe_con.execute(selector).fetchone()
-            if row is None:
+        for label, query, selector in probes:
+            ideal_rows = probe_con.execute(selector).fetchall()
+            if not ideal_rows:
                 print(f"===== {label} =====\n  (ideal-answer chunk not found, skip)\n")
                 continue
-            provider = PseudoQueryProvider(_load_pseudo_embedding(work, row["doc_id"]))
+            ideal_ids = {row["doc_id"] for row in ideal_rows}
+            provider = PseudoQueryProvider(
+                _load_pseudo_embedding(work, collection, ideal_rows[0]["doc_id"])
+            )
 
             print(f"===== {label} =====")
             print(f"query: {query}")
-            print(f"ideal answer (pseudo-query source): {info(row['doc_id'])}")
-
-            fts = await store.search(query, limit=args.limit)
-            print("FTS leg (top-5):")
-            for i, r in enumerate(fts, 1):
-                print(f"  {i}. {info(r.doc_id)}  (bm25={r.score:.3f})")
+            print(
+                f"ideal answers: {len(ideal_ids)} chunks, "
+                f"pseudo-query source: {info(ideal_rows[0]['doc_id'])}"
+            )
 
             hybrid = await store.search_hybrid(
                 query, provider, limit=args.limit, vector_index=vector_index
             )
-            print("Hybrid final (top-5):")
+            hit_rank: int | None = None
             for i, r in enumerate(hybrid, 1):
-                marker = " <== ideal" if r.doc_id == row["doc_id"] else ""
+                if hit_rank is None and r.doc_id in ideal_ids:
+                    hit_rank = i
+                marker = " <== ideal" if r.doc_id in ideal_ids else ""
                 print(f"  {i}. {info(r.doc_id)}  (fused={r.score:.5f}){marker}")
+            ranks.append((label, hit_rank))
             print()
+
         probe_con.close()
     finally:
         await engine.close()
         work.unlink(missing_ok=True)
+
+    total = len(ranks)
+    top1 = sum(1 for _, r in ranks if r == 1)
+    top3 = sum(1 for _, r in ranks if r is not None and r <= 3)
+    top5 = sum(1 for _, r in ranks if r is not None and r <= 5)
+    print("===== summary =====")
+    for label, rank in ranks:
+        where = f"rank {rank}" if rank is not None else "MISS"
+        print(f"  {label}: {where}")
+    print(
+        f"\neval set: {total} probes | top1 {top1}/{total} | "
+        f"top3 {top3}/{total} | top5 {top5}/{total}"
+    )
 
 
 if __name__ == "__main__":
