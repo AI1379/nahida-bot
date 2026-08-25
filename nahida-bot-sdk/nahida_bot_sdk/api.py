@@ -574,6 +574,23 @@ class BotAPI(Protocol):
         """
         ...
 
+    async def recall_cross_chat(
+        self,
+        query: str,
+        *,
+        chat_address: str = "",
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Intent-triggered cross-chat recall fused across retrieval sources.
+
+        Merges public+portable durable memory items with raw conversation turns
+        via weighted RRF. Returns dicts annotated with ``source_type`` /
+        ``scope_type`` / ``scope_id`` / ``sensitivity`` / ``role`` /
+        ``session_id`` / ``chat_key`` / ``created_at`` so the calling tool can
+        render provenance. Results are soft context only.
+        """
+        ...
+
     async def read_chat_history(
         self,
         *,

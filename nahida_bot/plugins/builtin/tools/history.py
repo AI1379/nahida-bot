@@ -116,6 +116,33 @@ _FIND_PARAMETERS: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_RECALL_PARAMETERS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "What to recall: a topic, keyword, or phrase from the past "
+                "conversation."
+            ),
+        },
+        "chat_address": {
+            "type": "string",
+            "description": (
+                "Optional: narrow turns to one chat, e.g. 'milky:group:20001' "
+                "(use find_chat to resolve a name). Memory items are always "
+                "searched across scopes."
+            ),
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Max fused results. Default 8, capped at 20.",
+        },
+    },
+    "required": ["query"],
+    "additionalProperties": False,
+}
+
 
 @dataclass(slots=True, frozen=True)
 class _HistorySelection:
@@ -224,6 +251,26 @@ class HistoryTools:
                 parameters=_FIND_PARAMETERS,
                 handler=self.find_chat,
                 requires_admin=True,
+            ),
+            PluginToolDefinition(
+                name="recall_cross_chat",
+                description=(
+                    "Exploratory recall across past conversations and durable "
+                    "memory for 'do you remember when we talked about X' moments. "
+                    "Fuses two soft-recall legs into one ranked list: raw turns "
+                    "from every chat (both sides of past conversations) and "
+                    "public+portable memory items from other scopes. Call this "
+                    "when the user references something said elsewhere or beyond "
+                    "the recent window and the answer is not already in context. "
+                    "Results are SOFT context recalled from other conversations: "
+                    "each hit is labeled with its source chat/scope — treat them "
+                    "as your own memory of past events, verify before asserting, "
+                    "and never quote another chat's private content to a different "
+                    "audience. For deeper raw-text search use search_chat_history; "
+                    "for current-scope durable memory use memory_read."
+                ),
+                parameters=_RECALL_PARAMETERS,
+                handler=self.recall,
             ),
         )
 
@@ -375,6 +422,66 @@ class HistoryTools:
                 f"({plat}, last seen {last_seen})"
             )
         return "\n".join(lines)
+
+    async def recall(self, query: str, chat_address: str = "", limit: int = 8) -> str:
+        """Fused cross-chat soft recall over turns and portable memory."""
+        _logger.debug("tool.recall_cross_chat", query=query, chat_address=chat_address)
+        capped_limit = max(min(int(limit or 8), 20), 1)
+        rows = await self._api.recall_cross_chat(
+            query,
+            chat_address=chat_address,
+            limit=capped_limit,
+        )
+        if not rows:
+            return (
+                "No cross-chat recall matched that. Try different keywords, or "
+                "use find_chat + search_chat_history for a deeper raw search."
+            )
+        chat_keys = {
+            str(row.get("chat_key") or self.base_chat_key(row.get("session_id", "")))
+            for row in rows
+        }
+        chat_keys.discard("")
+        name_map = await self._api.get_chat_names(list(chat_keys)) if chat_keys else {}
+        lines = [
+            f"Soft recall for {query!r} — {len(rows)} hits, fused across "
+            "past turns and portable memory (newest-recall first):",
+            "These are recalled from other conversations/scopes: treat as "
+            "memory, not proof; keep provenance; do not surface another "
+            "chat's private content to a different audience.",
+        ]
+        for idx, row in enumerate(rows, start=1):
+            lines.append(self._format_recall_row(row, idx, name_map))
+        return "\n".join(lines)
+
+    def _format_recall_row(
+        self,
+        row: dict[str, Any],
+        idx: int,
+        name_map: dict[str, str],
+    ) -> str:
+        """Render one fused recall hit with source and scope provenance."""
+        source_type = str(row.get("source_type", "") or "")
+        session_id = str(row.get("session_id", "") or "")
+        chat_key = str(row.get("chat_key", "") or "")
+        label = name_map.get(chat_key or self.base_chat_key(session_id)) or (
+            chat_key or session_id or "?"
+        )
+        created = str(row.get("created_at", "") or "")
+        content = self.sanitize_turn(str(row.get("content", "") or ""))
+        if source_type == "conversation_turns":
+            role = str(row.get("role", "") or "turn")
+            return f"\n{idx}. [past turn] [{label}] {created} [{role}]\n{content}"
+        scope_type = str(row.get("scope_type", "") or "global")
+        scope_id = str(row.get("scope_id", "") or "")
+        kind = str(row.get("kind", "") or "memory")
+        title = str(row.get("title", "") or "")
+        head = f"[memory] [{scope_type}:{scope_id}]"
+        if kind:
+            head += f" {kind}"
+        if title:
+            head += f" {title}"
+        return f"\n{idx}. {head} ({created})\n{content}"
 
     async def resolve_chat_names(self, session_ids: list[str]) -> dict[str, str]:
         """Resolve base chat keys to friendly display names."""

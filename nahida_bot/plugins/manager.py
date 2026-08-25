@@ -93,12 +93,16 @@ class PluginManager:
         task_manager: Any | None = None,
         temp_file_service: ManagedTempFileService | None = None,
         memory_soft_scope: bool = False,
+        memory_cross_chat_enabled: bool = True,
+        memory_cross_chat_weights: dict[str, float] | None = None,
         speech_service: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
         self._memory = memory_store
         self._memory_soft_scope = memory_soft_scope
+        self._memory_cross_chat_enabled = memory_cross_chat_enabled
+        self._memory_cross_chat_weights = memory_cross_chat_weights
         self._message_delivery_store = message_delivery_store
         self._plugin_data_repo = plugin_data_repo
         self._channel_registry = channel_registry
@@ -303,6 +307,8 @@ class PluginManager:
             workspace_manager=self._workspace,
             memory_store=self._memory,
             memory_soft_scope=self._memory_soft_scope,
+            memory_cross_chat_enabled=self._memory_cross_chat_enabled,
+            memory_cross_chat_weights=self._memory_cross_chat_weights,
             message_delivery_store=self._message_delivery_store,
             plugin_data_repo=self._plugin_data_repo,
             permission_checker=checker,

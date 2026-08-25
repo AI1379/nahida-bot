@@ -269,6 +269,14 @@ class MemoryRetrievalConfig(BaseModel):
     # Default off: zero behavior change until backfill (A1) has softened
     # legacy ``private`` items to ``public``.
     soft_scope: bool = False
+    # Intent-triggered cross-chat recall (A1, exploration §8 Step 2): the
+    # agent-facing recall_cross_chat tool fuses public+portable memory items
+    # with raw conversation turns via weighted RRF. Weights are keyed by
+    # retrieval source type; unmapped sources default to 1.0.
+    cross_chat_enabled: bool = True
+    cross_chat_weights: dict[str, float] = Field(
+        default_factory=lambda: {"memory": 1.0, "conversation_turns": 1.0}
+    )
 
 
 class MemoryEmbeddingConfig(BaseModel):

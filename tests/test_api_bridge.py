@@ -233,6 +233,8 @@ def _api(
     manifest: PluginManifest | None = None,
     memory_store: Any | None = None,
     memory_soft_scope: bool = False,
+    memory_cross_chat_enabled: bool = True,
+    memory_cross_chat_weights: dict[str, float] | None = None,
 ) -> tuple[RealBotAPI, _ChannelRegistry, ToolRegistry, CommandRegistry]:
     manifest = manifest or _manifest()
     app = SimpleNamespace(
@@ -261,6 +263,8 @@ def _api(
         workspace_manager=workspace,
         memory_store=cast(Any, memory_store or _Memory()),
         memory_soft_scope=memory_soft_scope,
+        memory_cross_chat_enabled=memory_cross_chat_enabled,
+        memory_cross_chat_weights=memory_cross_chat_weights,
         permission_checker=PermissionChecker(manifest),
         tool_registry=tool_registry,
         handler_registry=HandlerRegistry(),

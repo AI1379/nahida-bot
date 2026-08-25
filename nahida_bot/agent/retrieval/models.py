@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-RetrievalSourceType = Literal["memory", "knowledge_base"]
+#: ``conversation_turns`` is the raw-turn third source (A1): the same
+#: cross-session raw-turn base that ``search_chat_history`` reads, exposed to
+#: RetrievalService for intent-triggered exploratory recall.
+RetrievalSourceType = Literal["memory", "knowledge_base", "conversation_turns"]
 
 
 RetrievalMode = Literal["fts", "vector", "hybrid", "none"]

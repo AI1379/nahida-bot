@@ -401,6 +401,98 @@ class MemoryStoreRetrievalAdapter:
         return [_memory_item_to_retrieval(item, mode=mode) for item in list(items)]
 
 
+class ConversationTurnsRetrievalAdapter:
+    """Adapter from cross-session raw-turn search to common retrieval results.
+
+    Wraps the structured memory store's ``search_turns`` — the same raw-turn
+    base that ``search_chat_history`` reads — as the ``conversation_turns``
+    third retrieval source (A1, memory-architecture-exploration §8 Step 2).
+    Results carry chat-scope provenance so prompt-side consumers can tell a
+    soft-recalled turn from another conversation apart from in-scope context.
+
+    Raw turns have no relevance scorer (the store orders by recency) and no
+    sensitivity tag (they are soft-gated by policy, not filtered here); the
+    ``score`` is 0.0 and consumers should rely on fused rank order.
+    """
+
+    def __init__(self, *, memory_store: Any) -> None:
+        self._memory_store = memory_store
+
+    async def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
+        """Search raw turns across sessions, newest first."""
+        query = request.query.strip()
+        limit = max(0, int(request.limit))
+        if not query or limit <= 0:
+            return []
+        search_turns = getattr(self._memory_store, "search_turns", None)
+        if not callable(search_turns):
+            return []
+        search_turns = cast(Any, search_turns)
+        chat_address = self._chat_filter(request)
+        records = await search_turns(query, chat_address=chat_address, limit=limit)
+        return [_turn_record_to_retrieval(record) for record in list(records)]
+
+    @staticmethod
+    def _chat_filter(request: RetrievalRequest) -> str:
+        """Resolve an optional chat filter from the request's chat scopes."""
+        scopes = request.scopes or ((request.scope,) if request.scope else ())
+        for scope in scopes:
+            if scope.scope_type == SCOPE_TYPE_CHAT and scope.scope_id:
+                return scope.scope_id
+        return ""
+
+
+def _base_chat_key(session_id: str) -> str:
+    """Strip an optional suffix from a derived session id to the chat key."""
+    if not session_id:
+        return ""
+    parts = session_id.split(":")
+    if len(parts) >= 3:
+        return ":".join(parts[:3])
+    return session_id
+
+
+def _turn_record_to_retrieval(record: Any) -> RetrievalResult:
+    """Convert one ``MemoryRecord`` row into a retrieval result."""
+    turn = getattr(record, "turn", None)
+    turn_id = str(getattr(record, "turn_id", "") or "")
+    session_id = str(getattr(record, "session_id", "") or "")
+    role = str(getattr(turn, "role", "") or "") if turn is not None else ""
+    source = str(getattr(turn, "source", "") or "") if turn is not None else ""
+    content = str(getattr(turn, "content", "") or "") if turn is not None else ""
+    created_at = getattr(turn, "created_at", None) if turn is not None else None
+    created_str = (
+        cast(Any, created_at).isoformat()
+        if created_at is not None and hasattr(created_at, "isoformat")
+        else ""
+    )
+    chat_key = _base_chat_key(session_id)
+    return RetrievalResult(
+        result_id=f"turn-{turn_id}" if turn_id else f"turn@{session_id}",
+        title=f"[{role or 'turn'}] {chat_key or session_id}",
+        text=content,
+        source_type="conversation_turns",
+        score=0.0,
+        mode="fts",
+        provenance=RetrievalProvenance(
+            source_type="conversation_turns",
+            source_id=turn_id,
+            scope_type=SCOPE_TYPE_CHAT,
+            scope_id=chat_key,
+            metadata={"session_id": session_id, "role": role},
+        ),
+        metadata={
+            "session_id": session_id,
+            "chat_key": chat_key,
+            "role": role,
+            "turn_source": source,
+            "created_at": created_str,
+            "raw_turn": True,
+        },
+        raw=record,
+    )
+
+
 def _above_threshold(
     items: list[RetrievalResult],
     min_score: float,

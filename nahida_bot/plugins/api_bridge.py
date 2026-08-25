@@ -161,6 +161,8 @@ class RealBotAPI:
         document_store_manager: Any | None = None,  # DocumentStoreManager
         temp_file_service: ManagedTempFileService | None = None,
         memory_soft_scope: bool = False,
+        memory_cross_chat_enabled: bool = True,
+        memory_cross_chat_weights: dict[str, float] | None = None,
         speech_service: Any | None = None,  # SpeechService (shared)
     ) -> None:
         self._plugin_id = plugin_id
@@ -172,6 +174,12 @@ class RealBotAPI:
         # the SessionRunner flag so plugin memory_search / /memory search stay
         # consistent with auto-injection. Default off = no behavior change.
         self._memory_soft_scope = memory_soft_scope
+        # Intent-triggered cross-chat recall (A1): the recall_cross_chat tool
+        # fuses public+portable memory items with raw turns via weighted RRF.
+        # Mirrors ``memory.retrieval.cross_chat_*`` config; weights keyed by
+        # retrieval source type.
+        self._memory_cross_chat_enabled = memory_cross_chat_enabled
+        self._memory_cross_chat_weights = dict(memory_cross_chat_weights or {})
         # Lazily-built unified MemoryService over ``_memory``. All consumer
         # memory reads/writes (memory_search / memory_store / search_chat_history
         # / the /memory command) delegate here so the agent SDK and the gateway
@@ -924,6 +932,116 @@ class RealBotAPI:
                 }
             )
         return results
+
+    async def recall_cross_chat(
+        self,
+        query: str,
+        *,
+        chat_address: str = "",
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Intent-triggered cross-chat recall fused across retrieval sources.
+
+        Fuses two legs with weighted RRF via ``RetrievalService.retrieve_fused``:
+        durable memory items admitted cross-scope ONLY when public AND portable
+        (the soft-scope policy — fail closed, 宁可不召回也不泄漏), and raw
+        conversation turns across sessions (the same raw-turn base as
+        ``search_chat_history``; raw turns are soft-gated by the calling tool's
+        description, not filtered here). Results are dicts annotated with
+        source/scope/sensitivity so the tool can render provenance; they are
+        soft context for the current turn, never a hard injection. Returns []
+        when cross-chat recall is disabled or memory is unavailable.
+        """
+        if not self._memory_cross_chat_enabled:
+            return []
+        if not query.strip() or limit <= 0:
+            return []
+        if self._memory is None:
+            return []
+
+        from nahida_bot.agent.memory.scope import (
+            SCOPE_ID_GLOBAL,
+            SCOPE_TYPE_CHAT,
+            SCOPE_TYPE_GLOBAL,
+        )
+        from nahida_bot.agent.retrieval.adapters import (
+            ConversationTurnsRetrievalAdapter,
+            MemoryStoreRetrievalAdapter,
+        )
+        from nahida_bot.agent.retrieval.models import (
+            RetrievalRequest,
+            RetrievalScope,
+        )
+        from nahida_bot.agent.retrieval.service import RetrievalService
+
+        turn_scopes = (
+            (RetrievalScope(scope_type=SCOPE_TYPE_CHAT, scope_id=chat_address),)
+            if chat_address
+            else ()
+        )
+        service = RetrievalService(
+            {
+                "memory": MemoryStoreRetrievalAdapter(
+                    memory_store=self._memory,
+                    soft_scope=True,
+                ),
+                "conversation_turns": ConversationTurnsRetrievalAdapter(
+                    memory_store=self._memory,
+                ),
+            }
+        )
+        results = await service.retrieve_fused(
+            [
+                (
+                    "memory",
+                    RetrievalRequest(
+                        query=query,
+                        source_type="memory",
+                        limit=limit,
+                        scope=RetrievalScope(
+                            scope_type=SCOPE_TYPE_GLOBAL, scope_id=SCOPE_ID_GLOBAL
+                        ),
+                        fts_enabled=True,
+                        vector_enabled=False,
+                    ),
+                ),
+                (
+                    "conversation_turns",
+                    RetrievalRequest(
+                        query=query,
+                        source_type="conversation_turns",
+                        limit=limit,
+                        scopes=turn_scopes,
+                        fts_enabled=True,
+                    ),
+                ),
+            ],
+            limit=limit,
+            weights=self._memory_cross_chat_weights or None,
+        )
+        payload: list[dict[str, Any]] = []
+        for result in results:
+            provenance = result.provenance
+            payload.append(
+                {
+                    "source_type": result.source_type,
+                    "result_id": result.result_id,
+                    "title": result.title,
+                    "content": result.text,
+                    "score": result.score,
+                    "mode": result.mode,
+                    "scope_type": provenance.scope_type if provenance else "",
+                    "scope_id": provenance.scope_id if provenance else "",
+                    "session_id": str(result.metadata.get("session_id", "")),
+                    "chat_key": str(result.metadata.get("chat_key", "")),
+                    "role": str(result.metadata.get("role", "")),
+                    "created_at": str(result.metadata.get("created_at", "")),
+                    "kind": str(result.metadata.get("kind", "")),
+                    "sensitivity": str(result.metadata.get("sensitivity", "")),
+                    "turn_source": str(result.metadata.get("turn_source", "")),
+                }
+            )
+        return payload
 
     async def read_chat_history(
         self,

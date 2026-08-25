@@ -207,6 +207,12 @@ class Application:
                 task_manager=self.task_manager,
                 temp_file_service=self.temp_file_service,
                 memory_soft_scope=self.settings.memory.retrieval.soft_scope,
+                memory_cross_chat_enabled=(
+                    self.settings.memory.retrieval.cross_chat_enabled
+                ),
+                memory_cross_chat_weights=dict(
+                    self.settings.memory.retrieval.cross_chat_weights
+                ),
             )
             await self._discover_plugins()
             self._inject_plugin_configs()
