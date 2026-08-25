@@ -24,6 +24,7 @@ import structlog
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.storage.embedding import EmbeddingResult
+from nahida_bot.agent.providers._http_transport import HttpProviderTransportMixin
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ProviderResponse,
@@ -31,13 +32,7 @@ from nahida_bot.agent.providers.base import (
     ToolCall,
     ToolDefinition,
 )
-from nahida_bot.agent.providers.errors import (
-    ProviderAuthError,
-    ProviderBadResponseError,
-    ProviderRateLimitError,
-    ProviderTimeoutError,
-    ProviderTransportError,
-)
+from nahida_bot.agent.providers.errors import ProviderBadResponseError
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
 from nahida_bot.core.runtime_settings import current_runtime_settings
@@ -54,7 +49,7 @@ _STATUS_MAP: dict[str, str] = {
 
 @register_provider("openai-responses", "OpenAI Responses API Provider")
 @dataclass(slots=True)
-class OpenAIResponsesProvider(ChatProvider):
+class OpenAIResponsesProvider(HttpProviderTransportMixin, ChatProvider):
     """Provider for the OpenAI Responses API (``POST /responses``).
 
     Does **not** inherit ``OpenAICompatibleProvider`` because the Responses API
@@ -75,20 +70,11 @@ class OpenAIResponsesProvider(ChatProvider):
     built_in_tools: list[object] | None = None
     tokenizer_impl: Tokenizer | None = None
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
+    _log_namespace = "openai_responses"
 
     @property
     def tokenizer(self) -> Tokenizer | None:
         return self.tokenizer_impl
-
-    def _ensure_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient()
-        return self._client
-
-    async def close(self) -> None:
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
 
     async def embed_texts(
         self,
@@ -108,30 +94,20 @@ class OpenAIResponsesProvider(ChatProvider):
             "Content-Type": "application/json",
         }
         timeout = timeout_seconds or 30
-        try:
-            logger.debug(
-                "provider.openai_responses.embeddings_request",
-                provider_name=self.name,
-                model=payload["model"],
-                input_count=len(texts),
-                timeout_seconds=timeout,
-            )
-            response = await self._ensure_client().post(
-                endpoint, json=payload, headers=headers, timeout=timeout
-            )
-            self._raise_for_status(response)
-            try:
-                body = response.json()
-            except ValueError as exc:
-                raise ProviderBadResponseError(
-                    "Provider returned non-JSON embedding body"
-                ) from exc
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError() from exc
-        except httpx.HTTPError as exc:
-            raise ProviderTransportError(
-                f"HTTP transport error communicating with {self.name}"
-            ) from exc
+        logger.debug(
+            "provider.openai_responses.embeddings_request",
+            provider_name=self.name,
+            model=payload["model"],
+            input_count=len(texts),
+            timeout_seconds=timeout,
+        )
+        body, _status_code = await self._post_json(
+            endpoint=endpoint,
+            payload=payload,
+            headers=headers,
+            timeout=timeout,
+            invalid_json_message="Provider returned non-JSON embedding body",
+        )
 
         data = body.get("data")
         if not isinstance(data, list):
@@ -451,54 +427,42 @@ class OpenAIResponsesProvider(ChatProvider):
 
         timeout = timeout_seconds or 60
         endpoint, headers = self._resolve_endpoint_and_headers(payload)
+        headers = await self._resolve_auth(payload, headers)
 
-        try:
-            logger.debug(
-                "provider.openai_responses.request",
-                provider_name=self.name,
-                base_url=self.base_url,
-                endpoint="/responses",
-                model=payload["model"],
-                message_count=len(messages),
-                input_item_count=len(input_items),
-                tool_count=len(tools or []),
-                store=self.store_responses,
-                stream=self.stream_responses,
-                has_previous_response_id=previous_response_id is not None,
-                reasoning_effort=reasoning_effort,
-                timeout_seconds=timeout,
-            )
-            client = self._ensure_client()
-            if self.stream_responses:
-                body = await self._stream_responses(
-                    client=client,
+        logger.debug(
+            f"provider.{self._log_namespace}.request",
+            provider_name=self.name,
+            model=payload["model"],
+            message_count=len(messages),
+            input_item_count=len(input_items),
+            tool_count=len(tools or []),
+            stream=self.stream_responses,
+            has_previous_response_id=previous_response_id is not None,
+            reasoning_effort=reasoning_effort,
+            timeout_seconds=timeout,
+            **self._request_transport_log_fields(endpoint),
+        )
+        if self.stream_responses:
+            body = await self._await_transport(
+                self._stream_responses(
+                    client=self._ensure_client(),
                     endpoint=endpoint,
                     payload=payload,
                     headers=headers,
                     timeout=timeout,
                 )
-                status_code = 200
-            else:
-                response = await client.post(
-                    endpoint, json=payload, headers=headers, timeout=timeout
-                )
-                self._raise_for_status(response)
-                status_code = response.status_code
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    raise ProviderBadResponseError(
-                        "Provider returned non-JSON body"
-                    ) from exc
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError() from exc
-        except httpx.HTTPError as exc:
-            raise ProviderTransportError(
-                f"HTTP transport error communicating with {self.name}"
-            ) from exc
+            )
+            status_code = 200
+        else:
+            body, status_code = await self._post_json(
+                endpoint=endpoint,
+                payload=payload,
+                headers=headers,
+                timeout=timeout,
+            )
 
         logger.debug(
-            "provider.openai_responses.response",
+            f"provider.{self._log_namespace}.response",
             provider_name=self.name,
             model=payload["model"],
             status_code=status_code,
@@ -507,16 +471,30 @@ class OpenAIResponsesProvider(ChatProvider):
 
         return self._parse_response(body)
 
+    def _request_transport_log_fields(self, endpoint: str) -> dict[str, object]:
+        """Return transport-specific request fields for structured logging."""
+        del endpoint
+        return {
+            "base_url": self.base_url,
+            "endpoint": "/responses",
+            "store": self.store_responses,
+        }
+
+    def _resolve_endpoint(self) -> str:
+        """Return the Responses API endpoint for this provider."""
+        return f"{self.base_url.rstrip('/')}/responses"
+
     def _resolve_endpoint_and_headers(
         self, payload: dict[str, object]
     ) -> tuple[str, dict[str, str]]:
         """Build the request URL and headers for a ``/responses`` call.
 
-        Subclasses with non-trivial auth (e.g. OAuth with token refresh) or
-        custom endpoint rewriting override this hook instead of duplicating
-        the whole ``_chat_impl`` body.
+        This remains synchronous so subclasses can customize endpoint routing
+        without participating in async authentication. Providers that refresh
+        credentials asynchronously should override :meth:`_resolve_auth`.
         """
-        endpoint = f"{self.base_url.rstrip('/')}/responses"
+        del payload
+        endpoint = self._resolve_endpoint()
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -525,43 +503,14 @@ class OpenAIResponsesProvider(ChatProvider):
             headers["Accept"] = "text/event-stream"
         return endpoint, headers
 
-    def _raise_for_status(self, response: httpx.Response) -> None:
-        if response.status_code in (401, 403):
-            body_hint = response.text[:200] if response.text else ""
-            raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code} — {body_hint}"
-            )
-        if response.status_code == 429:
-            raise ProviderRateLimitError()
-        if response.status_code >= 500:
-            body_hint = response.text[:200] if response.text else ""
-            raise ProviderTransportError(
-                f"Provider server error: status {response.status_code} — {body_hint}"
-            )
-        if response.status_code >= 400:
-            body_hint = response.text[:300] if response.text else ""
-            raise ProviderBadResponseError(
-                f"Provider rejected request: status {response.status_code} — {body_hint}"
-            )
-
-    async def _raise_for_stream_status(self, response: httpx.Response) -> None:
-        if response.status_code < 400:
-            return
-        raw = await response.aread()
-        body_hint = raw.decode("utf-8", errors="replace")
-        if response.status_code in (401, 403):
-            raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code} — {body_hint[:200]}"
-            )
-        if response.status_code == 429:
-            raise ProviderRateLimitError()
-        if response.status_code >= 500:
-            raise ProviderTransportError(
-                f"Provider server error: status {response.status_code} — {body_hint[:200]}"
-            )
-        raise ProviderBadResponseError(
-            f"Provider rejected request: status {response.status_code} — {body_hint[:300]}"
-        )
+    async def _resolve_auth(
+        self,
+        payload: dict[str, object],
+        headers: dict[str, str],
+    ) -> dict[str, str]:
+        """Resolve asynchronous authentication without rebuilding the request."""
+        del payload
+        return headers
 
     async def _stream_responses(
         self,

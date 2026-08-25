@@ -4,7 +4,7 @@ Covers:
 - ``SQLiteChatMetadataRepository`` (observe upsert / search / get_many)
 - router chat-name capture in ``_build_session_context``
 - ``SQLiteMemoryStore.search_turns`` cross-session reuse target
-- ``_sanitize_turn_for_model`` base64 stripping + truncation
+- ``HistoryTools.sanitize_turn`` base64 stripping + truncation
 """
 
 from __future__ import annotations
@@ -382,32 +382,30 @@ async def test_find_message_and_read_neighbors(engine: DatabaseEngine) -> None:
 
 
 def test_sanitize_strips_base64_data_url() -> None:
-    from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
 
     data_url = "data:image/png;base64," + "A" * 500
-    sanitized = BuiltinCommandsPlugin._sanitize_turn_for_model(
-        f"look {data_url} and text"
-    )
+    sanitized = HistoryTools.sanitize_turn(f"look {data_url} and text")
     assert "base64" not in sanitized
     assert "[media omitted]" in sanitized
     assert "and text" in sanitized
 
 
 def test_sanitize_strips_long_base64_blob() -> None:
-    from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
 
     blob = "Q" * 400  # not a data URL, just a long base64-ish run
-    sanitized = BuiltinCommandsPlugin._sanitize_turn_for_model(f"pre {blob} post")
+    sanitized = HistoryTools.sanitize_turn(f"pre {blob} post")
     assert "[data omitted]" in sanitized
     assert "pre" in sanitized
     assert "post" in sanitized
 
 
 def test_sanitize_truncates_long_content() -> None:
-    from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
 
     # Realistic long text (spaces break up base64 runs) should truncate, not be
     # fully elided.
-    sanitized = BuiltinCommandsPlugin._sanitize_turn_for_model("word " * 2000)
+    sanitized = HistoryTools.sanitize_turn("word " * 2000)
     assert len(sanitized) <= 8000 + len("...")
     assert sanitized.endswith("...")

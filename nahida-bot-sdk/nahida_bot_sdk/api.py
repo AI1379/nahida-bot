@@ -32,7 +32,7 @@ if TYPE_CHECKING:
         CompletionChoice,
         CompletionQuery,
     )
-    from nahida_bot_sdk.plugin import MemoryRef, SessionInfo
+    from nahida_bot_sdk.plugin import MemoryRef
 
 
 # ── LLM / Subagent data types ──────────────────────────
@@ -419,12 +419,6 @@ class BotAPI(Protocol):
         arguments: Sequence[CommandArgument] | None = None,
     ) -> None:
         """Register a /command that is matched from incoming messages."""
-        ...
-
-    # ── Session ────────────────────────────────────────
-
-    async def get_session(self, session_id: str) -> SessionInfo | None:
-        """Look up session metadata."""
         ...
 
     async def clear_session(self, session_id: str) -> int:

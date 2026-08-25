@@ -172,9 +172,6 @@ class MockBotAPI:
     ) -> None:
         pass
 
-    async def get_session(self, session_id: str) -> Any:
-        return None
-
     async def record_message_delivery(
         self,
         *,
@@ -839,11 +836,6 @@ class ConsoleMockBotAPI:
 
     @property
     def scheduler_service(self) -> Any | None:
-        return None
-
-    # ── Session ────────────────────────────────────────
-
-    async def get_session(self, session_id: str) -> Any:
         return None
 
     async def clear_session(self, session_id: str) -> int:

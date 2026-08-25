@@ -19,7 +19,11 @@ from nahida_bot.agent.memory.models import (
 )
 from nahida_bot.agent.memory.scope import SCOPE_ID_GLOBAL, SCOPE_TYPE_GLOBAL
 from nahida_bot.agent.memory.store import MemoryStore
-from nahida_bot.agent.storage.embedding import EmbeddingProvider, memory_text_hash
+from nahida_bot.agent.storage.embedding import (
+    EmbeddingProvider,
+    memory_text_hash,
+    stable_embedding_id,
+)
 from nahida_bot.agent.storage.tokenization import (
     build_fts_query,
     extract_keywords,
@@ -28,8 +32,9 @@ from nahida_bot.agent.storage.tokenization import (
 from nahida_bot.agent.storage.vector import (
     VectorIndex,
     VectorRecord,
-    cosine_similarity,
-    reciprocal_rank_fusion,
+    fuse_hybrid_rankings,
+    hybrid_candidate_limit,
+    rank_by_cosine,
 )
 from nahida_bot.db.engine import DatabaseEngine
 from nahida_bot.db.repositories.sqlite_memory_repo import SQLiteMemoryRepository
@@ -165,18 +170,6 @@ def _item_embedding_text(item: MemoryItem) -> str:
     """Build the text payload embedded for a durable memory item."""
     parts = [item.title.strip(), item.content.strip()]
     return "\n".join(part for part in parts if part)
-
-
-def _embedding_id_for(
-    *,
-    item_id: str,
-    provider_id: str,
-    model: str,
-    content_hash: str,
-) -> str:
-    """Build a stable embedding id for repeatable vector upserts."""
-    key = "\0".join([item_id, provider_id, model, content_hash])
-    return f"emb_{memory_text_hash(key)[:32]}"
 
 
 class SQLiteMemoryStore(MemoryStore):
@@ -569,11 +562,12 @@ class SQLiteMemoryStore(MemoryStore):
         vector_index: VectorIndex | None = None,
     ) -> str:
         """Persist an embedding for a memory item and optional vector index."""
-        embedding_id = _embedding_id_for(
-            item_id=item_id,
-            provider_id=provider_id,
-            model=model,
-            content_hash=content_hash,
+        embedding_id = stable_embedding_id(
+            item_id,
+            provider_id,
+            model,
+            content_hash,
+            prefix="emb",
         )
         await self._repo.upsert_memory_embedding(
             embedding_id=embedding_id,
@@ -724,17 +718,11 @@ class SQLiteMemoryStore(MemoryStore):
             scope_id=scope_id,
         )
         embeddings = [_row_to_embedding(row) for row in rows]
-        ranked = sorted(
-            (
-                (
-                    embedding.item_id,
-                    cosine_similarity(query_embedding, embedding.embedding),
-                )
-                for embedding in embeddings
-            ),
-            key=lambda item: item[1],
-            reverse=True,
-        )[:limit]
+        ranked = rank_by_cosine(
+            query_embedding,
+            ((embedding.item_id, embedding.embedding) for embedding in embeddings),
+            limit=limit,
+        )
         rows_by_rank = await self._repo.get_memory_items_by_ids(
             [item_id for item_id, _score in ranked]
         )
@@ -755,11 +743,14 @@ class SQLiteMemoryStore(MemoryStore):
         vector_index: VectorIndex | None = None,
     ) -> list[MemoryItem]:
         """Search memory items with FTS BM25 plus optional vector RRF fusion."""
+        candidate_limit = (
+            hybrid_candidate_limit(limit) if provider is not None else limit
+        )
         fts_items = await self.search_items(
             query,
             scope_type=scope_type,
             scope_id=scope_id,
-            limit=limit,
+            limit=candidate_limit,
         )
         if provider is None:
             return fts_items
@@ -769,19 +760,17 @@ class SQLiteMemoryStore(MemoryStore):
             provider,
             scope_type=scope_type,
             scope_id=scope_id,
-            limit=limit,
+            limit=candidate_limit,
             vector_index=vector_index,
         )
         if not vector_items:
-            return fts_items
+            return fts_items[:limit]
         if not fts_items:
-            return vector_items
+            return vector_items[:limit]
 
-        fused = reciprocal_rank_fusion(
-            [
-                [item.item_id for item in fts_items],
-                [item.item_id for item in vector_items],
-            ],
+        fused = fuse_hybrid_rankings(
+            [item.item_id for item in fts_items],
+            [item.item_id for item in vector_items],
             limit=limit,
         )
         rows = await self._repo.get_memory_items_by_ids(

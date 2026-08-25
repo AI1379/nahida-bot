@@ -3,23 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 RetrievalSourceType = Literal["memory", "knowledge_base"]
-
-
-class ContextNode(Protocol):
-    """Shared protocol for KB documents and memory items (Phase 3b)."""
-
-    node_id: str
-    title: str
-    content: str
-    node_type: str
-    parent_id: str
-    root_id: str
-    path: str
-    source_id: str
-    score: float
 
 
 RetrievalMode = Literal["fts", "vector", "hybrid", "none"]

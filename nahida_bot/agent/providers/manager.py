@@ -95,12 +95,9 @@ class ProviderManager:
         return None
 
     def resolve_model(self, model_name: str) -> ProviderSlot | None:
-        """Find which provider serves a given model name."""
+        """Return the provider slot serving a model name."""
         resolved = self.resolve_model_selection(model_name)
-        if resolved is None:
-            return None
-        slot, _ = resolved
-        return slot
+        return resolved[0] if resolved is not None else None
 
     def list_available(self) -> list[dict[str, str]]:
         """Return all available provider+model combinations."""

@@ -18,7 +18,6 @@ from nahida_bot.plugins.base import (
     MemoryRef,
     OutboundMessage,
     PluginLogger,
-    SessionInfo,
     SubscriptionHandle,
     WebhookHandle,
     WebhookRequest,
@@ -823,12 +822,6 @@ class RealBotAPI:
         if self._registrations_active:
             self._activate_command(name)
         self._logger.debug("command_registered", command_name=name)
-
-    # ── Session ────────────────────────────────────────
-
-    async def get_session(self, session_id: str) -> SessionInfo | None:
-        # Full implementation deferred to Channel integration (Phase 4)
-        return None
 
     # ── Memory ─────────────────────────────────────────
 

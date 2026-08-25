@@ -40,7 +40,6 @@ from nahida_bot.agent.storage.tokenization import (
     tokenize_for_fts,
 )
 from nahida_bot.agent.storage.vector import (
-    NoopVectorIndex,
     SQLiteVecIndex,
     VectorHit,
     VectorIndex,
@@ -68,7 +67,6 @@ __all__ = [
     "VectorIndex",
     "VectorRecord",
     "VectorHit",
-    "NoopVectorIndex",
     "SQLiteVecIndex",
     "cosine_similarity",
     "reciprocal_rank_fusion",

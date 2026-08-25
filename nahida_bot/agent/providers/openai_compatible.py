@@ -10,6 +10,7 @@ import structlog
 
 from nahida_bot.agent.context import ContextMessage
 from nahida_bot.agent.storage.embedding import EmbeddingResult
+from nahida_bot.agent.providers._http_transport import HttpProviderTransportMixin
 from nahida_bot.agent.providers._tool_protocol import sanitize_tool_transcript
 from nahida_bot.agent.providers.base import (
     ChatProvider,
@@ -19,11 +20,7 @@ from nahida_bot.agent.providers.base import (
     ToolDefinition,
 )
 from nahida_bot.agent.providers.errors import (
-    ProviderAuthError,
     ProviderBadResponseError,
-    ProviderRateLimitError,
-    ProviderTimeoutError,
-    ProviderTransportError,
 )
 from nahida_bot.agent.providers.reasoning import ReasoningMixin
 from nahida_bot.agent.providers.registry import register_provider
@@ -34,7 +31,9 @@ logger = structlog.get_logger(__name__)
 
 @register_provider("openai-compatible", "OpenAI-compatible Provider")
 @dataclass(slots=True)
-class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
+class OpenAICompatibleProvider(
+    HttpProviderTransportMixin, ReasoningMixin, ChatProvider
+):
     """Provider for OpenAI-compatible ``/chat/completions`` endpoints.
 
     Subclasses for specific backends (DeepSeek, GLM, Groq, Minimax) only need
@@ -56,24 +55,6 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
     def tokenizer(self) -> Tokenizer | None:
         """Expose provider tokenizer to context budgeting."""
         return self.tokenizer_impl
-
-    def _ensure_client(self) -> httpx.AsyncClient:
-        """Return the shared HTTP client, creating it if needed.
-
-        TODO: The httpx.AsyncClient is never closed automatically — ``close()``
-        must be called manually. Tie provider lifecycle to Application shutdown
-        or implement ``__aenter__``/``__aexit__`` on ChatProvider so the AgentLoop
-        can guarantee cleanup.
-        """
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient()
-        return self._client
-
-    async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
 
     def _extra_payload(self) -> dict[str, object]:
         """Hook for subclasses to inject provider-specific parameters."""
@@ -97,30 +78,20 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
             "Content-Type": "application/json",
         }
         timeout = timeout_seconds or 30
-        try:
-            logger.debug(
-                "provider.openai_compatible.embeddings_request",
-                provider_name=self.name,
-                model=payload["model"],
-                input_count=len(texts),
-                timeout_seconds=timeout,
-            )
-            response = await self._ensure_client().post(
-                endpoint, json=payload, headers=headers, timeout=timeout
-            )
-            self._raise_for_status(response)
-            try:
-                body = response.json()
-            except ValueError as exc:
-                raise ProviderBadResponseError(
-                    "Provider returned non-JSON embedding body"
-                ) from exc
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError() from exc
-        except httpx.HTTPError as exc:
-            raise ProviderTransportError(
-                f"HTTP transport error communicating with {self.name}"
-            ) from exc
+        logger.debug(
+            "provider.openai_compatible.embeddings_request",
+            provider_name=self.name,
+            model=payload["model"],
+            input_count=len(texts),
+            timeout_seconds=timeout,
+        )
+        body, _status_code = await self._post_json(
+            endpoint=endpoint,
+            payload=payload,
+            headers=headers,
+            timeout=timeout,
+            invalid_json_message="Provider returned non-JSON embedding body",
+        )
 
         return self._parse_embeddings_response(body, str(payload["model"]))
 
@@ -201,47 +172,36 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
         if self.stream_responses:
             headers["Accept"] = "text/event-stream"
 
-        try:
-            logger.debug(
-                "provider.openai_compatible.request",
-                provider_name=self.name,
-                base_url=self.base_url,
-                endpoint="/chat/completions",
-                model=payload["model"],
-                message_count=len(messages),
-                serialized_message_count=len(payload["messages"]),  # type: ignore[arg-type]
-                tool_count=len(tools or []),
-                stream=self.stream_responses,
-                timeout_seconds=timeout,
-            )
-            client = self._ensure_client()
-            if self.stream_responses:
-                body = await self._stream_chat_completions(
-                    client=client,
+        logger.debug(
+            "provider.openai_compatible.request",
+            provider_name=self.name,
+            base_url=self.base_url,
+            endpoint="/chat/completions",
+            model=payload["model"],
+            message_count=len(messages),
+            serialized_message_count=len(payload["messages"]),  # type: ignore[arg-type]
+            tool_count=len(tools or []),
+            stream=self.stream_responses,
+            timeout_seconds=timeout,
+        )
+        if self.stream_responses:
+            body = await self._await_transport(
+                self._stream_chat_completions(
+                    client=self._ensure_client(),
                     endpoint=endpoint,
                     payload=payload,
                     headers=headers,
                     timeout=timeout,
                 )
-                status_code = 200
-            else:
-                response = await client.post(
-                    endpoint, json=payload, headers=headers, timeout=timeout
-                )
-                self._raise_for_status(response)
-                status_code = response.status_code
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    raise ProviderBadResponseError(
-                        "Provider returned non-JSON body"
-                    ) from exc
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError() from exc
-        except httpx.HTTPError as exc:
-            raise ProviderTransportError(
-                f"HTTP transport error communicating with {self.name}"
-            ) from exc
+            )
+            status_code = 200
+        else:
+            body, status_code = await self._post_json(
+                endpoint=endpoint,
+                payload=payload,
+                headers=headers,
+                timeout=timeout,
+            )
 
         logger.debug(
             "provider.openai_compatible.response",
@@ -328,44 +288,6 @@ class OpenAICompatibleProvider(ReasoningMixin, ChatProvider):
             refusal=refusal,
             usage=usage,
             tool_protocol_anomaly=tool_protocol_anomaly,
-        )
-
-    def _raise_for_status(self, response: httpx.Response) -> None:
-        if response.status_code in (401, 403):
-            body_hint = response.text[:200] if response.text else ""
-            raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code} — {body_hint}"
-            )
-        if response.status_code == 429:
-            raise ProviderRateLimitError()
-        if response.status_code >= 500:
-            body_hint = response.text[:200] if response.text else ""
-            raise ProviderTransportError(
-                f"Provider server error: status {response.status_code} — {body_hint}"
-            )
-        if response.status_code >= 400:
-            body_hint = response.text[:300] if response.text else ""
-            raise ProviderBadResponseError(
-                f"Provider rejected request: status {response.status_code} — {body_hint}"
-            )
-
-    async def _raise_for_stream_status(self, response: httpx.Response) -> None:
-        if response.status_code < 400:
-            return
-        raw = await response.aread()
-        body_hint = raw.decode("utf-8", errors="replace")
-        if response.status_code in (401, 403):
-            raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code} — {body_hint[:200]}"
-            )
-        if response.status_code == 429:
-            raise ProviderRateLimitError()
-        if response.status_code >= 500:
-            raise ProviderTransportError(
-                f"Provider server error: status {response.status_code} — {body_hint[:200]}"
-            )
-        raise ProviderBadResponseError(
-            f"Provider rejected request: status {response.status_code} — {body_hint[:300]}"
         )
 
     async def _stream_chat_completions(

@@ -339,6 +339,29 @@ async def test_hybrid_candidate_pool_reaches_beyond_fts_topk() -> None:
 
 
 @pytest.mark.asyncio
+async def test_hybrid_vector_empty_fallback_respects_limit() -> None:
+    engine, store = await _make_store()
+    try:
+        for index in range(5):
+            await store.put(
+                f"doc{index}",
+                f"shared keyword passage {index}",
+                title=f"document {index}",
+                node_type="passage",
+            )
+
+        results = await store.search_hybrid(
+            "shared keyword",
+            _StaticQueryProvider([]),
+            limit=2,
+        )
+
+        assert len(results) == 2
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_hybrid_vector_results_exclude_structural_nodes() -> None:
     engine, store = await _make_store()
     try:

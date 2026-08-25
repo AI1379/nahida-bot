@@ -8,7 +8,11 @@ from typing import Any
 import structlog
 
 from nahida_bot.agent.storage.document_store import BackfillResult, DocumentStore
-from nahida_bot.agent.storage.embedding import EmbeddingProvider, memory_text_hash
+from nahida_bot.agent.storage.embedding import (
+    EmbeddingProvider,
+    memory_text_hash,
+    stable_embedding_id,
+)
 from nahida_bot.agent.storage.models import (
     DocumentEmbedding,
     DocumentItem,
@@ -24,20 +28,13 @@ from nahida_bot.agent.storage.tokenization import (
 from nahida_bot.agent.storage.vector import (
     VectorIndex,
     VectorRecord,
-    cosine_similarity,
-    reciprocal_rank_fusion,
+    fuse_hybrid_rankings,
+    hybrid_candidate_limit,
+    rank_by_cosine,
 )
 from nahida_bot.db.engine import DatabaseEngine
 
 logger = structlog.get_logger(__name__)
-
-# Hybrid fusion tuning (issue #49). Each leg over-fetches by this factor so
-# fusion sees a real candidate pool instead of two pre-truncated top-k lists;
-# the FTS leg is weighted below the vector leg because BM25 keyword collisions
-# are cheap to produce while an embedding rank-1 hit is the semantic answer.
-_HYBRID_CANDIDATE_FACTOR = 10
-_RRF_FTS_WEIGHT = 0.6
-_RRF_VECTOR_WEIGHT = 1.0
 
 # Batch size for the index-rebuild path that replays persisted embeddings.
 _INDEX_REBUILD_BATCH = 500
@@ -101,18 +98,6 @@ def _doc_embedding_text(item: DocumentItem) -> str:
         return item.retrieval_text
     parts = [item.title, item.content] if item.title else [item.content]
     return "\n".join(parts)
-
-
-def _embedding_id_for(
-    *,
-    doc_id: str,
-    provider_id: str,
-    model: str,
-    content_hash: str,
-) -> str:
-    """Build a stable embedding id for repeatable document upserts."""
-    key = "\0".join([doc_id, provider_id, model, content_hash])
-    return f"docemb_{memory_text_hash(key)[:32]}"
 
 
 def _parse_dt(raw: str) -> datetime:
@@ -342,17 +327,11 @@ class SQLiteDocumentStore(DocumentStore):
             dimensions=len(query_embedding),
         )
         embeddings = [_row_to_embedding(row) for row in rows]
-        ranked = sorted(
-            (
-                (
-                    emb.doc_id,
-                    cosine_similarity(query_embedding, emb.embedding),
-                )
-                for emb in embeddings
-            ),
-            key=lambda item: item[1],
-            reverse=True,
-        )[: max(limit * 2, limit)]
+        ranked = rank_by_cosine(
+            query_embedding,
+            ((embedding.doc_id, embedding.embedding) for embedding in embeddings),
+            limit=max(limit * 2, limit),
+        )
         doc_rows = await self._repo.get_documents_by_ids(
             [doc_id for doc_id, _score in ranked]
         )
@@ -387,7 +366,7 @@ class SQLiteDocumentStore(DocumentStore):
         equal weights the two tie at exactly ``1/(k+1)`` and stable sorting
         lets FTS junk win every tie.
         """
-        candidate_limit = max(limit * _HYBRID_CANDIDATE_FACTOR, limit)
+        candidate_limit = hybrid_candidate_limit(limit)
         fts_results = await self.search(query, limit=candidate_limit)
         vector_results = await self.search_vector(
             query, provider, limit=candidate_limit, vector_index=vector_index
@@ -402,17 +381,14 @@ class SQLiteDocumentStore(DocumentStore):
                 collection=self.collection,
                 fallback="fts",
             )
-            return fts_results
+            return fts_results[:limit]
         if not fts_results:
-            return vector_results
+            return vector_results[:limit]
 
-        fused = reciprocal_rank_fusion(
-            [
-                [r.doc_id for r in fts_results],
-                [r.doc_id for r in vector_results],
-            ],
+        fused = fuse_hybrid_rankings(
+            [result.doc_id for result in fts_results],
+            [result.doc_id for result in vector_results],
             limit=limit,
-            weights=[_RRF_FTS_WEIGHT, _RRF_VECTOR_WEIGHT],
         )
         rows = await self._repo.get_documents_by_ids(
             [doc_id for doc_id, _score in fused]
@@ -435,11 +411,12 @@ class SQLiteDocumentStore(DocumentStore):
         content_hash: str,
         vector_index: VectorIndex | None = None,
     ) -> str:
-        embedding_id = _embedding_id_for(
-            doc_id=doc_id,
-            provider_id=provider_id,
-            model=model,
-            content_hash=content_hash,
+        embedding_id = stable_embedding_id(
+            doc_id,
+            provider_id,
+            model,
+            content_hash,
+            prefix="docemb",
         )
         stale_ids = [
             existing_id

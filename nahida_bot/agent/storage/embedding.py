@@ -83,6 +83,19 @@ def memory_text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def stable_embedding_id(
+    item_id: str,
+    provider_id: str,
+    model: str,
+    content_hash: str,
+    *,
+    prefix: str,
+) -> str:
+    """Build a stable embedding id for repeatable vector upserts."""
+    key = "\0".join([item_id, provider_id, model, content_hash])
+    return f"{prefix}_{memory_text_hash(key)[:32]}"
+
+
 class RoutedEmbeddingProvider:
     """EmbeddingProvider adapter around a routed chat provider.
 

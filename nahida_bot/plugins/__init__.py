@@ -8,7 +8,6 @@ from nahida_bot.plugins.base import (  # noqa: F401
     OutboundMessage,
     Plugin,
     PluginLogger,
-    SessionInfo,
     SubscriptionHandle,
 )
 from nahida_bot.plugins.commands import (
@@ -46,7 +45,6 @@ __all__ = [
     "OutboundMessage",
     "Plugin",
     "PluginLogger",
-    "SessionInfo",
     "SubscriptionHandle",
     # Channel
     "ChannelService",

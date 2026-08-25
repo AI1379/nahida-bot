@@ -26,10 +26,7 @@ from datetime import UTC, datetime
 import httpx
 import structlog
 
-from nahida_bot.agent.providers.errors import (
-    ProviderAuthError,
-    ProviderTransportError,
-)
+from nahida_bot.agent.providers.errors import ProviderAuthError
 from nahida_bot.agent.providers.openai_responses import OpenAIResponsesProvider
 from nahida_bot.agent.providers.quota import (
     QuotaQueryError,
@@ -76,6 +73,7 @@ class CodexProvider(OpenAIResponsesProvider):
     )
     _cached_token: CodexToken | None = field(default=None, init=False, repr=False)
     _refresh_lock: asyncio.Lock | None = field(default=None, init=False, repr=False)
+    _log_namespace = "codex"
 
     def _repo(self) -> SQLiteCodexTokenRepository:
         if self._token_repo is None:
@@ -142,128 +140,24 @@ class CodexProvider(OpenAIResponsesProvider):
             account_id=token.account_id,
         )
 
-    def _resolve_endpoint_and_headers(
-        self, payload: dict[str, object]
-    ) -> tuple[str, dict[str, str]]:
-        """Hook override — but we need an async token, so this is unused.
-
-        The parent ``_chat_impl`` calls this synchronously after building
-        the payload. Because OAuth token refresh is async, CodexProvider
-        overrides ``_chat_impl`` itself and never calls this method.
-        """
-        return CODEX_API_ENDPOINT, {
-            "Content-Type": "application/json",
-        }
-
-    async def _chat_impl(  # noqa: PLR0912 — mirrors parent structure with auth injected
+    async def _resolve_auth(
         self,
-        *,
-        messages: list,  # type: ignore[type-arg]
-        tools: list | None = None,  # type: ignore[type-arg]
-        timeout_seconds: float | None = None,
-        model: str | None = None,
-    ):
-        # Late import keeps the dataclass field typing simple.
-        from nahida_bot.agent.providers.base import ChatProvider
-
-        prepared = ChatProvider._coalesce_system_messages(messages)
-        previous_response_id, input_messages = self._input_messages_for_request(
-            prepared
-        )
-        input_items = self.serialize_messages(input_messages)
-
-        payload: dict[str, object] = {
-            "model": model or self.model,
-            "input": input_items,
-        }
-        instructions = self._instructions_from_messages(prepared)
-        if instructions:
-            payload["instructions"] = instructions
-        if self.store_responses:
-            payload["store"] = True
-        if previous_response_id is not None:
-            payload["previous_response_id"] = previous_response_id
-
-        from nahida_bot.core.runtime_settings import current_runtime_settings
-
-        runtime_effort = current_runtime_settings.get().reasoning.effort
-        reasoning_effort = runtime_effort or self.reasoning_effort
-        if reasoning_effort:
-            payload["reasoning"] = {"effort": reasoning_effort}
-        if self.max_output_tokens is not None:
-            payload["max_output_tokens"] = self.max_output_tokens
-        if tools:
-            payload["tools"] = self.format_tools(tools)
-        elif self.built_in_tools:
-            payload["tools"] = self.format_tools([])
-        if self.stream_responses:
-            payload["stream"] = True
-
+        payload: dict[str, object],
+        headers: dict[str, str],
+    ) -> dict[str, str]:
+        """Refresh Codex OAuth credentials without duplicating request assembly."""
+        del payload
+        del headers
         token = await self._resolve_token()
-        headers = self._build_headers(token)
-        endpoint = self._resolve_endpoint()
-        timeout = timeout_seconds or 60
+        resolved_headers = self._build_headers(token)
         if self.stream_responses:
-            headers["Accept"] = "text/event-stream"
+            resolved_headers["Accept"] = "text/event-stream"
+        return resolved_headers
 
-        try:
-            logger.debug(
-                "provider.codex.request",
-                provider_name=self.name,
-                endpoint=endpoint,
-                model=payload["model"],
-                message_count=len(messages),
-                input_item_count=len(input_items),
-                tool_count=len(tools or []),
-                stream=self.stream_responses,
-                has_previous_response_id=previous_response_id is not None,
-                reasoning_effort=reasoning_effort,
-                timeout_seconds=timeout,
-                account_id=token.account_id,
-            )
-            client = self._ensure_client()
-            if self.stream_responses:
-                body = await self._stream_responses(
-                    client=client,
-                    endpoint=endpoint,
-                    payload=payload,
-                    headers=headers,
-                    timeout=timeout,
-                )
-                status_code = 200
-            else:
-                response = await client.post(
-                    endpoint, json=payload, headers=headers, timeout=timeout
-                )
-                self._raise_for_status(response)
-                status_code = response.status_code
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    from nahida_bot.agent.providers.errors import (
-                        ProviderBadResponseError,
-                    )
-
-                    raise ProviderBadResponseError(
-                        "Provider returned non-JSON body"
-                    ) from exc
-        except httpx.TimeoutException as exc:
-            from nahida_bot.agent.providers.errors import ProviderTimeoutError
-
-            raise ProviderTimeoutError() from exc
-        except httpx.HTTPError as exc:
-            raise ProviderTransportError(
-                f"HTTP transport error communicating with {self.name}"
-            ) from exc
-
-        logger.debug(
-            "provider.codex.response",
-            provider_name=self.name,
-            model=payload["model"],
-            status_code=status_code,
-            stream=self.stream_responses,
-        )
-        return self._parse_response(body)
+    def _request_transport_log_fields(self, endpoint: str) -> dict[str, object]:
+        """Keep Codex endpoint and account identity visible in request logs."""
+        account_id = self._cached_token.account_id if self._cached_token else ""
+        return {"endpoint": endpoint, "account_id": account_id}
 
     def _build_headers(self, token: CodexToken) -> dict[str, str]:
         headers = {

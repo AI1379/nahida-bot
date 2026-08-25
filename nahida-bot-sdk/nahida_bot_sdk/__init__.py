@@ -46,7 +46,6 @@ from nahida_bot_sdk.api import (  # noqa: F401
 from nahida_bot_sdk.plugin import (  # noqa: F401
     MemoryRef,
     Plugin,
-    SessionInfo,
     register_command,
     register_tool,
     subscribe,
@@ -157,7 +156,6 @@ __all__ = [
     # Plugin base
     "MemoryRef",
     "Plugin",
-    "SessionInfo",
     "register_command",
     "register_tool",
     "subscribe",

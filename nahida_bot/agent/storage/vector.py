@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from nahida_bot.db.engine import DatabaseEngine
+
+
+# Shared hybrid-retrieval policy. Keep these values beside the fusion
+# implementation so document and memory stores cannot silently drift apart.
+HYBRID_CANDIDATE_FACTOR = 10
+HYBRID_FTS_WEIGHT = 0.6
+HYBRID_VECTOR_WEIGHT = 1.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -56,29 +64,6 @@ class VectorIndex(Protocol):
     async def embedding_ids(self) -> set[str]:
         """Return the ids of all records currently in the index."""
         ...
-
-
-class NoopVectorIndex:
-    """Vector index that intentionally stores nothing."""
-
-    async def upsert(self, records: list[VectorRecord]) -> None:
-        return None
-
-    async def delete(self, ids: list[str]) -> None:
-        return None
-
-    async def search(
-        self, query_embedding: list[float], *, limit: int
-    ) -> list[VectorHit]:
-        return []
-
-    async def count(self) -> int:
-        """Return the number of records currently in the index."""
-        return 0
-
-    async def embedding_ids(self) -> set[str]:
-        """Return the ids of all records currently in the index."""
-        return set()
 
 
 class SQLiteVecIndex:
@@ -294,6 +279,23 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
+def rank_by_cosine(
+    query_embedding: list[float],
+    candidates: Iterable[tuple[str, list[float]]],
+    *,
+    limit: int,
+) -> list[tuple[str, float]]:
+    """Rank candidate ids by cosine similarity to a query embedding."""
+    return sorted(
+        (
+            (item_id, cosine_similarity(query_embedding, embedding))
+            for item_id, embedding in candidates
+        ),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:limit]
+
+
 def reciprocal_rank_fusion(
     ranked_lists: list[list[str]],
     *,
@@ -322,3 +324,22 @@ def reciprocal_rank_fusion(
         for rank, item_id in enumerate(ranked, start=1):
             scores[item_id] = scores.get(item_id, 0.0) + weight / (k + rank)
     return sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]
+
+
+def hybrid_candidate_limit(limit: int) -> int:
+    """Return the per-channel candidate count for hybrid retrieval."""
+    return max(limit * HYBRID_CANDIDATE_FACTOR, limit)
+
+
+def fuse_hybrid_rankings(
+    fts_ids: Sequence[str],
+    vector_ids: Sequence[str],
+    *,
+    limit: int,
+) -> list[tuple[str, float]]:
+    """Fuse FTS and vector ids using the shared hybrid-retrieval policy."""
+    return reciprocal_rank_fusion(
+        [list(fts_ids), list(vector_ids)],
+        limit=limit,
+        weights=[HYBRID_FTS_WEIGHT, HYBRID_VECTOR_WEIGHT],
+    )

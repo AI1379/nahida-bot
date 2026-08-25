@@ -47,30 +47,13 @@ class TestProviderManagerGet:
         assert pm.get("missing") is None
 
 
-class TestProviderManagerResolveModel:
-    def test_resolve_by_exact_model(self) -> None:
-        s1 = _slot("deepseek", models=["deepseek-chat", "deepseek-reasoner"])
-        s2 = _slot("glm", models=["glm-4-flash"])
-        pm = ProviderManager([s1, s2])
-        assert pm.resolve_model("deepseek-reasoner") is s1
-        assert pm.resolve_model("glm-4-flash") is s2
+class TestProviderManagerResolveModelSelection:
+    def test_resolve_model_returns_slot_only(self) -> None:
+        slot = _slot("deepseek", models=["deepseek-chat"])
+        manager = ProviderManager([slot])
 
-    def test_resolve_empty_models_matches_any(self) -> None:
-        # A slot with no explicit model list accepts any model name
-        s1 = ProviderSlot(
-            id="openai",
-            provider=MagicMock(),
-            context_builder=MagicMock(),
-            default_model="gpt-4o",
-            available_models=[],
-        )
-        pm = ProviderManager([s1])
-        assert pm.resolve_model("gpt-5-turbo") is s1
-
-    def test_resolve_not_found(self) -> None:
-        s1 = _slot("glm", models=["glm-4-flash"])
-        pm = ProviderManager([s1])
-        assert pm.resolve_model("nonexistent") is None
+        assert manager.resolve_model("deepseek-chat") is slot
+        assert manager.resolve_model("missing") is None
 
     def test_resolve_model_selection_returns_slot_and_bare_model(self) -> None:
         s1 = _slot("deepseek", models=["deepseek-chat", "deepseek-reasoner"])

@@ -15,6 +15,7 @@ import httpx
 import structlog
 
 from nahida_bot.agent.context import ContextMessage, ContextPart
+from nahida_bot.agent.providers._http_transport import HttpProviderTransportMixin
 from nahida_bot.agent.providers._tool_protocol import sanitize_tool_transcript
 from nahida_bot.agent.providers.base import (
     ChatProvider,
@@ -23,13 +24,7 @@ from nahida_bot.agent.providers.base import (
     ToolCall,
     ToolDefinition,
 )
-from nahida_bot.agent.providers.errors import (
-    ProviderAuthError,
-    ProviderBadResponseError,
-    ProviderRateLimitError,
-    ProviderTimeoutError,
-    ProviderTransportError,
-)
+from nahida_bot.agent.providers.errors import ProviderBadResponseError
 from nahida_bot.agent.providers.reasoning import extract_think_tags
 from nahida_bot.agent.providers.registry import register_provider
 from nahida_bot.agent.tokenization import Tokenizer
@@ -50,7 +45,7 @@ _STOP_REASON_MAP: dict[str, str] = {
 
 @register_provider("anthropic", "Anthropic Claude Provider")
 @dataclass(slots=True)
-class AnthropicProvider(ChatProvider):
+class AnthropicProvider(HttpProviderTransportMixin, ChatProvider):
     """Provider for the Anthropic Messages API (``POST /v1/messages``).
 
     Does **not** inherit ``OpenAICompatibleProvider`` because the Anthropic
@@ -90,19 +85,6 @@ class AnthropicProvider(ChatProvider):
     @property
     def tokenizer(self) -> Tokenizer | None:
         return self.tokenizer_impl
-
-    def _ensure_client(self) -> httpx.AsyncClient:
-        # TODO: Same lifecycle issue as OpenAICompatibleProvider — see its
-        # _ensure_client TODO for details.
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient()
-        return self._client
-
-    async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
 
     # ------------------------------------------------------------------
     # format_tools: Anthropic uses ``input_schema`` instead of ``parameters``
@@ -373,51 +355,40 @@ class AnthropicProvider(ChatProvider):
         if self.stream_responses:
             headers["Accept"] = "text/event-stream"
 
-        try:
-            logger.debug(
-                "provider.anthropic.request",
-                provider_name=self.name,
-                base_url=self.base_url,
-                endpoint="/v1/messages",
-                model=payload["model"],
-                message_count=len(messages),
-                serialized_message_count=len(serialized_messages),
-                has_system=system_prompt is not None,
-                tool_count=len(tools or []),
-                stream=self.stream_responses,
-                reasoning_effort=reasoning_effort,
-                context_1m=self.context_1m,
-                anthropic_beta_headers=beta_headers,
-                timeout_seconds=timeout,
-            )
-            client = self._ensure_client()
-            if self.stream_responses:
-                body = await self._stream_messages(
-                    client=client,
+        logger.debug(
+            "provider.anthropic.request",
+            provider_name=self.name,
+            base_url=self.base_url,
+            endpoint="/v1/messages",
+            model=payload["model"],
+            message_count=len(messages),
+            serialized_message_count=len(serialized_messages),
+            has_system=system_prompt is not None,
+            tool_count=len(tools or []),
+            stream=self.stream_responses,
+            reasoning_effort=reasoning_effort,
+            context_1m=self.context_1m,
+            anthropic_beta_headers=beta_headers,
+            timeout_seconds=timeout,
+        )
+        if self.stream_responses:
+            body = await self._await_transport(
+                self._stream_messages(
+                    client=self._ensure_client(),
                     endpoint=endpoint,
                     payload=payload,
                     headers=headers,
                     timeout=timeout,
                 )
-                status_code = 200
-            else:
-                response = await client.post(
-                    endpoint, json=payload, headers=headers, timeout=timeout
-                )
-                self._raise_for_status(response)
-                status_code = response.status_code
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    raise ProviderBadResponseError(
-                        "Provider returned non-JSON body"
-                    ) from exc
-        except httpx.TimeoutException as exc:
-            raise ProviderTimeoutError() from exc
-        except httpx.HTTPError as exc:
-            raise ProviderTransportError(
-                f"HTTP transport error communicating with {self.name}"
-            ) from exc
+            )
+            status_code = 200
+        else:
+            body, status_code = await self._post_json(
+                endpoint=endpoint,
+                payload=payload,
+                headers=headers,
+                timeout=timeout,
+            )
 
         logger.debug(
             "provider.anthropic.response",
@@ -434,43 +405,6 @@ class AnthropicProvider(ChatProvider):
         if isinstance(raw, str):
             return [item.strip() for item in raw.split(",") if item.strip()]
         return [str(item).strip() for item in raw if str(item).strip()]
-
-    def _raise_for_status(self, response: httpx.Response) -> None:
-        if response.status_code in (401, 403):
-            raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code}"
-            )
-        if response.status_code == 429:
-            raise ProviderRateLimitError()
-        if response.status_code >= 500:
-            body_hint = response.text[:200] if response.text else ""
-            raise ProviderTransportError(
-                f"Provider server error: status {response.status_code} — {body_hint}"
-            )
-        if response.status_code >= 400:
-            body_hint = response.text[:300] if response.text else ""
-            raise ProviderBadResponseError(
-                f"Provider rejected request: status {response.status_code} — {body_hint}"
-            )
-
-    async def _raise_for_stream_status(self, response: httpx.Response) -> None:
-        if response.status_code < 400:
-            return
-        raw = await response.aread()
-        body_hint = raw.decode("utf-8", errors="replace")
-        if response.status_code in (401, 403):
-            raise ProviderAuthError(
-                f"Provider auth rejected request with status {response.status_code} — {body_hint[:200]}"
-            )
-        if response.status_code == 429:
-            raise ProviderRateLimitError()
-        if response.status_code >= 500:
-            raise ProviderTransportError(
-                f"Provider server error: status {response.status_code} — {body_hint[:200]}"
-            )
-        raise ProviderBadResponseError(
-            f"Provider rejected request: status {response.status_code} — {body_hint[:300]}"
-        )
 
     async def _stream_messages(
         self,

@@ -25,7 +25,7 @@ from nahida_bot.plugins.builtin.tools.cron import CronTools
 from nahida_bot.plugins.builtin.tools.desktop import DesktopTools
 from nahida_bot.plugins.builtin.tools.history import HistoryTools
 from nahida_bot.plugins.builtin.tools.memory import MemoryTools
-from nahida_bot.plugins.builtin.tools.message import AttachmentResolver, MessageTools
+from nahida_bot.plugins.builtin.tools.message import MessageTools
 from nahida_bot.plugins.builtin.tools.plan import PlanTools
 from nahida_bot.plugins.builtin.tools.web_fetch import WebFetchTools
 from nahida_bot.plugins.builtin.tools.workspace import WorkspaceTools
@@ -213,37 +213,6 @@ class BuiltinCommandsPlugin(Plugin):
     def _register_history_tools(self) -> None:
         register_tool_definitions(self.api, self._history_tools.definitions())
 
-    async def _tool_read_chat_history(self, **arguments: Any) -> str:
-        return await self._history_tools.read(**arguments)
-
-    async def _tool_search_chat_history(
-        self,
-        query: str,
-        chat_address: str = "",
-        role: str = "",
-        limit: int = 20,
-    ) -> str:
-        return await self._history_tools.search(
-            query=query,
-            chat_address=chat_address,
-            role=role,
-            limit=limit,
-        )
-
-    async def _tool_find_chat(self, name: str, platform: str = "") -> str:
-        return await self._history_tools.find_chat(name=name, platform=platform)
-
-    @staticmethod
-    def _base_chat_key(session_id: str) -> str:
-        return HistoryTools.base_chat_key(session_id)
-
-    async def _resolve_chat_names(self, session_ids: list[str]) -> dict[str, str]:
-        return await self._history_tools.resolve_chat_names(session_ids)
-
-    @staticmethod
-    def _sanitize_turn_for_model(content: str) -> str:
-        return HistoryTools.sanitize_turn(content)
-
     # ── exec Tool ──────────────────────────────────────────
 
     def _register_exec_tool(self) -> None:
@@ -377,118 +346,15 @@ class BuiltinCommandsPlugin(Plugin):
     def _register_web_fetch_tool(self) -> None:
         register_tool_definitions(self.api, self._web_fetch_tools.definitions())
 
-    @staticmethod
-    def _is_private_ip(ip_str: str) -> bool:
-        return WebFetchTools.is_disallowed_ip(ip_str)
-
-    @staticmethod
-    def _resolve_host(hostname: str) -> str | None:
-        addresses = WebFetchTools.resolve_host(hostname)
-        return addresses[0] if addresses else None
-
-    @staticmethod
-    def _html_to_markdown(html_content: str) -> str:
-        return WebFetchTools.html_to_markdown(html_content)
-
-    async def _tool_web_fetch(self, url: str, max_length: int = 10000) -> str:
-        return await self._web_fetch_tools.fetch(url, max_length)
-
     # ── plan Tool ──────────────────────────────────────────
 
     def _register_plan_tool(self) -> None:
         register_tool_definitions(self.api, self._plan_tools.definitions())
 
-    async def _load_plan_data(self) -> dict[str, Any] | None:
-        return await self._plan_tools.load()
-
-    async def _save_plan_data(self, data: dict[str, Any]) -> None:
-        await self._plan_tools.save(data)
-
-    async def _read_workspace_text_or_empty(self, path: str) -> str:
-        return await self._memory_tools.read_workspace_text_or_empty(path)
-
-    async def _tool_memory_read(
-        self,
-        query: str = "",
-        max_length: int = 10000,
-    ) -> str:
-        return await self._memory_tools.read(query=query, max_length=max_length)
-
-    async def _tool_memory_write(
-        self,
-        content: str,
-        title: str = "",
-        kind: str = "fact",
-        audience: str = "current",
-        sensitivity: str = "public",
-        portable: bool = True,
-    ) -> str:
-        return await self._memory_tools.write(
-            content=content,
-            title=title,
-            kind=kind,
-            audience=audience,
-            sensitivity=sensitivity,
-            portable=portable,
-        )
-
-    async def _tool_memory_update(
-        self,
-        item_id: str,
-        content: str,
-        title: str = "",
-        kind: str = "",
-        audience: str = "",
-        target_scope_type: str = "",
-        target_scope_id: str = "",
-        sensitivity: str = "",
-        portable: bool | None = None,
-    ) -> str:
-        return await self._memory_tools.update(
-            item_id=item_id,
-            content=content,
-            title=title,
-            kind=kind,
-            audience=audience,
-            target_scope_type=target_scope_type,
-            target_scope_id=target_scope_id,
-            sensitivity=sensitivity,
-            portable=portable,
-        )
-
-    async def _tool_memory_archive(self, item_id: str, reason: str) -> str:
-        return await self._memory_tools.archive(item_id=item_id, reason=reason)
-
-    @staticmethod
-    def _format_plan(data: dict[str, Any]) -> str:
-        return PlanTools.format_plan(data)
-
-    async def _tool_plan(
-        self,
-        action: str,
-        title: str = "",
-        tasks: list[dict[str, str]] | None = None,
-        task_id: int | None = None,
-        status: str = "",
-        detail: str = "",
-    ) -> str:
-        return await self._plan_tools.execute(
-            action=action,
-            title=title,
-            tasks=tasks,
-            task_id=task_id,
-            status=status,
-            detail=detail,
-        )
-
     # ── Cron Tools ─────────────────────────────────────────
 
     def _register_cron_tools(self) -> None:
         register_tool_definitions(self.api, self._cron_tools.definitions())
-
-    def _get_scheduler(self) -> Any:
-        """Access the SchedulerService exposed by the plugin API."""
-        return self._cron_tools.scheduler
 
     # ── Agent Orchestration Tools ────────────────────────
 
@@ -497,26 +363,6 @@ class BuiltinCommandsPlugin(Plugin):
 
     def _get_orchestrator(self) -> Any:
         return self._agent_tools.orchestrator
-
-    async def _tool_agent_spawn(
-        self,
-        task: str,
-        **arguments: Any,
-    ) -> str:
-        return await self._agent_tools.spawn(task, **arguments)
-
-    async def _tool_agent_wait(self, task_id: str, timeout_seconds: int = 30) -> str:
-        return await self._agent_tools.wait(task_id, timeout_seconds)
-
-    async def _tool_agent_list(self, limit: int = 20) -> str:
-        return await self._agent_tools.list_tasks(limit)
-
-    async def _tool_agent_stop(self, task_id: str) -> str:
-        return await self._agent_tools.stop(task_id)
-
-    @staticmethod
-    def _current_requester_session_id() -> str | None:
-        return AgentTools.current_requester_session_id()
 
     @staticmethod
     def _format_background_task(task: Any) -> str:
@@ -570,111 +416,8 @@ class BuiltinCommandsPlugin(Plugin):
     def _register_desktop_control_tools(self) -> None:
         register_tool_definitions(self.api, self._desktop_tools.definitions())
 
-    async def _tool_desktop_exec(
-        self, program: str, args: list[str] | None = None, cwd: str = ""
-    ) -> str:
-        return await self._desktop_tools.exec(program, args, cwd)
-
-    async def _tool_desktop_file_read(
-        self,
-        path: str,
-        root_id: str = "",
-        offset: int = 0,
-        max_bytes: int = 65536,
-    ) -> str:
-        return await self._desktop_tools.file_read(
-            path=path,
-            root_id=root_id,
-            offset=offset,
-            max_bytes=max_bytes,
-        )
-
-    async def _tool_desktop_screenshot_capture(self) -> str:
-        return await self._desktop_tools.screenshot_capture()
-
-    async def _tool_desktop_screen_observe(
-        self,
-        question: str = "Describe the visible desktop and actionable controls.",
-        media_id: str = "",
-    ) -> str:
-        return await self._desktop_tools.screen_observe(
-            question=question, media_id=media_id
-        )
-
-    async def _tool_desktop_screenshot_send(
-        self,
-        media_id: str = "",
-        caption: str = "",
-        attachment_type: str = "photo",
-    ) -> str:
-        return await self._desktop_tools.screenshot_send(
-            media_id=media_id,
-            caption=caption,
-            attachment_type=attachment_type,
-        )
-
-    async def _tool_desktop_input(
-        self,
-        action: str,
-        x: int | None = None,
-        y: int | None = None,
-        button: str = "left",
-        clicks: int = 1,
-        scroll_steps: int = 0,
-        text: str = "",
-        keys: list[str] | None = None,
-    ) -> str:
-        return await self._desktop_tools.input(
-            action=action,
-            x=x,
-            y=y,
-            button=button,
-            clicks=clicks,
-            scroll_steps=scroll_steps,
-            text=text,
-            keys=keys or [],
-        )
-
     def _register_message_tool(self) -> None:
         register_tool_definitions(self.api, self._message_tools.message_definitions())
-
-    async def _tool_message(
-        self,
-        text: str,
-        target: str = "",
-        delivery: str = "notify",
-        attachments: list[dict[str, Any]] | None = None,
-    ) -> str:
-        return await self._message_tools.send(
-            text=text,
-            target=target,
-            delivery=delivery,
-            attachments=attachments,
-        )
-
-    async def _tool_cron_create(
-        self,
-        prompt: str,
-        mode: str,
-        **arguments: Any,
-    ) -> str:
-        return await self._cron_tools.create(prompt, mode, **arguments)
-
-    async def _tool_cron_list(self) -> str:
-        return await self._cron_tools.list_active()
-
-    async def _tool_cron_cancel(self, job_id: str) -> str:
-        return await self._cron_tools.cancel(job_id)
-
-    async def _tool_cron_update(
-        self,
-        job_id: str,
-        **arguments: Any,
-    ) -> str:
-        return await self._cron_tools.update(job_id, **arguments)
-
-    async def _tool_cron_delete(self, job_id: str) -> str:
-        return await self._cron_tools.delete(job_id)
 
     # ── Command Handlers ──────────────────────────────────
 
@@ -1430,42 +1173,6 @@ class BuiltinCommandsPlugin(Plugin):
             account_key=account_key,
         )
         return json.dumps(result, ensure_ascii=False, sort_keys=True)
-
-    async def _tool_workspace_read(self, path: str) -> str:
-        """Read a text file from the current workspace."""
-        return await self._workspace_tools.read(path)
-
-    async def _tool_workspace_write(self, path: str, content: str) -> str:
-        """Write a text file to the current workspace."""
-        return await self._workspace_tools.write(path, content)
-
-    async def _tool_send_local_attachment(
-        self,
-        path: str,
-        attachment_type: str = "auto",
-        caption: str = "",
-        filename: str = "",
-    ) -> str:
-        """Send a workspace file to the current chat as an attachment."""
-        return await self._message_tools.send_local_attachment(
-            path,
-            attachment_type,
-            caption,
-            filename,
-        )
-
-    def _resolve_attachment_path(self, path: str) -> Path:
-        return self._message_tools.attachments.resolve(path)
-
-    def _allow_external_attachment_paths(self) -> bool:
-        return self._message_tools.attachments.allows_external_paths()
-
-    def _validate_external_attachment_path(self, path: Path) -> None:
-        self._message_tools.attachments.validate_external_path(path)
-
-    @staticmethod
-    def _infer_attachment_type(path: Path) -> str:
-        return AttachmentResolver.infer_type(path)
 
 
 def _format_session_key_kind(kind: str) -> str:

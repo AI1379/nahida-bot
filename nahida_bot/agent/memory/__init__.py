@@ -30,7 +30,6 @@ from nahida_bot.agent.storage.embedding import (
     RoutedEmbeddingProvider,
 )
 from nahida_bot.agent.storage.vector import (
-    NoopVectorIndex,
     SQLiteVecIndex,
     VectorHit,
     VectorIndex,
@@ -56,7 +55,6 @@ __all__ = [
     "EmbeddingResult",
     "HashEmbeddingProvider",
     "RoutedEmbeddingProvider",
-    "NoopVectorIndex",
     "RuleBasedMemoryExtractor",
     "SQLiteVecIndex",
     "VectorHit",

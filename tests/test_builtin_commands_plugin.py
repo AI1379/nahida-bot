@@ -160,9 +160,6 @@ class _FakeAPI:
     def get_workspace_root(self, workspace_id: str | None = None) -> str | None:
         return str(self.workspace_root)
 
-    async def get_session(self, session_id: str) -> Any:
-        return None
-
     async def memory_search(self, query: str, *, limit: int = 5) -> list[MemoryRef]:
         if query == "" or query == "nahida":
             return [
@@ -483,7 +480,7 @@ async def test_desktop_exec_uses_trusted_context_in_chat_and_cron(origin: str) -
         )
     )
     try:
-        result = await plugin._tool_desktop_exec("git", ["status"], "repo")
+        result = await plugin._desktop_tools.exec("git", ["status"], "repo")
     finally:
         current_session.reset(token)
 
@@ -510,7 +507,7 @@ async def test_desktop_control_tool_rejects_missing_actor() -> None:
         )
     )
     try:
-        result = await plugin._tool_desktop_file_read("a.txt", "docs", 0, 100)
+        result = await plugin._desktop_tools.file_read("a.txt", "docs", 0, 100)
     finally:
         current_session.reset(token)
 
@@ -539,7 +536,7 @@ async def test_desktop_input_uses_trusted_context() -> None:
         )
     )
     try:
-        result = await plugin._tool_desktop_input("click", x=500, y=250)
+        result = await plugin._desktop_tools.input("click", x=500, y=250)
     finally:
         current_session.reset(token)
 
@@ -619,7 +616,7 @@ async def test_desktop_screen_observe_sends_pixels_only_to_vision_model(
         )
     )
     try:
-        result = await plugin._tool_desktop_screen_observe("Locate Settings")
+        result = await plugin._desktop_tools.screen_observe("Locate Settings")
     finally:
         current_session.reset(token)
 
@@ -685,10 +682,10 @@ async def test_desktop_screenshot_capture_and_send_reuse_actor_bound_media(
         )
     )
     try:
-        captured = json.loads(await plugin._tool_desktop_screenshot_capture())
+        captured = json.loads(await plugin._desktop_tools.screenshot_capture())
         media_id = captured["media"]["mediaId"]
         sent = json.loads(
-            await plugin._tool_desktop_screenshot_send(
+            await plugin._desktop_tools.screenshot_send(
                 media_id=media_id,
                 caption="当前桌面",
                 attachment_type="document",
@@ -730,7 +727,7 @@ async def test_desktop_screenshot_media_id_is_actor_bound(tmp_path: Path) -> Non
         )
     )
     try:
-        result = await plugin._tool_desktop_screenshot_send(
+        result = await plugin._desktop_tools.screenshot_send(
             media_id="desktop-screenshot:not-this-actor:abc"
         )
     finally:
@@ -761,7 +758,7 @@ async def test_read_chat_history_tool_formats_structured_provenance() -> None:
     ]
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_read_chat_history(
+    result = await plugin._history_tools.read(
         mode="around_message",
         chat_address="milky:group:1",
         message_id="m41",
@@ -783,11 +780,11 @@ async def test_read_chat_history_tool_formats_structured_provenance() -> None:
 async def test_read_chat_history_tool_validates_mode_inputs() -> None:
     plugin = BuiltinCommandsPlugin(api=_FakeAPI(), manifest=_manifest())
 
-    assert "requires message_id" in await plugin._tool_read_chat_history(
+    assert "requires message_id" in await plugin._history_tools.read(
         mode="around_message"
     )
-    assert "requires query" in await plugin._tool_read_chat_history(mode="search")
-    assert "requires since" in await plugin._tool_read_chat_history(mode="time_range")
+    assert "requires query" in await plugin._history_tools.read(mode="search")
+    assert "requires since" in await plugin._history_tools.read(mode="time_range")
 
 
 @pytest.mark.asyncio
@@ -806,7 +803,7 @@ async def test_message_tool_notify_records_delivery_audit_only() -> None:
         )
     )
     try:
-        result = await plugin._tool_message(
+        result = await plugin._message_tools.send(
             text="hello",
             target="telegram:private:c2",
             delivery="notify",
@@ -842,7 +839,7 @@ async def test_message_tool_record_keeps_cross_session_turn_and_audit() -> None:
         )
     )
     try:
-        result = await plugin._tool_message(
+        result = await plugin._message_tools.send(
             text="hello",
             target="telegram:private:c2",
             delivery="record",
@@ -874,9 +871,9 @@ async def test_workspace_tools_delegate_to_bot_api() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_workspace_write("notes/a.txt", "hello")
+    result = await plugin._workspace_tools.write("notes/a.txt", "hello")
     assert result == "Written workspace file: notes/a.txt"
-    assert await plugin._tool_workspace_read("notes/a.txt") == "hello"
+    assert await plugin._workspace_tools.read("notes/a.txt") == "hello"
 
 
 @pytest.mark.asyncio
@@ -884,28 +881,32 @@ async def test_plan_tool_manages_durable_task_state() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    created = await plugin._tool_plan(
-        "create",
+    created = await plugin._plan_tools.execute(
+        action="create",
         title="Refactor",
         tasks=[
             {"title": "Extract tools", "detail": "Keep compatibility wrappers"},
             {"title": "Run tests"},
         ],
     )
-    updated = await plugin._tool_plan(
-        "update",
+    updated = await plugin._plan_tools.execute(
+        action="update",
         task_id=1,
         status="completed",
         detail="Done",
     )
-    added = await plugin._tool_plan("add", tasks=[{"title": "Review quality"}])
-    removed = await plugin._tool_plan("remove", task_id=2)
+    added = await plugin._plan_tools.execute(
+        action="add", tasks=[{"title": "Review quality"}]
+    )
+    removed = await plugin._plan_tools.execute(action="remove", task_id=2)
 
     assert "Plan: Refactor" in created
     assert "1. [x] Extract tools — Done" in updated
     assert "3. [ ] Review quality" in added
     assert "2. [ ] Review quality" in removed
-    assert await plugin._tool_plan("list") == removed.removeprefix("Task removed.\n")
+    assert await plugin._plan_tools.execute(action="list") == removed.removeprefix(
+        "Task removed.\n"
+    )
 
 
 @pytest.mark.asyncio
@@ -913,20 +914,22 @@ async def test_plan_tool_validates_updates_and_clear() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    assert await plugin._tool_plan("list") == (
+    assert await plugin._plan_tools.execute(action="list") == (
         "No plan exists. Use action='create' to start one."
     )
-    await plugin._tool_plan("create", tasks=[{"title": "One"}])
+    await plugin._plan_tools.execute(action="create", tasks=[{"title": "One"}])
 
-    assert await plugin._tool_plan("update", task_id=1, status="unknown") == (
+    assert await plugin._plan_tools.execute(
+        action="update", task_id=1, status="unknown"
+    ) == (
         "Error: Invalid status 'unknown'. Must be one of: "
         "completed, failed, in_progress, pending"
     )
-    assert await plugin._tool_plan("remove") == (
+    assert await plugin._plan_tools.execute(action="remove") == (
         "Error: task_id is required for remove."
     )
-    assert await plugin._tool_plan("clear") == "Plan cleared."
-    assert await plugin._tool_plan("list") == (
+    assert await plugin._plan_tools.execute(action="clear") == "Plan cleared."
+    assert await plugin._plan_tools.execute(action="list") == (
         "No plan exists. Use action='create' to start one."
     )
 
@@ -978,16 +981,16 @@ async def test_agent_tools_delegate_with_session_ownership() -> None:
         )
     )
     try:
-        spawned = await plugin._tool_agent_spawn(
+        spawned = await plugin._agent_tools.spawn(
             "Review the refactor",
             label="Review",
             context_mode="summary",
             handoff_summary="Plan and cron are extracted",
             tool_allowlist=["workspace_read"],
         )
-        waited = await plugin._tool_agent_wait("task-1", timeout_seconds=-1)
-        listed = await plugin._tool_agent_list(limit=0)
-        stopped = await plugin._tool_agent_stop("task-1")
+        waited = await plugin._agent_tools.wait("task-1", timeout_seconds=-1)
+        listed = await plugin._agent_tools.list_tasks(limit=0)
+        stopped = await plugin._agent_tools.stop("task-1")
     finally:
         current_session.reset(token)
 
@@ -1018,7 +1021,7 @@ async def test_agent_wait_hides_tasks_owned_by_another_session() -> None:
         )
     )
     try:
-        result = await plugin._tool_agent_wait("task-1")
+        result = await plugin._agent_tools.wait("task-1")
     finally:
         current_session.reset(token)
 
@@ -1044,7 +1047,7 @@ async def test_send_local_attachment_sends_in_current_session(tmp_path: Path) ->
         )
     )
     try:
-        result = await plugin._tool_send_local_attachment(
+        result = await plugin._message_tools.send_local_attachment(
             "images/a.png", caption="caption"
         )
     finally:
@@ -1083,7 +1086,7 @@ async def test_send_local_attachment_supports_document_type(tmp_path: Path) -> N
         )
     )
     try:
-        result = await plugin._tool_send_local_attachment(
+        result = await plugin._message_tools.send_local_attachment(
             "report.bin", attachment_type="document", filename="report.dat"
         )
     finally:
@@ -1104,7 +1107,7 @@ async def test_send_local_attachment_requires_session_context(tmp_path: Path) ->
     api.workspace_root = tmp_path
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_send_local_attachment("a.png")
+    result = await plugin._message_tools.send_local_attachment("a.png")
 
     assert result == "Error: No active session context."
     assert api.sent_messages == []
@@ -1126,7 +1129,7 @@ async def test_send_local_attachment_rejects_missing_file(tmp_path: Path) -> Non
         )
     )
     try:
-        result = await plugin._tool_send_local_attachment("missing.png")
+        result = await plugin._message_tools.send_local_attachment("missing.png")
     finally:
         current_session.reset(token)
 
@@ -1153,7 +1156,7 @@ async def test_send_local_attachment_rejects_absolute_path_by_default(
         )
     )
     try:
-        result = await plugin._tool_send_local_attachment(str(file_path))
+        result = await plugin._message_tools.send_local_attachment(str(file_path))
     finally:
         current_session.reset(token)
 
@@ -1183,7 +1186,7 @@ async def test_send_local_attachment_allows_absolute_path_when_configured(
         )
     )
     try:
-        result = await plugin._tool_send_local_attachment(str(file_path))
+        result = await plugin._message_tools.send_local_attachment(str(file_path))
     finally:
         current_session.reset(token)
 
@@ -1224,8 +1227,8 @@ async def test_send_local_attachment_enforces_external_root_allowlist(
         )
     )
     try:
-        rejected = await plugin._tool_send_local_attachment(str(outside_file))
-        accepted = await plugin._tool_send_local_attachment(str(allowed_file))
+        rejected = await plugin._message_tools.send_local_attachment(str(outside_file))
+        accepted = await plugin._message_tools.send_local_attachment(str(allowed_file))
     finally:
         current_session.reset(token)
 
@@ -1240,7 +1243,7 @@ async def test_memory_tools_use_structured_store() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_memory_write(
+    result = await plugin._memory_tools.write(
         "User prefers Chinese architecture discussions.",
         title="Language preference",
         kind="preference",
@@ -1256,7 +1259,7 @@ async def test_memory_tools_use_structured_store() -> None:
     assert metadata["audience"] == "current"
     assert metadata["portable"] is True
 
-    read_result = await plugin._tool_memory_read(query="nahida")
+    read_result = await plugin._memory_tools.read(query="nahida")
     assert "Memory results:" in read_result
     assert "mem_1" in read_result
 
@@ -1266,7 +1269,7 @@ async def test_memory_write_can_mark_current_chat_context_non_portable() -> None
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_memory_write(
+    result = await plugin._memory_tools.write(
         "People in this group call the current sender Old Wang.",
         title="Group-local alias",
         audience="global",
@@ -1285,7 +1288,7 @@ async def test_memory_write_rejects_secret_like_content() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_memory_write("api_key=secret-value")
+    result = await plugin._memory_tools.write("api_key=secret-value")
 
     assert "secret" in result.lower()
     assert api.files == {}
@@ -1301,7 +1304,7 @@ async def test_memory_write_private_skips_markdown_and_persists_structured() -> 
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_memory_write(
+    result = await plugin._memory_tools.write(
         "this stays between us",
         title="Private",
         sensitivity="private",
@@ -1322,14 +1325,14 @@ async def test_memory_update_and_archive_tools_use_item_ids() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    updated = await plugin._tool_memory_update(
-        "mem_1",
-        "Corrected durable content.",
+    updated = await plugin._memory_tools.update(
+        item_id="mem_1",
+        content="Corrected durable content.",
         title="Corrected",
         kind="fact",
         portable=False,
     )
-    archived = await plugin._tool_memory_archive("mem_2", "duplicate")
+    archived = await plugin._memory_tools.archive("mem_2", "duplicate")
 
     assert "mem_updated_1" in updated
     assert api.updated_memories[0][0] == "mem_1"
@@ -1349,9 +1352,9 @@ async def test_memory_update_blocks_reassign_without_env_var(
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_memory_update(
-        "mem_1",
-        "reassign content",
+    result = await plugin._memory_tools.update(
+        item_id="mem_1",
+        content="reassign content",
         target_scope_type="person",
         target_scope_id="owner",
     )
@@ -1366,9 +1369,9 @@ async def test_memory_update_allows_reassign_with_env_var(
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
-    result = await plugin._tool_memory_update(
-        "mem_1",
-        "reassign content",
+    result = await plugin._memory_tools.update(
+        item_id="mem_1",
+        content="reassign content",
         target_scope_type="person",
         target_scope_id="owner",
     )
@@ -1618,13 +1621,13 @@ async def test_cron_update_and_delete_tools_use_scheduler_api() -> None:
         )
     )
     try:
-        updated = await plugin._tool_cron_update(
+        updated = await plugin._cron_tools.update(
             "job1",
             prompt="new prompt",
             interval_seconds=180,
             max_runs=3,
         )
-        deleted = await plugin._tool_cron_delete("job1")
+        deleted = await plugin._cron_tools.delete("job1")
     finally:
         current_session.reset(token)
 
@@ -1659,7 +1662,7 @@ async def test_cron_create_records_creator_and_source_session() -> None:
         )
     )
     try:
-        result = await plugin._tool_cron_create(
+        result = await plugin._cron_tools.create(
             prompt="ping",
             mode="interval",
             interval_seconds=120,
@@ -1693,7 +1696,7 @@ async def test_cron_once_normalizes_naive_datetime_to_utc() -> None:
         )
     )
     try:
-        result = await plugin._tool_cron_create(
+        result = await plugin._cron_tools.create(
             "ping",
             "once",
             fire_at="2026-08-13T09:00:00",
@@ -1724,7 +1727,7 @@ async def test_cron_cancel_enforces_current_user_ownership() -> None:
         )
     )
     try:
-        cancelled = await plugin._tool_cron_cancel("job1")
+        cancelled = await plugin._cron_tools.cancel("job1")
     finally:
         current_session.reset(token)
 
@@ -1751,8 +1754,8 @@ async def test_cron_tools_hide_jobs_owned_by_other_user() -> None:
         )
     )
     try:
-        listed = await plugin._tool_cron_list()
-        deleted = await plugin._tool_cron_delete("job1")
+        listed = await plugin._cron_tools.list_active()
+        deleted = await plugin._cron_tools.delete("job1")
     finally:
         current_session.reset(token)
 

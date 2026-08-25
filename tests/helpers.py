@@ -96,9 +96,6 @@ class MockBotAPI:
     ) -> None:
         pass
 
-    async def get_session(self, session_id: str) -> Any:
-        return None
-
     async def record_message_delivery(
         self,
         *,

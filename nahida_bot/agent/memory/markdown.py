@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Sequence
-from uuid import uuid4
 
 MEMORY_FILE = "MEMORY.md"
 MEMORY_SUMMARY_FILE = "memory_summary.md"
@@ -38,11 +36,6 @@ class MarkdownMemoryEntry:
 
     path: str
     content: str
-
-
-def stable_memory_id(prefix: str = "mem") -> str:
-    """Create a short stable-looking memory id for markdown bullets."""
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
 
 
 def validate_memory_content(content: str) -> str | None:

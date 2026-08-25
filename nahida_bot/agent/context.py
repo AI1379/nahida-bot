@@ -250,9 +250,8 @@ class SkillInfo:
 class SkillCatalog:
     """Load and query workspace skills by name or scan for catalog listing.
 
-    Reuses the same on-disk layout as ``ContextBuilder.load_workspace_skills``:
-    ``{workspace_root}/{directory}/<skill-name>/SKILL.md`` with optional
-    YAML frontmatter (``name``, ``description`` fields).
+    Skills use ``{workspace_root}/{directory}/<skill-name>/SKILL.md`` with
+    optional YAML frontmatter (``name``, ``description`` fields).
 
     Static methods — no instance state needed.
     """
@@ -296,8 +295,6 @@ class SkillCatalog:
         for skill in skills:
             desc = skill.description[:120] if skill.description else "(no description)"
             lines.append(f"- {skill.name}: {desc}")
-
-        from nahida_bot.agent.context import ContextMessage  # avoid circular
 
         return ContextMessage(
             role="system",
@@ -443,7 +440,6 @@ class ContextBuilder:
     """Build context from system prompt, workspace instructions, and history."""
 
     instruction_filenames: tuple[str, ...] = ("AGENTS.md", "SOUL.md", "USER.md")
-    skill_directories: tuple[str, ...] = (".agents/skills", "skills")
 
     def __init__(
         self,
@@ -480,24 +476,6 @@ class ContextBuilder:
                 )
             )
         return messages
-
-    def load_workspace_skills(self, workspace_root: Path) -> list[ContextMessage]:
-        """Load AgentSkills-compatible workspace skills.
-
-        Each skill is a directory containing ``SKILL.md`` with optional YAML
-        frontmatter. If the same skill exists in multiple workspace locations,
-        later locations in ``skill_directories`` take precedence.
-        """
-        skills: dict[str, ContextMessage] = {}
-        for directory in self.skill_directories:
-            root = workspace_root / directory
-            if not root.exists() or not root.is_dir():
-                continue
-            for skill_file in sorted(root.glob("*/SKILL.md")):
-                parsed = self._parse_skill_file(skill_file, workspace_root)
-                if parsed is not None:
-                    skills[parsed.source.removeprefix("workspace_skill:")] = parsed
-        return [skills[name] for name in sorted(skills)]
 
     def load_workspace_memory(self, workspace_root: Path) -> ContextMessage | None:
         """Load bounded Markdown memory from the active workspace."""
@@ -1115,51 +1093,3 @@ class ContextBuilder:
             ],
             sort_keys=True,
         )
-
-    def _parse_skill_file(
-        self, skill_file: Path, workspace_root: Path
-    ) -> ContextMessage | None:
-        raw = skill_file.read_text(encoding="utf-8").strip()
-        if not raw:
-            return None
-
-        metadata, body = self._split_skill_frontmatter(raw)
-        skill_name_raw = metadata.get("name") or skill_file.parent.name
-        skill_name = str(skill_name_raw).strip() or skill_file.parent.name
-        description_raw = metadata.get("description", "")
-        description = str(description_raw).strip()
-
-        parts = [f"# Skill: {skill_name}"]
-        if description:
-            parts.append(f"Description: {description}")
-        parts.append(body.strip())
-        relative_path = skill_file.relative_to(workspace_root).as_posix()
-        return ContextMessage(
-            role="system",
-            source=f"workspace_skill:{skill_name}",
-            content="\n\n".join(part for part in parts if part),
-            metadata={
-                "skill_name": skill_name,
-                "description": description,
-                "path": relative_path,
-            },
-        )
-
-    def _split_skill_frontmatter(self, raw: str) -> tuple[dict[str, object], str]:
-        if not raw.startswith("---"):
-            return {}, raw
-
-        _, separator, rest = raw.partition("\n")
-        if not separator:
-            return {}, raw
-        frontmatter, separator, body = rest.partition("\n---")
-        if not separator:
-            return {}, raw
-
-        try:
-            parsed = yaml.safe_load(frontmatter) or {}
-        except yaml.YAMLError:
-            return {}, raw
-        if not isinstance(parsed, dict):
-            return {}, raw
-        return {str(key): value for key, value in parsed.items()}, body.lstrip()

@@ -49,29 +49,6 @@ class DocumentEmbedding:
 
 
 @dataclass(slots=True, frozen=True)
-class Provenance:
-    """Stable source provenance for a retrieved chunk (knowledge-base.md §5.1).
-
-    Dual-mode by design: the document side (``source_type`` / ``source_id`` /
-    ``collection`` / ``path`` / ``page`` / ``version``) is populated by KB now;
-    the conversation side (``turn_id`` / ``session_id`` / ``person_id`` /
-    ``account_key``) is reserved for when memory turns become ContextNodes
-    (Phase 3). Only one side is populated per record.
-    """
-
-    source_type: str = "document"
-    source_id: str = ""
-    collection: str = ""
-    path: str = ""
-    page: str = ""
-    version: str = ""
-    turn_id: str = ""
-    session_id: str = ""
-    person_id: str = ""
-    account_key: str = ""
-
-
-@dataclass(slots=True, frozen=True)
 class SearchResult:
     """A document search result with relevance score and provenance."""
 

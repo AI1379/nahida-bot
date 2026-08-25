@@ -88,21 +88,6 @@ class SQLiteMemoryRepository:
         )
         return [self._row_to_dict(row) for row in reversed(rows)]
 
-    async def search_by_keyword(
-        self, session_id: str, keyword: str, *, limit: int = 10
-    ) -> list[dict[str, Any]]:
-        """Search turns by keyword match within a session."""
-        rows = await self._engine.fetch_all(
-            "SELECT DISTINCT t.id, t.session_id, t.role, t.content, "
-            "t.source, t.metadata_json, t.created_at "
-            "FROM memory_turns t "
-            "JOIN memory_keywords mk ON mk.turn_id = t.id "
-            "WHERE t.session_id = ? AND mk.keyword = ? "
-            "ORDER BY t.created_at DESC LIMIT ?",
-            (session_id, keyword.lower(), limit),
-        )
-        return [self._row_to_dict(row) for row in rows]
-
     async def search_by_keywords(
         self, session_id: str, keywords: list[str], *, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -124,14 +109,6 @@ class SQLiteMemoryRepository:
         )
         return [self._row_to_dict(row) for row in rows]
 
-    async def get_keywords_for_turn(self, turn_id: int) -> list[str]:
-        """Return all indexed keywords for a given turn."""
-        rows = await self._engine.fetch_all(
-            "SELECT keyword FROM memory_keywords WHERE turn_id = ?",
-            (turn_id,),
-        )
-        return [row["keyword"] for row in rows]
-
     async def get_keywords_for_turns(self, turn_ids: list[int]) -> dict[int, list[str]]:
         """Bulk-fetch keywords for multiple turns."""
         if not turn_ids:
@@ -146,36 +123,6 @@ class SQLiteMemoryRepository:
         for row in rows:
             result[row["turn_id"]].append(row["keyword"])
         return result
-
-    async def search_by_time_window(
-        self,
-        session_id: str,
-        *,
-        since: datetime | None = None,
-        until: datetime | None = None,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """Search turns within a time window for a session."""
-        conditions = ["session_id = ?"]
-        params: list[Any] = [session_id]
-
-        if since is not None:
-            conditions.append("created_at >= ?")
-            params.append(since.isoformat())
-        if until is not None:
-            conditions.append("created_at <= ?")
-            params.append(until.isoformat())
-
-        where_clause = " AND ".join(conditions)
-        sql = (
-            "SELECT id, session_id, role, content, source, metadata_json, created_at "
-            f"FROM memory_turns WHERE {where_clause} "
-            "ORDER BY created_at DESC LIMIT ?"
-        )
-        params.append(limit)
-
-        rows = await self._engine.fetch_all(sql, tuple(params))
-        return [self._row_to_dict(row) for row in reversed(rows)]
 
     async def search_turns(
         self,

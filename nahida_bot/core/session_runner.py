@@ -1976,44 +1976,6 @@ class SessionRunner:
             return parts
         return [ContextPart(type="text", text=content), *parts]
 
-    @staticmethod
-    def _reconstruct_parts(
-        metadata: dict[str, Any] | None,
-    ) -> list[ContextPart]:
-        if not metadata or "attachments" not in metadata:
-            return []
-        parts: list[ContextPart] = []
-        for att in metadata["attachments"]:
-            if att.get("kind") != "image":
-                continue
-            if att.get("url"):
-                parts.append(
-                    ContextPart(
-                        type="image_url",
-                        url=att["url"],
-                        media_id=att.get("platform_id", ""),
-                        mime_type=att.get("mime_type", ""),
-                    )
-                )
-            elif att.get("path"):
-                parts.append(
-                    ContextPart(
-                        type="image_url",
-                        url=att["path"],
-                        media_id=att.get("platform_id", ""),
-                        mime_type=att.get("mime_type", ""),
-                    )
-                )
-            elif att.get("alt_text"):
-                parts.append(
-                    ContextPart(
-                        type="image_description",
-                        text=att["alt_text"],
-                        media_id=att.get("platform_id", ""),
-                    )
-                )
-        return parts
-
     async def _reconstruct_parts_for_history(
         self,
         metadata: dict[str, Any] | None,

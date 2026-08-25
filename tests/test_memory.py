@@ -588,6 +588,61 @@ async def test_memory_item_hybrid_search_fuses_fts_and_vector(
     assert "中文记忆检索" in results[0].content
 
 
+@pytest.mark.asyncio
+async def test_memory_hybrid_search_uses_shared_candidate_pool_and_weights(
+    memory_store: SQLiteMemoryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await memory_store.append_item(
+        item_id="fts-junk",
+        title="keyword collision",
+        content="keyword-stuffed but irrelevant",
+    )
+    await memory_store.append_item(
+        item_id="vector-correct",
+        title="semantic answer",
+        content="the relevant memory",
+    )
+    junk, correct = await memory_store.get_items_by_ids(["fts-junk", "vector-correct"])
+    search_limits: list[tuple[str, int]] = []
+
+    async def fake_fts_search(
+        query: str = "",
+        *,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        limit: int = 10,
+    ) -> list[MemoryItem]:
+        del query, scope_type, scope_id
+        search_limits.append(("fts", limit))
+        return [junk]
+
+    async def fake_vector_search(
+        query: str,
+        provider: object,
+        *,
+        scope_type: str,
+        scope_id: str,
+        limit: int,
+        vector_index: object | None = None,
+    ) -> list[MemoryItem]:
+        del query, provider, scope_type, scope_id, vector_index
+        search_limits.append(("vector", limit))
+        return [correct]
+
+    monkeypatch.setattr(memory_store, "search_items", fake_fts_search)
+    monkeypatch.setattr(memory_store, "search_items_vector", fake_vector_search)
+
+    results = await memory_store.search_items_hybrid(
+        "ambiguous query",
+        HashEmbeddingProvider(dimensions=2),
+        limit=2,
+    )
+
+    assert search_limits == [("fts", 20), ("vector", 20)]
+    assert [item.item_id for item in results] == ["vector-correct", "fts-junk"]
+
+
 def test_reciprocal_rank_fusion_orders_shared_hits_first() -> None:
     fused = reciprocal_rank_fusion([["a", "b"], ["b", "a"]], limit=2)
     assert [item_id for item_id, _score in fused] == ["a", "b"]

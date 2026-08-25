@@ -120,6 +120,39 @@ def test_format_tools_maps_web_search_alias_and_keeps_functions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_preserves_synchronous_endpoint_hook() -> None:
+    class CustomEndpointProvider(OpenAIResponsesProvider):
+        def _resolve_endpoint_and_headers(
+            self, payload: dict[str, object]
+        ) -> tuple[str, dict[str, str]]:
+            del payload
+            return "https://relay.test/custom", {"X-Custom-Auth": "token"}
+
+    provider = CustomEndpointProvider(base_url="", api_key="", model="gpt-test")
+    fake_client = _FakeClient(
+        {
+            "id": "resp_new",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "answer"}],
+                }
+            ],
+        }
+    )
+    provider._client = cast(Any, fake_client)
+
+    await provider.chat(
+        messages=[ContextMessage(role="user", source="user_input", content="Hi")]
+    )
+
+    assert fake_client.url == "https://relay.test/custom"
+    assert fake_client.headers == {"X-Custom-Auth": "token"}
+
+
+@pytest.mark.asyncio
 async def test_chat_uses_previous_response_id_and_sends_only_new_input() -> None:
     provider = _provider(
         store_responses=True,

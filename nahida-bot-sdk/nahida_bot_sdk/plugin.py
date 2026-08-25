@@ -1,4 +1,4 @@
-"""Plugin base class, registration decorators, SessionInfo, and MemoryRef."""
+"""Plugin base class, registration decorators, and MemoryRef."""
 
 from __future__ import annotations
 
@@ -103,17 +103,6 @@ def subscribe(event_type: type) -> Callable:
         return func
 
     return deco
-
-
-@dataclass(slots=True, frozen=True)
-class SessionInfo:
-    """Snapshot of an active session."""
-
-    session_id: str
-    channel: str
-    chat_id: str
-    user_id: str
-    workspace_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)

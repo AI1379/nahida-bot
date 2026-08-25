@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from nahida_bot.agent.orchestration.models import SubagentSpec
-from nahida_bot.agent.providers import ToolDefinition
 
 # Tools a child subagent may never invoke, regardless of what the parent model
 # writes into ``SubagentSpec.tool_allowlist``. These either break the
@@ -91,11 +88,6 @@ class OrchestrationPolicy:
         ):
             raise PermissionError("Session is outside the requester scope.")
 
-    async def can_send_session(
-        self, requester_session_id: str, target_session_id: str
-    ) -> None:
-        await self.can_read_session(requester_session_id, target_session_id)
-
     def compute_child_tool_filter(
         self, spec: SubagentSpec
     ) -> tuple[frozenset[str], frozenset[str]]:
@@ -113,30 +105,3 @@ class OrchestrationPolicy:
         requested_allow = frozenset(spec.tool_allowlist)
         allowlist = requested_allow - denylist
         return allowlist, denylist
-
-    async def filter_tools_for_child(
-        self,
-        requester_session_id: str,
-        spec: SubagentSpec,
-        available_tools: Sequence[ToolDefinition],
-    ) -> Sequence[ToolDefinition]:
-        """Filter concrete tool definitions for a child run.
-
-        Kept for callers that resolve the full tool registry before invoking
-        the orchestrator. The orchestrator service itself drives filtering
-        through :meth:`compute_child_tool_filter` + the runner's allow/deny
-        sets, so both paths consult the same system denylist.
-        """
-        allowlist, denylist = self.compute_child_tool_filter(spec)
-        # ``allowlist`` is empty when the spec provides no allowlist (meaning
-        # "no allowlist restriction"). Only treat it as restrictive when the
-        # parent actually supplied one.
-        restrict_to_allow = bool(spec.tool_allowlist)
-        result: list[ToolDefinition] = []
-        for tool in available_tools:
-            if tool.name in denylist:
-                continue
-            if restrict_to_allow and tool.name not in allowlist:
-                continue
-            result.append(tool)
-        return result
