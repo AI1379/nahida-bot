@@ -5,6 +5,12 @@
 > 来源：#22（A 线任务 A3）。主设计依据：`docs/design/knowledge-base.md` §4（职责边界）、
 > `docs/a-line-memory-plan.md` 任务 A3。
 > 现状基线：`v2` @ `b176136`。
+>
+> **定位修订（2026-08-25，见 `kb-direction.md` §2）**：本提案的地位从"补
+> memory↔KB 统一的最后一环"升格为**新 KB 战略的地基**——`dreams` collection
+> 不只是隔离/回滚措施，而是 auto-recall 主力语料（策展库）的第一个试点；
+> wiki 大库降为显式 `kb_search` 的参考资料层。结构不变，但 §4.5 的放量节奏
+> 与抽查设计因此更重要：它直接决定策展库的生长质量。
 
 ## 1. 背景与问题
 
