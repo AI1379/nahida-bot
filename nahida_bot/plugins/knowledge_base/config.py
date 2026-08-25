@@ -7,6 +7,30 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class KBDreamPromotionConfig(BaseModel):
+    """Dreaming→KB promotion (A3, dreaming-to-kb.md) — default OFF.
+
+    The DreamPromoter scans global-scope durable memory items and imports the
+    ones passing this gate into a dedicated KB collection as knowledge nodes.
+    Every threshold lives here on purpose (owner decision 2026-08-25): code
+    carries defaults only, operators tune the config file.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = False
+    collection: str = "dreams"
+    min_confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+    daily_limit: int = Field(default=2, ge=0)
+    kinds: list[str] = Field(default_factory=lambda: ["fact", "procedure", "decision"])
+    scan_limit: int = Field(
+        default=200, ge=1, description="Max memory items scanned per pass."
+    )
+    interval_seconds: int = Field(
+        default=3600, ge=60, description="Delay between promoter passes."
+    )
+
+
 class KBRetrievalConfig(BaseModel):
     """Retrieval settings for the Knowledge Base plugin."""
 
@@ -75,6 +99,7 @@ class KBConfig(BaseModel):
     )
     retrieval: KBRetrievalConfig = KBRetrievalConfig()
     embedding: KBEmbeddingConfig = KBEmbeddingConfig()
+    dream_promotion: KBDreamPromotionConfig = KBDreamPromotionConfig()
 
 
 def parse_kb_config(raw: dict | None) -> KBConfig:

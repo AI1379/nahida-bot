@@ -543,6 +543,21 @@ class BotAPI(Protocol):
         """Persist a record to the memory store and return its item id."""
         ...
 
+    async def memory_list_items(
+        self,
+        *,
+        scope_type: str | None = "__global__",
+        scope_id: str | None = "__global__",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List durable memory items for an operator-side scan.
+
+        Admin-surface read, unfiltered by sensitivity (``None`` matches every
+        scope). Consumers must apply their own visibility policy before
+        exposing results.
+        """
+        ...
+
     async def memory_update(
         self,
         item_id: str,

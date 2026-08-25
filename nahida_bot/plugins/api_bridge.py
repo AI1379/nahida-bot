@@ -887,6 +887,45 @@ class RealBotAPI:
             for item in items
         ]
 
+    async def memory_list_items(
+        self,
+        *,
+        scope_type: str | None = "__global__",
+        scope_id: str | None = "__global__",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List durable memory items for an operator-side scan.
+
+        Admin-surface read: unfiltered by sensitivity (``None`` matches every
+        scope type/id). The dreaming→KB promoter is the current consumer and
+        applies its own public/portable/kind/confidence gate; any future
+        consumer must apply its own visibility policy before exposing results.
+        """
+        self._permissions.check_memory_read()
+        service = self._memory_service()
+        if service is None:
+            return []
+        items = await service.list_items(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            limit=limit,
+        )
+        return [
+            {
+                "item_id": item.item_id,
+                "scope_type": item.scope_type,
+                "scope_id": item.scope_id,
+                "kind": item.kind,
+                "title": item.title,
+                "content": item.content,
+                "status": item.status,
+                "confidence": item.confidence,
+                "sensitivity": item.sensitivity,
+                "metadata": dict(item.metadata or {}),
+            }
+            for item in items
+        ]
+
     async def search_chat_history(
         self,
         query: str,

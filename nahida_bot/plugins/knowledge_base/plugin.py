@@ -115,6 +115,7 @@ class KnowledgeBasePlugin(Plugin):
         self._embedding_dimensions = self._config.embedding.dimensions
         self._embedding_tasks: dict[str, asyncio.Task[None]] = {}
         self._embedding_status: dict[str, str] = {}  # "idle" | "embedding" | "embedded"
+        self._dream_promotion_task: asyncio.Task[None] | None = None
 
     # ── Lifecycle ────────────────────────────────────────
 
@@ -132,6 +133,7 @@ class KnowledgeBasePlugin(Plugin):
         self._register_tool()
         self._register_command()
         await self._register_supplement()
+        self._start_dream_promotion_loop()
 
         self.api.logger.info(
             "kb.loaded",
@@ -151,6 +153,68 @@ class KnowledgeBasePlugin(Plugin):
             except (asyncio.CancelledError, Exception):
                 pass
         self._embedding_tasks.clear()
+        if self._dream_promotion_task is not None:
+            self._dream_promotion_task.cancel()
+            try:
+                await self._dream_promotion_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._dream_promotion_task = None
+
+    # ── Dream Promotion (A3, dreaming-to-kb.md) ──────────
+
+    def _start_dream_promotion_loop(self) -> None:
+        """Start the periodic promotion pass when enabled in config."""
+        config = self._config.dream_promotion
+        if not config.enabled:
+            return
+        self._dream_promotion_task = asyncio.create_task(
+            self._dream_promotion_loop(), name="kb-dream-promotion"
+        )
+        self.api.logger.info(
+            "kb.dream_promotion_started",
+            collection=config.collection,
+            min_confidence=config.min_confidence,
+            daily_limit=config.daily_limit,
+            interval_seconds=config.interval_seconds,
+        )
+
+    async def _dream_promotion_loop(self) -> None:
+        config = self._config.dream_promotion
+        while True:
+            await asyncio.sleep(config.interval_seconds)
+            try:
+                stats = await self._run_dream_promotion_once()
+                if stats.get("scanned"):
+                    self.api.logger.info("kb.dream_promotion_pass", **stats)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # The loop must survive a failed pass (memory or KB hiccup);
+                # the next interval retries.
+                self.api.logger.warning(
+                    "kb.dream_promotion_pass_failed", error=str(exc)
+                )
+
+    async def _run_dream_promotion_once(self) -> dict[str, int]:
+        from nahida_bot.plugins.knowledge_base.promoter import (
+            LEDGER_KEY,
+            DreamPromoter,
+        )
+
+        config = self._config.dream_promotion
+        items = await self.api.memory_list_items(
+            scope_type="global", limit=config.scan_limit
+        )
+        promoter = DreamPromoter(
+            import_content=self.import_content,
+            search_documents=self.search_documents,
+            load_ledger=lambda: self.api.plugin_data_get(LEDGER_KEY),
+            save_ledger=lambda ledger: self.api.plugin_data_set(LEDGER_KEY, ledger),
+            config=config,
+            logger=self.api.logger,
+        )
+        return await promoter.promote_once(items)
 
     # ── Tool Registration ────────────────────────────────
 

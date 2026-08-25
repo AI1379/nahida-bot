@@ -1,6 +1,6 @@
 # 做梦 → 知识节点写路径（dreaming-to-kb）设计提案
 
-> 状态：**提案，等待 owner 拍板三个决策点**（见 §8）。拍板前不动代码。
+> 状态：**已拍板（2026-08-25），阶段二实现中**。三个决策点的拍板结果见 §8.1。
 > 日期：2026-08-25
 > 来源：#22（A 线任务 A3）。主设计依据：`docs/design/knowledge-base.md` §4（职责边界）、
 > `docs/a-line-memory-plan.md` 任务 A3。
@@ -153,6 +153,19 @@ consolidator 内部**。dreaming 继续只写 `memory_items`；「晋升为知�
   （`promoted_from_item_id`）就是 memory↔KB 双向链接的第一批真实数据。
 
 ## 8. 决策点（owner 拍板）
+
+### 8.1 拍板结果（2026-08-25）
+
+- [x] **置信门槛**：默认 **0.9**，复用现有 `confidence` 字段，不新增 schema。
+- [x] **首版 scope 白名单**：仅 `global ∧ public ∧ portable ∧ kind∈{fact,procedure,decision}`。
+- [x] **抽查窗口与放量节奏**：owner 无精力逐条抽查，取保守替代方案——
+      **默认 `daily_limit=2`，观察窗口一周**（看观测指标与偶发抽查，非逐条），
+      之后按舒适度通过配置上调；不设自动放量阶梯。
+- [x] **配置化原则（owner 补充要求）**：门槛、daily limit、collection、kind
+      白名单等所有阈值类参数一律放配置文件（`knowledge_base.dream_promotion.*`），
+      代码只承载默认值，不做硬编码。
+
+### 8.2 原建议（留档）
 
 - [ ] **置信门槛具体值与字段来源**
       建议：0.9 + 复用现有 `confidence` 字段，不新增 schema。

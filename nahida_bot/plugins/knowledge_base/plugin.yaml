@@ -12,6 +12,8 @@ permissions:
   plugin_data:
     read: true
     write: true
+  memory:
+    read: true
   llm_access: true
 config:
   default_chunk_size: 500
@@ -28,3 +30,11 @@ config:
     dimensions: 0
     batch_size: 16
     embed_after_import: true
+  dream_promotion:
+    enabled: false
+    collection: "dreams"
+    min_confidence: 0.9
+    daily_limit: 2
+    kinds: ["fact", "procedure", "decision"]
+    scan_limit: 200
+    interval_seconds: 3600

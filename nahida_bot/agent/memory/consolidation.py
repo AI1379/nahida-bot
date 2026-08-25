@@ -130,6 +130,7 @@ Rules:
 - Never store routine chat recaps, transient reactions, image-only exchanges, greetings, or "recent conversation" summaries.
 - Do not store secrets, credentials, tokens, cookies, private keys, signed URLs, base64, or raw event dumps.
 - Do not invent facts. Use the conversation as evidence.
+- Content that reached this conversation via knowledge-base recall (auto-recalled snippets or kb_search/context_read results, including dream-promoted nodes) is existing knowledge, not new evidence: never create a memory entry that merely restates it.
 - Prefer the language and terminology the user normally uses in the conversation.
 - Archive an existing memory only when the new conversation clearly makes it obsolete or contradictory.
 - Audience is independent from kind. Use "current" unless the item is intentionally applicable across every chat and user of this bot.
