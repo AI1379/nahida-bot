@@ -2,3 +2,6 @@ packages:
   - webui
   - docs
   - desktop
+allowBuilds:
+  esbuild: true
+  vue-demi: true

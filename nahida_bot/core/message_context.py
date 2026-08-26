@@ -94,7 +94,13 @@ SILENT_REPLY_INSTRUCTION = (
     "- It must be your ENTIRE message — nothing else.\n"
     "- Never append it to an actual response.\n"
     "- Never wrap it in markdown or code blocks.\n"
-    '- You may also use {"action": "NO_REPLY"} JSON format.'
+    '- You may also use {"action": "NO_REPLY"} JSON format.\n'
+    "- NEVER use NO_REPLY when a user directly addressed you. A direct "
+    "summon means the message context block shows you were @-mentioned "
+    "(mentions_bot: yes) or the channel is a private chat with the user. "
+    "In those cases you MUST reply with real content, even for greetings, "
+    "jokes, one-word messages, or seemingly trivial chatter — the user is "
+    "waiting for a visible answer, so NO_REPLY is forbidden."
 )
 
 HEARTBEAT_INSTRUCTION = (
@@ -256,6 +262,13 @@ def _render_context_block(
         ("message_id", _clean(context.message_id)),
         ("reply_to_message_id", _clean(context.reply_to_message_id)),
     ]
+    if context.mentions_bot:
+        facts.append(
+            (
+                "mentions_bot",
+                "yes — the sender directly @-mentioned you in this message",
+            )
+        )
     rendered = [(key, value) for key, value in facts if value]
     if not rendered:
         return ""
