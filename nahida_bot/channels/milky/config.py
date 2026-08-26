@@ -109,6 +109,27 @@ class MilkyPluginConfig(BaseModel):
         ge=1,
         description="Maximum peer->scene entries retained for outbound routing.",
     )
+    outbound_mentions_enabled: bool = Field(
+        default=True,
+        description=(
+            "Convert [CQ:at,qq=…] mention tokens in outbound text into real "
+            "mention segments for group sends, after verifying each target is "
+            "a current group member. Unverified tokens stay as literal text."
+        ),
+    )
+    max_mentions_per_message: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum distinct mention targets converted per message.",
+    )
+    mention_member_cache_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "TTL for cached group-membership lookups used to validate "
+            "outbound mention targets."
+        ),
+    )
     pending_file_ttl_seconds: float = Field(
         default=600.0,
         gt=0,

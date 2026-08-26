@@ -10,7 +10,11 @@ import pytest
 
 from nahida_bot.channels.milky.client import MilkyAPIError, MilkyNetworkError
 from nahida_bot.channels.milky.plugin import MilkyPlugin
-from nahida_bot.channels.milky.segments import OutgoingTextSegment, OutgoingVideoSegment
+from nahida_bot.channels.milky.segments import (
+    OutgoingMentionSegment,
+    OutgoingTextSegment,
+    OutgoingVideoSegment,
+)
 from nahida_bot.core.events import (
     MessageObserved,
     MessageReactionEvent,
@@ -45,6 +49,9 @@ class _FakeClient:
         self.private_files: list[tuple[int, object]] = []
         self.group_files: list[tuple[int, object]] = []
         self.fail_next_group_message = False
+        self.member_ids: set[int] = set()
+        self.member_checks = 0
+        self.fail_member_check = False
 
     async def get_login_info(self) -> dict[str, object]:
         return {"uin": 999}
@@ -93,6 +100,18 @@ class _FakeClient:
 
     async def get_group_file_download_url(self, group_id: int, file_id: str) -> str:
         return f"https://example.com/group/{file_id}"
+
+    async def get_group_member_info(
+        self, *, group_id: int, user_id: int
+    ) -> dict[str, object]:
+        self.member_checks += 1
+        if self.fail_member_check or user_id not in self.member_ids:
+            raise MilkyAPIError(
+                "user is not a group member",
+                api_name="get_group_member_info",
+                retcode=1200,
+            )
+        return {"uin": user_id}
 
     async def close(self) -> None:
         self.closed = True
@@ -1691,3 +1710,136 @@ async def test_stream_download_falls_back_to_legacy_dir_without_cache(
     from pathlib import Path
 
     assert Path(result.path).read_bytes() == b"milky-bytes"
+
+
+async def test_group_send_converts_validated_mention_token() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    client.member_ids = {111}
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    sent = await plugin.send_message(
+        "321",
+        OutboundMessage(
+            text="[CQ:at,qq=111] 你先说",
+            extra={"message_scene": "group", "peer_id": 321},
+        ),
+    )
+
+    assert sent == "22"
+    assert client.member_checks == 1
+    group_id, segments = client.group_messages[0]
+    assert group_id == 321
+    assert isinstance(segments[0], OutgoingMentionSegment)
+    assert segments[0].user_id == 111
+    assert isinstance(segments[1], OutgoingTextSegment)
+    assert segments[1].text == " 你先说"
+
+
+async def test_unknown_member_token_stays_literal_text() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.send_message(
+        "321",
+        OutboundMessage(
+            text="[CQ:at,qq=111] 你先说",
+            extra={"message_scene": "group", "peer_id": 321},
+        ),
+    )
+
+    assert client.member_checks == 1
+    _, segments = client.group_messages[0]
+    assert [type(seg) for seg in segments] == [OutgoingTextSegment]
+    assert segments[0].text == "[CQ:at,qq=111] 你先说"
+
+
+async def test_member_check_api_failure_degrades_to_literal() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    client.member_ids = {111}
+    client.fail_member_check = True
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.send_message(
+        "321",
+        OutboundMessage(
+            text="[CQ:at,qq=111] 你先说",
+            extra={"message_scene": "group", "peer_id": 321},
+        ),
+    )
+
+    _, segments = client.group_messages[0]
+    assert [type(seg) for seg in segments] == [OutgoingTextSegment]
+    assert segments[0].text == "[CQ:at,qq=111] 你先说"
+
+
+async def test_member_check_result_is_cached_across_sends() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    client.member_ids = {111}
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    for _ in range(2):
+        await plugin.send_message(
+            "321",
+            OutboundMessage(
+                text="[CQ:at,qq=111] ping",
+                extra={"message_scene": "group", "peer_id": 321},
+            ),
+        )
+
+    assert client.member_checks == 1
+    assert len(client.group_messages) == 2
+
+
+async def test_private_send_never_checks_membership_or_converts() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest())
+    client = _FakeClient()
+    client.member_ids = {111}
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.send_message(
+        "111",
+        OutboundMessage(
+            text="[CQ:at,qq=111] 你先说",
+            extra={"message_scene": "friend", "peer_id": 111},
+        ),
+    )
+
+    assert client.member_checks == 0
+    _, segments = client.private_messages[0]
+    assert [type(seg) for seg in segments] == [OutgoingTextSegment]
+    assert segments[0].text == "[CQ:at,qq=111] 你先说"
+
+
+async def test_mentions_disabled_config_leaves_tokens_literal() -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(api=api, manifest=_manifest(outbound_mentions_enabled=False))
+    client = _FakeClient()
+    client.member_ids = {111}
+    plugin._client = client  # type: ignore[assignment]
+    await plugin.on_load()
+
+    await plugin.send_message(
+        "321",
+        OutboundMessage(
+            text="[CQ:at,qq=111] 你先说",
+            extra={"message_scene": "group", "peer_id": 321},
+        ),
+    )
+
+    assert client.member_checks == 0
+    _, segments = client.group_messages[0]
+    assert [type(seg) for seg in segments] == [OutgoingTextSegment]

@@ -43,6 +43,7 @@ from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
     HEARTBEAT_INSTRUCTION,
     CRON_DESKTOP_ANNOUNCEMENT_INSTRUCTION,
+    MENTION_INSTRUCTION,
     PROACTIVE_JOIN_INSTRUCTION,
     SILENT_REPLY_INSTRUCTION,
     assistant_context,
@@ -52,6 +53,7 @@ from nahida_bot.core.message_context import (
     render_message_with_context,
     strip_envelope_prefix,
 )
+from nahida_bot.core.outbound_mentions import MENTION_CAPABLE_PLATFORMS
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
@@ -2815,6 +2817,8 @@ class SessionRunner:
         parts = [system_prompt.rstrip()]
         if context is not None and context.channel not in ("", "bot"):
             parts.append(ENVELOPE_INSTRUCTION)
+        if context is not None and context.channel in MENTION_CAPABLE_PLATFORMS:
+            parts.append(MENTION_INSTRUCTION)
         if enable_silent_reply:
             parts.append(SILENT_REPLY_INSTRUCTION)
         if source_tag == "cron_trigger":

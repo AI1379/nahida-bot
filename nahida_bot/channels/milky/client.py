@@ -170,6 +170,14 @@ class MilkyClient:
             retry=True,
         )
 
+    async def get_group_member_info(
+        self, *, group_id: int, user_id: int
+    ) -> dict[str, Any]:
+        """Fetch one group member's info; raises when the user is not a member."""
+        return await self.post_api(
+            "get_group_member_info", {"group_id": group_id, "user_id": user_id}
+        )
+
     async def get_resource_temp_url(self, resource_id: str) -> str:
         """Return a temporary URL for a Milky resource ID."""
         data = await self.post_api(

@@ -8,6 +8,8 @@ from nahida_bot.channels.milky.config import parse_milky_config
 from nahida_bot.channels.milky.segment_converter import (
     MilkyTargetError,
     MilkyOutboundConverter,
+    fallback_text_for_segments,
+    has_rich_segments,
     message_seq_from_send_result,
     resolve_target,
     video_segment_to_file_upload,
@@ -16,6 +18,7 @@ from nahida_bot.channels.milky.segments import (
     OutgoingFileUpload,
     OutgoingForwardSegment,
     OutgoingImageSegment,
+    OutgoingMentionSegment,
     OutgoingRecordSegment,
     OutgoingReplySegment,
     OutgoingTextSegment,
@@ -187,3 +190,107 @@ def test_video_segment_to_file_upload_derives_filename(
 
     assert upload.file_uri == uri
     assert upload.file_name == expected_name
+
+
+def test_converts_validated_mention_tokens_in_order() -> None:
+    converter = MilkyOutboundConverter(parse_milky_config({}))
+    message = OutboundMessage(
+        text="[CQ:at,qq=111] 你先说，@[qq=222] 你补充",
+        extra={"milky_mention_ids": ["111", "222"]},
+    )
+
+    segments, files = converter.to_payload(message)
+
+    assert files == []
+    assert [type(seg) for seg in segments] == [
+        OutgoingMentionSegment,
+        OutgoingTextSegment,
+        OutgoingMentionSegment,
+        OutgoingTextSegment,
+    ]
+    assert segments[0].user_id == 111
+    assert segments[2].user_id == 222
+    assert segments[1].text == " 你先说，"
+    assert segments[3].text == " 你补充"
+
+
+def test_unvalidated_mention_token_stays_literal() -> None:
+    converter = MilkyOutboundConverter(parse_milky_config({}))
+    message = OutboundMessage(
+        text="[CQ:at,qq=999] hi @[qq=111] ok",
+        extra={"milky_mention_ids": ["111"]},
+    )
+
+    segments, _ = converter.to_payload(message)
+
+    assert [type(seg) for seg in segments] == [
+        OutgoingTextSegment,
+        OutgoingMentionSegment,
+        OutgoingTextSegment,
+    ]
+    assert segments[0].text == "[CQ:at,qq=999] hi "
+    assert segments[1].user_id == 111
+    assert segments[2].text == " ok"
+
+
+def test_tokens_without_validation_metadata_stay_literal() -> None:
+    converter = MilkyOutboundConverter(parse_milky_config({}))
+    message = OutboundMessage(text="[CQ:at,qq=111] hello")
+
+    segments, _ = converter.to_payload(message)
+
+    assert [type(seg) for seg in segments] == [OutgoingTextSegment]
+    assert segments[0].text == "[CQ:at,qq=111] hello"
+
+
+def test_long_text_split_never_cuts_a_mention_token() -> None:
+    converter = MilkyOutboundConverter(parse_milky_config({"max_text_length": 5}))
+    message = OutboundMessage(
+        text="aaaaaabbb[CQ:at,qq=1]cc",
+        extra={"milky_mention_ids": ["1"]},
+    )
+
+    segments, _ = converter.to_payload(message)
+
+    assert [type(seg) for seg in segments] == [
+        OutgoingTextSegment,
+        OutgoingTextSegment,
+        OutgoingMentionSegment,
+        OutgoingTextSegment,
+    ]
+    assert segments[0].text == "aaaaa"
+    assert segments[1].text == "abbb"
+    assert segments[3].text == "cc"
+
+
+def test_extra_raw_segment_supports_mention_type() -> None:
+    converter = MilkyOutboundConverter(parse_milky_config({}))
+    message = OutboundMessage(
+        text="",
+        extra={
+            "milky_segments": [
+                {"type": "mention", "data": {"user_id": 314}},
+            ]
+        },
+    )
+
+    segments, _ = converter.to_payload(message)
+
+    assert isinstance(segments[0], OutgoingMentionSegment)
+    assert segments[0].user_id == 314
+
+
+def test_fallback_text_renders_mention_as_plain_at() -> None:
+    text = fallback_text_for_segments(
+        [
+            OutgoingMentionSegment(user_id=271),
+            OutgoingTextSegment(text="看一下"),
+        ]
+    )
+
+    assert text == "@271\n看一下"
+
+
+def test_mention_is_not_a_rich_segment() -> None:
+    assert has_rich_segments([OutgoingMentionSegment(user_id=1)]) is False
+    assert has_rich_segments([OutgoingImageSegment(uri="file:///a")]) is True

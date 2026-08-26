@@ -44,6 +44,7 @@ from nahida_bot.channels.milky.segments import (
     parse_incoming_segments,
 )
 from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.outbound_mentions import extract_mention_ids, parse_outbound_parts
 from nahida_bot.core.events import (
     MessageObserved,
     MessagePayload,
@@ -69,6 +70,10 @@ if TYPE_CHECKING:
     from nahida_bot.plugins.manifest import PluginManifest
 
 logger = structlog.get_logger(__name__)
+
+# Upper bound for the membership-check cache used by outbound mention
+# validation; entries expire by TTL long before this is reached in practice.
+_MEMBER_CACHE_MAX = 1024
 
 
 class _PendingFileEntry(TypedDict):
@@ -100,6 +105,11 @@ class MilkyPlugin(Plugin):
         self._self_id = 0
         self._scene_by_peer: OrderedDict[str, str] = OrderedDict()
         self._file_context_cache: OrderedDict[str, dict[str, object]] = OrderedDict()
+        # (group_id, user_id) -> (is_member, expires_at monotonic), caching
+        # membership checks for outbound mention validation.
+        self._member_cache: OrderedDict[tuple[int, int], tuple[bool, float]] = (
+            OrderedDict()
+        )
         # Pending file deliveries per chat (key "scene:chat_id"), awaiting a
         # follow-up message that triggers the agent so the file context can be
         # injected into the same turn. Entries expire after
@@ -914,6 +924,8 @@ class MilkyPlugin(Plugin):
                 channel=self.channel_id,
             )
             return ""
+        if scene == "group" and self.config.outbound_mentions_enabled and message.text:
+            message = await self._with_validated_mentions(client, peer_id, message)
         segments, file_uploads = converter.to_payload(message)
         logger.debug(
             "milky.send_payload_prepared",
@@ -1015,6 +1027,88 @@ class MilkyPlugin(Plugin):
         if scene == "group":
             return await client.send_group_message(peer_id, segments)
         return await client.send_private_message(peer_id, segments)
+
+    async def _with_validated_mentions(
+        self,
+        client: MilkyClient,
+        group_id: int,
+        message: OutboundMessage,
+    ) -> OutboundMessage:
+        """Validate mention tokens in text against current group membership.
+
+        Targets that pass are recorded in ``extra["milky_mention_ids"]`` for
+        the outbound converter; every other token stays as literal text, so a
+        hallucinated, mistyped, or stale id degrades to text instead of a
+        broken mention segment.
+        """
+        if not any(part.is_mention for part in parse_outbound_parts(message.text)):
+            return message
+        requested = extract_mention_ids(
+            message.text, limit=self.config.max_mentions_per_message
+        )
+        validated = [
+            user_id
+            for user_id in requested
+            if await self._is_group_member(client, group_id, int(user_id))
+        ]
+        degraded = [
+            part.user_id
+            for part in parse_outbound_parts(message.text)
+            if part.is_mention and part.user_id not in validated
+        ]
+        logger.info(
+            "milky.mention_outbound",
+            channel=self.channel_id,
+            group_id=group_id,
+            requested_ids=requested,
+            validated_ids=validated,
+            degraded_ids=list(dict.fromkeys(degraded)),
+        )
+        if not validated or "milky_mention_ids" in message.extra:
+            return message
+        extra = dict(message.extra)
+        extra["milky_mention_ids"] = validated
+        return OutboundMessage(
+            text=message.text,
+            reply_to=message.reply_to,
+            extra=extra,
+            attachments=message.attachments,
+        )
+
+    async def _is_group_member(
+        self, client: MilkyClient, group_id: int, user_id: int
+    ) -> bool:
+        """Whether user_id currently belongs to group_id, cached briefly."""
+        key = (group_id, user_id)
+        now = time.monotonic()
+        cached = self._member_cache.get(key)
+        if cached is not None:
+            is_member, expires_at = cached
+            if now < expires_at:
+                self._member_cache.move_to_end(key)
+                return is_member
+        try:
+            await client.get_group_member_info(group_id=group_id, user_id=user_id)
+            is_member = True
+        except MilkyClientError as exc:
+            # Not a member, or the lookup itself failed — either way the
+            # mention is not proven valid, so it stays literal text.
+            logger.warning(
+                "milky.mention_member_check_failed",
+                channel=self.channel_id,
+                group_id=group_id,
+                user_id=user_id,
+                error=str(exc),
+            )
+            is_member = False
+        self._member_cache[key] = (
+            is_member,
+            now + self.config.mention_member_cache_seconds,
+        )
+        self._member_cache.move_to_end(key)
+        while len(self._member_cache) > _MEMBER_CACHE_MAX:
+            self._member_cache.popitem(last=False)
+        return is_member
 
     def _ensure_client(self) -> MilkyClient:
         if self._client is None:

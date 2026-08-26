@@ -85,6 +85,25 @@ ENVELOPE_INSTRUCTION = (
     "text only."
 )
 
+MENTION_INSTRUCTION = (
+    "## Mentioning Users\n"
+    "To direct your reply at a specific group member (and notify them), write "
+    "an at-token inline in your message text:\n"
+    "[CQ:at,qq=<user_id>]\n"
+    "Rules:\n"
+    "- Use the numeric user ID exactly as shown in context: the id in "
+    'parentheses in the sender line (e.g. sender "Alice(12345)"), or the id '
+    "inside at-tokens you received. Never invent or guess IDs.\n"
+    "- If you do not know the user's ID, address them by name in plain text "
+    "instead.\n"
+    "- Group chats only; in private chats just use names.\n"
+    "- Use sparingly: at most 3 tokens per message, usually 1, and only when "
+    "directing the reply at someone or when their attention is genuinely "
+    "needed.\n"
+    "- In scheduled or proactive runs be extra conservative — a mention "
+    "notifies the person."
+)
+
 SILENT_REPLY_INSTRUCTION = (
     "## Silent Replies\n"
     "Use NO_REPLY ONLY when no user-visible reply is required.\n"

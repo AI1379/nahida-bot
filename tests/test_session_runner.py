@@ -182,3 +182,28 @@ async def test_run_forwards_ordered_transcript_from_done_event() -> None:
     # Before the fix this was the default empty list.
     assert result.ordered_transcript
     assert result.ordered_transcript[0].content == "hi"
+
+
+def test_build_system_prompt_injects_mention_instruction_for_capable_channel() -> None:
+    from nahida_bot.core.message_context import MENTION_INSTRUCTION
+    from nahida_bot.core.session_runner import SessionRunner
+    from nahida_bot.plugins.base import MessageContext
+
+    runner = SessionRunner()
+    context = MessageContext(channel="milky", chat_type="group", chat_id="1")
+
+    prompt = runner._build_system_prompt("base", context)
+
+    assert MENTION_INSTRUCTION in prompt
+
+
+def test_build_system_prompt_skips_mention_instruction_for_other_platforms() -> None:
+    from nahida_bot.core.session_runner import SessionRunner
+    from nahida_bot.plugins.base import MessageContext
+
+    runner = SessionRunner()
+    context = MessageContext(channel="telegram", chat_type="group", chat_id="1")
+
+    prompt = runner._build_system_prompt("base", context)
+
+    assert "[CQ:at,qq=" not in prompt

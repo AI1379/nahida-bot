@@ -13,6 +13,7 @@ from nahida_bot.channels.milky.segments import (
     OutgoingForwardSegment,
     OutgoingForwardedMessage,
     OutgoingImageSegment,
+    OutgoingMentionSegment,
     OutgoingRecordSegment,
     OutgoingReplySegment,
     OutgoingSegment,
@@ -20,6 +21,7 @@ from nahida_bot.channels.milky.segments import (
     OutgoingVideoSegment,
 )
 from nahida_bot.core.chat_address import ChatAddress, normalize_target_type
+from nahida_bot.core.outbound_mentions import parse_outbound_parts
 from nahida_bot.plugins.base import Attachment, OutboundMessage
 
 MessageScene = Literal["friend", "group"]
@@ -47,8 +49,29 @@ class MilkyOutboundConverter:
             if reply_seq is not None:
                 segments.append(OutgoingReplySegment(reply_seq))
 
-        for chunk in self._split_text(message.text):
-            segments.append(OutgoingTextSegment(chunk))
+        # Mention tokens validated by the plugin (via group-membership check)
+        # become real mention segments; everything else stays literal text so
+        # a wrong or hallucinated user id never breaks the send. Adjacent
+        # literal chunks are merged before splitting so degraded tokens read
+        # as one continuous text.
+        mention_ids = _validated_mention_ids(message.extra)
+        literal_chunks: list[str] = []
+
+        def _flush_literal() -> None:
+            if not literal_chunks:
+                return
+            joined = "".join(literal_chunks)
+            literal_chunks.clear()
+            for chunk in self._split_text(joined):
+                segments.append(OutgoingTextSegment(chunk))
+
+        for part in parse_outbound_parts(message.text):
+            if part.is_mention and part.user_id in mention_ids:
+                _flush_literal()
+                segments.append(OutgoingMentionSegment(user_id=int(part.user_id)))
+            else:
+                literal_chunks.append(part.raw if part.is_mention else part.text)
+        _flush_literal()
 
         for attachment in message.attachments:
             media_segment = self._attachment_to_media_segment(attachment)
@@ -139,6 +162,8 @@ def fallback_text_for_segments(segments: list[OutgoingSegment]) -> str:
     for segment in segments:
         if isinstance(segment, OutgoingTextSegment):
             parts.append(segment.text)
+        elif isinstance(segment, OutgoingMentionSegment):
+            parts.append(f"@{segment.user_id}")
         elif isinstance(segment, OutgoingImageSegment):
             parts.append(f"[Image: {segment.uri}]")
         elif isinstance(segment, OutgoingRecordSegment):
@@ -153,7 +178,10 @@ def fallback_text_for_segments(segments: list[OutgoingSegment]) -> str:
 def has_rich_segments(segments: list[OutgoingSegment]) -> bool:
     """Whether segments include non-text content likely to need fallback."""
     return any(
-        not isinstance(segment, (OutgoingTextSegment, OutgoingReplySegment))
+        not isinstance(
+            segment,
+            (OutgoingTextSegment, OutgoingReplySegment, OutgoingMentionSegment),
+        )
         for segment in segments
     )
 
@@ -275,6 +303,14 @@ def _scene_and_peer_from_address(address: ChatAddress) -> tuple[MessageScene, in
     )
 
 
+def _validated_mention_ids(extra: dict[str, object]) -> frozenset[str]:
+    """Read mention ids the plugin validated for this message, if any."""
+    raw = extra.get("milky_mention_ids")
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(str(item) for item in raw if str(item))
+
+
 def _extra_segments(extra: dict[str, object]) -> list[OutgoingSegment]:
     segments: list[OutgoingSegment] = []
 
@@ -303,6 +339,9 @@ def _segment_from_dict(raw: dict[str, object]) -> OutgoingSegment | None:
 
     if segment_type == "text":
         return OutgoingTextSegment(str(data.get("text", "")))
+    if segment_type == "mention":
+        user_id = _parse_int(str(data.get("user_id", "")))
+        return OutgoingMentionSegment(user_id) if user_id is not None else None
     if segment_type == "reply":
         message_seq = _parse_int(str(data.get("message_seq", "")))
         return OutgoingReplySegment(message_seq) if message_seq is not None else None
