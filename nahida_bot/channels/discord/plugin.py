@@ -55,6 +55,28 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Deferred-interaction plumbing: a slash-command reply must reach Discord
+# through the interaction followup (or at least resolve the "Bot is
+# thinking…" placeholder), otherwise the client eventually reports
+# "The application did not respond" once the token expires.
+_FOLLOWUP_TOKEN_TTL_SECONDS = 14 * 60  # Discord tokens live 15 minutes
+_THINKING_WATCHDOG_SECONDS = 10 * 60  # clean up never-answered placeholders
+_PENDING_INTERACTION_CAP = 32
+_INTERACTION_REPLY_RE = re.compile(r"^interaction-(\d+)$")
+
+
+class _PendingInteraction:
+    """A deferred interaction whose reply has not been delivered yet."""
+
+    __slots__ = ("object", "registered_at", "watchdog")
+
+    def __init__(
+        self, obj: Any, registered_at: float, watchdog: asyncio.Task[None]
+    ) -> None:
+        self.object = obj
+        self.registered_at = registered_at
+        self.watchdog = watchdog
+
 
 class DiscordPlugin(Plugin):
     """Discord Bot channel using a discord.py gateway transport."""
@@ -67,6 +89,7 @@ class DiscordPlugin(Plugin):
         self._gateway_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._converter = DiscordMessageConverter()
         self._attachment_urls = AttachmentUrlCache()
+        self._pending_interactions: dict[str, _PendingInteraction] = {}
 
     @property
     def channel_id(self) -> str:
@@ -139,6 +162,9 @@ class DiscordPlugin(Plugin):
             except asyncio.CancelledError:
                 pass
             self._gateway_task = None
+        for entry in self._pending_interactions.values():
+            entry.watchdog.cancel()
+        self._pending_interactions.clear()
         if self._transport is not None:
             await self._transport.close()
         logger.info("discord.stopped")
@@ -372,8 +398,69 @@ class DiscordPlugin(Plugin):
         try:
             await self._transport.defer_interaction(interaction["_object"])
         except Exception:  # noqa: BLE001 - already acked or expired
-            logger.debug("discord.interaction_defer_failed")
+            logger.warning("discord.interaction_defer_failed")
+        else:
+            self._register_pending_interaction(interaction)
         await self.handle_inbound_event({"kind": "message", "message": message})
+
+    # ── Deferred-interaction followup routing ────────────
+
+    def _register_pending_interaction(self, interaction: dict[str, Any]) -> None:
+        """Track a deferred interaction until its reply is delivered."""
+        key = str(interaction.get("id", ""))
+        obj = interaction.get("_object")
+        if not key or obj is None or self._transport is None:
+            return
+        self._drop_expired_pending_interactions()
+        while len(self._pending_interactions) >= _PENDING_INTERACTION_CAP:
+            oldest = next(iter(self._pending_interactions))
+            self._discard_pending_interaction(oldest)
+        watchdog = asyncio.create_task(
+            self._resolve_orphaned_interaction(key, _THINKING_WATCHDOG_SECONDS)
+        )
+        self._pending_interactions[key] = _PendingInteraction(
+            obj, time.monotonic(), watchdog
+        )
+
+    async def _resolve_orphaned_interaction(self, key: str, delay: float) -> None:
+        """Delete the thinking placeholder of an interaction nobody answered."""
+        await asyncio.sleep(delay)
+        entry = self._pending_interactions.pop(key, None)
+        if entry is None or self._transport is None:
+            return
+        try:
+            await self._transport.delete_interaction_response(entry.object)
+        except Exception:  # noqa: BLE001 - token may already be gone
+            logger.debug("discord.interaction_watchdog_failed", interaction_id=key)
+
+    def _take_pending_interaction(self, reply_to: str) -> Any | None:
+        """Consume the pending interaction a reply targets, if still usable."""
+        match = _INTERACTION_REPLY_RE.match(reply_to or "")
+        if match is None:
+            return None
+        key = match.group(1)
+        entry = self._pending_interactions.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() - entry.registered_at > _FOLLOWUP_TOKEN_TTL_SECONDS:
+            self._discard_pending_interaction(key)
+            return None
+        self._discard_pending_interaction(key)
+        return entry.object
+
+    def _discard_pending_interaction(self, key: str) -> None:
+        entry = self._pending_interactions.pop(key, None)
+        if entry is not None:
+            entry.watchdog.cancel()
+
+    def _drop_expired_pending_interactions(self) -> None:
+        now = time.monotonic()
+        for key in [
+            key
+            for key, entry in self._pending_interactions.items()
+            if now - entry.registered_at > _FOLLOWUP_TOKEN_TTL_SECONDS
+        ]:
+            self._discard_pending_interaction(key)
 
     # ── Application command sync ─────────────────────────
 
@@ -412,31 +499,41 @@ class DiscordPlugin(Plugin):
         Discord renders Markdown natively, so outbound text is passed
         through unchanged and only split at the 2000-character limit.
         Reasoning content is sent as a blockquoted message first.
+        A slash-command reply (``reply_to`` is an interaction id) sends
+        its first chunk through the interaction followup so Discord's
+        "Bot is thinking…" placeholder resolves into the actual reply.
         """
         assert self._transport is not None
         transport = self._transport
         last_msg_id = ""
+        followup_object = self._take_pending_interaction(message.reply_to)
+
+        async def _send_text_chunk(text: str, reply_to: str = "") -> str:
+            nonlocal followup_object
+            if followup_object is not None:
+                interaction_object, followup_object = followup_object, None
+                try:
+                    return await self._send_with_retry(
+                        lambda: transport.send_followup(interaction_object, text)
+                    )
+                except Exception:  # noqa: BLE001 - token may be gone; deliver anyway
+                    logger.warning("discord.followup_send_failed")
+            return await self._send_with_retry(
+                lambda: transport.send_text(target, text, reply_to=reply_to)
+            )
 
         if message.reasoning:
             quoted = "\n".join(
                 f"> {line}" for line in message.reasoning.strip().splitlines()
             )
             for chunk in _split_text(quoted, self.config.message_max_length):
-                sent_id = await self._send_with_retry(
-                    lambda text=chunk: transport.send_text(target, text)
-                )
-                last_msg_id = sent_id
+                last_msg_id = await _send_text_chunk(chunk)
 
         if message.text:
             chunks = _split_text(message.text, self.config.message_max_length)
             for i, chunk in enumerate(chunks):
                 reply_to = message.reply_to if i == 0 else ""
-                sent_id = await self._send_with_retry(
-                    lambda text=chunk, ref=reply_to: transport.send_text(
-                        target, text, reply_to=ref
-                    )
-                )
-                last_msg_id = sent_id
+                last_msg_id = await _send_text_chunk(chunk, reply_to=reply_to)
 
         for attachment in message.attachments:
             sent_id = await self._send_attachment(target, attachment)

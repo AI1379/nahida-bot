@@ -135,6 +135,14 @@ def _stringify_option_value(value: Any) -> str:
     return str(value)
 
 
+def parse_snowflake(value: str) -> int | None:
+    """Parse a Discord snowflake id, or None for synthetic/non-numeric ids."""
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 class _Client(discord.Client):
     """Gateway client that forwards every message as a dict event."""
 
@@ -228,9 +236,14 @@ class DiscordTransport:
         channel = await self._resolve_channel(target)
         kwargs: dict[str, Any] = {"content": text}
         if reply_to:
-            kwargs["reference"] = discord.MessageReference(
-                message_id=int(reply_to), channel_id=channel.id
-            )
+            # Synthetic ids (e.g. "interaction-…") are not real message ids;
+            # quoting them is impossible, so the reference is dropped rather
+            # than failing the whole send.
+            message_id = parse_snowflake(reply_to)
+            if message_id is not None:
+                kwargs["reference"] = discord.MessageReference(
+                    message_id=message_id, channel_id=channel.id
+                )
         message = await channel.send(**kwargs)
         return str(message.id)
 
@@ -286,6 +299,15 @@ class DiscordTransport:
     async def defer_interaction(self, interaction_object: Any) -> None:
         """Ack a command interaction (holds Discord's 3s deadline)."""
         await interaction_object.response.defer(thinking=True)
+
+    async def send_followup(self, interaction_object: Any, text: str) -> str:
+        """Deliver the response of a deferred interaction (resolves thinking)."""
+        message = await interaction_object.followup.send(text)
+        return str(message.id)
+
+    async def delete_interaction_response(self, interaction_object: Any) -> None:
+        """Delete a deferred interaction's leftover placeholder response."""
+        await interaction_object.delete_original_response()
 
     async def respond_autocomplete(
         self, interaction_object: Any, choices: list[dict[str, str]]

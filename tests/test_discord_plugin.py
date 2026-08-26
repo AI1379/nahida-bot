@@ -12,8 +12,13 @@ from unittest.mock import patch
 import pytest
 
 from nahida_bot.channels.discord.config import DiscordPluginConfig
-from nahida_bot.channels.discord.plugin import DiscordPlugin, _split_text
+from nahida_bot.channels.discord.plugin import (
+    DiscordPlugin,
+    _FOLLOWUP_TOKEN_TTL_SECONDS,
+    _split_text,
+)
 from nahida_bot.core.events import MessageObserved, MessageReceived
+from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.plugins.manifest import PluginManifest
 
 from .helpers import RecordingMockBotAPI
@@ -89,6 +94,10 @@ class FakeTransport:
         self.sent_files: list[dict[str, str]] = []
         self.text_errors: list[Exception] = []
         self.deferred_interactions: list[str] = []
+        self.defer_errors: list[Exception] = []
+        self.followup_sends: list[tuple[str, str]] = []
+        self.followup_errors: list[Exception] = []
+        self.deleted_responses: list[str] = []
         self.autocomplete_responses: list[tuple[str, list[dict[str, str]]]] = []
         self.synced_commands: dict[str, list[dict[str, Any]]] = {}
         self.known_guilds: list[str] = []
@@ -105,7 +114,18 @@ class FakeTransport:
         self.synced_commands[guild_id] = payload
 
     async def defer_interaction(self, interaction_object: Any) -> None:
+        if self.defer_errors:
+            raise self.defer_errors.pop(0)
         self.deferred_interactions.append(str(interaction_object.id))
+
+    async def send_followup(self, interaction_object: Any, text: str) -> str:
+        if self.followup_errors:
+            raise self.followup_errors.pop(0)
+        self.followup_sends.append((str(interaction_object.id), text))
+        return f"followup-{interaction_object.id}"
+
+    async def delete_interaction_response(self, interaction_object: Any) -> None:
+        self.deleted_responses.append(str(interaction_object.id))
 
     async def respond_autocomplete(
         self, interaction_object: Any, choices: list[dict[str, str]]
@@ -718,6 +738,115 @@ class TestDiscordSlashCommandInvocation:
 
         assert api.published_events == []
         assert transport.autocomplete_responses == []
+
+
+class TestDiscordSlashCommandReply:
+    async def test_command_reply_delivered_via_followup(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event())
+
+        sent_id = await plugin.send_message(
+            "111", OutboundMessage(text="done", reply_to="interaction-5001")
+        )
+
+        assert transport.followup_sends == [("5001", "done")]
+        assert transport.sent_texts == []
+        assert sent_id == "followup-5001"
+
+    async def test_followup_failure_falls_back_to_channel_send(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event())
+        transport.followup_errors.append(RuntimeError("unknown interaction"))
+
+        sent_id = await plugin.send_message(
+            "111", OutboundMessage(text="done", reply_to="interaction-5001")
+        )
+
+        assert transport.followup_sends == []
+        assert transport.sent_texts == [
+            {"target": "111", "text": "done", "reply_to": "interaction-5001"}
+        ]
+        assert sent_id == "1101"
+
+    async def test_only_first_chunk_uses_followup(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event())
+
+        await plugin.send_message(
+            "111", OutboundMessage(text="x" * 2500, reply_to="interaction-5001")
+        )
+
+        assert transport.followup_sends == [("5001", "x" * 2000)]
+        assert transport.sent_texts == [
+            {"target": "111", "text": "x" * 500, "reply_to": ""}
+        ]
+
+    async def test_expired_interaction_falls_back_to_channel_send(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event())
+        entry = plugin._pending_interactions["5001"]
+        entry.registered_at -= _FOLLOWUP_TOKEN_TTL_SECONDS + 1
+
+        await plugin.send_message(
+            "111", OutboundMessage(text="done", reply_to="interaction-5001")
+        )
+
+        assert transport.followup_sends == []
+        assert len(transport.sent_texts) == 1
+
+    async def test_reply_without_pending_interaction_sends_normally(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+
+        # A stale interaction id (e.g. after restart) must not break delivery.
+        await plugin.send_message(
+            "111", OutboundMessage(text="done", reply_to="interaction-5001")
+        )
+
+        assert transport.followup_sends == []
+        assert len(transport.sent_texts) == 1
+
+    async def test_orphaned_interaction_watchdog_deletes_placeholder(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        with patch(
+            "nahida_bot.channels.discord.plugin._THINKING_WATCHDOG_SECONDS", 0.05
+        ):
+            await plugin.handle_inbound_event(_interaction_event())
+            await asyncio.sleep(0.15)
+
+        assert transport.deleted_responses == ["5001"]
+        assert plugin._pending_interactions == {}
+
+    async def test_defer_failure_registers_no_pending_interaction(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        transport.defer_errors.append(RuntimeError("already acknowledged"))
+
+        await plugin.handle_inbound_event(_interaction_event())
+
+        assert plugin._pending_interactions == {}
+
+    async def test_consumed_reply_cancels_watchdog(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event())
+        watchdog = plugin._pending_interactions["5001"].watchdog
+
+        await plugin.send_message(
+            "111", OutboundMessage(text="done", reply_to="interaction-5001")
+        )
+        await asyncio.sleep(0)
+
+        assert plugin._pending_interactions == {}
+        assert watchdog.cancelled()
+
+    async def test_disable_cancels_watchdogs(self) -> None:
+        api, plugin, transport = await _loaded_plugin()
+        await plugin.handle_inbound_event(_interaction_event())
+        watchdog = plugin._pending_interactions["5001"].watchdog
+
+        await plugin.on_disable()
+        await asyncio.sleep(0)
+
+        assert plugin._pending_interactions == {}
+        assert watchdog.cancelled()
 
 
 class TestDiscordAutocomplete:
