@@ -307,8 +307,14 @@ class BotAPI(Protocol):
         handler: Callable[..., Awaitable[str]],
         *,
         requires_admin: bool = False,
+        scope: str = "",
     ) -> None:
-        """Register an LLM tool, optionally requiring an administrator sender."""
+        """Register an LLM tool.
+
+        ``requires_admin`` gates the tool behind the admin set; ``scope``
+        selects an alternative visibility mode (e.g. "chat_domain" lets
+        non-admin senders use the tool within their chat trust domain).
+        """
         ...
 
     def unregister_tool(self, name: str) -> bool:
@@ -595,6 +601,7 @@ class BotAPI(Protocol):
         *,
         chat_address: str = "",
         limit: int = 8,
+        allowed_chats: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Intent-triggered cross-chat recall fused across retrieval sources.
 
@@ -603,6 +610,9 @@ class BotAPI(Protocol):
         ``scope_type`` / ``scope_id`` / ``sensitivity`` / ``role`` /
         ``session_id`` / ``chat_key`` / ``created_at`` so the calling tool can
         render provenance. Results are soft context only.
+
+        ``allowed_chats`` narrows the raw-turn leg to that chat set
+        (chat-domain scoped, non-admin senders); ``None`` spans all sessions.
         """
         ...
 

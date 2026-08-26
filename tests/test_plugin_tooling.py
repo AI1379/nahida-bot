@@ -22,8 +22,11 @@ class _RecordingRegistrar:
         handler: Any,
         *,
         requires_admin: bool = False,
+        scope: str = "",
     ) -> None:
-        self.tools.append((name, description, parameters, handler, requires_admin))
+        self.tools.append(
+            (name, description, parameters, handler, requires_admin, scope)
+        )
 
 
 async def _handler(value: str) -> str:
@@ -47,5 +50,5 @@ def test_register_tool_definitions_preserves_declaration_order() -> None:
     register_tool_definitions(registrar, definitions)
 
     assert [tool[0] for tool in registrar.tools] == ["first", "second"]
-    assert registrar.tools[0][1:] == ("First", empty_schema, _handler, False)
-    assert registrar.tools[1][-1] is True
+    assert registrar.tools[0][1:] == ("First", empty_schema, _handler, False, "")
+    assert registrar.tools[1][1:] == ("Second", empty_schema, _handler, True, "")

@@ -845,6 +845,11 @@ class SessionRunner:
         run_kwargs["sender_account_key"] = (
             session_context.sender_account_key if session_context is not None else ""
         )
+        run_kwargs["chat_address"] = (
+            session_context.chat_address.chat_key
+            if session_context is not None and session_context.chat_address is not None
+            else ""
+        )
         if request.stop_event is not None:
             run_kwargs["stop_event"] = request.stop_event
         runtime.run_kwargs = run_kwargs

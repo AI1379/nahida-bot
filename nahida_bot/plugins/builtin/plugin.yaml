@@ -7,6 +7,9 @@ enabled: true
 config:
   allow_external_attachment_paths: false
   external_attachment_roots: []
+  # Read-only directories searchable by the search_files tool (available to
+  # every sender, no shell). Empty disables the tool entirely.
+  file_search_roots: []
 permissions:
   filesystem:
     read:
@@ -43,6 +46,8 @@ capabilities:
       description: Search matching turns across chats and sessions
     - name: find_chat
       description: Resolve a known chat name to a typed chat address
+    - name: search_files
+      description: Case-insensitive content search over configured read-only roots
     - name: exec
       description: Execute a shell command and return stdout/stderr
     - name: web_fetch

@@ -395,6 +395,12 @@ class IdentityConfig(BaseModel):
     # management). Decoupled from ``people``: declaring someone a Person does NOT
     # make them an admin. Only consulted when ``enabled`` is true.
     admins: list[IdentityAccountSeed] = Field(default_factory=list)
+    # Chat trust domains: named sets of chat addresses (e.g. a main QQ group
+    # plus its satellite groups) that share read visibility for chat-history
+    # tools. Non-admin senders may read/search only within the domain of the
+    # chat they are talking in; chats not listed anywhere are singletons
+    # (current chat only). Runtime editing is tracked in issue #54.
+    chat_domains: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class RouterConfigModel(BaseModel):

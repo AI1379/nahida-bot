@@ -1,9 +1,10 @@
 """Tests for the Phase A action-authorization gate (issue #7).
 
 Covers gate semantics (privileged set, admin check, fail-closed, disabled
-no-op) and the auth/memory decoupling invariant: memory-subsystem code must not
-import or branch on ``identity.authorization`` (person-identity-system.md §2.5,
-docs/design/memory-soft-scope-and-authz.md §4.4).
+no-op), chat-domain scoping (trust domains, scoped tool authorization, allowed
+chat resolution), and the auth/memory decoupling invariant: memory-subsystem
+code must not import or branch on ``identity.authorization``
+(person-identity-system.md §2.5, docs/design/memory-soft-scope-and-authz.md §4.4).
 """
 
 from __future__ import annotations
@@ -14,8 +15,12 @@ import pytest
 
 from nahida_bot.identity.authorization import (
     PRIVILEGED_TOOLS,
+    TOOL_SCOPE_CHAT_DOMAIN,
     AuthorizationGate,
+    ChatDomainIndex,
     NotAuthorized,
+    NotInChatScope,
+    chat_key_from_session_id,
 )
 
 
@@ -100,6 +105,182 @@ def test_enabled_with_empty_admins_is_fail_closed() -> None:
     gate = AuthorizationGate(frozenset(), enabled=True)
     with pytest.raises(NotAuthorized):
         gate.authorize("exec", "milky:1")
+
+
+# --- chat-domain scoping ------------------------------------------------------
+
+
+def _domain_gate() -> AuthorizationGate:
+    return AuthorizationGate(
+        frozenset({"milky:admin"}),
+        enabled=True,
+        domains=ChatDomainIndex(
+            {
+                "main": ["milky:group:100", "milky:group:200"],
+                "other": ["milky:group:300"],
+            }
+        ),
+    )
+
+
+def test_chat_key_from_session_id_strips_suffix() -> None:
+    assert (
+        chat_key_from_session_id("milky:group:833325688:8d738f35")
+        == "milky:group:833325688"
+    )
+    assert chat_key_from_session_id("milky:group:100") == "milky:group:100"
+    assert chat_key_from_session_id("") == ""
+
+
+def test_domain_index_same_domain_semantics() -> None:
+    index = ChatDomainIndex({"main": ["milky:group:100", "milky:group:200"]})
+    # Same chat, domain siblings, unrelated chats, empty values.
+    assert index.same_domain("milky:group:100", "milky:group:100")
+    assert index.same_domain("milky:group:100", "milky:group:200")
+    assert not index.same_domain("milky:group:100", "milky:group:300")
+    assert not index.same_domain("milky:group:100", "")
+    assert not index.same_domain("", "milky:group:100")
+
+
+def test_domain_index_unlisted_chat_is_singleton() -> None:
+    index = ChatDomainIndex({"main": ["milky:group:100"]})
+    assert index.domain_of("milky:group:555") == ""
+    assert index.domain_chats("milky:group:555") == frozenset({"milky:group:555"})
+    assert index.domain_chats("") == frozenset()
+
+
+def test_domain_index_includes_self_and_siblings() -> None:
+    index = ChatDomainIndex({"main": ["milky:group:100", "milky:group:200"]})
+    assert index.domain_chats("milky:group:100") == frozenset(
+        {"milky:group:100", "milky:group:200"}
+    )
+
+
+def test_domain_index_overlap_first_domain_wins() -> None:
+    index = ChatDomainIndex(
+        {"a": ["milky:group:1", "milky:group:2"], "b": ["milky:group:2"]}
+    )
+    assert index.domain_of("milky:group:2") == "a"
+
+
+def test_scoped_tool_allows_domain_sibling_for_non_admin() -> None:
+    gate = _domain_gate()
+    gate.authorize(
+        "read_chat_history",
+        "milky:user",
+        {"chat_address": "milky:group:200"},
+        scope=TOOL_SCOPE_CHAT_DOMAIN,
+        chat_address="milky:group:100",
+    )
+
+
+def test_scoped_tool_current_chat_target_implicit() -> None:
+    gate = _domain_gate()
+    # No explicit target ⇒ "current chat", always in scope.
+    gate.authorize(
+        "read_chat_history",
+        "milky:user",
+        {},
+        scope=TOOL_SCOPE_CHAT_DOMAIN,
+        chat_address="milky:group:100",
+    )
+
+
+def test_scoped_tool_resolves_target_from_session_id() -> None:
+    gate = _domain_gate()
+    gate.authorize(
+        "read_chat_history",
+        "milky:user",
+        {"session_id": "milky:group:200:8d738f35"},
+        scope=TOOL_SCOPE_CHAT_DOMAIN,
+        chat_address="milky:group:100",
+    )
+
+
+def test_scoped_tool_denies_cross_domain_for_non_admin() -> None:
+    gate = _domain_gate()
+    with pytest.raises(NotInChatScope) as exc:
+        gate.authorize(
+            "read_chat_history",
+            "milky:user",
+            {"chat_address": "milky:group:300"},
+            scope=TOOL_SCOPE_CHAT_DOMAIN,
+            chat_address="milky:group:100",
+        )
+    assert exc.value.target_chat == "milky:group:300"
+    assert exc.value.current_chat == "milky:group:100"
+
+
+def test_scoped_tool_denies_other_unlisted_chat_for_non_admin() -> None:
+    gate = _domain_gate()
+    with pytest.raises(NotInChatScope):
+        gate.authorize(
+            "search_chat_history",
+            "milky:user",
+            {"chat_address": "milky:group:555"},
+            scope=TOOL_SCOPE_CHAT_DOMAIN,
+            chat_address="milky:group:100",
+        )
+
+
+def test_scoped_tool_admin_bypasses_domain_check() -> None:
+    gate = _domain_gate()
+    gate.authorize(
+        "read_chat_history",
+        "milky:admin",
+        {"chat_address": "milky:group:300"},
+        scope=TOOL_SCOPE_CHAT_DOMAIN,
+        chat_address="milky:group:100",
+    )
+
+
+def test_scoped_tool_empty_current_chat_fails_closed_on_explicit_target() -> None:
+    gate = _domain_gate()
+    with pytest.raises(NotInChatScope):
+        gate.authorize(
+            "read_chat_history",
+            "milky:user",
+            {"chat_address": "milky:group:100"},
+            scope=TOOL_SCOPE_CHAT_DOMAIN,
+            chat_address="",
+        )
+
+
+def test_scoped_tool_disabled_gate_is_noop() -> None:
+    gate = AuthorizationGate(
+        frozenset(),
+        enabled=False,
+        domains=ChatDomainIndex({"main": ["milky:group:100"]}),
+    )
+    gate.authorize(
+        "read_chat_history",
+        "milky:user",
+        {"chat_address": "milky:group:999"},
+        scope=TOOL_SCOPE_CHAT_DOMAIN,
+        chat_address="milky:group:100",
+    )
+
+
+def test_allowed_chats_for_resolves_domain() -> None:
+    gate = _domain_gate()
+    assert gate.allowed_chats_for("milky:group:100") == frozenset(
+        {"milky:group:100", "milky:group:200"}
+    )
+    assert gate.allowed_chats_for("milky:group:555") == frozenset({"milky:group:555"})
+    assert gate.allowed_chats_for("") == frozenset()
+
+
+def test_privileged_check_takes_precedence_over_scope() -> None:
+    # A tool that is both privileged and scoped is gated by the admin rule.
+    gate = _domain_gate()
+    with pytest.raises(NotAuthorized):
+        gate.authorize(
+            "exec",
+            "milky:user",
+            {"chat_address": "milky:group:200"},
+            scope=TOOL_SCOPE_CHAT_DOMAIN,
+            chat_address="milky:group:100",
+        )
 
 
 # --- auth/memory decoupling invariant ---------------------------------------

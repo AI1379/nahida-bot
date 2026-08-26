@@ -419,7 +419,13 @@ class ConversationTurnsRetrievalAdapter:
         self._memory_store = memory_store
 
     async def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
-        """Search raw turns across sessions, newest first."""
+        """Search raw turns across sessions, newest first.
+
+        Multiple chat scopes are treated as an OR filter (chat-domain
+        narrowing): each scope is searched separately and the per-scope
+        newest-first lists are interleaved round-robin, so no timestamp
+        comparison across records is needed.
+        """
         query = request.query.strip()
         limit = max(0, int(request.limit))
         if not query or limit <= 0:
@@ -428,18 +434,39 @@ class ConversationTurnsRetrievalAdapter:
         if not callable(search_turns):
             return []
         search_turns = cast(Any, search_turns)
-        chat_address = self._chat_filter(request)
-        records = await search_turns(query, chat_address=chat_address, limit=limit)
-        return [_turn_record_to_retrieval(record) for record in list(records)]
+        chat_filters = self._chat_filters(request)
+        if not chat_filters:
+            records = list(await search_turns(query, chat_address="", limit=limit))
+        elif len(chat_filters) == 1:
+            records = list(
+                await search_turns(query, chat_address=chat_filters[0], limit=limit)
+            )
+        else:
+            buckets = [
+                list(await search_turns(query, chat_address=chat, limit=limit))
+                for chat in chat_filters
+            ]
+            records = []
+            for rank in range(limit):
+                for bucket in buckets:
+                    if rank < len(bucket):
+                        records.append(bucket[rank])
+                if len(records) >= limit:
+                    break
+            records = records[:limit]
+        return [_turn_record_to_retrieval(record) for record in records]
 
     @staticmethod
-    def _chat_filter(request: RetrievalRequest) -> str:
-        """Resolve an optional chat filter from the request's chat scopes."""
+    def _chat_filters(request: RetrievalRequest) -> list[str]:
+        """Resolve chat filters from the request's chat scopes (OR semantics)."""
         scopes = request.scopes or ((request.scope,) if request.scope else ())
-        for scope in scopes:
-            if scope.scope_type == SCOPE_TYPE_CHAT and scope.scope_id:
-                return scope.scope_id
-        return ""
+        filters = [
+            scope.scope_id
+            for scope in scopes
+            if scope.scope_type == SCOPE_TYPE_CHAT and scope.scope_id
+        ]
+        # Dedupe while preserving order.
+        return list(dict.fromkeys(filters))
 
 
 def _base_chat_key(session_id: str) -> str:

@@ -409,3 +409,132 @@ def test_sanitize_truncates_long_content() -> None:
     sanitized = HistoryTools.sanitize_turn("word " * 2000)
     assert len(sanitized) <= 8000 + len("...")
     assert sanitized.endswith("...")
+
+
+# ── Chat-domain narrowed history tools ────────────────────────────
+
+
+def _history_api_mock():
+    from unittest.mock import AsyncMock, MagicMock
+
+    api = MagicMock()
+    api.search_chat_history = AsyncMock(return_value=[])
+    api.search_chats = AsyncMock(return_value=[])
+    api.get_chat_names = AsyncMock(return_value={})
+    return api
+
+
+def _row(chat: str, content: str, created_at: str) -> dict[str, object]:
+    return {
+        "session_id": chat,
+        "role": "user",
+        "content": content,
+        "created_at": created_at,
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_aggregates_allowed_chats_newest_first() -> None:
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
+
+    api = _history_api_mock()
+    rows_by_chat = {
+        "milky:group:100": [
+            _row("milky:group:100", "older main hit", "2026-08-26T01:00:00")
+        ],
+        "milky:group:200": [
+            _row("milky:group:200", "newer sibling hit", "2026-08-26T02:00:00")
+        ],
+    }
+
+    async def fake_search(query, *, chat_address="", role="", limit=20):
+        return rows_by_chat.get(chat_address, [])
+
+    api.search_chat_history.side_effect = fake_search
+    tools = HistoryTools(api)
+
+    out = await tools.search(
+        "topic", allowed_chats=["milky:group:100", "milky:group:200"]
+    )
+
+    assert api.search_chat_history.await_count == 2
+    assert out.index("newer sibling hit") < out.index("older main hit")
+
+
+@pytest.mark.asyncio
+async def test_search_with_empty_allowed_chats_reports_unavailable() -> None:
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
+
+    api = _history_api_mock()
+    tools = HistoryTools(api)
+
+    out = await tools.search("topic", allowed_chats=[])
+
+    assert "unavailable" in out
+    api.search_chat_history.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_with_explicit_chat_keeps_single_call() -> None:
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
+
+    api = _history_api_mock()
+    api.search_chat_history.return_value = [
+        _row("milky:group:200", "sibling hit", "2026-08-26T03:00:00")
+    ]
+    tools = HistoryTools(api)
+
+    await tools.search(
+        "topic",
+        chat_address="milky:group:200",
+        allowed_chats=["milky:group:100", "milky:group:200"],
+    )
+
+    api.search_chat_history.assert_awaited_once()
+    assert (
+        api.search_chat_history.await_args.kwargs["chat_address"] == "milky:group:200"
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_without_allowed_chats_stays_unrestricted() -> None:
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
+
+    api = _history_api_mock()
+    api.search_chat_history.return_value = [
+        _row("milky:group:300", "any chat", "2026-08-26T03:00:00")
+    ]
+    tools = HistoryTools(api)
+
+    out = await tools.search("topic")
+
+    api.search_chat_history.assert_awaited_once()
+    assert api.search_chat_history.await_args.kwargs["chat_address"] == ""
+    assert "any chat" in out
+
+
+@pytest.mark.asyncio
+async def test_find_chat_filters_to_allowed_chats() -> None:
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
+
+    api = _history_api_mock()
+    api.search_chats.return_value = [
+        {
+            "chat_address": "milky:group:100",
+            "display_name": "Main",
+            "platform": "milky",
+            "last_seen_at": "2026-08-26",
+        },
+        {
+            "chat_address": "milky:group:300",
+            "display_name": "Elsewhere",
+            "platform": "milky",
+            "last_seen_at": "2026-08-26",
+        },
+    ]
+    tools = HistoryTools(api)
+
+    out = await tools.find_chat("group", allowed_chats=["milky:group:100"])
+
+    assert "Main" in out
+    assert "Elsewhere" not in out

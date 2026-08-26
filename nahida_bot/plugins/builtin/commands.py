@@ -23,6 +23,7 @@ from nahida_bot.plugins.builtin.tools.context import (
 )
 from nahida_bot.plugins.builtin.tools.cron import CronTools
 from nahida_bot.plugins.builtin.tools.desktop import DesktopTools
+from nahida_bot.plugins.builtin.tools.file_search import FileSearchTools
 from nahida_bot.plugins.builtin.tools.history import HistoryTools
 from nahida_bot.plugins.builtin.tools.memory import MemoryTools
 from nahida_bot.plugins.builtin.tools.message import MessageTools
@@ -56,6 +57,9 @@ class BuiltinCommandsPlugin(Plugin):
         self._agent_tools = AgentTools(api)
         self._cron_tools = CronTools(api)
         self._desktop_tools = DesktopTools(api)
+        self._file_search_tools = FileSearchTools(
+            api, list(manifest.config.get("file_search_roots") or [])
+        )
         self._history_tools = HistoryTools(api)
         self._memory_tools = MemoryTools(api)
         self._message_tools = MessageTools(api, manifest.config)
@@ -69,6 +73,7 @@ class BuiltinCommandsPlugin(Plugin):
         self._register_attachment_tools()
         self._register_memory_tools()
         self._register_history_tools()
+        self._register_file_search_tool()
         self._register_exec_tool()
         self._register_web_fetch_tool()
         self._register_plan_tool()
@@ -199,6 +204,11 @@ class BuiltinCommandsPlugin(Plugin):
 
     def _register_workspace_tools(self) -> None:
         register_tool_definitions(self.api, self._workspace_tools.definitions())
+
+    def _register_file_search_tool(self) -> None:
+        if not self._file_search_tools.configured:
+            return
+        register_tool_definitions(self.api, self._file_search_tools.definitions())
 
     def _register_attachment_tools(self) -> None:
         register_tool_definitions(

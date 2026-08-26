@@ -20,6 +20,7 @@ class ToolRegistrar(Protocol):
         handler: ToolHandler,
         *,
         requires_admin: bool = False,
+        scope: str = "",
     ) -> None: ...
 
 
@@ -32,6 +33,7 @@ class PluginToolDefinition:
     parameters: dict[str, Any]
     handler: ToolHandler
     requires_admin: bool = False
+    scope: str = ""
 
     def register(self, registrar: ToolRegistrar) -> None:
         """Register this definition through the stable plugin API."""
@@ -41,6 +43,7 @@ class PluginToolDefinition:
             self.parameters,
             self.handler,
             requires_admin=self.requires_admin,
+            scope=self.scope,
         )
 
 

@@ -541,6 +541,7 @@ class RealBotAPI:
         handler: Callable[..., Awaitable[str]],
         *,
         requires_admin: bool = False,
+        scope: str = "",
     ) -> None:
         entry = ToolEntry(
             name=name,
@@ -549,6 +550,7 @@ class RealBotAPI:
             handler=handler,
             plugin_id=self._plugin_id,
             requires_admin=requires_admin,
+            scope=scope,
         )
         if name in self._registered_tools:
             if self._registrations_active:
@@ -978,6 +980,7 @@ class RealBotAPI:
         *,
         chat_address: str = "",
         limit: int = 8,
+        allowed_chats: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Intent-triggered cross-chat recall fused across retrieval sources.
 
@@ -990,6 +993,10 @@ class RealBotAPI:
         source/scope/sensitivity so the tool can render provenance; they are
         soft context for the current turn, never a hard injection. Returns []
         when cross-chat recall is disabled or memory is unavailable.
+
+        ``allowed_chats`` narrows the raw-turn leg to that chat set (used for
+        chat-domain scoped, non-admin senders); when it is ``None`` the turns
+        leg spans all sessions. An explicit ``chat_address`` takes precedence.
         """
         if not self._memory_cross_chat_enabled:
             return []
@@ -1013,11 +1020,18 @@ class RealBotAPI:
         )
         from nahida_bot.agent.retrieval.service import RetrievalService
 
-        turn_scopes = (
-            (RetrievalScope(scope_type=SCOPE_TYPE_CHAT, scope_id=chat_address),)
-            if chat_address
-            else ()
-        )
+        if chat_address:
+            turn_scopes = (
+                RetrievalScope(scope_type=SCOPE_TYPE_CHAT, scope_id=chat_address),
+            )
+        elif allowed_chats is not None:
+            turn_scopes = tuple(
+                RetrievalScope(scope_type=SCOPE_TYPE_CHAT, scope_id=chat)
+                for chat in allowed_chats
+                if chat
+            )
+        else:
+            turn_scopes = ()
         service = RetrievalService(
             {
                 "memory": MemoryStoreRetrievalAdapter(

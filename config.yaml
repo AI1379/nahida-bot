@@ -454,6 +454,23 @@ agent_runtime:
 #   admins:
 #     - channel: "milky"
 #       platform_account_id: "123456789"
+#   # Chat trust domains: chats that share read visibility for the history
+#   # tools (read/search_chat_history, find_chat, recall_cross_chat). Non-admin
+#   # senders may read the current chat plus its declared siblings; everything
+#   # else still requires an admin. Chats not listed anywhere are singletons
+#   # (current chat only). Runtime editing is tracked in issue #54.
+#   chat_domains:
+#     main_community:
+#       - "milky:group:833325688"
+#       - "milky:group:732870642"
+
+# ── Builtin plugin overrides（顶层插件 id 覆盖 manifest config）──
+# search_files 只读检索工具的根目录白名单：每个发送者可用（无 shell），
+# 空 = 不注册该工具。路径必须是 bot 可读的只读参考资料目录。
+#
+# builtin-commands:
+#   file_search_roots:
+#     - /home/ecs-user/FrozenProjects
 
 # ── Processes（附属进程监管 / SSH 隧道 / frpc / sidecar）──
 # 把需要在服务端常驻的附属进程统一交给 bot 核心监管。

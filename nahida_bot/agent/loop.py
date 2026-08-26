@@ -8,7 +8,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
@@ -64,6 +64,10 @@ class ToolExecutor(ABC):
     def tool_requires_admin(self, tool_name: str) -> bool:
         """Return whether a registered tool requires an administrator sender."""
         return False
+
+    def tool_scope(self, tool_name: str) -> str:
+        """Return the registered tool's scope mode ("" for none)."""
+        return ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -205,6 +209,9 @@ class _LoopRequest:
     provider_id: str | None
     origin: str
     sender_account_key: str
+    # Chat address of the originating conversation ("" when unavailable), used
+    # by the authorization gate to resolve chat-domain scoped tools.
+    chat_address: str
 
 
 @dataclass(slots=True)
@@ -317,6 +324,7 @@ class AgentLoop:
         provider_id: str | None = None,
         origin: str = "",
         sender_account_key: str = "",
+        chat_address: str = "",
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -341,6 +349,7 @@ class AgentLoop:
             provider_id=provider_id,
             origin=origin,
             sender_account_key=sender_account_key,
+            chat_address=chat_address,
         )
         runtime = await self._start_loop_runtime(request)
         try:
@@ -404,6 +413,7 @@ class AgentLoop:
                     trace=runtime.trace,
                     recorder=runtime.recorder,
                     sender_account_key=request.sender_account_key,
+                    chat_address=request.chat_address,
                 )
                 runtime.tool_messages.extend(executed_messages)
                 runtime.active_turn_messages.extend(executed_messages)
@@ -1291,6 +1301,7 @@ class AgentLoop:
         trace: Trace | None = None,
         recorder: RunRecorder | None = None,
         sender_account_key: str = "",
+        chat_address: str = "",
     ) -> list[ContextMessage]:
         messages: list[ContextMessage] = []
 
@@ -1348,6 +1359,7 @@ class AgentLoop:
                 step=step,
                 trace=trace,
                 sender_account_key=sender_account_key,
+                chat_address=chat_address,
             )
             messages.append(
                 self._build_tool_message(
@@ -1363,6 +1375,34 @@ class AgentLoop:
                 )
         return messages
 
+    def _attach_allowed_chats(
+        self,
+        tool_call: ToolCall,
+        *,
+        sender_account_key: str,
+        chat_address: str,
+    ) -> ToolCall:
+        """Attach the gate-derived allowed chat set to a scoped tool call.
+
+        ``allowed_chats`` is loop-controlled: model-provided values are always
+        discarded first, then the sender's domain set is attached for non-admin
+        senders so scoped handlers can narrow corpus-wide reads (e.g.
+        chat-history search without an explicit chat filter) to the sender's
+        chat domain. Admin callers keep unrestricted access (no key attached).
+        """
+        if self.authorization is None:
+            return tool_call
+        arguments = {
+            key: value
+            for key, value in tool_call.arguments.items()
+            if key != "allowed_chats"
+        }
+        if not self.authorization.is_admin(sender_account_key):
+            arguments["allowed_chats"] = sorted(
+                self.authorization.allowed_chats_for(chat_address)
+            )
+        return replace(tool_call, arguments=arguments)
+
     async def _execute_tool_with_lifecycle(
         self,
         tool_call: ToolCall,
@@ -1370,18 +1410,26 @@ class AgentLoop:
         step: int = 0,
         trace: Trace | None = None,
         sender_account_key: str = "",
+        chat_address: str = "",
     ) -> tuple[ToolExecutionResult, int, str]:
         if self.tool_executor is None:
             raise RuntimeError("Tool executor is not set")
-        # Phase A action-authorization: privileged tools require an admin sender.
-        # Runs at the tool-dispatch boundary, before any execution attempt. A
-        # denied call short-circuits to a clean tool error the model can see;
-        # memory subsystem code is never involved (decoupling, see authz module).
+        # Phase A action-authorization: privileged tools require an admin
+        # sender; chat-domain scoped tools require the target chat to share
+        # the current chat's declared trust domain. Runs at the tool-dispatch
+        # boundary, before any execution attempt. A denied call short-circuits
+        # to a clean tool error the model can see; memory subsystem code is
+        # never involved (decoupling, see authz module).
         if self.authorization is not None:
             # Lazy import avoids the loop → identity → plugins → loop cycle.
-            from nahida_bot.identity.authorization import NotAuthorized
+            from nahida_bot.identity.authorization import (
+                NotAuthorized,
+                NotInChatScope,
+                TOOL_SCOPE_CHAT_DOMAIN,
+            )
 
             try:
+                scope_mode = self.tool_executor.tool_scope(tool_call.name)
                 self.authorization.authorize(
                     tool_call.name,
                     sender_account_key,
@@ -1389,21 +1437,33 @@ class AgentLoop:
                     requires_admin=self.tool_executor.tool_requires_admin(
                         tool_call.name
                     ),
+                    scope=scope_mode,
+                    chat_address=chat_address,
                 )
-            except NotAuthorized:
+                if scope_mode == TOOL_SCOPE_CHAT_DOMAIN:
+                    tool_call = self._attach_allowed_chats(
+                        tool_call,
+                        sender_account_key=sender_account_key,
+                        chat_address=chat_address,
+                    )
+            except (NotAuthorized, NotInChatScope) as exc:
                 logger.warning(
                     "agent_loop.tool_not_authorized",
                     trace_id=trace.trace_id if trace else "",
                     step=step,
                     tool_name=tool_call.name,
                     sender_account_key=sender_account_key,
+                    chat_address=chat_address,
+                    error=str(exc),
                 )
                 return (
                     ToolExecutionResult.error(
                         code="not_authorized",
                         message=(
-                            f"Tool '{tool_call.name}' requires admin "
-                            "authorization. The action was not executed."
+                            f"{exc} The action was not executed. Do not retry "
+                            "this tool with the same or similar arguments; "
+                            "either continue without it or tell the user this "
+                            "action needs an admin."
                         ),
                         retryable=False,
                     ),

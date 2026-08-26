@@ -355,6 +355,7 @@ class Application:
             AccountKey,
             AccountLink,
             AuthorizationGate,
+            ChatDomainIndex,
             IdentityResolver,
             Person,
             SQLiteIdentityStore,
@@ -400,6 +401,7 @@ class Application:
         self._authorization_gate = AuthorizationGate(
             admin_keys,
             enabled=identity_cfg.enabled,
+            domains=ChatDomainIndex(identity_cfg.chat_domains),
         )
 
         # Build providers from config

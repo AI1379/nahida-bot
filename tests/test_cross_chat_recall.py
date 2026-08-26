@@ -378,7 +378,12 @@ class _RecallAPI:
         self.names: dict[str, str] = {"milky:group:B": "原神交流群"}
 
     async def recall_cross_chat(
-        self, query: str, *, chat_address: str = "", limit: int = 8
+        self,
+        query: str,
+        *,
+        chat_address: str = "",
+        limit: int = 8,
+        allowed_chats: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         return self.rows
 
@@ -440,3 +445,98 @@ async def test_history_tool_no_matches_hint() -> None:
     tools = HistoryTools(_RecallAPI([]))  # type: ignore[arg-type]
     output = await tools.recall("nothing-matches-this")
     assert "No cross-chat recall matched" in output
+
+
+# ── Chat-domain narrowed turns leg (multi-scope OR) ────────────────
+
+
+class _FilteringTurnStore:
+    """Fake store honoring the ``chat_address`` filter."""
+
+    def __init__(self, records: list[MemoryRecord]) -> None:
+        self.records = records
+        self.calls: list[str] = []
+
+    async def search_turns(
+        self,
+        query: str = "",
+        *,
+        chat_address: str = "",
+        source: str = "",
+        role: str = "",
+        limit: int = 100,
+    ) -> list[MemoryRecord]:
+        self.calls.append(chat_address)
+        if not chat_address:
+            return self.records[:limit]
+        return [
+            record
+            for record in self.records
+            if record.session_id.startswith(chat_address)
+        ][:limit]
+
+
+@pytest.mark.asyncio
+async def test_turns_adapter_multiple_chat_scopes_search_each_and_merge() -> None:
+    store = _FilteringTurnStore(
+        [
+            _record(1, "milky:group:100", "user", "dragons main"),
+            _record(2, "milky:group:200", "user", "dragons sibling"),
+            _record(3, "milky:group:300", "user", "dragons elsewhere"),
+        ]
+    )
+    adapter = ConversationTurnsRetrievalAdapter(memory_store=store)
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="dragons",
+            source_type="conversation_turns",
+            limit=10,
+            scopes=(
+                RetrievalScope(scope_type="chat", scope_id="milky:group:100"),
+                RetrievalScope(scope_type="chat", scope_id="milky:group:200"),
+            ),
+        )
+    )
+    assert sorted(store.calls) == ["milky:group:100", "milky:group:200"]
+    texts = {result.text for result in results}
+    assert texts == {"dragons main", "dragons sibling"}
+
+
+@pytest.mark.asyncio
+async def test_turns_adapter_interleaves_multi_scope_results_up_to_limit() -> None:
+    records = [
+        _record(i, "milky:group:100" if i % 2 else "milky:group:200", "user", f"hit{i}")
+        for i in range(1, 9)
+    ]
+    store = _FilteringTurnStore(records)
+    adapter = ConversationTurnsRetrievalAdapter(memory_store=store)
+    results = await adapter.retrieve(
+        RetrievalRequest(
+            query="hit",
+            source_type="conversation_turns",
+            limit=3,
+            scopes=(
+                RetrievalScope(scope_type="chat", scope_id="milky:group:100"),
+                RetrievalScope(scope_type="chat", scope_id="milky:group:200"),
+            ),
+        )
+    )
+    assert len(results) == 3
+
+
+@pytest.mark.asyncio
+async def test_turns_adapter_dedupes_duplicate_scopes() -> None:
+    store = _FilteringTurnStore([_record(1, "milky:group:100", "user", "hit")])
+    adapter = ConversationTurnsRetrievalAdapter(memory_store=store)
+    await adapter.retrieve(
+        RetrievalRequest(
+            query="hit",
+            source_type="conversation_turns",
+            limit=5,
+            scopes=(
+                RetrievalScope(scope_type="chat", scope_id="milky:group:100"),
+                RetrievalScope(scope_type="chat", scope_id="milky:group:100"),
+            ),
+        )
+    )
+    assert store.calls == ["milky:group:100"]

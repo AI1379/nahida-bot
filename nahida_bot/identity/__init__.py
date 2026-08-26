@@ -8,7 +8,10 @@ and WebUI (Phase 4), and self-service linking (Phase 5) build on this base.
 
 from nahida_bot.identity.authorization import (
     AuthorizationGate,
+    ChatDomainIndex,
     NotAuthorized,
+    NotInChatScope,
+    TOOL_SCOPE_CHAT_DOMAIN,
 )
 from nahida_bot.identity.management import IdentityManagementError, IdentityManager
 from nahida_bot.identity.models import (
@@ -35,6 +38,7 @@ __all__ = [
     "AccountKey",
     "AccountLink",
     "AuthorizationGate",
+    "ChatDomainIndex",
     "IdentityResolution",
     "IdentityAuditEntry",
     "IdentityManagementError",
@@ -44,9 +48,11 @@ __all__ = [
     "MemoryReadRequest",
     "MemoryWriteRequest",
     "NotAuthorized",
+    "NotInChatScope",
     "ParticipantObservation",
     "Person",
     "SQLiteIdentityStore",
+    "TOOL_SCOPE_CHAT_DOMAIN",
     "account_key_from_inbound",
     "memory_read_request_from_context",
     "memory_write_request_from_context",

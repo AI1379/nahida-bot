@@ -170,6 +170,34 @@ class AuthorizationGate:
 - `plugins/api_bridge.py` / `tool_executor.py` / `commands.py`：闸门接入 + sender_account_key plumbing。
 - `app.py` / 装配处：构造 `AuthorizationGate` 并注入。
 
+### 4.7 Chat-domain scoping（2026-08-26 扩展，正交第二轴）
+
+> 背景：主群 + 附属分群是**同一社区**（管理员只按话题分群，不按信任分级），
+> 一刀切"历史工具仅 admin"或"仅当前群"都无法表达这种拓扑。
+> 关联 issue：#54（配置热更新——域成员的运行时编辑）。
+
+- **模型**：`IdentityConfig.chat_domains: dict[str, list[str]]`（域名 → chat 地址集合）。
+  `ChatDomainIndex` 装配期折叠成 chat→domain 映射；未列入任何域的 chat 自成
+  singleton 域（只能读自己）——fail-closed，不配置等价于"仅当前聊天"。
+- **工具侧**：`ToolEntry.scope="chat_domain"`（与 `requires_admin` 并列的注册元数据）。
+  非 admin 调用带显式目标（`chat_address` / `session_id` 前缀解析）时，目标必须在
+  当前 chat 的域内，否则 `NotInChatScope`；无显式目标（当前聊天）恒放行。admin 恒全通。
+  特权检查（`requires_admin` / `PRIVILEGED_TOOLS`）优先于 scope 检查。
+- **收窄注入**：loop 在 authorize 通过后对 scoped 工具注入 `allowed_chats`
+  （gate 的 `allowed_chats_for(current_chat)` = 域成员 ∪ {当前 chat}；admin 不注入）。
+  这是 **loop 控制参数**：模型提供的 `allowed_chats` 一律先剥离再覆盖，防止自我扩权。
+  `search_chat_history` 无过滤参数时按 allowed_chats 逐 chat 聚合（新到旧合并、截断）；
+  `find_chat` 结果过滤到 allowed 集；`recall_cross_chat` 的 raw-turn 腿以多 chat scope
+  OR 进入适配器（round-robin 交错合并，避免跨记录时间戳比较）。
+- **围栏边界不变**：`exec` / `message` / `workspace_write` / `identity_manage` 等仍
+  admin-only；跨域读取、私聊跨域仍 admin-only；§4.4 解耦约束不放松——域是 config
+  数据，`allowed_chats` 由 gate（授权模块）计算，memory/retrieval 不感知 admin 状态。
+- **代码触点**：`identity/authorization.py`（`ChatDomainIndex` / `NotInChatScope` /
+  `chat_key_from_session_id`）；`agent/loop.py`（`chat_address` 贯通 + 注入）；
+  `plugins/{registry,tooling,api_bridge,tool_executor}.py`（scope 元数据贯通）；
+  `plugins/builtin/tools/history.py`（四个历史工具改为 scope 模式）；
+  `agent/retrieval/adapters.py`（多 chat scope OR）。
+
 ## 5. 实施顺序
 
 1. **Piece B 先**（更独立、风险低、解锁安全洞）：config → authorization.py → 装配 → 工具边界接入 → 解耦测试。

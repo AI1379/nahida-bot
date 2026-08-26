@@ -46,3 +46,8 @@ class RegistryToolExecutor(ToolExecutor):
         """Expose registry authorization metadata to the agent loop."""
         entry = self._registry.get(tool_name)
         return bool(entry and entry.requires_admin)
+
+    def tool_scope(self, tool_name: str) -> str:
+        """Expose the registry scope mode to the agent loop."""
+        entry = self._registry.get(tool_name)
+        return entry.scope if entry else ""

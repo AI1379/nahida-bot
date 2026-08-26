@@ -212,32 +212,39 @@ class HistoryTools:
                     "with neighboring turns. Omit chat_address/session_id to read the "
                     "current chat. To continue a discussion from another group/private "
                     "chat, resolve the chat with find_chat and pass its typed "
-                    "chat_address. Cross-chat results are private recall: preserve "
-                    "provenance and do not reveal private messages to a different "
-                    "audience without authorization. Use before_turn_id to page "
-                    "backward through long history."
+                    "chat_address. Access is scoped to the sender's chat domain: "
+                    "chats outside the current chat and its declared sibling "
+                    "groups require an admin sender. Cross-chat results are "
+                    "private recall: preserve provenance and do not reveal "
+                    "private messages to a different audience without "
+                    "authorization. Use before_turn_id to page backward "
+                    "through long history."
                 ),
                 parameters=_READ_PARAMETERS,
                 handler=self.read,
-                requires_admin=True,
+                scope="chat_domain",
             ),
             PluginToolDefinition(
                 name="search_chat_history",
                 description=(
-                    "Search ALL past conversations across every chat — both what users "
-                    "said and what you said — to recall something from another "
-                    "session/chat. Use sparingly, only when the user wants to remember "
-                    "something from elsewhere (e.g. 'do you remember when we talked "
-                    "about X', or continuing a thread from another group/private chat). "
-                    "Results may include private 1:1 content from other people — treat "
-                    "it as reference for your own recall, and do not volunteer others' "
-                    "private messages in a group. Narrow with chat_address (use "
-                    "find_chat to resolve a name) or role when you can. This is a recall "
+                    "Search past conversations — both what users said and what "
+                    "you said — to recall something from another session/chat. "
+                    "Use sparingly, only when the user wants to remember "
+                    "something from elsewhere (e.g. 'do you remember when we "
+                    "talked about X', or continuing a thread from another "
+                    "group/private chat). For non-admin senders the search is "
+                    "automatically limited to the current chat's domain "
+                    "(current chat plus declared sibling groups); wider "
+                    "search needs an admin. Results may include private 1:1 "
+                    "content — treat them as reference for your own recall, "
+                    "and do not volunteer others' private messages in a "
+                    "group. Narrow with chat_address (use find_chat to "
+                    "resolve a name) or role when you can. This is a recall "
                     "aid, not a way to surveil."
                 ),
                 parameters=_SEARCH_PARAMETERS,
                 handler=self.search,
-                requires_admin=True,
+                scope="chat_domain",
             ),
             PluginToolDefinition(
                 name="find_chat",
@@ -245,12 +252,13 @@ class HistoryTools:
                     "Fuzzy-search a chat by group/chat name to resolve its address "
                     "(e.g. '原神' -> milky:group:20001). Use before "
                     "search_chat_history (to narrow) or the message tool (to target) "
-                    "when the user refers to a chat by name rather than id. Only knows "
-                    "chats the bot has seen."
+                    "when the user refers to a chat by name rather than id. Only "
+                    "knows chats the bot has seen. For non-admin senders, results "
+                    "are limited to the current chat's domain."
                 ),
                 parameters=_FIND_PARAMETERS,
                 handler=self.find_chat,
-                requires_admin=True,
+                scope="chat_domain",
             ),
             PluginToolDefinition(
                 name="recall_cross_chat",
@@ -258,19 +266,22 @@ class HistoryTools:
                     "Exploratory recall across past conversations and durable "
                     "memory for 'do you remember when we talked about X' moments. "
                     "Fuses two soft-recall legs into one ranked list: raw turns "
-                    "from every chat (both sides of past conversations) and "
+                    "from past chats (both sides of past conversations) and "
                     "public+portable memory items from other scopes. Call this "
                     "when the user references something said elsewhere or beyond "
                     "the recent window and the answer is not already in context. "
-                    "Results are SOFT context recalled from other conversations: "
-                    "each hit is labeled with its source chat/scope — treat them "
-                    "as your own memory of past events, verify before asserting, "
-                    "and never quote another chat's private content to a different "
-                    "audience. For deeper raw-text search use search_chat_history; "
-                    "for current-scope durable memory use memory_read."
+                    "For non-admin senders the raw-turn leg is limited to the "
+                    "current chat's domain. Results are SOFT context recalled "
+                    "from other conversations: each hit is labeled with its "
+                    "source chat/scope — treat them as your own memory of past "
+                    "events, verify before asserting, and never quote another "
+                    "chat's private content to a different audience. For deeper "
+                    "raw-text search use search_chat_history; for current-scope "
+                    "durable memory use memory_read."
                 ),
                 parameters=_RECALL_PARAMETERS,
                 handler=self.recall,
+                scope="chat_domain",
             ),
         )
 
@@ -373,21 +384,52 @@ class HistoryTools:
         chat_address: str = "",
         role: str = "",
         limit: int = 20,
+        allowed_chats: list[str] | None = None,
     ) -> str:
-        """Search all conversation history and retain chat provenance."""
+        """Search conversation history and retain chat provenance.
+
+        ``allowed_chats`` is injected by the agent loop for chat-domain scoped
+        (non-admin) senders: an unfiltered search is then aggregated per chat
+        within that set instead of spanning every chat. Model-provided values
+        are stripped before execution.
+        """
         _logger.debug(
             "tool.search_chat_history",
             query=query,
             chat_address=chat_address,
             role=role,
+            scoped=bool(allowed_chats is not None),
         )
         capped_limit = max(min(int(limit or 20), 50), 1)
-        rows = await self._api.search_chat_history(
-            query,
-            chat_address=chat_address,
-            role=role,
-            limit=capped_limit,
-        )
+        if allowed_chats is not None and not chat_address:
+            if not allowed_chats:
+                return (
+                    "Chat-history search is unavailable from this context "
+                    "(no chats are in scope)."
+                )
+            rows: list[dict[str, Any]] = []
+            per_chat_limit = max(capped_limit, 10)
+            for chat in allowed_chats:
+                rows.extend(
+                    await self._api.search_chat_history(
+                        query,
+                        chat_address=chat,
+                        role=role,
+                        limit=per_chat_limit,
+                    )
+                )
+            rows.sort(
+                key=lambda row: str(row.get("created_at") or ""),
+                reverse=True,
+            )
+            rows = rows[:capped_limit]
+        else:
+            rows = await self._api.search_chat_history(
+                query,
+                chat_address=chat_address,
+                role=role,
+                limit=capped_limit,
+            )
         if not rows:
             return "No matching conversation history found."
         name_map = await self.resolve_chat_names(
@@ -405,10 +447,24 @@ class HistoryTools:
             )
         return "\n".join(lines)
 
-    async def find_chat(self, name: str, platform: str = "") -> str:
-        """Resolve a fuzzy chat name to typed chat addresses."""
+    async def find_chat(
+        self,
+        name: str,
+        platform: str = "",
+        allowed_chats: list[str] | None = None,
+    ) -> str:
+        """Resolve a fuzzy chat name to typed chat addresses.
+
+        For chat-domain scoped (non-admin) senders the loop injects
+        ``allowed_chats``; results are then limited to that set.
+        """
         _logger.debug("tool.find_chat", name=name, platform=platform)
         rows = await self._api.search_chats(name, platform=platform)
+        if allowed_chats is not None:
+            allowed = set(allowed_chats)
+            rows = [
+                row for row in rows if str(row.get("chat_address") or "") in allowed
+            ]
         if not rows:
             return "No chats matched that name."
         lines = [f"Found {len(rows)} chats:"]
@@ -423,14 +479,26 @@ class HistoryTools:
             )
         return "\n".join(lines)
 
-    async def recall(self, query: str, chat_address: str = "", limit: int = 8) -> str:
-        """Fused cross-chat soft recall over turns and portable memory."""
+    async def recall(
+        self,
+        query: str,
+        chat_address: str = "",
+        limit: int = 8,
+        allowed_chats: list[str] | None = None,
+    ) -> str:
+        """Fused cross-chat soft recall over turns and portable memory.
+
+        ``allowed_chats`` is loop-injected for chat-domain scoped (non-admin)
+        senders: the raw-turn leg then only spans that chat set instead of
+        every chat.
+        """
         _logger.debug("tool.recall_cross_chat", query=query, chat_address=chat_address)
         capped_limit = max(min(int(limit or 8), 20), 1)
         rows = await self._api.recall_cross_chat(
             query,
             chat_address=chat_address,
             limit=capped_limit,
+            allowed_chats=allowed_chats,
         )
         if not rows:
             return (

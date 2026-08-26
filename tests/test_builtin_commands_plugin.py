@@ -118,12 +118,14 @@ class _FakeAPI:
         handler: Any,
         *,
         requires_admin: bool = False,
+        scope: str = "",
     ) -> None:
         self.tools[name] = {
             "description": description,
             "parameters": parameters,
             "handler": handler,
             "requires_admin": requires_admin,
+            "scope": scope,
         }
 
     def get_model_router(self) -> Any | None:
@@ -332,11 +334,18 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "desktop_screenshot_send",
         "desktop_input",
         "identity_manage",
+    }:
+        assert api.tools[tool_name]["requires_admin"] is True
+    # History tools are chat-domain scoped instead of admin-only: non-admin
+    # senders reach the current chat plus its declared sibling groups.
+    for tool_name in {
         "read_chat_history",
         "search_chat_history",
         "find_chat",
+        "recall_cross_chat",
     }:
-        assert api.tools[tool_name]["requires_admin"] is True
+        assert api.tools[tool_name]["scope"] == "chat_domain"
+        assert api.tools[tool_name]["requires_admin"] is False
     assert api.tools["workspace_read"]["requires_admin"] is False
     assert api.tools["memory_write"]["requires_admin"] is False
     create_params = api.tools["cron_create"]["parameters"]
