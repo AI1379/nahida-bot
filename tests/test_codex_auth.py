@@ -7,6 +7,7 @@ import time
 from nahida_bot.auth.codex import (
     TokenResponse,
     _parse_jwt_claims,
+    _parse_token_response,
     extract_account_id,
     token_needs_refresh,
     to_codex_token,
@@ -111,6 +112,16 @@ def test_to_codex_token_populates_account_id_and_expiry() -> None:
     assert codex_token.access_token == "access-abc"
     assert codex_token.account_id == "acct_t"
     assert before + 1000 <= codex_token.expires_at <= after + 1000
+
+
+def test_parse_refresh_response_preserves_unrotated_refresh_token() -> None:
+    tokens = _parse_token_response(
+        {"access_token": "new-access", "expires_in": 3600},
+        fallback_refresh_token="old-refresh",
+    )
+
+    assert tokens.access_token == "new-access"
+    assert tokens.refresh_token == "old-refresh"
 
 
 def test_token_needs_refresh_true_for_missing_access_token() -> None:

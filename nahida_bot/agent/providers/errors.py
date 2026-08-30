@@ -34,8 +34,16 @@ class ProviderRateLimitError(ProviderError):
 class ProviderAuthError(ProviderError):
     """Raised when provider authentication fails."""
 
-    def __init__(self, message: str = "Provider authentication failed") -> None:
+    __slots__ = ("status_code",)
+
+    def __init__(
+        self,
+        message: str = "Provider authentication failed",
+        *,
+        status_code: int | None = None,
+    ) -> None:
         super().__init__(code="provider_auth_failed", message=message, retryable=False)
+        self.status_code = status_code
 
 
 class ProviderBadResponseError(ProviderError):

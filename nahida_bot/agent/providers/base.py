@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -14,6 +15,19 @@ if TYPE_CHECKING:
     from nahida_bot.agent.usage import UsageRecorder
 
 ToolType = Literal["function"]
+
+
+@dataclass(slots=True, frozen=True)
+class ProviderRequestContext:
+    """Correlation identity for one provider request."""
+
+    session_id: str = ""
+    request_id: str = ""
+
+
+current_provider_request_context: ContextVar[ProviderRequestContext] = ContextVar(
+    "current_provider_request_context", default=ProviderRequestContext()
+)
 
 
 @dataclass(slots=True, frozen=True)

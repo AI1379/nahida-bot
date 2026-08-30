@@ -17,6 +17,7 @@ from ``OpenAICompatibleProvider``.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass, field
 
 import httpx
@@ -404,8 +405,7 @@ class OpenAIResponsesProvider(HttpProviderTransportMixin, ChatProvider):
         if instructions:
             payload["instructions"] = instructions
 
-        if self.store_responses:
-            payload["store"] = True
+        payload["store"] = self.store_responses
         if previous_response_id is not None:
             payload["previous_response_id"] = previous_response_id
 
@@ -524,31 +524,40 @@ class OpenAIResponsesProvider(HttpProviderTransportMixin, ChatProvider):
         async with client.stream(
             "POST", endpoint, json=payload, headers=headers, timeout=timeout
         ) as response:
+            self._observe_response_headers(response.headers, request_headers=headers)
             await self._raise_for_stream_status(response)
             return await self._parse_stream_response(response)
 
     async def _parse_stream_response(
         self, response: httpx.Response
     ) -> dict[str, object]:
+        async def events() -> AsyncIterator[dict[str, object]]:
+            async for raw_line in response.aiter_lines():
+                line = raw_line.strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line.removeprefix("data:").strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    yield event
+
+        return await self._parse_stream_events(events())
+
+    async def _parse_stream_events(
+        self, events: AsyncIterable[dict[str, object]]
+    ) -> dict[str, object]:
+        """Aggregate Responses events from SSE or WebSocket transports."""
         text_parts: list[str] = []
         done_text: str | None = None
         final_body: dict[str, object] | None = None
         output_items: list[object] = []
 
-        async for raw_line in response.aiter_lines():
-            line = raw_line.strip()
-            if not line.startswith("data:"):
-                continue
-            data = line.removeprefix("data:").strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                event = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-
+        async for event in events:
             event_type = event.get("type")
             if event_type == "response.output_text.delta":
                 delta = event.get("delta")
@@ -562,10 +571,22 @@ class OpenAIResponsesProvider(HttpProviderTransportMixin, ChatProvider):
                 item = event.get("item")
                 if isinstance(item, dict):
                     output_items.append(item)
-            elif event_type == "response.completed":
+            elif event_type in {
+                "response.completed",
+                "response.incomplete",
+                "response.failed",
+            }:
                 event_response = event.get("response")
                 if isinstance(event_response, dict):
                     final_body = event_response
+            elif event_type == "error":
+                error = event.get("error")
+                message = error.get("message") if isinstance(error, dict) else None
+                if not isinstance(message, str):
+                    message = event.get("message")
+                raise ProviderBadResponseError(
+                    f"Responses stream failed: {message or 'unknown error'}"
+                )
 
         if final_body is None:
             raise ProviderBadResponseError(
@@ -587,6 +608,12 @@ class OpenAIResponsesProvider(HttpProviderTransportMixin, ChatProvider):
     # ------------------------------------------------------------------
 
     def _parse_response(self, body: dict[str, object]) -> ProviderResponse:
+        if body.get("status") == "failed":
+            error = body.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            raise ProviderBadResponseError(
+                f"Responses API request failed: {message or 'unknown error'}"
+            )
         output_items = body.get("output")
         if not isinstance(output_items, list):
             raise ProviderBadResponseError(

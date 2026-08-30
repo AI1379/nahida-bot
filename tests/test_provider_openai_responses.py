@@ -21,6 +21,7 @@ class _FakeResponse:
     def __init__(self, body: dict[str, object], text: str = "") -> None:
         self._body = body
         self.text = text
+        self.headers: dict[str, str] = {}
 
     def json(self) -> dict[str, object]:
         return self._body
@@ -456,8 +457,42 @@ async def test_chat_streaming_responses_collects_output_text() -> None:
     assert response.extra["response_id"] == "resp_stream"
     assert fake_client.payload is not None
     assert fake_client.payload["stream"] is True
+    assert fake_client.payload["store"] is False
     assert fake_client.headers is not None
     assert fake_client.headers["Accept"] == "text/event-stream"
+
+
+@pytest.mark.asyncio
+async def test_chat_streaming_accepts_incomplete_terminal_event() -> None:
+    stream_body = (
+        'data: {"type":"response.incomplete","response":'
+        '{"id":"resp_partial","status":"incomplete","output":[],'
+        '"usage":{"input_tokens":1,"output_tokens":2}}}'
+    )
+    provider = _provider(stream_responses=True)
+    provider._client = cast(Any, _FakeClient({}, stream_body))
+
+    response = await provider.chat(
+        messages=[ContextMessage(role="user", source="user_input", content="hi")]
+    )
+
+    assert response.finish_reason == "length"
+    assert response.extra["response_id"] == "resp_partial"
+
+
+@pytest.mark.asyncio
+async def test_chat_streaming_surfaces_failed_terminal_event() -> None:
+    stream_body = (
+        'data: {"type":"response.failed","response":'
+        '{"status":"failed","output":[],"error":{"message":"backend failed"}}}'
+    )
+    provider = _provider(stream_responses=True)
+    provider._client = cast(Any, _FakeClient({}, stream_body))
+
+    with pytest.raises(ProviderBadResponseError, match="backend failed"):
+        await provider.chat(
+            messages=[ContextMessage(role="user", source="user_input", content="hi")]
+        )
 
 
 def test_agent_loop_keeps_response_metadata_and_image_only_content() -> None:

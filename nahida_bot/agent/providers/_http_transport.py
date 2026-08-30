@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from typing import TypeVar, cast
+from collections.abc import Awaitable, Mapping
+from typing import TypeVar
 
 import httpx
 
@@ -67,12 +67,25 @@ class HttpProviderTransportMixin:
                 timeout=timeout,
             )
         )
+        self._observe_response_headers(response.headers, request_headers=headers)
         self._raise_for_status(response)
         try:
             body = response.json()
         except ValueError as exc:
             raise ProviderBadResponseError(invalid_json_message) from exc
-        return cast(dict[str, object], body), response.status_code
+        if not isinstance(body, dict):
+            raise ProviderBadResponseError(invalid_json_message)
+        return body, response.status_code
+
+    def _observe_response_headers(
+        self,
+        response_headers: Mapping[str, str],
+        *,
+        request_headers: Mapping[str, str],
+    ) -> None:
+        """Allow providers to retain transport-specific response state."""
+        del response_headers
+        del request_headers
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         """Map a buffered HTTP error response to the provider error contract."""
@@ -80,7 +93,8 @@ class HttpProviderTransportMixin:
             body_hint = response.text[:200] if response.text else ""
             raise ProviderAuthError(
                 "Provider auth rejected request with status "
-                f"{response.status_code} — {body_hint}"
+                f"{response.status_code} — {body_hint}",
+                status_code=response.status_code,
             )
         if response.status_code == 429:
             raise ProviderRateLimitError()
@@ -104,7 +118,8 @@ class HttpProviderTransportMixin:
         if response.status_code in (401, 403):
             raise ProviderAuthError(
                 "Provider auth rejected request with status "
-                f"{response.status_code} — {body_hint[:200]}"
+                f"{response.status_code} — {body_hint[:200]}",
+                status_code=response.status_code,
             )
         if response.status_code == 429:
             raise ProviderRateLimitError()

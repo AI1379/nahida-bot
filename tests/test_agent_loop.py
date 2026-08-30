@@ -25,9 +25,11 @@ from nahida_bot.agent.providers import (
     ChatProvider,
     ProviderAuthError,
     ProviderRateLimitError,
+    ProviderRequestContext,
     ProviderResponse,
     ToolCall,
     ToolDefinition,
+    current_provider_request_context,
 )
 from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
 
@@ -37,6 +39,9 @@ class _QueuedProvider(ChatProvider):
     responses: list[ProviderResponse] = field(default_factory=list)
     failures: list[Exception] = field(default_factory=list)
     observed_messages: list[list[ContextMessage]] = field(default_factory=list)
+    observed_request_contexts: list[ProviderRequestContext] = field(
+        default_factory=list
+    )
     calls: int = 0
     name: str = "queued-provider"
 
@@ -49,6 +54,7 @@ class _QueuedProvider(ChatProvider):
     ):  # noqa: ANN001
         self.calls += 1
         self.observed_messages.append(list(messages))
+        self.observed_request_contexts.append(current_provider_request_context.get())
         if self.failures:
             failure = self.failures.pop(0)
             raise failure
@@ -140,6 +146,28 @@ async def test_agent_loop_returns_direct_response_without_tools() -> None:
     assert result.final_response == "hello"
     assert result.steps == 1
     assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_propagates_provider_request_context() -> None:
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="hello", tool_calls=[])]
+    )
+    loop = AgentLoop(provider=provider, context_builder=ContextBuilder())
+
+    events = [
+        event
+        async for event in loop.run_stream(
+            user_message="hi",
+            system_prompt="sys",
+            session_id="milky:group:123",
+        )
+    ]
+
+    assert events[-1].type == "done"
+    assert provider.observed_request_contexts[0].session_id == "milky:group:123"
+    assert provider.observed_request_contexts[0].request_id
+    assert current_provider_request_context.get() == ProviderRequestContext()
 
 
 @pytest.mark.asyncio

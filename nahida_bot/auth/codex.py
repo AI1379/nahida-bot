@@ -140,6 +140,18 @@ def _default_post_kwargs() -> dict[str, str]:
     return {"User-Agent": user_agent()}
 
 
+def _response_json_object(
+    response: httpx.Response, *, operation: str
+) -> dict[str, object]:
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"{operation} returned invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{operation} returned a non-object JSON body")
+    return data
+
+
 async def request_device_challenge(
     client: httpx.AsyncClient, *, client_id: str | None = None
 ) -> DeviceChallenge:
@@ -156,7 +168,7 @@ async def request_device_challenge(
             f"Failed to initiate device authorization: "
             f"HTTP {response.status_code} {response.text[:200]}"
         )
-    data = response.json()
+    data = _response_json_object(response, operation="Device authorization")
     interval_raw = data.get("interval", "5")
     try:
         interval_seconds = max(float(str(interval_raw)), 1.0)
@@ -208,7 +220,9 @@ async def poll_device_challenge(
             timeout=30,
         )
         if response.status_code < 400:
-            data = response.json()
+            data = _response_json_object(
+                response, operation="Device authorization poll"
+            )
             return await _exchange_authorization_code(
                 client,
                 authorization_code=str(data["authorization_code"]),
@@ -252,13 +266,21 @@ async def _exchange_authorization_code(
         raise RuntimeError(
             f"Token exchange failed: HTTP {response.status_code} {response.text[:200]}"
         )
-    return _parse_token_response(response.json())
+    return _parse_token_response(
+        _response_json_object(response, operation="Token exchange")
+    )
 
 
-def _parse_token_response(data: dict[str, object]) -> TokenResponse:
+def _parse_token_response(
+    data: dict[str, object], *, fallback_refresh_token: str = ""
+) -> TokenResponse:
     access = data.get("access_token")
     refresh = data.get("refresh_token")
-    if not isinstance(access, str) or not isinstance(refresh, str):
+    if not isinstance(access, str) or not access:
+        raise RuntimeError("Token response missing access_token")
+    if not isinstance(refresh, str) or not refresh:
+        refresh = fallback_refresh_token
+    if not refresh:
         raise RuntimeError("Token response missing access_token or refresh_token")
     expires_raw = data.get("expires_in", 3600)
     try:
@@ -298,7 +320,10 @@ async def refresh_access_token(
         raise RuntimeError(
             f"Token refresh failed: HTTP {response.status_code} {response.text[:200]}"
         )
-    return _parse_token_response(response.json())
+    return _parse_token_response(
+        _response_json_object(response, operation="Token refresh"),
+        fallback_refresh_token=refresh_token,
+    )
 
 
 def token_needs_refresh(token: CodexToken) -> bool:

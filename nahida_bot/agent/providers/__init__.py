@@ -3,10 +3,12 @@
 from nahida_bot.agent.providers.base import (
     ChatProvider,
     ModelCapabilities,
+    ProviderRequestContext,
     ProviderResponse,
     TokenUsage,
     ToolCall,
     ToolDefinition,
+    current_provider_request_context,
 )
 from nahida_bot.agent.providers.errors import (
     ProviderAuthError,
@@ -57,6 +59,7 @@ __all__ = [
     "ProviderDescriptor",
     "ProviderError",
     "ProviderRateLimitError",
+    "ProviderRequestContext",
     "ProviderResponse",
     "RoutedModel",
     "ProviderTimeoutError",
@@ -66,6 +69,7 @@ __all__ = [
     "ToolCall",
     "ToolDefinition",
     "clear_runtime_providers",
+    "current_provider_request_context",
     "create_provider",
     "extract_think_tags",
     "get_provider_class",

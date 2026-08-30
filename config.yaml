@@ -155,6 +155,8 @@ providers:
   # codex:
   #   type: codex
   #   stream_responses: true
+  #   websocket_responses: true  # 当前 Codex 协议；握手失败时自动回退 SSE
+  #   websocket_fallback: true
   #   reasoning_effort: "medium"
   #   models:
   #     - name: "gpt-5.5"

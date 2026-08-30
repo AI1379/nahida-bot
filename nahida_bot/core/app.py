@@ -456,6 +456,8 @@ class Application:
                 "store_responses",
                 "use_previous_response_id",
                 "stream_responses",
+                "websocket_responses",
+                "websocket_fallback",
                 "reasoning_effort",
                 "context_1m",
                 "anthropic_beta_headers",

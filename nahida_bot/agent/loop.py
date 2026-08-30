@@ -27,10 +27,12 @@ from nahida_bot.core.config import AgentConfig
 from nahida_bot.agent.providers import (
     ChatProvider,
     ProviderError,
+    ProviderRequestContext,
     ProviderResponse,
     TokenUsage,
     ToolCall,
     ToolDefinition,
+    current_provider_request_context,
 )
 
 if TYPE_CHECKING:
@@ -469,6 +471,7 @@ class AgentLoop:
             provider=runtime.provider,
             model=request.model,
             stop_event=request.stop_event,
+            session_id=request.session_id,
         )
         if response.usage is not None:
             runtime.total_usage = self._merge_usage(
@@ -915,6 +918,7 @@ class AgentLoop:
         provider: ChatProvider | None = None,
         model: str | None = None,
         stop_event: asyncio.Event | None = None,
+        session_id: str | None = None,
     ) -> ProviderResponse:
         active_provider = provider or self.provider
         attempts = 0
@@ -945,6 +949,7 @@ class AgentLoop:
                     timeout_seconds=self.config.provider_timeout_seconds,
                     model=model,
                     stop_event=stop_event,
+                    session_id=session_id,
                 )
                 logger.debug(
                     "agent_loop.provider_call_done",
@@ -1039,6 +1044,7 @@ class AgentLoop:
         timeout_seconds: float,
         model: str | None,
         stop_event: asyncio.Event | None,
+        session_id: str | None = None,
     ) -> ProviderResponse:
         """Call ``provider.chat``, aborting mid-call if ``stop_event`` fires.
 
@@ -1053,46 +1059,54 @@ class AgentLoop:
         its result — or ``ProviderError`` — is returned/raised for the normal
         retry path.
         """
-        chat_coro: Awaitable[ProviderResponse] = provider.chat(
-            messages=messages,
-            tools=tools,
-            timeout_seconds=timeout_seconds,
-            model=model,
+        request_context = ProviderRequestContext(
+            session_id=session_id or "",
+            request_id=str(uuid4()),
         )
-        if stop_event is None:
-            return await chat_coro
-
-        chat_task = asyncio.ensure_future(chat_coro)
-        stop_task = asyncio.ensure_future(stop_event.wait())
+        context_token = current_provider_request_context.set(request_context)
         try:
-            await asyncio.wait(
-                {chat_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+            chat_coro: Awaitable[ProviderResponse] = provider.chat(
+                messages=messages,
+                tools=tools,
+                timeout_seconds=timeout_seconds,
+                model=model,
             )
-        except asyncio.CancelledError:
-            # The run task itself was cancelled; clean up both children.
-            chat_task.cancel()
+            if stop_event is None:
+                return await chat_coro
+
+            chat_task = asyncio.ensure_future(chat_coro)
+            stop_task = asyncio.ensure_future(stop_event.wait())
+            try:
+                await asyncio.wait(
+                    {chat_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                )
+            except asyncio.CancelledError:
+                # The run task itself was cancelled; clean up both children.
+                chat_task.cancel()
+                stop_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await chat_task
+                with suppress(asyncio.CancelledError):
+                    await stop_task
+                raise
+
+            if stop_event.is_set():
+                chat_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await chat_task
+                stop_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await stop_task
+                raise _StopRequested
+
+            # Chat finished first; cancel the stop waiter and surface the result
+            # (or ProviderError) for the retry path.
             stop_task.cancel()
             with suppress(asyncio.CancelledError):
-                await chat_task
-            with suppress(asyncio.CancelledError):
                 await stop_task
-            raise
-
-        if stop_event.is_set():
-            chat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await chat_task
-            stop_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await stop_task
-            raise _StopRequested
-
-        # Chat finished first; cancel the stop waiter and surface the result
-        # (or ProviderError) for the retry path.
-        stop_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await stop_task
-        return chat_task.result()
+            return chat_task.result()
+        finally:
+            current_provider_request_context.reset(context_token)
 
     def _log_terminal_without_tool_calls(
         self,
