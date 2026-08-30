@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
+import { useMediaQuery } from "@vueuse/core";
 
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionFeedbackPanel from "@/components/MotionFeedbackPanel.vue";
@@ -17,6 +18,8 @@ const store = useDesktopStore();
 const replyText = ref("");
 const submitting = ref(false);
 const replayedPlanId = ref("");
+const wideLayout = useMediaQuery("(min-width: 921px)");
+const conversationOpen = ref(wideLayout.value);
 const recordsLocalStage = !isTauri();
 const live2dStage = ref<{
   replayNormalizedClip: (
@@ -35,6 +38,10 @@ const previewRenderMode = computed(() =>
     ? "idle"
     : store.petRuntime.renderMode,
 );
+
+watch(wideLayout, (wide) => {
+  conversationOpen.value = wide;
+});
 
 async function submitReply() {
   const trimmed = replyText.value.trim();
@@ -57,7 +64,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
 </script>
 
 <template>
-  <section class="pet-runtime" aria-label="Pet runtime">
+  <section class="pet-runtime" aria-label="桌宠运行界面">
     <Live2DStage
       ref="live2dStage"
       :emotion="store.currentEmotion"
@@ -81,16 +88,36 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       @motion-executed="handleMotionExecuted"
     />
 
+    <button
+      v-if="!conversationOpen"
+      type="button"
+      class="pet-runtime__conversation-toggle"
+      aria-controls="runtime-conversation"
+      :aria-expanded="false"
+      @click="conversationOpen = true"
+    >
+      查看对话
+      <span v-if="store.currentSessionTurns.length">
+        {{ store.currentSessionTurns.length }}
+      </span>
+    </button>
+
     <RuntimeConversationPanel
+      v-if="conversationOpen"
       :session-id="store.sessionId"
       :turns="store.currentSessionTurns"
+      closable
+      @close="conversationOpen = false"
     />
 
     <MotionFeedbackPanel
+      v-if="latestPlayback"
       class="pet-runtime__motion-feedback"
       :playback="latestPlayback"
       :enabled="store.localConfig.motionDataCollectionEnabled"
       compact
+      collapsible
+      initially-collapsed
       replayable
       rating-surface="runtime"
       :replay-of="replayedPlanId === latestPlayback?.motionPlanId ? replayedPlanId : undefined"
@@ -102,13 +129,14 @@ function replayMotion(playback: MotionPlaybackSummary): void {
         v-model="replyText"
         type="text"
         :disabled="!store.connected || submitting"
-        placeholder="Message Nahida"
+        placeholder="给纳西妲发消息"
+        aria-label="给纳西妲发消息"
       />
       <button
         type="submit"
         :disabled="!store.connected || submitting || !replyText.trim()"
       >
-        {{ submitting ? "Sending…" : "Send" }}
+        {{ submitting ? "发送中…" : "发送" }}
       </button>
     </form>
   </section>

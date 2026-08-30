@@ -33,6 +33,12 @@ const audit = ref<MotionDatasetAuditReport>(auditMotionDataset({}));
 const totalCount = computed(() =>
   Object.values(counts.value).reduce((total, count) => total + count, 0),
 );
+const kindLabels: Record<(typeof motionDatasetKinds)[number], string> = {
+  decisions: "动作决策",
+  executions: "动作执行",
+  preferences: "用户反馈",
+  invalid: "无效记录",
+};
 
 async function refreshCounts(): Promise<void> {
   const entries = await Promise.all(
@@ -71,7 +77,7 @@ async function exportDataset(): Promise<void> {
       link.click();
       URL.revokeObjectURL(url);
     }
-    status.value = "Dataset export prepared.";
+    status.value = "动作数据导出已准备完成。";
   } catch (error) {
     status.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -80,13 +86,13 @@ async function exportDataset(): Promise<void> {
 }
 
 async function clearDataset(): Promise<void> {
-  if (!window.confirm("Clear all local motion training records?")) return;
+  if (!window.confirm("清除全部本地动作训练记录？此操作无法撤销。")) return;
   busy.value = true;
   status.value = "";
   try {
     await clearMotionDataset();
     await refreshCounts();
-    status.value = "Local motion dataset cleared.";
+    status.value = "本地动作数据已清除。";
   } catch (error) {
     status.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -98,10 +104,10 @@ onMounted(() => void refreshCounts());
 </script>
 
 <template>
-  <section class="panel motion-data" aria-label="Motion training data">
+  <section class="panel motion-data" aria-label="动作训练数据">
     <header class="panel__header">
-      <h2>Motion Data</h2>
-      <span>{{ totalCount }} local records</span>
+      <h2>动作数据</h2>
+      <span>{{ totalCount }} 条本地记录</span>
     </header>
 
     <div class="motion-data__body">
@@ -111,22 +117,21 @@ onMounted(() => void refreshCounts());
           :checked="props.enabled"
           @change="emit('updateEnabled', ($event.target as HTMLInputElement).checked)"
         />
-        <span>Collect local motion training data</span>
+        <span>收集本地动作训练数据</span>
       </label>
       <p>
-        Use the pet normally, rate the latest motion in Runtime, or replay a
-        recent real motion in Workbench. Records stay on this device until you
-        explicitly export them; preview-only motions are excluded.
+        正常使用桌宠、评价最近动作或在开发工具中回放真实动作即可积累记录。
+        数据会留在本机，只有手动导出时才会离开；仅预览的动作不会计入。
       </p>
       <dl>
         <div v-for="kind in motionDatasetKinds" :key="kind">
-          <dt>{{ kind }}</dt>
+          <dt>{{ kindLabels[kind] }}</dt>
           <dd>{{ counts[kind] }}</dd>
         </div>
       </dl>
       <div class="motion-data__readiness">
         <strong>
-          Training readiness: {{ audit.readyForTraining ? "ready" : "collecting" }}
+          训练准备度：{{ audit.readyForTraining ? "已就绪" : "收集中" }}
         </strong>
         <ul>
           <li
@@ -142,18 +147,18 @@ onMounted(() => void refreshCounts());
           </li>
         </ul>
         <p v-if="audit.issues.length">
-          {{ audit.issues.length }} data integrity issue(s) found in the local set.
+          本地数据中发现 {{ audit.issues.length }} 个完整性问题。
         </p>
       </div>
       <div class="motion-data__actions">
         <button type="button" :disabled="busy" @click="refreshCounts">
-          Refresh
+          刷新
         </button>
         <button type="button" :disabled="busy || !totalCount" @click="exportDataset">
-          Export
+          导出
         </button>
         <button type="button" :disabled="busy || !totalCount" @click="clearDataset">
-          Clear
+          清除
         </button>
       </div>
       <p v-if="status" class="motion-data__status" aria-live="polite">

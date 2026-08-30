@@ -15,6 +15,7 @@ const windowMock = vi.hoisted(() => {
   return {
     state,
     setSize: vi.fn(async () => {}),
+    setAlwaysOnTop: vi.fn(async () => {}),
     setIgnoreCursorEvents: vi.fn(async () => {}),
     setPosition: vi.fn(async (position: { x: number; y: number }) => {
       state.concurrentPositions += 1;

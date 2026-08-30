@@ -110,6 +110,8 @@ export class PetWindowController {
 
     await appWindow.setSize(logicalSize);
     if (token !== this.animationToken) return;
+    await appWindow.setAlwaysOnTop(windowState.alwaysOnTop);
+    if (token !== this.animationToken) return;
     await appWindow.setIgnoreCursorEvents(runtime.clickThrough);
     if (token !== this.animationToken) return;
     // Toggling click-through makes tao re-apply the latent WS_CAPTION

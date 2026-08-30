@@ -66,6 +66,16 @@ button:disabled {
   opacity: 0.48;
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 3px solid rgb(47 125 84 / 24%);
+  outline-offset: 2px;
+  border-color: var(--green);
+}
+
 textarea {
   width: 100%;
   resize: vertical;
@@ -103,4 +113,15 @@ select {
 
 input[type="range"] {
   min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }

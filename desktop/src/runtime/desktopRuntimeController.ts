@@ -637,6 +637,9 @@ export function useDesktopRuntimeController(
       case "exit_chat":
         store.exitPetChat();
         break;
+      case "toggle_pomodoro":
+        togglePomodoro();
+        break;
       case "submit_message":
         submitUserMessage(command.text);
         break;

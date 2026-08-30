@@ -332,7 +332,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="stage" aria-label="Live2D preview stage">
+  <section class="stage" aria-label="Live2D 桌宠舞台">
     <div v-if="props.devChrome" class="stage__status">
       <span>{{ props.model.name }}</span>
       <span>{{ props.expressionKey }}</span>

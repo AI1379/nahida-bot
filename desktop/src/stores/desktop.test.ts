@@ -1,13 +1,18 @@
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { planFromText } from "@/domain/displayPlan";
 import type { DesktopRuntimeSnapshot } from "@/domain/desktopWindowProtocol";
+
+const showDesktopNotification = vi.hoisted(() => vi.fn(async () => true));
+vi.mock("@/services/desktopNotification", () => ({ showDesktopNotification }));
+
 import { useDesktopStore } from "./desktop";
 
 describe("desktop store pet transitions", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    vi.clearAllMocks();
   });
 
   it("waits for emerge to finish before entering chat", () => {
@@ -394,7 +399,7 @@ describe("desktop store pet transitions", () => {
     expect(store.transcript).toHaveLength(0);
   });
 
-  it("keeps notification show as transcript-only output", () => {
+  it("shows native notifications and keeps a transcript record", () => {
     const store = useDesktopStore();
 
     store.applyCapabilityInvoke("desktop.notification.show", {
@@ -403,6 +408,10 @@ describe("desktop store pet transitions", () => {
 
     expect(store.transcript[0]?.text).toBe("Visible only");
     expect(store.activePresentation).toBeNull();
+    expect(showDesktopNotification).toHaveBeenCalledWith({
+      title: "Nahida Desktop",
+      body: "Visible only",
+    });
   });
 
   it("returns structured errors for invalid and unsupported capabilities", () => {
@@ -420,5 +429,35 @@ describe("desktop store pet transitions", () => {
       ok: false,
       error: { code: "capability_not_found", retryable: false },
     });
+  });
+
+  it("clamps desktop pet window settings to safe dimensions", () => {
+    const store = useDesktopStore();
+
+    store.updateDesktopWindowState({
+      width: 9999,
+      height: 10,
+      exposedPx: 1,
+      edge: "left",
+      alwaysOnTop: false,
+    });
+
+    expect(store.localConfig.windowState).toMatchObject({
+      width: 720,
+      height: 360,
+      exposedPx: 16,
+      edge: "left",
+      alwaysOnTop: false,
+    });
+  });
+
+  it("updates the visible pet render mode with performance settings", () => {
+    const store = useDesktopStore();
+    store.requestPetPeek();
+
+    store.updatePerformanceMode("power_saver");
+
+    expect(store.localConfig.performanceMode).toBe("power_saver");
+    expect(store.petRuntime.renderMode).toBe("idle");
   });
 });

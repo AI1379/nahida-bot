@@ -63,7 +63,7 @@ const sanitizedDraftUrl = computed(() =>
 
 const urlWarning = computed<string | null>(() => {
   if (!draft.value.gatewayWsUrl.trim()) return null;
-  return sanitizedDraftUrl.value ? null : "URL must be ws:// or wss://";
+  return sanitizedDraftUrl.value ? null : "地址必须以 ws:// 或 wss:// 开头";
 });
 
 const nodeTokenWarning = computed<string | null>(() => {
@@ -71,7 +71,7 @@ const nodeTokenWarning = computed<string | null>(() => {
   if (!trimmed) return null;
   return isNodeToken(trimmed)
     ? null
-    : "Token should look like nt_xxxxx.yyyyy (issued by the gateway).";
+    : "节点令牌格式应为 nt_xxxxx.yyyyy。";
 });
 
 const pairingTokenWarning = computed<string | null>(() => {
@@ -79,7 +79,7 @@ const pairingTokenWarning = computed<string | null>(() => {
   if (!trimmed) return null;
   return isPairingToken(trimmed)
     ? null
-    : "Pairing token should look like np_xxxxx.yyyyy.";
+    : "配对令牌格式应为 np_xxxxx.yyyyy。";
 });
 
 const isDirty = computed(() => {
@@ -124,11 +124,11 @@ const canPairDevice = computed(() => {
 const actorAccountKeyWarning = computed<string | null>(() => {
   const trimmed = actorAccountKeyInput.value.trim();
   if (!trimmed) {
-    return "Without an actor binding the desktop can receive events but cannot submit messages.";
+    return "不绑定账号时，桌面端只能接收事件，不能发送消息。";
   }
   return isValidActorAccountKey(trimmed)
     ? null
-    : "Use the format `{channel}:user:{platform_user_id}`, e.g. `telegram:user:12345`.";
+    : "格式应为“渠道:user:平台用户 ID”，例如 telegram:user:12345。";
 });
 
 const derivedConversationId = computed(() =>
@@ -147,27 +147,27 @@ const canExchangeManualPairing = computed(
 
 const connectionStatusLabel = computed(() => {
   if (store.gatewayPairing.status === "exchanging") {
-    return "Pairing…";
+    return "正在配对…";
   }
   if (
     draft.value.mode === "gateway" &&
     store.gatewayConnectionStatus === "auth-required"
   ) {
-    return "Authentication required";
+    return "需要身份验证";
   }
   if (
     draft.value.mode === "gateway" &&
     store.gatewayConnectionStatus === "connecting"
   ) {
-    return "Connecting…";
+    return "正在连接…";
   }
   if (store.gatewayConnectionError) {
-    return "Error";
+    return "连接异常";
   }
   if (store.connected) {
-    return draft.value.mode === "gateway" ? "Gateway connected" : "Mock connected";
+    return draft.value.mode === "gateway" ? "Gateway 已连接" : "离线体验已启动";
   }
-  return draft.value.mode === "gateway" ? "Gateway offline" : "Mock offline";
+  return draft.value.mode === "gateway" ? "Gateway 未连接" : "离线体验未启动";
 });
 
 const pairingMessage = computed(() => store.gatewayPairing.message ?? "");
@@ -175,13 +175,13 @@ const pairingMessage = computed(() => store.gatewayPairing.message ?? "");
 const modeOptions: ReadonlyArray<{ value: GatewayConnectionMode; label: string; hint: string }> = [
   {
     value: "mock",
-    label: "Mock backend",
-    hint: "In-process fake gateway. Useful for previews without a Nahida Bot running.",
+    label: "离线体验",
+    hint: "无需运行 Nahida Bot，使用本地模拟数据预览桌宠。",
   },
   {
     value: "gateway",
     label: "Nahida Gateway",
-    hint: "Connect to a real Nahida Bot Gateway over WebSocket. Pair once and the token is reused.",
+    hint: "连接真实的 Nahida Bot。首次配对后会安全复用凭据。",
   },
 ];
 
@@ -285,10 +285,10 @@ function resetToDefaults() {
 <template>
   <section
     class="panel connection-panel"
-    aria-label="Gateway connection settings"
+    aria-label="Gateway 连接设置"
   >
     <header class="panel__header">
-      <h2>Gateway Connection</h2>
+      <h2>连接 Nahida Gateway</h2>
       <span
         class="connection-panel__status"
         :data-state="
@@ -304,8 +304,8 @@ function resetToDefaults() {
     </header>
 
     <div class="connection-panel__body">
-      <fieldset class="connection-panel__mode" legend="Mode">
-        <legend>Connection mode</legend>
+      <fieldset class="connection-panel__mode">
+        <legend>连接方式</legend>
         <label
           v-for="option in modeOptions"
           :key="option.value"
@@ -325,9 +325,9 @@ function resetToDefaults() {
         </label>
       </fieldset>
 
-      <div class="connection-panel__grid">
+      <div v-if="draft.mode === 'gateway'" class="connection-panel__grid">
         <label class="connection-panel__field connection-panel__field--wide">
-          <span>Gateway WebSocket URL</span>
+          <span>Gateway 地址</span>
           <input
             v-model="draft.gatewayWsUrl"
             type="text"
@@ -339,9 +339,16 @@ function resetToDefaults() {
           />
           <small v-if="urlWarning" class="connection-panel__hint">{{ urlWarning }}</small>
         </label>
+      </div>
 
+      <details
+        v-if="draft.mode === 'gateway'"
+        class="connection-panel__connection-advanced"
+      >
+        <summary>高级连接设置</summary>
+        <div class="connection-panel__grid">
         <label class="connection-panel__field">
-          <span>Node ID</span>
+          <span>节点 ID</span>
           <input
             v-model="draft.nodeId"
             type="text"
@@ -351,7 +358,7 @@ function resetToDefaults() {
         </label>
 
         <label class="connection-panel__field">
-          <span>Display name</span>
+          <span>设备名称</span>
           <input
             v-model="draft.displayName"
             type="text"
@@ -361,16 +368,17 @@ function resetToDefaults() {
         </label>
 
         <label class="connection-panel__field connection-panel__field--wide">
-          <span>Default session ID (optional)</span>
+          <span>默认会话 ID（可选）</span>
           <input
             v-model="draft.defaultSessionId"
             type="text"
             spellcheck="false"
             autocomplete="off"
-            placeholder="e.g. telegram:private:12345"
+            placeholder="例如 telegram:private:12345"
           />
         </label>
-      </div>
+        </div>
+      </details>
 
       <div class="connection-panel__actions">
         <button
@@ -379,7 +387,7 @@ function resetToDefaults() {
           :disabled="!canSave"
           @click="saveDraft"
         >
-          Save
+          保存
         </button>
         <button
           class="settings-button settings-button--quiet"
@@ -387,14 +395,14 @@ function resetToDefaults() {
           :disabled="!isDirty"
           @click="revertDraft"
         >
-          Revert
+          撤销修改
         </button>
         <button
           class="settings-button settings-button--quiet"
           type="button"
           @click="resetToDefaults"
         >
-          Reset
+          恢复默认
         </button>
         <span class="connection-panel__spacer" />
         <template v-if="draft.mode === 'gateway'">
@@ -404,7 +412,7 @@ function resetToDefaults() {
             type="button"
             @click="disconnect"
           >
-            Disconnect
+            断开连接
           </button>
           <button
             v-else
@@ -413,16 +421,16 @@ function resetToDefaults() {
             :disabled="!canConnect"
             @click="connect"
           >
-            Connect
+            连接
           </button>
           <button
             class="settings-button"
             type="button"
             :disabled="!canConnect || !store.connected"
-            :title="!store.connected ? 'Connect first to apply new settings' : ''"
+            :title="!store.connected ? '请先连接，再应用新设置' : ''"
             @click="reconnect"
           >
-            Apply &amp; Reconnect
+            应用并重连
           </button>
         </template>
         <template v-else>
@@ -432,7 +440,7 @@ function resetToDefaults() {
             type="button"
             @click="disconnect"
           >
-            Disconnect
+            停止体验
           </button>
           <button
             v-else
@@ -440,7 +448,7 @@ function resetToDefaults() {
             type="button"
             @click="useMock"
           >
-            Start Mock
+            进入离线体验
           </button>
         </template>
       </div>
@@ -452,24 +460,22 @@ function resetToDefaults() {
         {{ store.gatewayConnectionError }}
       </p>
 
-      <hr class="connection-panel__divider" />
+      <hr v-if="draft.mode === 'gateway'" class="connection-panel__divider" />
 
-      <div class="connection-panel__pairing">
+      <div v-if="draft.mode === 'gateway'" class="connection-panel__pairing">
         <header class="connection-panel__pairing-header">
           <div>
-            <strong>Pair this device</strong>
+            <strong>配对这台设备</strong>
             <p class="connection-panel__pairing-hint">
-              Desktop will ask the gateway to mint a one-shot pairing token
-              and immediately exchange it for a long-lived node token. If the
-              gateway has admin auth enabled, paste the
-              <code>webapi.auth_token</code> from its
-              <code>config.yaml</code>; otherwise leave the field blank.
+              桌面端会向 Gateway 申请一次性凭据，并换取长期节点令牌。若 Gateway
+              启用了管理员验证，请填入 <code>config.yaml</code> 中的
+              <code>webapi.auth_token</code>；否则留空即可。
             </p>
           </div>
         </header>
 
         <label class="connection-panel__field">
-          <span>Actor account key (recommended)</span>
+          <span>关联账号（推荐）</span>
           <input
             v-model="actorAccountKeyInput"
             type="text"
@@ -484,21 +490,20 @@ function resetToDefaults() {
             {{ actorAccountKeyWarning }}
           </small>
           <small class="connection-panel__hint connection-panel__hint--muted">
-            Same person across channels shares long-term memory. The desktop
-            session stays independent (<code>{{ derivedConversationId || "desktop:private:&lt;node-id&gt;" }}</code
-            >); only the identity binding crosses channels.
+            同一用户可在不同渠道共享长期记忆。桌面会话仍保持独立（<code>{{ derivedConversationId || "desktop:private:&lt;node-id&gt;" }}</code
+            >），仅身份关联会跨渠道使用。
           </small>
         </label>
 
         <label class="connection-panel__field">
-          <span>Admin API token (optional)</span>
+          <span>管理员 API 令牌（可选）</span>
           <div class="connection-panel__token-row">
             <input
               v-model="adminBearerInput"
               :type="showAdminBearer ? 'text' : 'password'"
               spellcheck="false"
               autocomplete="off"
-              placeholder="Only required when the gateway requires admin auth"
+              placeholder="仅在 Gateway 启用管理员验证时需要"
             />
             <button
               type="button"
@@ -506,7 +511,7 @@ function resetToDefaults() {
               :aria-pressed="showAdminBearer"
               @click="showAdminBearer = !showAdminBearer"
             >
-              {{ showAdminBearer ? "Hide" : "Show" }}
+              {{ showAdminBearer ? "隐藏" : "显示" }}
             </button>
           </div>
         </label>
@@ -518,7 +523,7 @@ function resetToDefaults() {
             :disabled="!canPairDevice"
             @click="pairDevice"
           >
-            Pair this device
+            配对设备
           </button>
         </div>
 
@@ -526,24 +531,23 @@ function resetToDefaults() {
           v-if="store.gatewayPairing.status === 'success'"
           class="connection-panel__pairing-result"
         >
-          {{ pairingMessage || "Pairing succeeded." }}
+          {{ pairingMessage || "设备配对成功。" }}
         </p>
         <p
           v-else-if="store.gatewayPairing.status === 'error'"
           class="connection-panel__pairing-result connection-panel__pairing-result--error"
         >
-          {{ pairingMessage || "Pairing failed." }}
+          {{ pairingMessage || "设备配对失败。" }}
         </p>
 
         <details class="connection-panel__pairing-advanced">
-          <summary>Already have a pairing token? Exchange it manually</summary>
+          <summary>已有配对令牌？手动换取</summary>
           <p class="connection-panel__pairing-hint">
-            Use this if an admin already ran
-            <code>/api/nodes/pairing/start</code> and handed you the
-            <code>np_…</code> token out-of-band.
+            如果管理员已通过 <code>/api/nodes/pairing/start</code>
+            生成并发送给你 <code>np_…</code> 令牌，可在此使用。
           </p>
           <label class="connection-panel__field">
-            <span>Pairing token</span>
+            <span>配对令牌</span>
             <div class="connection-panel__token-row">
               <input
                 v-model="pairingTokenInput"
@@ -558,7 +562,7 @@ function resetToDefaults() {
                 :aria-pressed="showPairingToken"
                 @click="showPairingToken = !showPairingToken"
               >
-                {{ showPairingToken ? "Hide" : "Show" }}
+                {{ showPairingToken ? "隐藏" : "显示" }}
               </button>
             </div>
             <small v-if="pairingTokenWarning" class="connection-panel__hint">
@@ -572,24 +576,24 @@ function resetToDefaults() {
               :disabled="!canExchangeManualPairing"
               @click="exchangeManualPairing"
             >
-              Exchange pairing token
+              换取节点令牌
             </button>
           </div>
         </details>
       </div>
 
-      <hr class="connection-panel__divider" />
+      <hr v-if="draft.mode === 'gateway'" class="connection-panel__divider" />
 
-      <div class="connection-panel__token">
+      <div v-if="draft.mode === 'gateway'" class="connection-panel__token">
         <label class="connection-panel__field">
-          <span>Node token (auto-filled after pairing)</span>
+          <span>节点令牌（配对后自动填写）</span>
           <div class="connection-panel__token-row">
             <input
               v-model="draft.nodeToken"
               :type="showToken ? 'text' : 'password'"
               spellcheck="false"
               autocomplete="off"
-              placeholder="nt_xxxxx.yyyyy — appears here after pairing"
+              placeholder="nt_xxxxx.yyyyy — 配对完成后会显示在这里"
             />
             <button
               type="button"
@@ -597,7 +601,7 @@ function resetToDefaults() {
               :aria-pressed="showToken"
               @click="showToken = !showToken"
             >
-              {{ showToken ? "Hide" : "Show" }}
+              {{ showToken ? "隐藏" : "显示" }}
             </button>
           </div>
           <small v-if="nodeTokenWarning" class="connection-panel__hint">
@@ -610,20 +614,20 @@ function resetToDefaults() {
           class="connection-panel__link"
           @click="clearNodeToken"
         >
-          Forget token
+          忘记令牌
         </button>
         <small class="connection-panel__hint connection-panel__hint--muted">
           {{
             hasPlatformCredentialStore
-              ? "Saved in the operating system credential store; never written to WebView storage."
-              : "Browser preview keeps tokens for this session only. Desktop builds use the operating system credential store."
+              ? "令牌保存在操作系统凭据库中，不会写入 WebView 存储。"
+              : "浏览器预览只在当前会话保存令牌；桌面版会使用操作系统凭据库。"
           }}
         </small>
       </div>
 
       <div v-if="draft.adminBearerToken" class="connection-panel__token">
         <label class="connection-panel__field">
-          <span>Admin API token (saved from pairing)</span>
+          <span>管理员 API 令牌（配对时保存）</span>
           <div class="connection-panel__token-row">
             <input
               v-model="draft.adminBearerToken"
@@ -638,7 +642,7 @@ function resetToDefaults() {
               :aria-pressed="showAdminBearer"
               @click="showAdminBearer = !showAdminBearer"
             >
-              {{ showAdminBearer ? "Hide" : "Show" }}
+              {{ showAdminBearer ? "隐藏" : "显示" }}
             </button>
           </div>
         </label>
@@ -647,30 +651,30 @@ function resetToDefaults() {
           class="connection-panel__link"
           @click="draft.adminBearerToken = ''; saveDraft()"
         >
-          Forget admin token
+          忘记管理员令牌
         </button>
       </div>
 
       <div v-if="draft.mode === 'gateway'" class="connection-panel__tts-source">
         <label class="connection-panel__field">
-          <span>TTS source</span>
+          <span>语音来源</span>
           <select
             :value="draft.ttsSource"
             @change="draft.ttsSource = ($event.target as HTMLSelectElement).value as TtsSourcePreference; saveDraft()"
           >
             <option value="auto">
-              Auto (gateway GPT-SoVITS, fallback to system)
+              自动（优先 Gateway GPT-SoVITS，失败时使用系统语音）
             </option>
             <option value="gateway">
-              Gateway (requires admin API token)
+              Gateway（需要管理员 API 令牌）
             </option>
             <option value="system">
-              System Web Speech only
+              仅使用系统语音
             </option>
           </select>
         </label>
         <small v-if="draft.ttsSource !== 'system' && !draft.adminBearerToken" class="connection-panel__hint">
-          Gateway TTS requires the admin API token above; pair with an admin token first.
+          Gateway 语音需要管理员 API 令牌，请先使用管理员令牌完成配对。
         </small>
       </div>
     </div>

@@ -14,7 +14,7 @@ import {
 const available = isTauri();
 const loading = ref(false);
 const saving = ref(false);
-const message = ref(available ? "" : "Policy editing is available in the Tauri desktop app.");
+const message = ref(available ? "" : "远程控制策略仅可在 Tauri 桌面应用中编辑。");
 const failed = ref(false);
 const draft = ref<RemoteControlPolicy>(deepClone(defaultRemoteControlPolicy));
 const loaded = ref<RemoteControlPolicy>(deepClone(defaultRemoteControlPolicy));
@@ -29,8 +29,8 @@ const isFullAccess = computed(() => draft.value.mode === "full_access");
 const modeStagingHint = computed(() => {
   if (draft.value.mode === loaded.value.mode) return "";
   return draft.value.mode === "full_access"
-    ? "Full access is staged. Saving it requires explicit confirmation."
-    : "Mode change is staged; save the policy to apply it.";
+    ? "已选择完全访问；保存时还需再次确认。"
+    : "模式更改尚未生效，请保存策略。";
 });
 const actorsWarning = computed(() => {
   if (draft.value.mode === "disabled") return "";
@@ -39,7 +39,7 @@ const actorsWarning = computed(() => {
   );
   return hasActor
     ? ""
-    : "No actors are allowed yet. Until an actor key is listed, every remote request is rejected with actor_denied — even in full access mode.";
+    : "尚未允许任何账号。添加账号前，所有远程请求都会被拒绝，即使在完全访问模式下也是如此。";
 });
 const actorsFull = computed(
   () =>
@@ -66,7 +66,7 @@ async function loadPolicy() {
       "remote_control_policy_read",
     );
     adoptPolicy(policy);
-    message.value = "Policy loaded from Rust-owned local storage.";
+    message.value = "已从本地安全存储读取策略。";
   } catch (error) {
     failed.value = true;
     message.value = String(error);
@@ -88,37 +88,37 @@ async function savePolicy() {
     policy.mode === "full_access" &&
     loaded.value.mode !== "full_access" &&
     !window.confirm(
-      "Enable full access? Authorized remote actors will be able to run arbitrary programs and read arbitrary text files on this computer.",
+      "启用完全访问？获授权的远程账号将能运行任意程序并读取这台电脑上的任意文本文件。",
     )
   ) {
-    message.value = "Full access was not enabled.";
+    message.value = "未启用完全访问。";
     return;
   }
   if (
     policy.computerUse.allowScreenCapture &&
     !loaded.value.computerUse.allowScreenCapture &&
     !window.confirm(
-      "Enable screen capture? Authorized remote actors will be able to capture all visible pixels across the virtual desktop, which may include sensitive information.",
+      "允许屏幕捕获？获授权的远程账号将能截取整个虚拟桌面的可见内容，其中可能包含敏感信息。",
     )
   ) {
-    message.value = "Screen capture was not enabled.";
+    message.value = "未启用屏幕捕获。";
     return;
   }
   if (
     policy.computerUse.allowInput &&
     !loaded.value.computerUse.allowInput &&
     !window.confirm(
-      "Enable computer input? Authorized remote actors will be able to move the pointer, click, scroll, type text, and press keys on this computer.",
+      "允许控制输入？获授权的远程账号将能移动鼠标、点击、滚动、输入文本和按键。",
     )
   ) {
-    message.value = "Computer input was not enabled.";
+    message.value = "未启用输入控制。";
     return;
   }
   saving.value = true;
   try {
     await invoke("remote_control_policy_save", { policy });
     loaded.value = deepClone(policy);
-    message.value = "Local pre-authorization policy saved.";
+    message.value = "本地预授权策略已保存。";
   } catch (error) {
     failed.value = true;
     message.value = String(error);
@@ -192,37 +192,35 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
   <section
     class="panel remote-control"
     :class="{ 'remote-control--danger': isFullAccess }"
-    aria-label="Remote control policy settings"
+    aria-label="远程控制策略设置"
   >
     <header class="panel__header">
-      <h2>Controlled Remote Access</h2>
-      <span>{{ isFullAccess ? "DANGER: FULL ACCESS" : "Local pre-authorization" }}</span>
+      <h2>受控远程访问</h2>
+      <span>{{ isFullAccess ? "危险：完全访问" : "本地预授权" }}</span>
     </header>
 
     <div class="remote-control__body">
       <p class="remote-control__warning" :class="{ 'remote-control__warning--danger': isFullAccess }">
         <template v-if="isFullAccess">
-          Full access lets authorized remote actors run arbitrary executables,
-          shells, and interpreters with inherited environment variables, and read
-          arbitrary UTF-8 files. Treat this as equivalent to local account access.
+          完全访问允许获授权的远程账号运行任意可执行文件、Shell 和解释器，
+          并读取任意 UTF-8 文件。请把它视为与本地账号访问等同的高风险权限。
         </template>
         <template v-else>
-          Scoped mode allows listed Gateway actors to read configured roots or run
-          fixed executable profiles. Commands execute in Rust and are never sent
-          to the renderer. Profile programs must use absolute executable paths.
+          受限模式仅允许名单内的 Gateway 账号读取指定目录或运行固定程序。
+          命令在 Rust 层执行，不会发送给渲染器；程序必须使用绝对路径。
         </template>
       </p>
 
       <label class="remote-control__field">
-        <span>Mode</span>
+        <span>模式</span>
         <select
           :value="draft.mode"
           :disabled="controlsDisabled"
           @change="setMode"
         >
-          <option value="disabled">Disabled</option>
-          <option value="scoped">Scoped</option>
-          <option value="full_access">Full access (dangerous)</option>
+          <option value="disabled">关闭</option>
+          <option value="scoped">受限</option>
+          <option value="full_access">完全访问（危险）</option>
         </select>
       </label>
       <p v-if="modeStagingHint" class="remote-control__note">
@@ -231,14 +229,14 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
 
       <div class="remote-control__section">
         <div class="remote-control__section-head">
-          <span>Allowed actors</span>
+          <span>允许的账号</span>
           <button
             class="settings-button settings-button--quiet"
             type="button"
             :disabled="controlsDisabled || actorsFull"
             @click="addActor"
           >
-            Add actor
+            添加账号
           </button>
         </div>
         <p v-if="actorsWarning" class="remote-control__note remote-control__note--warn">
@@ -263,27 +261,26 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
               :disabled="controlsDisabled"
               @click="removeActor(index)"
             >
-              Remove
+              移除
             </button>
           </li>
         </ul>
         <p v-else class="remote-control__note">
-          The whitelist is empty. Actor keys look like
-          <code>milky:user:12345</code>; pairing this desktop adds its bound
-          actor automatically.
+          白名单为空。账号键格式如 <code>milky:user:12345</code>；
+          配对桌面端时会自动添加其绑定账号。
         </p>
       </div>
 
       <div class="remote-control__section">
         <div class="remote-control__section-head">
-          <span>Read roots</span>
+          <span>可读目录</span>
           <button
             class="settings-button settings-button--quiet"
             type="button"
             :disabled="controlsDisabled || rootsFull"
             @click="addRoot"
           >
-            Add root
+            添加目录
           </button>
         </div>
         <ul v-if="draft.readRoots.length" class="remote-control__list">
@@ -293,7 +290,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             class="remote-control__root"
           >
             <label class="remote-control__field">
-              <span>Id</span>
+              <span>ID</span>
               <input
                 v-model="root.id"
                 placeholder="notes"
@@ -302,7 +299,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
               />
             </label>
             <label class="remote-control__field remote-control__field--grow">
-              <span>Path (absolute)</span>
+              <span>路径（绝对路径）</span>
               <input
                 v-model="root.path"
                 placeholder="C:\Users\me\notes"
@@ -316,31 +313,29 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
               :disabled="controlsDisabled"
               @click="removeRoot(index)"
             >
-              Remove
+              移除
             </button>
           </li>
         </ul>
         <p v-else class="remote-control__note">
-          Scoped file reads and profile working directories stay inside these
-          roots. Not used in full access mode.
+          受限模式下的文件读取与程序工作目录必须位于这些目录中；完全访问模式不会使用此限制。
         </p>
       </div>
 
       <div class="remote-control__section">
         <div class="remote-control__section-head">
-          <span>Exec profiles</span>
+          <span>程序配置</span>
           <button
             class="settings-button settings-button--quiet"
             type="button"
             :disabled="controlsDisabled || profilesFull"
             @click="addProfile"
           >
-            Add profile
+            添加配置
           </button>
         </div>
         <p v-if="!draft.execProfiles.length" class="remote-control__note">
-          In scoped mode the Gateway can only run programs listed here. Not used
-          in full access mode.
+          受限模式下，Gateway 只能运行这里列出的程序；完全访问模式不会使用此限制。
         </p>
         <div
           v-for="(profile, index) in draft.execProfiles"
@@ -348,19 +343,19 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
           class="remote-control__profile"
         >
           <div class="remote-control__section-head">
-            <span>Profile {{ index + 1 }}</span>
+            <span>配置 {{ index + 1 }}</span>
             <button
               class="settings-button settings-button--quiet remote-control__remove"
               type="button"
               :disabled="controlsDisabled"
               @click="removeProfile(index)"
             >
-              Remove
+              移除
             </button>
           </div>
           <div class="remote-control__grid">
             <label class="remote-control__field">
-              <span>Id</span>
+              <span>ID</span>
               <input
                 v-model="profile.id"
                 placeholder="rust-version"
@@ -369,7 +364,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
               />
             </label>
             <label class="remote-control__field">
-              <span>Program (absolute path)</span>
+              <span>程序（绝对路径）</span>
               <input
                 v-model="profile.program"
                 placeholder="C:\Tools\my-tool.exe"
@@ -378,24 +373,24 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
               />
             </label>
             <label class="remote-control__field">
-              <span>Working directory root</span>
+              <span>工作目录根路径</span>
               <select
                 v-model="profile.cwdRootId"
                 :disabled="controlsDisabled"
               >
-                <option value="" disabled>Select a read root</option>
+                <option value="" disabled>选择可读目录</option>
                 <option
                   v-for="root in draft.readRoots"
                   :key="root.id"
                   :value="root.id"
                 >
-                  {{ root.id || "(unnamed root)" }}
+                  {{ root.id || "（未命名目录）" }}
                 </option>
               </select>
             </label>
           </div>
           <label class="remote-control__field">
-            <span>Fixed arguments (one per line)</span>
+            <span>固定参数（每行一个）</span>
             <textarea
               :value="profile.fixedArgs.join('\n')"
               rows="3"
@@ -411,14 +406,14 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
               :disabled="controlsDisabled"
               @change="profile.allowAdditionalArgs = !profile.allowAdditionalArgs"
             />
-            <span>Allow the Gateway to append additional arguments</span>
+            <span>允许 Gateway 追加参数</span>
           </label>
         </div>
       </div>
 
       <div class="remote-control__section">
         <div class="remote-control__section-head">
-          <span>Computer use</span>
+          <span>电脑操作</span>
         </div>
         <label class="remote-control__check">
           <input
@@ -427,7 +422,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             :disabled="controlsDisabled"
             @change="draft.computerUse.allowScreenCapture = !draft.computerUse.allowScreenCapture"
           />
-          <span>Allow screen capture (all visible pixels, no DOM or UI Automation)</span>
+          <span>允许屏幕捕获（所有可见像素，不含 DOM 或 UI Automation）</span>
         </label>
         <label class="remote-control__check">
           <input
@@ -436,17 +431,17 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             :disabled="controlsDisabled"
             @change="draft.computerUse.allowInput = !draft.computerUse.allowInput"
           />
-          <span>Allow pointer and keyboard input with normalized coordinates</span>
+          <span>允许通过归一化坐标控制鼠标和键盘</span>
         </label>
       </div>
 
       <div class="remote-control__section">
         <div class="remote-control__section-head">
-          <span>Limits</span>
+          <span>限制</span>
         </div>
         <div class="remote-control__grid">
           <label class="remote-control__field">
-            <span>Timeout (ms)</span>
+            <span>超时（毫秒）</span>
             <input
               v-model.number="draft.limits.timeoutMs"
               type="number"
@@ -456,7 +451,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             />
           </label>
           <label class="remote-control__field">
-            <span>Output limit (bytes)</span>
+            <span>输出上限（字节）</span>
             <input
               v-model.number="draft.limits.outputLimitBytes"
               type="number"
@@ -466,7 +461,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             />
           </label>
           <label class="remote-control__field">
-            <span>Stdout limit (bytes)</span>
+            <span>标准输出上限（字节）</span>
             <input
               v-model.number="draft.limits.stdoutLimitBytes"
               type="number"
@@ -476,7 +471,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             />
           </label>
           <label class="remote-control__field">
-            <span>Stderr limit (bytes)</span>
+            <span>错误输出上限（字节）</span>
             <input
               v-model.number="draft.limits.stderrLimitBytes"
               type="number"
@@ -486,7 +481,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             />
           </label>
           <label class="remote-control__field">
-            <span>File limit (bytes)</span>
+            <span>文件上限（字节）</span>
             <input
               v-model.number="draft.limits.fileLimitBytes"
               type="number"
@@ -496,7 +491,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             />
           </label>
           <label class="remote-control__field">
-            <span>Max additional args</span>
+            <span>追加参数数量上限</span>
             <input
               v-model.number="draft.limits.maxAdditionalArgs"
               type="number"
@@ -506,7 +501,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
             />
           </label>
           <label class="remote-control__field">
-            <span>Max bytes per arg</span>
+            <span>单个参数字节上限</span>
             <input
               v-model.number="draft.limits.maxArgBytes"
               type="number"
@@ -519,12 +514,11 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
       </div>
 
       <p class="remote-control__note">
-        Exec requests use <code>program</code>, <code>args</code>, and
-        <code>cwd</code>. In scoped mode, program is a local profile id and cwd is
-        relative to its root. File requests use <code>path</code>, optional
-        <code>rootId</code>, <code>offset</code>, and <code>maxBytes</code>;
-        scoped mode requires a root id and relative path. The Gateway must inject
-        <code>actorAccountKey</code> for both capabilities.
+        程序请求使用 <code>program</code>、<code>args</code> 和 <code>cwd</code>。
+        受限模式下，program 是本地配置 ID，cwd 是相对其根目录的路径。
+        文件请求使用 <code>path</code>，以及可选的 <code>rootId</code>、
+        <code>offset</code> 和 <code>maxBytes</code>；两类能力都需要 Gateway 注入
+        <code>actorAccountKey</code>。
       </p>
 
       <div class="remote-control__actions">
@@ -534,7 +528,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
           :disabled="controlsDisabled || !isDirty"
           @click="savePolicy"
         >
-          {{ saving ? "Saving..." : "Save policy" }}
+          {{ saving ? "正在保存…" : "保存策略" }}
         </button>
         <button
           class="settings-button settings-button--quiet"
@@ -542,7 +536,7 @@ function deepClone(policy: RemoteControlPolicy): RemoteControlPolicy {
           :disabled="controlsDisabled"
           @click="loadPolicy"
         >
-          Reload
+          重新读取
         </button>
       </div>
       <p

@@ -6,29 +6,48 @@ import type { TurnRecord, TurnStatus } from "@/stores/desktop";
 const props = defineProps<{
   sessionId: string;
   turns: TurnRecord[];
+  closable?: boolean;
+}>();
+
+defineEmits<{
+  close: [];
 }>();
 
 const chronologicalTurns = computed(() => [...props.turns].reverse());
 
 const statusLabels: Record<TurnStatus, string> = {
-  submitting: "Sending",
-  accepted: "Queued",
-  generating: "Generating reply",
-  synthesizing: "Preparing voice",
-  playing: "Playing",
-  completed: "Complete",
-  failed: "Failed",
+  submitting: "正在发送",
+  accepted: "已进入队列",
+  generating: "正在生成回复",
+  synthesizing: "正在准备语音",
+  playing: "正在播放",
+  completed: "已完成",
+  failed: "失败",
 };
 </script>
 
 <template>
-  <section class="runtime-conversation" aria-label="Current conversation">
+  <section
+    id="runtime-conversation"
+    class="runtime-conversation"
+    aria-label="当前对话"
+  >
     <header class="runtime-conversation__header">
       <div>
-        <strong>Current conversation</strong>
-        <span>{{ props.sessionId || "No session" }}</span>
+        <strong>当前对话</strong>
+        <span>{{ props.sessionId || "尚未创建会话" }}</span>
       </div>
-      <span>{{ props.turns.length }} turns</span>
+      <div class="runtime-conversation__header-actions">
+        <span>{{ props.turns.length }} 条</span>
+        <button
+          v-if="props.closable"
+          type="button"
+          aria-label="收起对话"
+          @click="$emit('close')"
+        >
+          收起
+        </button>
+      </div>
     </header>
 
     <ol
@@ -43,7 +62,7 @@ const statusLabels: Record<TurnStatus, string> = {
         :data-status="turn.status"
       >
         <div v-if="turn.userText" class="runtime-conversation__message is-user">
-          <span>You</span>
+          <span>你</span>
           <p>{{ turn.userText }}</p>
         </div>
         <div
@@ -64,7 +83,7 @@ const statusLabels: Record<TurnStatus, string> = {
       </li>
     </ol>
     <p v-else class="runtime-conversation__empty">
-      Send a message to start this conversation.
+      发送一条消息，开始与纳西妲对话。
     </p>
   </section>
 </template>

@@ -42,12 +42,12 @@ const feedbackOptions: Array<{
   value: MotionPreferenceLabel;
   label: string;
 }> = [
-  { value: "good", label: "Good" },
-  { value: "bad", label: "Bad" },
-  { value: "too_much", label: "Too much" },
-  { value: "too_little", label: "Too little" },
-  { value: "wrong_emotion", label: "Wrong emotion" },
-  { value: "repetitive", label: "Repetitive" },
+  { value: "good", label: "合适" },
+  { value: "bad", label: "不合适" },
+  { value: "too_much", label: "幅度过大" },
+  { value: "too_little", label: "幅度过小" },
+  { value: "wrong_emotion", label: "情绪不对" },
+  { value: "repetitive", label: "太重复" },
 ];
 
 const preferenceStore = new LocalMotionPreferenceStore();
@@ -140,7 +140,7 @@ async function saveFeedback(
     await preferenceStore.record(record);
     currentPreference.value = record;
     correctionOpen.value = label === "bad" || label === "wrong_emotion";
-    status.value = "Saved locally";
+    status.value = "已保存在本机";
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -169,7 +169,7 @@ async function undoFeedback(): Promise<void> {
     await retractCurrent();
     currentPreference.value = null;
     correctionOpen.value = false;
-    status.value = "Feedback undone";
+    status.value = "已撤销反馈";
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error);
   } finally {
@@ -188,15 +188,15 @@ watch(
   <section
     class="motion-feedback"
     :class="{ 'motion-feedback--compact': props.compact }"
-    aria-label="Motion feedback"
+    aria-label="动作反馈"
   >
     <header class="motion-feedback__header">
       <div class="motion-feedback__heading">
-        <strong>Rate the last motion</strong>
+        <strong>评价刚才的动作</strong>
         <span v-if="props.playback">
           {{ props.playback.primitive }} · {{ props.playback.intent.intent }}
         </span>
-        <span v-else>Use the pet normally; the latest reply will appear here.</span>
+        <span v-else>使用桌宠后，最近一次动作会显示在这里。</span>
       </div>
       <div class="motion-feedback__header-actions">
         <button
@@ -204,7 +204,7 @@ watch(
           type="button"
           @click="emit('replay', props.playback)"
         >
-          Replay
+          重播
         </button>
         <button
           v-if="currentPreference && !collapsed"
@@ -212,14 +212,14 @@ watch(
           :disabled="busy"
           @click="undoFeedback"
         >
-          Undo
+          撤销
         </button>
         <button
           v-if="props.collapsible"
           type="button"
           @click="collapsed = !collapsed"
         >
-          {{ collapsed ? "Rate" : "Hide" }}
+          {{ collapsed ? "评价动作" : "收起" }}
         </button>
       </div>
     </header>
@@ -247,7 +247,7 @@ watch(
       class="motion-feedback__correction-toggle"
       @click="correctionOpen = true"
     >
-      Add correction
+      补充修正
     </button>
 
     <div
@@ -255,37 +255,37 @@ watch(
       class="motion-feedback__correction"
     >
       <label>
-        <span>Correct intent</span>
+        <span>正确意图</span>
         <select v-model="correctedIntent">
-          <option value="">Keep current</option>
+          <option value="">保持当前</option>
           <option v-for="intent in motionIntentNames" :key="intent" :value="intent">
             {{ intent }}
           </option>
         </select>
       </label>
       <label>
-        <span>Correct emotion</span>
+        <span>正确情绪</span>
         <select v-model="correctedEmotion">
-          <option value="">Keep current</option>
+          <option value="">保持当前</option>
           <option v-for="emotion in motionEmotions" :key="emotion" :value="emotion">
             {{ emotion }}
           </option>
         </select>
       </label>
       <label class="motion-feedback__intensity">
-        <span>Intensity {{ correctedIntensity.toFixed(2) }}</span>
+        <span>强度 {{ correctedIntensity.toFixed(2) }}</span>
         <input v-model.number="correctedIntensity" type="range" min="0" max="1" step="0.05" />
       </label>
       <div class="motion-feedback__correction-actions">
         <button type="button" :disabled="busy" @click="saveCorrection">
-          Save correction
+          保存修正
         </button>
-        <button type="button" @click="correctionOpen = false">Cancel</button>
+        <button type="button" @click="correctionOpen = false">取消</button>
       </div>
     </div>
 
     <p v-if="!props.enabled && !collapsed" class="motion-feedback__notice">
-      Motion data collection is disabled in Settings.
+      动作数据收集已在设置中关闭。
     </p>
     <p
       v-else-if="errorMessage && !collapsed"

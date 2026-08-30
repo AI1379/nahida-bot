@@ -58,7 +58,7 @@ export interface GatewayConnectionSettings {
 }
 
 export const defaultGatewayConnectionSettings: GatewayConnectionSettings = {
-  mode: "mock",
+  mode: "gateway",
   gatewayWsUrl: "ws://127.0.0.1:6185/api/nodes/ws",
   nodeId: "desktop-local",
   displayName: "Nahida Desktop",
@@ -85,7 +85,9 @@ function cleanNodeId(value: unknown): string {
 }
 
 function cleanMode(value: unknown): GatewayConnectionMode {
-  return value === "gateway" ? "gateway" : "mock";
+  return value === "mock" || value === "gateway"
+    ? value
+    : defaultGatewayConnectionSettings.mode;
 }
 
 function cleanTtsSource(value: unknown): TtsSourcePreference {

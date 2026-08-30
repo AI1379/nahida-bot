@@ -32,9 +32,9 @@ const matchingVoices = computed(() => {
 });
 
 const status = computed(() => {
-  if (!synthesis) return "Web Speech unavailable";
-  if (!voices.value.length) return "waiting for system voices";
-  return `${voices.value.length} system voices`;
+  if (!synthesis) return "系统语音不可用";
+  if (!voices.value.length) return "正在读取系统语音";
+  return `${voices.value.length} 个系统语音`;
 });
 
 function refreshVoices() {
@@ -79,15 +79,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="panel tts-settings" aria-label="TTS settings">
+  <section class="panel tts-settings" aria-label="语音设置">
     <header class="panel__header">
-      <h2>System TTS</h2>
+      <h2>系统语音</h2>
       <span>{{ status }}</span>
     </header>
 
     <div class="tts-settings__body">
       <label>
-        <span>Language</span>
+        <span>语言</span>
         <select :value="settings.language" @change="changeLanguage">
           <option v-for="language in languages" :key="language" :value="language">
             {{ language }}
@@ -96,10 +96,10 @@ onBeforeUnmount(() => {
       </label>
 
       <label>
-        <span>Voice</span>
+        <span>声音</span>
         <select :value="settings.voiceUri" @change="changeVoice">
           <option value="">
-            Auto (prefer matching female voice)
+            自动（优先匹配女性声音）
           </option>
           <option
             v-for="voice in matchingVoices"
@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
             :value="voice.voiceURI"
           >
             {{ voice.name }} · {{ voice.lang }}
-            {{ voice.localService ? "· local" : "· online" }}
+            {{ voice.localService ? "· 本地" : "· 在线" }}
           </option>
         </select>
       </label>
@@ -120,11 +120,11 @@ onBeforeUnmount(() => {
             preferFemale: ($event.target as HTMLInputElement).checked,
           })"
         />
-        <span>Auto mode prefers common female voice names</span>
+        <span>自动模式优先选择常见女性声音名称</span>
       </label>
 
       <label>
-        <span>Rate: {{ settings.rate.toFixed(2) }}</span>
+        <span>语速：{{ settings.rate.toFixed(2) }}</span>
         <input
           type="range"
           min="0.5"
@@ -136,7 +136,7 @@ onBeforeUnmount(() => {
       </label>
 
       <label>
-        <span>Pitch: {{ settings.pitch.toFixed(1) }} semitones</span>
+        <span>音高：{{ settings.pitch.toFixed(1) }} 个半音</span>
         <input
           type="range"
           min="-6"
@@ -148,7 +148,7 @@ onBeforeUnmount(() => {
       </label>
 
       <label>
-        <span>Volume: {{ Math.round(settings.volume * 100) }}%</span>
+        <span>音量：{{ Math.round(settings.volume * 100) }}%</span>
         <input
           type="range"
           min="0"
@@ -160,12 +160,12 @@ onBeforeUnmount(() => {
       </label>
 
       <p v-if="voices.length && !matchingVoices.length" class="tts-settings__warning">
-        No {{ settings.language }} system voice was found. Install a Chinese
-        speech voice in Windows language settings, then reopen the app.
+        未找到 {{ settings.language }} 系统语音。请在 Windows 语言设置中安装中文语音，
+        然后重新打开应用。
       </p>
 
       <form class="tts-settings__preview" @submit.prevent="emit('preview', previewText)">
-        <label for="tts-preview-text">Preview text</label>
+        <label for="tts-preview-text">试听文本</label>
         <textarea
           id="tts-preview-text"
           v-model="previewText"
@@ -177,13 +177,12 @@ onBeforeUnmount(() => {
           type="submit"
           :disabled="!previewText.trim() || !voices.length"
         >
-          Preview Voice
+          试听声音
         </button>
       </form>
 
       <p class="tts-settings__note">
-        Web Speech does not expose reliable gender metadata. Explicit voice
-        selection is authoritative; female preference is only a name heuristic.
+        系统语音不会提供可靠的性别信息。手动选择的声音始终优先；女性声音偏好仅按名称推测。
       </p>
     </div>
   </section>

@@ -32,6 +32,7 @@ export type PetWindowCommand =
   | { type: "hide" }
   | { type: "enter_chat" }
   | { type: "exit_chat" }
+  | { type: "toggle_pomodoro" }
   | { type: "submit_message"; text: string }
   /** Cursor is over the visible pet; re-arms auto retreat / chat timeouts. */
   | { type: "pointer_activity" }

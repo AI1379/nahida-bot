@@ -34,15 +34,15 @@ function changeDuration(
 </script>
 
 <template>
-  <section class="panel pet-trigger-settings" aria-label="Pet trigger settings">
+  <section class="panel pet-trigger-settings" aria-label="桌宠触发设置">
     <header class="panel__header">
-      <h2>Pet Triggers</h2>
-      <span>proximity &amp; idle timing</span>
+      <h2>桌宠触发方式</h2>
+      <span>靠近感应与空闲计时</span>
     </header>
 
     <div class="pet-trigger-settings__body">
       <label>
-        <span>Wake distance: {{ settings.wakeDistancePx }} px</span>
+        <span>唤醒距离：{{ settings.wakeDistancePx }} px</span>
         <input
           type="range"
           min="8"
@@ -54,7 +54,7 @@ function changeDuration(
       </label>
 
       <label>
-        <span>Hide distance: {{ settings.hideDistancePx }} px</span>
+        <span>收起距离：{{ settings.hideDistancePx }} px</span>
         <input
           type="range"
           min="16"
@@ -67,7 +67,7 @@ function changeDuration(
 
       <label>
         <span>
-          Auto retreat: {{ Math.round(settings.autoRetreatMs / 1000) }} s
+          自动收起：{{ Math.round(settings.autoRetreatMs / 1000) }} 秒
         </span>
         <input
           type="range"
@@ -81,8 +81,8 @@ function changeDuration(
 
       <label>
         <span>
-          Chat idle timeout:
-          {{ Math.round(settings.chatIdleTimeoutMs / 1000) }} s
+          对话空闲超时：
+          {{ Math.round(settings.chatIdleTimeoutMs / 1000) }} 秒
         </span>
         <input
           type="range"
@@ -95,9 +95,8 @@ function changeDuration(
       </label>
 
       <p class="pet-trigger-settings__note">
-        Wake distance is how close the cursor must get to the hidden pet
-        before it peeks out; hide distance is how far away it must move
-        again. The hide distance always stays beyond the wake distance.
+        鼠标靠近到唤醒距离时，隐藏的桌宠会探出；离开到收起距离时会再次隐藏。
+        收起距离会始终大于唤醒距离，避免桌宠反复闪动。
       </p>
     </div>
   </section>

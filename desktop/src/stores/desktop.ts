@@ -28,6 +28,7 @@ import type {
   PetRuntimeState,
   PresentationPlan,
 } from "@/domain/runtime";
+import { renderModeForPerformanceMode } from "@/domain/runtime";
 import {
   petRuntimeNeedsEmerge,
   transitionPetRuntime as reducePetRuntime,
@@ -70,6 +71,7 @@ import {
   writeConversationHistory,
 } from "@/services/conversationStorage";
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
+import { showDesktopNotification } from "@/services/desktopNotification";
 import {
   nextCustomExpressionKeyword,
   type ExpressionKeywordMap,
@@ -599,6 +601,47 @@ export const useDesktopStore = defineStore("desktop", {
         petTriggers,
       });
     },
+    updateDesktopWindowState(
+      patch: Partial<LocalDesktopConfig["windowState"]>,
+    ) {
+      const current = this.localConfig.windowState;
+      const width = Number.isFinite(patch.width)
+        ? Math.min(720, Math.max(280, Number(patch.width)))
+        : current.width;
+      const height = Number.isFinite(patch.height)
+        ? Math.min(900, Math.max(360, Number(patch.height)))
+        : current.height;
+      const exposedPx = Number.isFinite(patch.exposedPx)
+        ? Math.min(160, Math.max(16, Number(patch.exposedPx)))
+        : current.exposedPx;
+      this.commitLocalConfig({
+        ...this.localConfig,
+        windowState: {
+          ...current,
+          ...patch,
+          width,
+          height,
+          exposedPx,
+        },
+      });
+    },
+    updatePerformanceMode(mode: LocalDesktopConfig["performanceMode"]) {
+      if (!(["power_saver", "balanced", "active"] as const).includes(mode)) {
+        return;
+      }
+      this.commitLocalConfig({
+        ...this.localConfig,
+        performanceMode: mode,
+      });
+      if (this.petRuntime.status !== "hidden") {
+        this.syncPetRuntime({
+          renderMode:
+            this.petRuntime.status === "chat"
+              ? "active"
+              : renderModeForPerformanceMode(mode, this.petRuntime.speaking),
+        });
+      }
+    },
     commitGatewayConnection(settings: GatewayConnectionSettings) {
       this.gatewayConnection = sanitizeGatewayConnectionSettings(settings);
       this.gatewayConnectionVersion += 1;
@@ -620,7 +663,7 @@ export const useDesktopStore = defineStore("desktop", {
     },
     resetGatewayConnection() {
       this.commitGatewayConnection({
-        mode: "mock",
+        mode: "gateway",
         gatewayWsUrl: "ws://127.0.0.1:6185/api/nodes/ws",
         nodeId: "desktop-local",
         displayName: "Nahida Desktop",
@@ -986,6 +1029,10 @@ export const useDesktopStore = defineStore("desktop", {
           break;
         }
         case "notification.error": {
+          void showDesktopNotification({
+            title: "Nahida · 错误",
+            body: event.message,
+          });
           this.clearActiveMotionFeedbackCandidate();
           const presentation = presentationPlanFromDesktopEvent(event);
           if (presentation) {
@@ -1011,6 +1058,10 @@ export const useDesktopStore = defineStore("desktop", {
           break;
         }
         case "notification.reminder": {
+          void showDesktopNotification({
+            title: "Nahida · 提醒",
+            body: event.message,
+          });
           this.clearActiveMotionFeedbackCandidate();
           const presentation = presentationPlanFromDesktopEvent(event);
           if (!presentation) break;
@@ -1096,10 +1147,11 @@ export const useDesktopStore = defineStore("desktop", {
       }
 
       if (capability === "desktop.notification.show") {
+        const title = readStringArg(args.title) ?? "Nahida Desktop";
         const message =
           readStringArg(args.message) ??
           readStringArg(args.body) ??
-          readStringArg(args.title);
+          title;
         if (!message) {
           return invalidCapabilityArguments(
             capability,
@@ -1109,6 +1161,7 @@ export const useDesktopStore = defineStore("desktop", {
         this.transcript.unshift(
           createTranscriptEntry("system", message, new Date().toISOString()),
         );
+        void showDesktopNotification({ title, body: message });
         return capabilityApplied();
       }
 

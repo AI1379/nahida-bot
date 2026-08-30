@@ -100,6 +100,7 @@ watch(
     store.localConfig.windowState.height,
     store.localConfig.windowState.edge,
     store.localConfig.windowState.exposedPx,
+    store.localConfig.windowState.alwaysOnTop,
   ] as const,
   () => queueWindowUpdate(),
   { immediate: true },
@@ -197,21 +198,22 @@ onBeforeUnmount(() => {
         v-model="replyText"
         type="text"
         :disabled="!store.connected"
-        placeholder="Reply"
+        placeholder="回复纳西妲"
+        aria-label="回复纳西妲"
         autofocus
       />
       <button
         type="submit"
         :disabled="!store.connected || !replyText.trim()"
       >
-        Send
+        发送
       </button>
       <button
         type="button"
-        aria-label="Close chat"
+        aria-label="关闭对话"
         @click="sendPetWindowCommand({ type: 'exit_chat' })"
       >
-        Close
+        关闭
       </button>
     </form>
   </main>

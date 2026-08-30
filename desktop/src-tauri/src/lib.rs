@@ -1,14 +1,14 @@
 mod computer_use;
 mod gateway_node;
 mod motion_dataset;
-mod remote_control;
 #[cfg(windows)]
 mod pet_mouse_hook;
+mod remote_control;
 mod secure_storage;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 #[tauri::command]
 fn runtime_mode() -> &'static str {
@@ -115,6 +115,14 @@ pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn emit_pet_command(app: &tauri::AppHandle, command_type: &str) {
+    let _ = app.emit_to(
+        "main",
+        "nahida://desktop/pet-command",
+        serde_json::json!({ "type": command_type }),
+    );
+}
+
 /// Invoked by the frontend right after toggling click-through, because tao
 /// re-applies the caption styles on that change.
 #[tauri::command]
@@ -133,6 +141,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .manage(gateway_node::GatewayNodeManager::default())
         .invoke_handler(tauri::generate_handler![
             runtime_mode,
@@ -164,10 +173,17 @@ pub fn run() {
             }
             #[cfg(windows)]
             pet_mouse_hook::install(app);
-            let show_main =
-                MenuItem::with_id(app, "show-main", "打开主窗口", true, None::<&str>)?;
+            let show_main = MenuItem::with_id(app, "show-main", "打开主窗口", true, None::<&str>)?;
+            let show_pet = MenuItem::with_id(app, "show-pet", "唤出桌宠", true, None::<&str>)?;
+            let chat = MenuItem::with_id(app, "chat", "打开对话", true, None::<&str>)?;
+            let hide_pet = MenuItem::with_id(app, "hide-pet", "收起桌宠", true, None::<&str>)?;
+            let pomodoro =
+                MenuItem::with_id(app, "pomodoro", "开始 / 暂停专注", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_main, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show_main, &show_pet, &chat, &hide_pet, &pomodoro, &quit],
+            )?;
             let mut tray = TrayIconBuilder::with_id("nahida-tray")
                 .tooltip("Nahida Desktop")
                 .menu(&menu)
@@ -175,6 +191,10 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show-main" => show_main_window(app),
+                    "show-pet" => emit_pet_command(app, "emerge"),
+                    "chat" => emit_pet_command(app, "enter_chat"),
+                    "hide-pet" => emit_pet_command(app, "retreat"),
+                    "pomodoro" => emit_pet_command(app, "toggle_pomodoro"),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -216,7 +236,9 @@ pub fn run() {
             // resident in the tray. The tray quit item calls app.exit(0),
             // which carries a code and is allowed through.
             match event {
-                RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+                RunEvent::ExitRequested {
+                    code: None, api, ..
+                } => api.prevent_exit(),
                 RunEvent::Exit => {
                     #[cfg(windows)]
                     pet_mouse_hook::uninstall();

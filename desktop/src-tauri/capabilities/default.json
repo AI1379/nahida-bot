@@ -11,11 +11,13 @@
     "core:window:allow-outer-size",
     "core:window:allow-primary-monitor",
     "core:window:allow-set-focus",
+    "core:window:allow-set-always-on-top",
     "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "core:window:allow-show",
     "core:window:allow-unminimize",
-    "store:default"
+    "store:default",
+    "notification:default"
   ]
 }

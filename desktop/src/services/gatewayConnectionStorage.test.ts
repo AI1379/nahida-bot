@@ -13,7 +13,7 @@ describe("gateway connection sanitization", () => {
   it("falls back to defaults on invalid input", () => {
     expect(sanitizeGatewayConnectionSettings(null)).toEqual(defaultSettings);
     expect(sanitizeGatewayConnectionSettings("nope")).toEqual(defaultSettings);
-    expect(sanitizeGatewayConnectionSettings({ mode: "weird" }).mode).toBe("mock");
+    expect(sanitizeGatewayConnectionSettings({ mode: "weird" }).mode).toBe("gateway");
   });
 
   it("normalizes the WebSocket URL and strips unsupported schemes", () => {
