@@ -51,6 +51,20 @@ export interface PluginSurfaceSnapshot {
   surfaces: PluginSurfaceContribution[];
 }
 
+export function selectPluginSurfaces(
+  surfaces: PluginSurfaceContribution[],
+  target: PluginSurfaceTarget,
+): PluginSurfaceContribution[] {
+  return surfaces
+    .filter((surface) => surface.target === target)
+    .toSorted(
+      (left, right) =>
+        right.priority - left.priority ||
+        left.ownerPluginId.localeCompare(right.ownerPluginId) ||
+        left.id.localeCompare(right.id),
+    );
+}
+
 const targets = new Set<PluginSurfaceTarget>([
   "desktop.home",
   "desktop.sidebar",

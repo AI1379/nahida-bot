@@ -12,6 +12,8 @@ import { useDesktopStore } from "@/stores/desktop";
 import OnboardingView from "@/views/OnboardingView.vue";
 import PetRuntimeView from "@/views/PetRuntimeView.vue";
 import SettingsView from "@/views/SettingsView.vue";
+import PluginSurfaceHost from "@/components/PluginSurfaceHost.vue";
+import { selectPluginSurfaces } from "@/domain/pluginSurface";
 import { listenForMotionPlaybacks } from "@/services/desktopWindowBridge";
 import { readRecentMotionPlaybacks } from "@/services/motionPlaybackHistory";
 
@@ -25,7 +27,12 @@ const runtime = useDesktopRuntimeController(store);
 type DesktopView = "runtime" | "workbench" | "settings";
 const activeView = ref<DesktopView>("runtime");
 const developerToolsAvailable = import.meta.env.DEV;
+const sidebarOpen = ref(true);
 let unlistenMotionPlaybacks: UnlistenFn | null = null;
+
+const sidebarSurfaces = computed(() =>
+  selectPluginSurfaces(store.pluginSurfaces, "desktop.sidebar"),
+);
 
 const title = computed(() => {
   switch (activeView.value) {
@@ -157,6 +164,16 @@ onBeforeUnmount(() => {
         </div>
         <div class="status-cluster" aria-label="桌面端状态">
           <button
+            v-if="sidebarSurfaces.length"
+            type="button"
+            class="status-pill status-pill--button"
+            :aria-expanded="sidebarOpen"
+            aria-controls="desktop-plugin-sidebar"
+            @click="sidebarOpen = !sidebarOpen"
+          >
+            插件面板 · {{ sidebarSurfaces.length }}
+          </button>
+          <button
             type="button"
             class="status-pill status-pill--button"
             :data-state="connectionStatusState"
@@ -171,16 +188,52 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <OnboardingView
-      v-if="activeView === 'runtime' && needsOnboarding"
-      @open-settings="activeView = 'settings'"
-      @use-offline-demo="runtime.connectMockBackend()"
-    />
-    <PetRuntimeView
-      v-else-if="activeView === 'runtime'"
-      :runtime="runtime"
-    />
-    <WorkbenchView v-else-if="activeView === 'workbench'" :runtime="runtime" />
-    <SettingsView v-else :runtime="runtime" />
+    <div
+      class="desktop-shell__body"
+      :data-sidebar="sidebarSurfaces.length && sidebarOpen ? 'open' : 'closed'"
+    >
+      <div class="desktop-shell__content">
+        <OnboardingView
+          v-if="activeView === 'runtime' && needsOnboarding"
+          @open-settings="activeView = 'settings'"
+          @use-offline-demo="runtime.connectMockBackend()"
+        />
+        <PetRuntimeView
+          v-else-if="activeView === 'runtime'"
+          :runtime="runtime"
+        />
+        <WorkbenchView
+          v-else-if="activeView === 'workbench'"
+          :runtime="runtime"
+        />
+        <SettingsView v-else :runtime="runtime" />
+      </div>
+
+      <aside
+        v-if="sidebarSurfaces.length && sidebarOpen"
+        id="desktop-plugin-sidebar"
+        class="desktop-plugin-sidebar"
+        aria-label="插件侧栏"
+      >
+        <header class="desktop-plugin-sidebar__header">
+          <div>
+            <strong>插件面板</strong>
+            <span>{{ sidebarSurfaces.length }} 个组件</span>
+          </div>
+          <button
+            type="button"
+            aria-label="收起插件侧栏"
+            @click="sidebarOpen = false"
+          >
+            收起
+          </button>
+        </header>
+        <PluginSurfaceHost
+          class="desktop-plugin-sidebar__surfaces"
+          :surfaces="store.pluginSurfaces"
+          target="desktop.sidebar"
+        />
+      </aside>
+    </div>
   </main>
 </template>

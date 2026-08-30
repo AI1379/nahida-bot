@@ -6,6 +6,82 @@
   padding: 18px;
 }
 
+.desktop-shell__body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  overflow: hidden;
+}
+
+.desktop-shell__body[data-sidebar="open"] {
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 300px);
+}
+
+.desktop-shell__content {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.desktop-plugin-sidebar {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgb(250 253 249 / 90%);
+  box-shadow: 0 12px 30px rgb(22 32 26 / 10%);
+}
+
+.desktop-plugin-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 11px 12px;
+}
+
+.desktop-plugin-sidebar__header div {
+  display: grid;
+  gap: 2px;
+}
+
+.desktop-plugin-sidebar__header span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.desktop-plugin-sidebar__header button {
+  min-height: 30px;
+  padding-inline: 8px;
+  font-size: 11px;
+}
+
+.desktop-plugin-sidebar__surfaces {
+  align-content: start;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px;
+  scrollbar-gutter: stable;
+}
+
+.desktop-shell__body[data-sidebar="open"] .onboarding-view {
+  grid-template-columns: minmax(150px, 0.55fr) minmax(300px, 1fr);
+  gap: 28px;
+  padding: 36px;
+}
+
+.desktop-shell__body[data-sidebar="open"] .onboarding-view__art {
+  width: min(100%, 240px);
+}
+
 .hero-band {
   display: flex;
   align-items: center;
@@ -281,6 +357,28 @@
     gap: 28px;
     padding: 36px;
   }
+
+  .desktop-shell__body[data-sidebar="open"] {
+    grid-template-columns: minmax(0, 1fr) minmax(230px, 260px);
+  }
+
+  .desktop-shell__body[data-sidebar="open"] .onboarding-view {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+  }
+}
+
+@media (max-width: 900px) {
+  .desktop-shell__body[data-sidebar="open"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .desktop-plugin-sidebar {
+    position: absolute;
+    z-index: 9;
+    inset: 0 0 0 auto;
+    width: min(300px, calc(100% - 20px));
+  }
 }
 
 @media (max-width: 760px) {
@@ -305,5 +403,9 @@
 
   .onboarding-view__art {
     width: 180px;
+  }
+
+  .desktop-shell__body[data-sidebar="open"] .onboarding-view {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -7,6 +7,7 @@ import MotionFeedbackPanel from "@/components/MotionFeedbackPanel.vue";
 import PluginSurfaceHost from "@/components/PluginSurfaceHost.vue";
 import type { ProximityIntent } from "@/domain/petProximity";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
+import { selectPluginSurfaces } from "@/domain/pluginSurface";
 import {
   listenForLipSyncEnergy,
   listenForRuntimeSnapshots,
@@ -36,6 +37,10 @@ const latestPlayback = computed(
 let unlistenRuntimeSnapshots: UnlistenFn | null = null;
 let unlistenLipSyncEnergy: UnlistenFn | null = null;
 const lipSyncEnergy = ref<number | null>(null);
+const drawerOpen = ref(false);
+const drawerSurfaces = computed(() =>
+  selectPluginSurfaces(store.pluginSurfaces, "pet.drawer"),
+);
 let snapshotReceived = false;
 const stateRequestTimers: Array<ReturnType<typeof setTimeout>> = [];
 
@@ -79,7 +84,9 @@ function submitReply() {
 function handleStageDoubleClick(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
   if (
-    target?.closest(".pet-window__composer, .pet-window__motion-feedback")
+    target?.closest(
+      ".pet-window__composer, .pet-window__motion-feedback, .pet-window__drawer, .pet-window__drawer-toggle",
+    )
   ) {
     return;
   }
@@ -104,6 +111,13 @@ watch(
   ] as const,
   () => queueWindowUpdate(),
   { immediate: true },
+);
+
+watch(
+  () => [interactive.value, drawerSurfaces.value.length] as const,
+  ([isInteractive, surfaceCount]) => {
+    if (!isInteractive || surfaceCount === 0) drawerOpen.value = false;
+  },
 );
 
 onMounted(async () => {
@@ -172,6 +186,34 @@ onBeforeUnmount(() => {
       :surfaces="store.pluginSurfaces"
       target="pet.overlay"
     />
+
+    <button
+      v-if="interactive && drawerSurfaces.length"
+      type="button"
+      class="pet-window__drawer-toggle"
+      :aria-expanded="drawerOpen"
+      aria-controls="pet-plugin-drawer"
+      @click="drawerOpen = !drawerOpen"
+    >
+      {{ drawerOpen ? "收起插件" : `插件 ${drawerSurfaces.length}` }}
+    </button>
+
+    <aside
+      v-if="interactive && drawerSurfaces.length && drawerOpen"
+      id="pet-plugin-drawer"
+      class="pet-window__drawer"
+      aria-label="桌宠插件抽屉"
+    >
+      <header class="pet-window__drawer-header">
+        <strong>插件</strong>
+        <button type="button" @click="drawerOpen = false">关闭</button>
+      </header>
+      <PluginSurfaceHost
+        class="pet-window__drawer-surfaces"
+        :surfaces="store.pluginSurfaces"
+        target="pet.drawer"
+      />
+    </aside>
 
     <MotionFeedbackPanel
       v-if="interactive && latestPlayback"

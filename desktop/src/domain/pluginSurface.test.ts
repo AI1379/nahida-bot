@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseGatewayPluginSurfaceSnapshot } from "./pluginSurface";
+import {
+  parseGatewayPluginSurfaceSnapshot,
+  selectPluginSurfaces,
+  type PluginSurfaceContribution,
+} from "./pluginSurface";
 
 describe("parseGatewayPluginSurfaceSnapshot", () => {
   it("normalizes a valid gateway snapshot", () => {
@@ -95,5 +99,58 @@ describe("parseGatewayPluginSurfaceSnapshot", () => {
         surfaces: [surface, surface],
       }),
     ).toBeNull();
+  });
+});
+
+describe("selectPluginSurfaces", () => {
+  const view = {
+    title: "",
+    text: "",
+    status: "",
+    detail: "",
+    expiresAt: "",
+    progress: null,
+    items: [],
+    tone: "neutral" as const,
+  };
+
+  it("filters one UI slot and applies stable priority ordering", () => {
+    const surfaces: PluginSurfaceContribution[] = [
+      {
+        ownerPluginId: "example.low",
+        id: "card",
+        target: "desktop.sidebar",
+        kind: "card",
+        priority: 1,
+        source: "gateway",
+        view,
+      },
+      {
+        ownerPluginId: "example.overlay",
+        id: "badge",
+        target: "pet.overlay",
+        kind: "badge",
+        priority: 100,
+        source: "gateway",
+        view,
+      },
+      {
+        ownerPluginId: "example.high",
+        id: "card",
+        target: "desktop.sidebar",
+        kind: "card",
+        priority: 20,
+        source: "gateway",
+        view,
+      },
+    ];
+    const originalOrder = [...surfaces];
+
+    expect(
+      selectPluginSurfaces(surfaces, "desktop.sidebar").map(
+        (surface) => surface.ownerPluginId,
+      ),
+    ).toEqual(["example.high", "example.low"]);
+    expect(surfaces).toEqual(originalOrder);
   });
 });

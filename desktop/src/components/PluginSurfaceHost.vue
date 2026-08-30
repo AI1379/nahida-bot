@@ -5,6 +5,7 @@ import type {
   PluginSurfaceContribution,
   PluginSurfaceTarget,
 } from "@/domain/pluginSurface";
+import { selectPluginSurfaces } from "@/domain/pluginSurface";
 
 const props = defineProps<{
   surfaces: PluginSurfaceContribution[];
@@ -12,14 +13,7 @@ const props = defineProps<{
 }>();
 
 const visibleSurfaces = computed(() =>
-  props.surfaces
-    .filter((surface) => surface.target === props.target)
-    .toSorted(
-      (left, right) =>
-        right.priority - left.priority ||
-        left.ownerPluginId.localeCompare(right.ownerPluginId) ||
-        left.id.localeCompare(right.id),
-    ),
+  selectPluginSurfaces(props.surfaces, props.target),
 );
 
 const nowMs = ref(Date.now());

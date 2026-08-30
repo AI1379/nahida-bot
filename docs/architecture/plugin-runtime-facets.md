@@ -90,11 +90,14 @@ Desktop 注册 node 或 provider 集合变化时，Gateway 推送完整快照。
 WebUI 中 contribution 元数据展示。以下仍是后续工作：
 
 1. `pages` 的静态资源打包、CSP/iframe 隔离、路由挂载与宿主 API；当前只有 manifest 元数据。
-2. `desktop.sidebar` 与 `pet.drawer` 的具体槽位；当前宿主先覆盖 `desktop.home` 和
-   `pet.overlay`。
-3. 用户交互 action/event 协议；首版 surface 是只读展示，不能从 view model 触发任意命令。
-4. Node worker facet 的 `NodeBotAPI` 与 capability bridge；它复用相同 manifest，但不会让
+2. 用户交互 action/event 协议；首版 surface 是只读展示，不能从 view model 触发任意命令。
+3. Node worker facet 的 `NodeBotAPI` 与 capability bridge；它复用相同 manifest，但不会让
    Gateway Python SDK 直接在 Rust/TypeScript 中运行。
 
-这四项应沿用同一个 Plugin Manager 与 manifest 演进，不新增第二或第三套安装、权限和启停
+这些工作应沿用同一个 Plugin Manager 与 manifest 演进，不新增第二或第三套安装、权限和启停
 系统。
+
+四个声明式槽位均已有 Desktop 宿主：`desktop.home` 位于主运行界面，`desktop.sidebar` 是
+主窗口可折叠侧栏，`pet.overlay` 是点击穿透状态也可见的轻量浮层，`pet.drawer` 只在桌宠进入
+交互模式后允许展开，避免插件破坏常驻桌宠的点击穿透。开发模式可用
+`?surface-preview=1` 注入四个本地 fixture 做布局验收；pet 窗口同时加 `?window=pet`。

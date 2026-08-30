@@ -301,6 +301,60 @@
   display: none;
 }
 
+.pet-window__drawer-toggle {
+  position: absolute;
+  top: 52px;
+  right: 10px;
+  z-index: 8;
+  min-height: 30px;
+  border-color: rgb(167 195 174 / 78%);
+  padding-inline: 9px;
+  background: rgb(250 253 249 / 94%);
+  color: #2d5f41;
+  font-size: 11px;
+  font-weight: 750;
+  box-shadow: 0 8px 18px rgb(22 32 26 / 14%);
+}
+
+.pet-window__drawer {
+  position: absolute;
+  top: 88px;
+  right: 10px;
+  bottom: 76px;
+  z-index: 8;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(270px, calc(100% - 20px));
+  overflow: hidden;
+  border: 1px solid rgb(167 195 174 / 78%);
+  border-radius: 12px;
+  background: rgb(250 253 249 / 95%);
+  box-shadow: 0 14px 32px rgb(22 32 26 / 20%);
+  backdrop-filter: blur(12px);
+}
+
+.pet-window__drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid rgb(167 195 174 / 52%);
+  padding: 8px 9px;
+}
+
+.pet-window__drawer-header button {
+  min-height: 28px;
+  padding-inline: 8px;
+  font-size: 11px;
+}
+
+.pet-window__drawer-surfaces {
+  align-content: start;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 8px;
+}
+
 .plugin-surface-host {
   display: grid;
   gap: 8px;
