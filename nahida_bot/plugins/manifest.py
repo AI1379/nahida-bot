@@ -9,6 +9,7 @@ ManifestParseError into PluginLoadError for backward compatibility.
 from nahida_bot.core.exceptions import PluginLoadError
 from nahida_bot_sdk.manifest import (  # noqa: F401
     Capabilities,
+    DesktopRuntimeFacet,
     DesktopSurfaceDeclaration,
     FilesystemPermission,
     ManifestParseError,
@@ -20,6 +21,7 @@ from nahida_bot_sdk.manifest import (  # noqa: F401
     PluginContributions,
     PluginManifest,
     PluginPageDeclaration,
+    PluginRuntimeFacets,
     SystemPermission,
 )
 from nahida_bot_sdk.manifest import (

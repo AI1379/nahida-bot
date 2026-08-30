@@ -7,6 +7,7 @@ import pytest
 from nahida_bot.core.exceptions import PluginLoadError
 from nahida_bot.plugins.manifest import (
     Capabilities,
+    DesktopRuntimeFacet,
     DesktopSurfaceDeclaration,
     FilesystemPermission,
     MemoryPermission,
@@ -15,6 +16,7 @@ from nahida_bot.plugins.manifest import (
     PluginManifest,
     PluginContributions,
     PluginPageDeclaration,
+    PluginRuntimeFacets,
     SystemPermission,
     parse_manifest,
 )
@@ -108,10 +110,18 @@ class TestPluginManifest:
                     )
                 ],
             ),
+            runtimes=PluginRuntimeFacets(
+                desktop=DesktopRuntimeFacet(
+                    entrypoint="builtin:com.example.schedule",
+                    mode="builtin",
+                )
+            ),
         )
 
         assert m.contributes.desktop_surfaces[0].target == "desktop.home"
         assert m.contributes.pages[0].target == "webui.admin"
+        assert m.runtimes.desktop is not None
+        assert m.runtimes.desktop.entrypoint == "builtin:com.example.schedule"
 
 
 class TestParseManifest:
@@ -160,6 +170,10 @@ contributes:
       target: desktop.main
       entry: dist/settings.html
       title: Schedule settings
+runtimes:
+  desktop:
+    entrypoint: builtin:com.example.schedule
+    mode: builtin
 """,
         )
 
@@ -168,6 +182,8 @@ contributes:
         assert manifest.contributes.desktop_surfaces[0].id == "today"
         assert manifest.contributes.desktop_surfaces[0].priority == 15
         assert manifest.contributes.pages[0].entry == "dist/settings.html"
+        assert manifest.runtimes.desktop is not None
+        assert manifest.runtimes.desktop.mode == "builtin"
 
     def test_rejects_invalid_surface_identifiers(self, tmp_path: Path) -> None:
         path = _write_manifest(

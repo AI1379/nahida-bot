@@ -48,11 +48,7 @@ import {
   clearPersistedTtsSettings,
   sanitizeTtsSettings,
 } from "@/services/ttsSettingsStorage";
-import {
-  clearPersistedPomodoroSettings,
-  sanitizePomodoroSettings,
-} from "@/services/pomodoroSettingsStorage";
-import type { PomodoroState } from "@/services/pomodoroService";
+import { clearLegacyBuiltinDesktopPluginSettings } from "@/plugins/builtin/settings";
 import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { clearPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import {
@@ -77,10 +73,6 @@ import {
   type PluginSurfaceContribution,
   type PluginSurfaceSnapshot,
 } from "@/domain/pluginSurface";
-import {
-  localPomodoroSurfaceIdentity,
-  surfaceFromPomodoroState,
-} from "@/services/pomodoroSurface";
 import {
   nextCustomExpressionKeyword,
   type ExpressionKeywordMap,
@@ -144,6 +136,7 @@ export const useDesktopStore = defineStore("desktop", {
     async hydratePersistentState() {
       const legacyLocalConfig = this.localConfig;
       const legacyGatewayConnection = this.gatewayConnection;
+      const legacyPluginSettings = this.desktopPluginSettings;
       let persisted = null;
 
       this.persistenceError = null;
@@ -151,6 +144,7 @@ export const useDesktopStore = defineStore("desktop", {
         persisted = await readDesktopSettings(
           legacyLocalConfig,
           legacyGatewayConnection,
+          legacyPluginSettings,
         );
       } catch (error) {
         this.persistenceError = `Could not read desktop settings: ${persistenceErrorMessage(error)}`;
@@ -172,6 +166,8 @@ export const useDesktopStore = defineStore("desktop", {
       }
 
       this.localConfig = persisted?.localConfig ?? legacyLocalConfig;
+      this.desktopPluginSettings =
+        persisted?.pluginSettings ?? legacyPluginSettings;
       this.gatewayConnection = sanitizeGatewayConnectionSettings({
         ...(persisted?.gatewayConnection ?? legacyGatewayConnection),
         ...secureTokens,
@@ -187,7 +183,11 @@ export const useDesktopStore = defineStore("desktop", {
 
       let settingsSaved = false;
       try {
-        await writeDesktopSettings(this.localConfig, this.gatewayConnection);
+        await writeDesktopSettings(
+          this.localConfig,
+          this.gatewayConnection,
+          this.desktopPluginSettings,
+        );
         settingsSaved = true;
       } catch (error) {
         this.persistenceError = `Could not save desktop settings: ${persistenceErrorMessage(error)}`;
@@ -206,7 +206,7 @@ export const useDesktopStore = defineStore("desktop", {
         // the next launch instead of silently losing the only token copy.
         clearPersistedGatewayConnection();
         clearPersistedTtsSettings();
-        clearPersistedPomodoroSettings();
+        clearLegacyBuiltinDesktopPluginSettings();
         clearPersistedModelMappings();
       }
     },
@@ -367,7 +367,11 @@ export const useDesktopStore = defineStore("desktop", {
     },
     async persistDesktopSettings() {
       try {
-        await writeDesktopSettings(this.localConfig, this.gatewayConnection);
+        await writeDesktopSettings(
+          this.localConfig,
+          this.gatewayConnection,
+          this.desktopPluginSettings,
+        );
       } catch (error) {
         this.persistenceError = `Could not save desktop settings: ${persistenceErrorMessage(error)}`;
       }
@@ -593,24 +597,13 @@ export const useDesktopStore = defineStore("desktop", {
         motionDataCollectionEnabled: enabled,
       });
     },
-    updatePomodoroSettings(settings: LocalDesktopConfig["pomodoro"]) {
-      const pomodoro = sanitizePomodoroSettings(settings);
-      this.commitLocalConfig({
-        ...this.localConfig,
-        pomodoro,
-      });
-    },
-    setPomodoroState(state: PomodoroState) {
-      this.pomodoroState = state;
-      const surface = surfaceFromPomodoroState(state);
-      if (surface) {
-        this.upsertLocalPluginSurface(surface);
-      } else {
-        this.removeLocalPluginSurface(
-          localPomodoroSurfaceIdentity.ownerPluginId,
-          localPomodoroSurfaceIdentity.id,
-        );
-      }
+    updateDesktopPluginSettings(pluginId: string, settings: unknown) {
+      this.desktopPluginSettings = {
+        ...this.desktopPluginSettings,
+        [pluginId]: settings,
+      };
+      this.persistenceError = null;
+      void this.persistDesktopSettings();
     },
     syncGatewayPluginSurfaces(snapshot: PluginSurfaceSnapshot) {
       if (snapshot.revision <= this.pluginSurfaceRevision) return false;

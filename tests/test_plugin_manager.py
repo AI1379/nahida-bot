@@ -788,3 +788,20 @@ class TaskPlugin(Plugin):
         result = await read_tool.handler(path="notes/hello.txt")
 
         assert result == "hello workspace"
+
+    async def test_pomodoro_gateway_facet_owns_tool_lifecycle(self) -> None:
+        import nahida_bot.plugins.pomodoro as pomodoro_pkg
+
+        module_file = pomodoro_pkg.__file__
+        assert module_file is not None
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([Path(module_file).parent])
+
+        await manager.enable("nahida.pomodoro")
+
+        tool = manager.tool_registry.get("desktop_pomodoro")
+        assert tool is not None
+        assert tool.plugin_id == "nahida.pomodoro"
+
+        await manager.disable("nahida.pomodoro")
+        assert manager.tool_registry.get("desktop_pomodoro") is None

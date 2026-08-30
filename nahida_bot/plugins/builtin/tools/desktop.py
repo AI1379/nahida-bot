@@ -45,6 +45,7 @@ _MAX_SCREENSHOT_BYTES = 9_000_000
 _MAX_QUESTION_CHARS = 2_000
 _MAX_CAPTION_CHARS = 1_000
 _DEFAULT_QUESTION = "Describe the visible desktop and actionable controls."
+DESKTOP_POMODORO_TOOL = "desktop_pomodoro"
 _SCREENSHOT_MIME_SUFFIXES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -274,7 +275,7 @@ class DesktopTools:
                 requires_admin=True,
             ),
             PluginToolDefinition(
-                name="desktop_pomodoro",
+                name=DESKTOP_POMODORO_TOOL,
                 description=(
                     "Control the current actor's Desktop pomodoro timer. One "
                     "round is a work phase plus a break phase; total_rounds "

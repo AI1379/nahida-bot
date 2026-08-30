@@ -23,6 +23,7 @@ from nahida_bot.plugins.loader import PluginLoader
 from nahida_bot.plugins.manager import PluginManager, PluginState
 from nahida_bot.plugins.manifest import (
     Capabilities,
+    DesktopRuntimeFacet,
     FilesystemPermission,
     ManifestParseError,
     MemoryPermission,
@@ -30,6 +31,7 @@ from nahida_bot.plugins.manifest import (
     Permissions,
     PluginDependency,
     PluginManifest,
+    PluginRuntimeFacets,
     SystemPermission,
     parse_manifest,
 )
@@ -63,6 +65,7 @@ __all__ = [
     "PluginState",
     # Manifest
     "Capabilities",
+    "DesktopRuntimeFacet",
     "FilesystemPermission",
     "ManifestParseError",
     "MemoryPermission",
@@ -70,6 +73,7 @@ __all__ = [
     "Permissions",
     "PluginDependency",
     "PluginManifest",
+    "PluginRuntimeFacets",
     "SystemPermission",
     "parse_manifest",
     # Permissions

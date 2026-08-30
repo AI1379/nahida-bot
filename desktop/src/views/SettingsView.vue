@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
-import GatewayConnectionPanel from "@/components/GatewayConnectionPanel.vue";
-import PomodoroSettingsPanel from "@/components/PomodoroSettingsPanel.vue";
-import RemoteControlSettingsPanel from "@/components/RemoteControlSettingsPanel.vue";
-import PetTriggerSettingsPanel from "@/components/PetTriggerSettingsPanel.vue";
-import MotionDataPanel from "@/components/MotionDataPanel.vue";
+import { computed, ref, watch } from "vue";
+
+import DesktopPluginSettingsHost from "@/components/DesktopPluginSettingsHost.vue";
 import DesktopPetSettingsPanel from "@/components/DesktopPetSettingsPanel.vue";
+import GatewayConnectionPanel from "@/components/GatewayConnectionPanel.vue";
+import MotionDataPanel from "@/components/MotionDataPanel.vue";
+import PetTriggerSettingsPanel from "@/components/PetTriggerSettingsPanel.vue";
+import RemoteControlSettingsPanel from "@/components/RemoteControlSettingsPanel.vue";
+import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
 
@@ -16,30 +17,32 @@ const props = defineProps<{
 
 const store = useDesktopStore();
 
-type SettingsSection =
-  | "connection"
-  | "pet"
-  | "voice"
-  | "focus"
-  | "security"
-  | "advanced";
-
-const activeSection = ref<SettingsSection>("connection");
-const sections: Array<{ id: SettingsSection; label: string; hint: string }> = [
-  { id: "connection", label: "连接", hint: "Gateway 与设备配对" },
-  { id: "pet", label: "桌宠", hint: "模型、位置和触发方式" },
-  { id: "voice", label: "语音", hint: "系统语音和试听" },
-  { id: "focus", label: "专注", hint: "番茄钟与提醒" },
-  { id: "security", label: "安全", hint: "本机远程访问边界" },
-  { id: "advanced", label: "高级", hint: "动作数据与诊断" },
+const activeSection = ref("connection");
+const coreSections = [
+  { id: "connection", label: "连接", hint: "Gateway 与设备配对", order: 10 },
+  { id: "pet", label: "桌宠", hint: "模型、位置和触发方式", order: 20 },
+  { id: "voice", label: "语音", hint: "系统语音和试听", order: 30 },
+  { id: "security", label: "安全", hint: "本机远程访问边界", order: 50 },
+  { id: "advanced", label: "高级", hint: "动作数据与诊断", order: 60 },
 ];
+const sections = computed(() => {
+  const byId = new Map(coreSections.map((section) => [section.id, section]));
+  for (const section of props.runtime.desktopPlugins.settingsSections()) {
+    if (!byId.has(section.id)) byId.set(section.id, section);
+  }
+  return [...byId.values()].toSorted(
+    (left, right) => left.order - right.order,
+  );
+});
+
+watch(sections, (nextSections) => {
+  if (!nextSections.some((section) => section.id === activeSection.value)) {
+    activeSection.value = "connection";
+  }
+});
 
 function updateTtsSettings(next: typeof store.localConfig.ttsSettings) {
   store.updateTtsSettings(next);
-}
-
-function updatePomodoroSettings(next: typeof store.localConfig.pomodoro) {
-  store.updatePomodoroSettings(next);
 }
 
 function updateMotionDataCollectionEnabled(enabled: boolean) {
@@ -103,21 +106,19 @@ function updatePetTriggerSettings(next: typeof store.localConfig.petTriggers) {
           @preview="store.previewSystemSpeech"
         />
 
-        <PomodoroSettingsPanel
-          v-else-if="activeSection === 'focus'"
-          :settings="store.localConfig.pomodoro"
-          :state="store.pomodoroState"
-          @update="updatePomodoroSettings"
-          @start="props.runtime.startPomodoro"
-          @stop="props.runtime.stopPomodoro"
-        />
-
         <RemoteControlSettingsPanel v-else-if="activeSection === 'security'" />
 
         <MotionDataPanel
-          v-else
+          v-else-if="activeSection === 'advanced'"
           :enabled="store.localConfig.motionDataCollectionEnabled"
           @update-enabled="updateMotionDataCollectionEnabled"
+        />
+
+        <DesktopPluginSettingsHost
+          v-else
+          :host="props.runtime.desktopPlugins"
+          placement="settings"
+          :section-id="activeSection"
         />
       </div>
     </div>

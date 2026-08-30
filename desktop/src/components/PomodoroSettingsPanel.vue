@@ -117,7 +117,7 @@ function changeText(
   <section class="panel pomodoro-settings" aria-label="番茄钟设置">
     <header class="panel__header">
       <h2>专注计时</h2>
-      <span>本地番茄钟</span>
+      <span>本地番茄钟插件</span>
     </header>
 
     <div class="pomodoro-settings__body">

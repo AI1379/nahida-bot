@@ -15,26 +15,20 @@ import type {
 } from "@/domain/desktopWindowProtocol";
 import { petRuntimeNeedsEmerge } from "@/domain/petRuntimeMachine";
 import type { DesktopEvent } from "@/domain/runtime";
+import { isGatewayConnectionConfigured } from "@/domain/gatewayConnection";
+import { createBuiltinDesktopPlugins } from "@/plugins/builtin";
+import { DesktopPluginHost } from "@/plugins/desktopPluginHost";
+import type {
+  AudioPlaybackAdapter,
+  AudioPlaybackRequest,
+} from "@/services/audioPlaybackAdapter";
+import { isAudioPlaybackAborted } from "@/services/audioPlaybackAdapter";
 import {
   listenForPetCommands,
   publishLipSyncEnergy,
   publishRuntimeSnapshot,
 } from "@/services/desktopWindowBridge";
-import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
-import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
 import { GatewayAudioAdapter } from "@/services/gatewayAudioAdapter";
-import { PomodoroService } from "@/services/pomodoroService";
-import type {
-  PomodoroPhase,
-  PomodoroReminderKind,
-} from "@/services/pomodoroService";
-import { fetchGeneratedPomodoroReminder } from "@/services/pomodoroTextService";
-import {
-  applyPomodoroCapability,
-  POMODORO_CONTROL_CAPABILITY,
-} from "@/services/pomodoroCapability";
-import type { AudioPlaybackAdapter, AudioPlaybackRequest } from "@/services/audioPlaybackAdapter";
-import { isAudioPlaybackAborted } from "@/services/audioPlaybackAdapter";
 import {
   completeGatewayPairing,
   pairDevice,
@@ -42,6 +36,8 @@ import {
   type PairingCompleteResult,
 } from "@/services/gatewayPairing";
 import { addPairedActorToRemoteControlPolicy } from "@/services/remoteControlPolicy";
+import { SpeechPlaybackCoordinator } from "@/services/speechPlaybackCoordinator";
+import { SystemSpeechAdapter } from "@/services/systemSpeechAdapter";
 import {
   createDesktopEventSource,
   type DesktopEventSource,
@@ -49,8 +45,6 @@ import {
   type MessageSubmitResult,
 } from "@/runtime/desktopEventSource";
 import type { useDesktopStore } from "@/stores/desktop";
-import { isGatewayConnectionConfigured } from "@/domain/gatewayConnection";
-import { gatewayWsUrlToHttpBase } from "@/domain/gatewayConnection";
 
 type DesktopStore = ReturnType<typeof useDesktopStore>;
 
@@ -67,10 +61,7 @@ export interface DesktopRuntimeActions {
   ): Promise<PairDeviceResult>;
   submitUserMessage(text: string): Promise<MessageSubmitResult>;
   submitMockLlmResult(rawOutput: string): void;
-  /** Start/restart the local pomodoro timer. */
-  startPomodoro(): void;
-  stopPomodoro(): void;
-  togglePomodoro(): void;
+  desktopPlugins: DesktopPluginHost;
 }
 
 function clearTimer(timer: ReturnType<typeof setTimeout> | null) {
@@ -199,6 +190,21 @@ export function useDesktopRuntimeController(
     },
   );
 
+  const desktopPlugins = new DesktopPluginHost({
+    emitEvent: (event) => store.applyDesktopEvent(event),
+    upsertSurface: (surface) => store.upsertLocalPluginSurface(surface),
+    removeSurface: (ownerPluginId, surfaceId) =>
+      store.removeLocalPluginSurface(ownerPluginId, surfaceId),
+  });
+  desktopPlugins.activateAll(
+    createBuiltinDesktopPlugins({
+      getPluginSettings: (pluginId) => store.desktopPluginSettings[pluginId],
+      updatePluginSettings: (pluginId, settings) =>
+        store.updateDesktopPluginSettings(pluginId, settings),
+      getGatewayConnection: () => store.gatewayConnection,
+    }),
+  );
+
   function clearPetStateTimers() {
     clearTimer(transitionTimer);
     clearTimer(autoRetreatTimer);
@@ -226,18 +232,12 @@ export function useDesktopRuntimeController(
   }
 
   function handleDesktopEvent(event: DesktopEvent): unknown {
-    if (
-      event.type === "capability.invoked" &&
-      event.capability === POMODORO_CONTROL_CAPABILITY
-    ) {
-      return applyPomodoroCapability(
-        {
-          service: pomodoroService,
-          getSettings: () => store.localConfig.pomodoro,
-          updateSettings: (settings) => store.updatePomodoroSettings(settings),
-        },
+    if (event.type === "capability.invoked") {
+      const pluginResult = desktopPlugins.executeCapability(
+        event.capability,
         event.arguments,
       );
+      if (pluginResult) return pluginResult;
     }
     return store.applyDesktopEvent(event);
   }
@@ -463,96 +463,6 @@ export function useDesktopRuntimeController(
     eventSource?.submitMockLlmResult(trimmed);
   }
 
-  const pomodoroService = new PomodoroService({
-    getSettings: () => store.localConfig.pomodoro,
-    onTick: (event) => store.applyDesktopEvent(event),
-    onStateChange: (state) => {
-      store.setPomodoroState(state);
-      schedulePomodoroPrefetch(state);
-    },
-    getReminderText: (kind) =>
-      store.localConfig.pomodoro.dynamicText
-        ? pomodoroGeneratedTexts.get(kind) ?? null
-        : null,
-  });
-
-  // Dynamic reminder lines are generated + pre-synthesized on the Gateway
-  // during the current phase's runway so the next transition plays instantly.
-  const pomodoroGeneratedTexts = new Map<PomodoroReminderKind, string>();
-  const pomodoroRecentTexts: string[] = [];
-  let pomodoroPrefetchController: AbortController | null = null;
-
-  function schedulePomodoroPrefetch(state: {
-    phase: PomodoroPhase;
-    round: number;
-    totalRounds: number;
-  }): void {
-    if (state.phase === "working") {
-      void prefetchPomodoroReminders(["break-start"]);
-    } else if (state.phase === "breaking") {
-      const kinds: PomodoroReminderKind[] =
-        state.round >= state.totalRounds
-          ? ["rounds-done"]
-          : ["break-end", "work-start"];
-      void prefetchPomodoroReminders(kinds);
-    }
-  }
-
-  async function prefetchPomodoroReminders(
-    kinds: PomodoroReminderKind[],
-  ): Promise<void> {
-    if (!store.localConfig.pomodoro.dynamicText) return;
-    const bearer = store.gatewayConnection.adminBearerToken;
-    const httpBase = gatewayWsUrlToHttpBase(
-      store.gatewayConnection.gatewayWsUrl,
-    );
-    if (!bearer || !httpBase) return;
-
-    pomodoroPrefetchController?.abort();
-    const controller = new AbortController();
-    pomodoroPrefetchController = controller;
-    const synthesize = store.gatewayConnection.ttsSource !== "system";
-
-    await Promise.all(
-      kinds.map(async (kind) => {
-        try {
-          const reminder = await fetchGeneratedPomodoroReminder({
-            httpBase,
-            bearer,
-            kind,
-            avoid: [...pomodoroRecentTexts],
-            synthesize,
-            model: store.localConfig.pomodoro.dynamicTextModel,
-            signal: controller.signal,
-          });
-          if (controller.signal.aborted) return;
-          pomodoroGeneratedTexts.set(kind, reminder.text);
-          pomodoroRecentTexts.push(reminder.text);
-          if (pomodoroRecentTexts.length > 12) {
-            pomodoroRecentTexts.shift();
-          }
-        } catch (error) {
-          if (error instanceof DOMException && error.name === "AbortError") {
-            return;
-          }
-          // Silent fallback: the static settings text is used instead.
-        }
-      }),
-    );
-  }
-
-  function startPomodoro() {
-    pomodoroService.start();
-  }
-
-  function stopPomodoro() {
-    pomodoroService.stop();
-  }
-
-  function togglePomodoro() {
-    pomodoroService.toggle();
-  }
-
   function schedulePendingPresentations() {
     if (!store.pendingPresentations.length) return;
     if (petRuntimeNeedsEmerge(store.petRuntime.status)) {
@@ -638,9 +548,6 @@ export function useDesktopRuntimeController(
       case "exit_chat":
         store.exitPetChat();
         break;
-      case "toggle_pomodoro":
-        togglePomodoro();
-        break;
       case "submit_message":
         submitUserMessage(command.text);
         break;
@@ -712,8 +619,7 @@ export function useDesktopRuntimeController(
   onBeforeUnmount(() => {
     speechPlayback.dispose();
     gatewayTtsAdapter.dispose();
-    pomodoroService.dispose();
-    pomodoroPrefetchController?.abort();
+    desktopPlugins.dispose();
     clearPetStateTimers();
     unlistenPetCommands?.();
     stopEventSource();
@@ -729,8 +635,6 @@ export function useDesktopRuntimeController(
     pairDevice: pairDeviceFromForm,
     submitUserMessage,
     submitMockLlmResult,
-    startPomodoro,
-    stopPomodoro,
-    togglePomodoro,
+    desktopPlugins,
   };
 }

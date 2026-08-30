@@ -11,8 +11,8 @@ import type {
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { sanitizeModelPerformanceProfile } from "@/domain/modelPerformanceProfile";
+import { sanitizeBuiltinDesktopPluginSettings } from "@/plugins/builtin/settings";
 import { sanitizeExpressionMap, sanitizeMotionMap } from "./modelMappingStorage";
-import { sanitizePomodoroSettings } from "./pomodoroSettingsStorage";
 import { sanitizeTtsSettings } from "./ttsSettingsStorage";
 
 const STORE_FILE = "desktop-settings.json";
@@ -27,6 +27,7 @@ export interface SecureTokens {
 export interface PersistedDesktopSettings {
   version: 1;
   localConfig: LocalDesktopConfig;
+  pluginSettings: Record<string, unknown>;
   gatewayConnection: GatewayConnectionSettings;
 }
 
@@ -227,10 +228,6 @@ export function sanitizeLocalDesktopConfig(
       record.ttsSettings === undefined
         ? { ...fallback.ttsSettings }
         : sanitizeTtsSettings(record.ttsSettings),
-    pomodoro:
-      record.pomodoro === undefined
-        ? { ...fallback.pomodoro }
-        : sanitizePomodoroSettings(record.pomodoro),
     petTriggers:
       record.petTriggers === undefined
         ? { ...fallback.petTriggers }
@@ -240,6 +237,18 @@ export function sanitizeLocalDesktopConfig(
         ? record.motionDataCollectionEnabled
         : fallback.motionDataCollectionEnabled,
   };
+}
+
+export function sanitizeDesktopPluginSettings(
+  value: unknown,
+  fallback: Record<string, unknown> = {},
+  legacyLocalConfig?: unknown,
+): Record<string, unknown> {
+  return sanitizeBuiltinDesktopPluginSettings(
+    value,
+    fallback,
+    legacyLocalConfig,
+  );
 }
 
 export function withoutSecureTokens(
@@ -255,10 +264,12 @@ export function withoutSecureTokens(
 export function createPersistedDesktopSettings(
   localConfig: LocalDesktopConfig,
   gatewayConnection: GatewayConnectionSettings,
+  pluginSettings: Record<string, unknown>,
 ): PersistedDesktopSettings {
   return {
     version: 1,
     localConfig: sanitizeLocalDesktopConfig(localConfig, localConfig),
+    pluginSettings: sanitizeDesktopPluginSettings(pluginSettings),
     gatewayConnection: withoutSecureTokens(gatewayConnection),
   };
 }
@@ -267,13 +278,20 @@ function sanitizePersistedSettings(
   value: unknown,
   fallbackLocalConfig: LocalDesktopConfig,
   fallbackGatewayConnection: GatewayConnectionSettings,
+  fallbackPluginSettings: Record<string, unknown>,
 ): PersistedDesktopSettings | null {
   if (!isRecord(value)) return null;
+  const rawLocalConfig = isRecord(value.localConfig) ? value.localConfig : {};
   return {
     version: 1,
     localConfig: sanitizeLocalDesktopConfig(
       value.localConfig,
       fallbackLocalConfig,
+    ),
+    pluginSettings: sanitizeDesktopPluginSettings(
+      value.pluginSettings,
+      fallbackPluginSettings,
+      rawLocalConfig,
     ),
     gatewayConnection: withoutSecureTokens(
       isRecord(value.gatewayConnection)
@@ -301,6 +319,7 @@ function readBrowserSettings(): unknown {
 export async function readDesktopSettings(
   fallbackLocalConfig: LocalDesktopConfig,
   fallbackGatewayConnection: GatewayConnectionSettings,
+  fallbackPluginSettings: Record<string, unknown>,
 ): Promise<PersistedDesktopSettings | null> {
   const raw = isTauri()
     ? await (await desktopStore()).get<unknown>(STORE_KEY)
@@ -309,16 +328,19 @@ export async function readDesktopSettings(
     raw,
     fallbackLocalConfig,
     fallbackGatewayConnection,
+    fallbackPluginSettings,
   );
 }
 
 export function writeDesktopSettings(
   localConfig: LocalDesktopConfig,
   gatewayConnection: GatewayConnectionSettings,
+  pluginSettings: Record<string, unknown>,
 ): Promise<void> {
   const snapshot = createPersistedDesktopSettings(
     localConfig,
     gatewayConnection,
+    pluginSettings,
   );
   writeQueue = writeQueue.catch(() => undefined).then(async () => {
     if (isTauri()) {

@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { availableModelManifests } from "@/config/live2dModelManifests";
-import { createDefaultLocalDesktopConfig } from "@/domain/config";
+import {
+  createDefaultLocalDesktopConfig,
+  pomodoroDefaults,
+} from "@/domain/config";
 import { defaultGatewayConnectionSettings } from "@/domain/gatewayConnection";
+import { POMODORO_PLUGIN_ID } from "@/plugins/builtin/pomodoro/manifest";
 import {
   createPersistedDesktopSettings,
+  sanitizeDesktopPluginSettings,
   sanitizeLocalDesktopConfig,
 } from "./desktopSettingsStorage";
 
@@ -16,12 +21,16 @@ function defaultLocalConfig() {
 
 describe("desktop settings persistence", () => {
   it("never includes credentials in the ordinary settings snapshot", () => {
-    const snapshot = createPersistedDesktopSettings(defaultLocalConfig(), {
-      ...defaultGatewayConnectionSettings,
-      mode: "gateway",
-      nodeToken: "nt_secret.value",
-      adminBearerToken: "admin-secret",
-    });
+    const snapshot = createPersistedDesktopSettings(
+      defaultLocalConfig(),
+      {
+        ...defaultGatewayConnectionSettings,
+        mode: "gateway",
+        nodeToken: "nt_secret.value",
+        adminBearerToken: "admin-secret",
+      },
+      { [POMODORO_PLUGIN_ID]: pomodoroDefaults },
+    );
 
     expect(snapshot.gatewayConnection.nodeToken).toBe("");
     expect(snapshot.gatewayConnection.adminBearerToken).toBe("");
@@ -57,13 +66,6 @@ describe("desktop settings persistence", () => {
           ...fallback.ttsSettings,
           rate: 1.25,
         },
-        pomodoro: {
-          ...fallback.pomodoro,
-          enabled: true,
-          workDurationMinutes: 45,
-          dynamicText: true,
-          dynamicTextModel: "  zai/glm-5.2  ",
-        },
         petTriggers: {
           ...fallback.petTriggers,
           wakeDistancePx: 140,
@@ -83,12 +85,31 @@ describe("desktop settings persistence", () => {
       restored.modelConfigs[selectedModelId]?.performanceProfile.intensityScale,
     ).toBe(1.35);
     expect(restored.ttsSettings.rate).toBe(1.25);
-    expect(restored.pomodoro.enabled).toBe(true);
-    expect(restored.pomodoro.workDurationMinutes).toBe(45);
-    expect(restored.pomodoro.dynamicText).toBe(true);
-    expect(restored.pomodoro.dynamicTextModel).toBe("zai/glm-5.2");
     expect(restored.petTriggers.wakeDistancePx).toBe(140);
     expect(restored.petTriggers.autoRetreatMs).toBe(30000);
+  });
+
+  it("migrates legacy pomodoro config into namespaced plugin settings", () => {
+    const settings = sanitizeDesktopPluginSettings(
+      undefined,
+      {},
+      {
+        pomodoro: {
+          ...pomodoroDefaults,
+          enabled: true,
+          workDurationMinutes: 45,
+          dynamicText: true,
+          dynamicTextModel: "  zai/glm-5.2  ",
+        },
+      },
+    );
+
+    expect(settings[POMODORO_PLUGIN_ID]).toMatchObject({
+      enabled: true,
+      workDurationMinutes: 45,
+      dynamicText: true,
+      dynamicTextModel: "zai/glm-5.2",
+    });
   });
 
   it("keeps fallback coordinates and nested settings for partial snapshots", () => {

@@ -65,6 +65,7 @@ from nahida_bot_sdk.plugin import (  # noqa: F401
 # Manifest
 from nahida_bot_sdk.manifest import (  # noqa: F401
     Capabilities,
+    DesktopRuntimeFacet,
     DesktopSurfaceDeclaration,
     FilesystemPermission,
     ManifestParseError,
@@ -76,6 +77,7 @@ from nahida_bot_sdk.manifest import (  # noqa: F401
     PluginContributions,
     PluginManifest,
     PluginPageDeclaration,
+    PluginRuntimeFacets,
     SystemPermission,
     parse_manifest,
 )
@@ -183,6 +185,7 @@ __all__ = [
     "subscribe",
     # Manifest
     "Capabilities",
+    "DesktopRuntimeFacet",
     "DesktopSurfaceDeclaration",
     "FilesystemPermission",
     "ManifestParseError",
@@ -194,6 +197,7 @@ __all__ = [
     "PluginContributions",
     "PluginManifest",
     "PluginPageDeclaration",
+    "PluginRuntimeFacets",
     "SystemPermission",
     "parse_manifest",
     # Events

@@ -9,7 +9,7 @@ import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
 import MotionPerformancePanel from "@/components/MotionPerformancePanel.vue";
 import MotionHistoryPanel from "@/components/MotionHistoryPanel.vue";
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
-import PomodoroSettingsPanel from "@/components/PomodoroSettingsPanel.vue";
+import DesktopPluginSettingsHost from "@/components/DesktopPluginSettingsHost.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
@@ -86,12 +86,9 @@ function replayMotion(playback: MotionPlaybackSummary): void {
         @update="store.updateTtsSettings"
         @preview="store.previewSystemSpeech"
       />
-      <PomodoroSettingsPanel
-        :settings="store.localConfig.pomodoro"
-        :state="store.pomodoroState"
-        @update="store.updatePomodoroSettings"
-        @start="props.runtime.startPomodoro"
-        @stop="props.runtime.stopPomodoro"
+      <DesktopPluginSettingsHost
+        :host="props.runtime.desktopPlugins"
+        placement="workbench"
       />
       <ExpressionMappingPanel
         :model="store.model"

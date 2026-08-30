@@ -19,7 +19,8 @@
 
 Gateway、Node 与 Desktop 的扩展不是三套插件系统。安装、权限和生命周期归属于同一个
 manifest；不同进程只承载不同 runtime facet，轻量 Desktop UI 使用宿主渲染的声明式
-surface。详见 [Plugin 运行时与 UI Surface](plugin-runtime-facets.md)。
+surface。manifest 已支持 `runtimes.desktop`，首个 `nahida.pomodoro` 插件同时包含 Gateway
+工具 facet 与内置 Desktop 计时 facet。详见 [Plugin 运行时与 UI Surface](plugin-runtime-facets.md)。
 
 ## 2. 整体架构
 
@@ -580,6 +581,12 @@ description: "做某件很酷的事情"
 
 # 入口点：Plugin 子类的完全限定名
 entrypoint: "my_plugin:MyPlugin"
+
+# 同一插件在 Desktop 技术栈中的可选执行 facet
+runtimes:
+  desktop:
+    entrypoint: "builtin:my_plugin"
+    mode: builtin  # builtin | javascript | wasm | sidecar
 
 # 兼容性声明
 nahida_bot_version: ">=0.1.0,<1.0.0"   # 兼容的 bot 版本范围

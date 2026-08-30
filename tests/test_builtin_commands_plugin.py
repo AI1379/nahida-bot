@@ -311,6 +311,7 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "desktop_screenshot_send",
         "desktop_input",
     } <= set(api.tools)
+    assert "desktop_pomodoro" not in api.tools
     assert api.tools["workspace_read"]["parameters"]["required"] == ["path"]
     assert api.tools["workspace_write"]["parameters"]["required"] == [
         "path",

@@ -7,8 +7,9 @@
 import type { CapabilityExecutionResult } from "@/domain/runtime";
 import type { PomodoroSettings } from "@/domain/config";
 import type { PomodoroService } from "./pomodoroService";
+import { POMODORO_CONTROL_CAPABILITY } from "@/plugins/builtin/pomodoro/manifest";
 
-export const POMODORO_CONTROL_CAPABILITY = "desktop.pomodoro.control";
+export { POMODORO_CONTROL_CAPABILITY };
 
 const pomodoroActions = new Set([
   "start",

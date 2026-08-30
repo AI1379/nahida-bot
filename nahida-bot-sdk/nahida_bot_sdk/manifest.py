@@ -102,6 +102,19 @@ class PluginContributions(BaseModel):
     pages: list[PluginPageDeclaration] = Field(default_factory=list)
 
 
+class DesktopRuntimeFacet(BaseModel):
+    """Desktop implementation shipped by the same logical plugin package."""
+
+    entrypoint: str = Field(min_length=1, max_length=256)
+    mode: Literal["builtin", "javascript", "wasm", "sidecar"] = "builtin"
+
+
+class PluginRuntimeFacets(BaseModel):
+    """Technology-specific execution facets governed by one plugin manifest."""
+
+    desktop: DesktopRuntimeFacet | None = None
+
+
 class PluginManifest(BaseModel):
     """Parsed plugin manifest from plugin.yaml."""
 
@@ -117,6 +130,7 @@ class PluginManifest(BaseModel):
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
     contributes: PluginContributions = Field(default_factory=PluginContributions)
+    runtimes: PluginRuntimeFacets = Field(default_factory=PluginRuntimeFacets)
     config: dict[str, Any] = Field(default_factory=dict)
     config_schema: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[PluginDependency] = Field(default_factory=list)

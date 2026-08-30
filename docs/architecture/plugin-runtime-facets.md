@@ -11,6 +11,7 @@ Nahida Bot 不为 Gateway、Node 和 Desktop 分别建立彼此独立的插件�
              │
              ├─ gateway facet    Python Plugin + BotAPI（当前）
              ├─ node facet       worker capability（后续）
+             ├─ desktop facet    本地 service/capability/action（内置 facet 当前）
              └─ UI contributions
                   ├─ pages       WebUI / Desktop 的复杂管理页面（后续宿主）
                   └─ surfaces    Desktop 原生渲染的轻量 view model（当前）
@@ -39,6 +40,11 @@ name: Schedule
 version: "1.0.0"
 entrypoint: schedule:SchedulePlugin
 
+runtimes:
+  desktop:
+    entrypoint: builtin:example.schedule
+    mode: builtin
+
 contributes:
   desktop_surfaces:
     - id: today
@@ -58,8 +64,10 @@ contributes:
 
 当前 surface target 为 `desktop.home`、`desktop.sidebar`、`pet.overlay`、`pet.drawer`；kind
 为 `text`、`badge`、`countdown`、`progress`、`list`、`card`。声明只决定可占用的槽位，
-插件仍需通过 `BotAPI.register_desktop_surface_provider()` 注册对应 provider。未在 manifest
-声明的 ID 会被拒绝，插件也不能伪造 `owner_plugin_id`。
+Gateway facet 产生的 surface 需通过 `BotAPI.register_desktop_surface_provider()` 注册对应
+provider；Desktop facet 产生的本地 surface 则通过 `DesktopPluginContext.setSurface()` 写入。
+两条路径都会校验 manifest 声明，未声明的 ID 会被拒绝，插件也不能伪造
+`owner_plugin_id`。
 provider 的底层数据变化后，插件调用 `request_desktop_surface_refresh(id)` 请求 Gateway 重新
 生成并分发完整快照；倒计时只需在 deadline 改变时刷新，Desktop 会按 `expires_at` 本地派生
 秒数，不应每秒请求同步。
@@ -84,14 +92,27 @@ Desktop 注册 node 或 provider 集合变化时，Gateway 推送完整快照。
 硬编码的 `PomodoroBadge` 迁移为本地 `pet.overlay/countdown` contribution，因此本地和远端
 插件共享渲染层。
 
+Desktop 当前提供 `DesktopPluginHost` 作为 runtime facet 适配器。它不负责再次发现或安装插件，
+只激活已经随 Desktop bundle 交付、且由同一 manifest 声明的 facet；运行时会校验 capability、
+action 和 surface 所有权，隔离 handler 异常，并在停用时释放计时器和清除本地 surface。
+`nahida.pomodoro` 是第一条完整垂直链路：独立 Gateway 插件拥有 `desktop_pomodoro` 工具，
+同 ID 的内置 Desktop facet 拥有计时服务、`desktop.pomodoro.control`、设置面板和倒计时 surface。
+核心 `desktopRuntimeController` 与设置页不再直接实现番茄钟行为。插件设置保存在
+`desktopPluginSettings[plugin_id]` 命名空间，不再混入会同步给 pet window 的
+`LocalDesktopConfig`；旧版顶层 `pomodoro` 设置会在读取时迁移。
+
 ## 5. 当前边界与后续顺序
 
-当前已实现 manifest、Python provider、Gateway 快照同步、Desktop contract/宿主渲染以及
-WebUI 中 contribution 元数据展示。以下仍是后续工作：
+当前已实现 manifest、Python provider、Gateway 快照同步、Desktop contract/宿主渲染、
+内置 Desktop facet host，以及 WebUI 中 contribution 元数据展示。以下仍是后续工作：
 
-1. `pages` 的静态资源打包、CSP/iframe 隔离、路由挂载与宿主 API；当前只有 manifest 元数据。
-2. 用户交互 action/event 协议；首版 surface 是只读展示，不能从 view model 触发任意命令。
-3. Node worker facet 的 `NodeBotAPI` 与 capability bridge；它复用相同 manifest，但不会让
+1. Gateway Plugin Manager 的 enable/disable 状态同步到 Desktop facet；当前内置 facet 已支持
+   activate/deactivate，但启动时仍按 bundle 静态列表激活。
+2. 第三方 Desktop artifact 加载与隔离；`javascript`、`wasm`、`sidecar` 已是 manifest 枚举，
+   当前只执行受信任的 `builtin` entrypoint。
+3. `pages` 的静态资源打包、CSP/iframe 隔离、路由挂载与宿主 API；当前只有 manifest 元数据。
+4. surface 用户交互 action/event 协议；当前设置面板可调用受限 action，但声明式 surface 仍只读。
+5. Node worker facet 的 `NodeBotAPI` 与 capability bridge；它复用相同 manifest，但不会让
    Gateway Python SDK 直接在 Rust/TypeScript 中运行。
 
 这些工作应沿用同一个 Plugin Manager 与 manifest 演进，不新增第二或第三套安装、权限和启停

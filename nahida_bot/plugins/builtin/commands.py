@@ -22,7 +22,10 @@ from nahida_bot.plugins.builtin.tools.context import (
     typed_address_from_session_context as _typed_address_from_session_context,
 )
 from nahida_bot.plugins.builtin.tools.cron import CronTools
-from nahida_bot.plugins.builtin.tools.desktop import DesktopTools
+from nahida_bot.plugins.builtin.tools.desktop import (
+    DESKTOP_POMODORO_TOOL,
+    DesktopTools,
+)
 from nahida_bot.plugins.builtin.tools.file_search import FileSearchTools
 from nahida_bot.plugins.builtin.tools.history import HistoryTools
 from nahida_bot.plugins.builtin.tools.memory import MemoryTools
@@ -424,7 +427,14 @@ class BuiltinCommandsPlugin(Plugin):
         return f"Desktop announcement queued on {result.node_id}."
 
     def _register_desktop_control_tools(self) -> None:
-        register_tool_definitions(self.api, self._desktop_tools.definitions())
+        register_tool_definitions(
+            self.api,
+            [
+                definition
+                for definition in self._desktop_tools.definitions()
+                if definition.name != DESKTOP_POMODORO_TOOL
+            ],
+        )
 
     def _register_message_tool(self) -> None:
         register_tool_definitions(self.api, self._message_tools.message_definitions())

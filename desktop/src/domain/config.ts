@@ -113,7 +113,6 @@ export interface LocalDesktopConfig {
   windowState: DesktopWindowState;
   performanceMode: PerformanceMode;
   ttsSettings: TtsSettings;
-  pomodoro: PomodoroSettings;
   petTriggers: PetTriggerSettings;
   motionDataCollectionEnabled: boolean;
 }
@@ -164,7 +163,6 @@ export function createDefaultLocalDesktopConfig(
     },
     performanceMode: desktopWindowDefaults.performanceMode,
     ttsSettings: { ...ttsDefaults },
-    pomodoro: { ...pomodoroDefaults },
     petTriggers: { ...petTriggerDefaults },
     motionDataCollectionEnabled: true,
   };

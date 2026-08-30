@@ -20,9 +20,7 @@ import {
   readPersistedMotionMaps,
 } from "@/services/modelMappingStorage";
 import { readPersistedTtsSettings } from "@/services/ttsSettingsStorage";
-import { readPersistedPomodoroSettings } from "@/services/pomodoroSettingsStorage";
-import { idlePomodoroState } from "@/services/pomodoroService";
-import type { PomodoroState } from "@/services/pomodoroService";
+import { createInitialBuiltinDesktopPluginSettings } from "@/plugins/builtin/settings";
 import type { TurnRecord } from "@/domain/conversation";
 import { readPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
@@ -77,7 +75,6 @@ export function createDesktopState() {
     persistedMotions,
   );
   localConfig.ttsSettings = readPersistedTtsSettings();
-  localConfig.pomodoro = readPersistedPomodoroSettings();
   const gatewayConnection: GatewayConnectionSettings =
     sanitizeGatewayConnectionSettings(readPersistedGatewayConnection());
 
@@ -107,7 +104,7 @@ export function createDesktopState() {
     gatewayConnectionStatus: "disconnected" as GatewayConnectionStatus,
     gatewayConnectionError: null as string | null,
     gatewayPairing: { status: "idle" } as GatewayPairingState,
-    pomodoroState: { ...idlePomodoroState } as PomodoroState,
+    desktopPluginSettings: createInitialBuiltinDesktopPluginSettings(),
     pluginSurfaces: [] as PluginSurfaceContribution[],
     pluginSurfaceRevision: 0,
     persistenceError: null as string | null,

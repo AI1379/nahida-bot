@@ -1,0 +1,20 @@
+id: nahida.pomodoro
+name: "Pomodoro"
+version: "0.1.0"
+description: "Local Desktop focus timer with pet reminders and agent control"
+entrypoint: "nahida_bot.plugins.pomodoro.plugin:PomodoroPlugin"
+enabled: true
+capabilities:
+  tools:
+    - name: desktop_pomodoro
+      description: Control the current actor's local Desktop focus timer
+contributes:
+  desktop_surfaces:
+    - id: timer
+      target: pet.overlay
+      kind: countdown
+      priority: 50
+runtimes:
+  desktop:
+    entrypoint: builtin:nahida.pomodoro
+    mode: builtin

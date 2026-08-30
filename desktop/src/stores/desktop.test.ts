@@ -358,13 +358,23 @@ describe("desktop store pet transitions", () => {
 
   it("clears stale gateway surfaces on disconnect and accepts a new revision epoch", () => {
     const store = useDesktopStore();
-    store.setPomodoroState({
-      phase: "working",
-      round: 1,
-      totalRounds: 1,
-      startedAt: "2026-08-30T00:00:00.000Z",
-      expiresAt: "2026-08-30T00:25:00.000Z",
-      remainingSeconds: 1500,
+    store.upsertLocalPluginSurface({
+      ownerPluginId: "nahida.pomodoro",
+      id: "timer",
+      target: "pet.overlay",
+      kind: "countdown",
+      priority: 50,
+      source: "local",
+      view: {
+        title: "专注",
+        text: "",
+        status: "进行中",
+        detail: "1/1",
+        expiresAt: "2026-08-30T00:25:00.000Z",
+        progress: null,
+        items: [],
+        tone: "info",
+      },
     });
     store.applyCapabilityInvoke("desktop.surface.sync", {
       revision: 99,
@@ -416,13 +426,23 @@ describe("desktop store pet transitions", () => {
 
   it("replaces gateway plugin surfaces without removing local surfaces", () => {
     const store = useDesktopStore();
-    store.setPomodoroState({
-      phase: "working",
-      round: 1,
-      totalRounds: 4,
-      startedAt: "2026-08-30T00:00:00.000Z",
-      expiresAt: "2026-08-30T00:25:00.000Z",
-      remainingSeconds: 1500,
+    store.upsertLocalPluginSurface({
+      ownerPluginId: "nahida.pomodoro",
+      id: "timer",
+      target: "pet.overlay",
+      kind: "countdown",
+      priority: 50,
+      source: "local",
+      view: {
+        title: "专注",
+        text: "",
+        status: "进行中",
+        detail: "1/4",
+        expiresAt: "2026-08-30T00:25:00.000Z",
+        progress: null,
+        items: [],
+        tone: "info",
+      },
     });
 
     const result = store.applyCapabilityInvoke("desktop.surface.sync", {
