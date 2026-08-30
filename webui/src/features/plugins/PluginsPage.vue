@@ -419,6 +419,35 @@ function schemaKeys(plugin: PluginSummary): string[] {
         </section>
 
         <section class="detail-section">
+          <h3>Contributions</h3>
+          <div class="badge-group">
+            <Badge
+              v-for="surface in selectedPlugin.contributes?.desktop_surfaces ?? []"
+              :key="`${selectedPlugin.id}-surface-${surface.id}`"
+              variant="outline"
+            >
+              {{ surface.target }} · {{ surface.id }} · {{ surface.kind }}
+            </Badge>
+            <Badge
+              v-for="page in selectedPlugin.contributes?.pages ?? []"
+              :key="`${selectedPlugin.id}-page-${page.id}`"
+              variant="secondary"
+            >
+              {{ page.target }} · {{ page.title || page.id }}
+            </Badge>
+            <span
+              v-if="
+                !(selectedPlugin.contributes?.desktop_surfaces ?? []).length &&
+                !(selectedPlugin.contributes?.pages ?? []).length
+              "
+              class="muted"
+            >
+              -
+            </span>
+          </div>
+        </section>
+
+        <section class="detail-section">
           <h3>Configuration</h3>
           <dl class="kv-list">
             <div>

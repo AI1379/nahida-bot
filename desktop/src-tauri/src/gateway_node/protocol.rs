@@ -241,12 +241,20 @@ pub fn desktop_capabilities() -> Vec<NodeCapability> {
             requires_user_approval: false,
         },
         NodeCapability {
+            name: "desktop.surface.sync".to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::Low,
+            description: "Replace host-rendered plugin surfaces with a desired-state snapshot"
+                .to_string(),
+            requires_user_approval: false,
+        },
+        NodeCapability {
             name: "desktop.pomodoro.control".to_string(),
             version: PROTOCOL_VERSION.to_string(),
             direction: CapabilityDirection::GatewayToNode,
             risk: CapabilityRisk::Low,
-            description: "Start, stop, configure, or query the local pomodoro timer"
-                .to_string(),
+            description: "Start, stop, configure, or query the local pomodoro timer".to_string(),
             requires_user_approval: false,
         },
         NodeCapability {
@@ -372,6 +380,18 @@ mod tests {
             .into_iter()
             .find(|capability| capability.name == "desktop.notification.announce")
             .expect("announce capability is registered");
+
+        assert_eq!(capability.direction, CapabilityDirection::GatewayToNode);
+        assert_eq!(capability.risk, CapabilityRisk::Low);
+        assert!(!capability.requires_user_approval);
+    }
+
+    #[test]
+    fn registers_desktop_surface_sync_capability() {
+        let capability = desktop_capabilities()
+            .into_iter()
+            .find(|capability| capability.name == "desktop.surface.sync")
+            .expect("surface sync capability is registered");
 
         assert_eq!(capability.direction, CapabilityDirection::GatewayToNode);
         assert_eq!(capability.risk, CapabilityRisk::Low);

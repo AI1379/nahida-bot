@@ -431,6 +431,21 @@ export interface PluginDependency {
   version: string;
 }
 
+export interface PluginContributions {
+  desktop_surfaces?: Array<{
+    id: string;
+    target: "desktop.home" | "desktop.sidebar" | "pet.overlay" | "pet.drawer";
+    kind: "text" | "badge" | "countdown" | "progress" | "list" | "card";
+    priority?: number;
+  }>;
+  pages?: Array<{
+    id: string;
+    target: "webui.admin" | "desktop.main" | "desktop.popup";
+    entry: string;
+    title?: string;
+  }>;
+}
+
 export interface PluginSummary {
   id: string;
   name: string;
@@ -446,6 +461,7 @@ export interface PluginSummary {
   error_message: string;
   permissions: PluginPermissions;
   capabilities: PluginCapabilities;
+  contributes: PluginContributions;
   depends_on: PluginDependency[];
   config_keys: string[];
   config_schema: Record<string, unknown>;

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -187,6 +188,7 @@ async def node_websocket(websocket: WebSocket) -> None:
     registry: NodeRegistry | None = getattr(app.state, "node_registry", None)
     auth_service: NodeAuthService | None = getattr(app.state, "node_auth", None)
     invoker: NodeInvoker | None = getattr(app.state, "node_invoker", None)
+    surface_service = getattr(app.state, "desktop_surface_service", None)
 
     if registry is None:
         await websocket.close(
@@ -250,7 +252,14 @@ async def node_websocket(websocket: WebSocket) -> None:
 
     logger.info("node_protocol.connected", node_id=session.node_id)
     try:
-        await _read_loop(websocket, dispatcher, session)
+        await _read_loop(
+            websocket,
+            dispatcher,
+            session,
+            on_registered=(
+                surface_service.sync_node if surface_service is not None else None
+            ),
+        )
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -267,7 +276,11 @@ async def node_websocket(websocket: WebSocket) -> None:
 
 
 async def _read_loop(
-    websocket: WebSocket, dispatcher: NodeDispatcher, session: NodeSession
+    websocket: WebSocket,
+    dispatcher: NodeDispatcher,
+    session: NodeSession,
+    *,
+    on_registered: Callable[[str], Awaitable[bool]] | None = None,
 ) -> None:
     while True:
         raw = await websocket.receive_text()
@@ -288,7 +301,25 @@ async def _read_loop(
 
         response = await dispatcher.handle_inbound(envelope)
         if response is not None:
-            await _send_envelope(websocket, response)
+            sent = await _send_envelope(websocket, response)
+            if (
+                sent
+                and response.ok
+                and envelope.method == "node.register"
+                and on_registered is not None
+            ):
+                asyncio.create_task(
+                    _run_registration_hook(on_registered, session.node_id)
+                )
+
+
+async def _run_registration_hook(
+    callback: Callable[[str], Awaitable[bool]], node_id: str
+) -> None:
+    try:
+        await callback(node_id)
+    except Exception:  # noqa: BLE001 - registration has already succeeded
+        logger.exception("node_protocol.registration_hook_failed", node_id=node_id)
 
 
 async def _handle_heartbeat(

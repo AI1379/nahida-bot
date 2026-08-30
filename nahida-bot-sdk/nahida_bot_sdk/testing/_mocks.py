@@ -14,6 +14,7 @@ import structlog
 from nahida_bot_sdk.api import ManagedTempFile
 from nahida_bot_sdk.chat_address import ChatAddress
 from nahida_bot_sdk.commands import CommandArgument
+from nahida_bot_sdk.desktop import DesktopSurfaceContext, DesktopSurfaceView
 from nahida_bot_sdk.messaging import AttentionFrame, InboundMessage, OutboundMessage
 from nahida_bot_sdk.plugin import bind_decorated_registrations
 
@@ -137,6 +138,21 @@ class MockBotAPI:
         config_schema: dict[str, Any] | None = None,
         description: str = "",
     ) -> None:
+        pass
+
+    def register_desktop_surface_provider(
+        self,
+        surface_id: str,
+        handler: Callable[
+            [DesktopSurfaceContext], Awaitable[DesktopSurfaceView | None]
+        ],
+    ) -> None:
+        pass
+
+    def unregister_desktop_surface_provider(self, surface_id: str) -> bool:
+        return False
+
+    def request_desktop_surface_refresh(self, surface_id: str) -> None:
         pass
 
     def register_webhook_endpoint(
@@ -354,6 +370,7 @@ class RecordingMockBotAPI(MockBotAPI):
         self.registered_provider_types: dict[str, dict[str, Any]] = {}
         self.registered_webhooks: dict[str, dict[str, Any]] = {}
         self.registered_prompt_supplements: dict[str, dict[str, Any]] = {}
+        self.registered_desktop_surfaces: dict[str, Any] = {}
         self.spawned_tasks: dict[str, dict[str, Any]] = {}
         self._plugin_data: dict[str, Any] = {}
 
@@ -438,6 +455,24 @@ class RecordingMockBotAPI(MockBotAPI):
             "config_schema": config_schema,
             "description": description,
         }
+
+    def register_desktop_surface_provider(
+        self,
+        surface_id: str,
+        handler: Callable[
+            [DesktopSurfaceContext], Awaitable[DesktopSurfaceView | None]
+        ],
+    ) -> None:
+        if surface_id in self.registered_desktop_surfaces:
+            raise KeyError(f"Desktop surface '{surface_id}' is already registered")
+        self.registered_desktop_surfaces[surface_id] = handler
+
+    def unregister_desktop_surface_provider(self, surface_id: str) -> bool:
+        return self.registered_desktop_surfaces.pop(surface_id, None) is not None
+
+    def request_desktop_surface_refresh(self, surface_id: str) -> None:
+        if surface_id not in self.registered_desktop_surfaces:
+            raise KeyError(f"Desktop surface '{surface_id}' is not registered")
 
     def register_webhook_endpoint(
         self,
@@ -614,6 +649,7 @@ class ConsoleMockBotAPI:
         self._event_handlers: dict[type, list[Callable[..., Awaitable[None]]]] = {}
         self._channels: list[Any] = []
         self._provider_types: dict[str, dict[str, Any]] = {}
+        self._desktop_surfaces: dict[str, Any] = {}
         self._workspace: dict[str, str] = {}
         self.spawned_tasks: dict[str, dict[str, Any]] = {}
 
@@ -811,6 +847,24 @@ class ConsoleMockBotAPI:
             "config_schema": config_schema,
             "description": description,
         }
+
+    def register_desktop_surface_provider(
+        self,
+        surface_id: str,
+        handler: Callable[
+            [DesktopSurfaceContext], Awaitable[DesktopSurfaceView | None]
+        ],
+    ) -> None:
+        if surface_id in self._desktop_surfaces:
+            raise KeyError(f"Desktop surface '{surface_id}' is already registered")
+        self._desktop_surfaces[surface_id] = handler
+
+    def unregister_desktop_surface_provider(self, surface_id: str) -> bool:
+        return self._desktop_surfaces.pop(surface_id, None) is not None
+
+    def request_desktop_surface_refresh(self, surface_id: str) -> None:
+        if surface_id not in self._desktop_surfaces:
+            raise KeyError(f"Desktop surface '{surface_id}' is not registered")
 
     def register_webhook_endpoint(
         self,

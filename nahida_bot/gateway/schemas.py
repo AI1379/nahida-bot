@@ -91,6 +91,7 @@ class PluginSummaryResponse(BaseModel):
     error_message: str = ""
     permissions: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, Any] = Field(default_factory=dict)
+    contributes: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[dict[str, str]] = Field(default_factory=list)
     config_keys: list[str] = Field(default_factory=list)
     config_schema: dict[str, Any] = Field(default_factory=dict)

@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+
+from nahida_bot_sdk.desktop import DesktopSurfaceKind, DesktopSurfaceTarget
 
 
 class ManifestParseError(Exception):
@@ -75,6 +77,31 @@ class PluginDependency(BaseModel):
     version: str = ""
 
 
+class DesktopSurfaceDeclaration(BaseModel):
+    """A host-rendered Desktop surface owned by the plugin."""
+
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    target: DesktopSurfaceTarget
+    kind: DesktopSurfaceKind
+    priority: int = Field(default=0, ge=-100, le=100)
+
+
+class PluginPageDeclaration(BaseModel):
+    """A sandboxed page contribution for a host-specific management surface."""
+
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    target: Literal["webui.admin", "desktop.main", "desktop.popup"]
+    entry: str
+    title: str = ""
+
+
+class PluginContributions(BaseModel):
+    """Declarative UI contributions shipped in one logical plugin package."""
+
+    desktop_surfaces: list[DesktopSurfaceDeclaration] = Field(default_factory=list)
+    pages: list[PluginPageDeclaration] = Field(default_factory=list)
+
+
 class PluginManifest(BaseModel):
     """Parsed plugin manifest from plugin.yaml."""
 
@@ -89,6 +116,7 @@ class PluginManifest(BaseModel):
     enabled: bool = True
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
+    contributes: PluginContributions = Field(default_factory=PluginContributions)
     config: dict[str, Any] = Field(default_factory=dict)
     config_schema: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[PluginDependency] = Field(default_factory=list)
@@ -128,4 +156,7 @@ def parse_manifest(yaml_path: Path) -> PluginManifest:
             f"Manifest at {yaml_path} missing required fields: {', '.join(sorted(missing))}"
         )
 
-    return PluginManifest(**data)
+    try:
+        return PluginManifest(**data)
+    except ValidationError as exc:
+        raise ManifestParseError(f"Invalid manifest at {yaml_path}: {exc}") from exc

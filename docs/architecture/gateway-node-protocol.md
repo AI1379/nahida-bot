@@ -372,6 +372,11 @@ Desktop 桌宠气泡输入框的消息通过此方法注入到指定 session。G
 - `arguments` 由 capability schema 约束；非法字段 schema 校验失败返回 `invalid_arguments`。
 - 高风险 capability（文件、命令、媒体采集）首版不开放。
 
+`desktop.surface.sync` 是低风险的宿主渲染能力。其 `arguments` 是带单调 `revision` 的
+完整 desired-state snapshot；Desktop 必须校验 surface 数量、枚举、字符串长度、进度范围
+和重复所有权 ID，并忽略旧 revision。协议与插件边界见
+[Plugin 运行时与 UI Surface](plugin-runtime-facets.md)。
+
 ## 7. Events
 
 事件是单向通知（`kind="event"`），不需要回应。

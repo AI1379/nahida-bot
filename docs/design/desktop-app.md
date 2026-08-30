@@ -1620,7 +1620,7 @@ Gateway 需要保存或维护：
 - 番茄钟提醒默认带 `ttsEnabled`（`speakReminders` 设置，默认开）：planner 给 reminder segment 加 voice，按 TTS 来源设置走系统语音或 Gateway `/api/speech/jobs` 合成。Agent 可经 `desktop_pomodoro` 工具 → `desktop.pomodoro.control` capability 控制番茄钟（低风险、无需审批）。
 - 动态文案（`dynamicText` 设置，默认关）：开启后每个阶段开始时 Desktop 在 runway 内调 `POST /api/generate/text`（通用生成端点，带最近用过的 `avoid` 列表防重复）预取下阶段文案；任务指令（场景 + ≤40 字等输出要求）由 Desktop 组装，**人设由服务端注入**——system 基线 + 目标 workspace 的 `AGENTS.md`/`SOUL.md`/`USER.md`，与 agent 对话同一灵魂；按与播放侧完全一致的参数（style=neutral）预合成 TTS，触发时刻 `/api/speech/jobs` 直接缓存命中。**生成模型由 Desktop 决定**：设置项 `dynamicTextModel`（model spec：tag 如 `primary`/`cheap`，或固定模型 `provider/model`/裸模型名）随请求体 `model` 字段发送；优先级为请求 `model` → 服务器 `webapi.generate.model` → `primary` tag → `default_provider` 兜底，写错的 spec 会静默穿过落到下一级。生成失败、未配置模型或未连接 Gateway 时回退固定文案。阶段含 `rounds_done`（全部轮次完成）。
 - 轮数（`totalRounds` 设置，1–16，默认 1）：一次 start = `totalRounds` 个 work+break 轮，break 结束后自动进入下一轮，最后一轮结束用 `roundsDoneText` 提醒并自动停表；`PomodoroState` 暴露 `round`/`totalRounds`，运行中改设置不影响本次运行的轮数。
-- pet 窗口常驻番茄钟徽标（`PomodoroBadge`）：`pomodoroState` 随 `DesktopRuntimeSnapshot`（可选字段 `pomodoro`，旧发布端不带时 pet 侧保留现值）下发，只在 phase 切换时变化；徽标在非 idle 时显示于桌宠头顶（脉冲圆点 + 阶段文案 + `mm:ss` + 轮次，working 绿 / breaking 蓝配色与设置面板一致，phase 切换重放入场动画），剩余秒数由 pet 窗口本地按 `expiresAt` 每秒派生，快照不逐秒重发；桌宠 hidden/retreating 时隐藏。
+- 番茄钟计时仍完全在 Desktop 本地运行，但展示已适配为 `nahida.pomodoro:timer` 的本地 `pet.overlay/countdown` contribution，与 Gateway 插件共用 `PluginSurfaceHost`。`pluginSurfaces` 随 `DesktopRuntimeSnapshot` 下发到 pet 窗口，剩余秒数由宿主按 `expiresAt` 每秒派生，快照不逐秒重发；桌宠 hidden/retreating 时隐藏。Gateway 插件 surface 通过 `desktop.surface.sync` 完整快照同步，本地 contribution 不会被远端快照清除。
 - TTS 来源可选 `system | gateway | auto`：gateway 模式经 Gateway 合成并缓存到本地 blob。
 
 验收口径：本地番茄钟或 mock 通知能触发桌宠唤出、气泡、可选 TTS、口型、表情和动作；TTS 失败不会影响文本展示。

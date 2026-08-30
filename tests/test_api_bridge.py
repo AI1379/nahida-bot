@@ -32,14 +32,17 @@ from nahida_bot.core.temp_files import ManagedTempFileService
 from nahida_bot.plugins.api_bridge import RealBotAPI
 from nahida_bot.plugins.base import ChatContext, InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import CommandRegistry
+from nahida_bot.plugins.desktop_surfaces import DesktopSurfaceRegistry
 from nahida_bot.plugins.manifest import (
     Capabilities,
+    DesktopSurfaceDeclaration,
     FilesystemPermission,
     MemoryPermission,
     NetworkPermission,
     Permissions,
     PluginDataPermission,
     PluginManifest,
+    PluginContributions,
 )
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerRegistry, ToolRegistry
@@ -235,6 +238,7 @@ def _api(
     memory_soft_scope: bool = False,
     memory_cross_chat_enabled: bool = True,
     memory_cross_chat_weights: dict[str, float] | None = None,
+    desktop_surface_registry: DesktopSurfaceRegistry | None = None,
 ) -> tuple[RealBotAPI, _ChannelRegistry, ToolRegistry, CommandRegistry]:
     manifest = manifest or _manifest()
     app = SimpleNamespace(
@@ -274,6 +278,7 @@ def _api(
         temp_file_service=temp_file_service,
         provider_manager=_ProviderManager(),
         model_router=None,
+        desktop_surface_registry=desktop_surface_registry,
     )
     return api, channel_registry, tool_registry, command_registry
 
@@ -282,6 +287,62 @@ def test_get_multimodal_image_fallback_model(tmp_path: Path) -> None:
     api, _, _, _ = _api(tmp_path)
 
     assert api.get_multimodal_image_fallback_model() == "vision-provider/model"
+
+
+def test_desktop_surface_registration_requires_a_manifest_declaration(
+    tmp_path: Path,
+) -> None:
+    registry = DesktopSurfaceRegistry()
+    api, _, _, _ = _api(tmp_path, desktop_surface_registry=registry)
+
+    async def provider(context: object) -> None:
+        return None
+
+    with pytest.raises(PermissionDenied, match="did not declare Desktop surface"):
+        api.register_desktop_surface_provider("today", provider)
+
+
+def test_desktop_surface_provider_follows_plugin_lifecycle(tmp_path: Path) -> None:
+    registry = DesktopSurfaceRegistry()
+    manifest = PluginManifest(
+        id="example.schedule",
+        name="Schedule",
+        version="1.0.0",
+        entrypoint="schedule:SchedulePlugin",
+        contributes=PluginContributions(
+            desktop_surfaces=[
+                DesktopSurfaceDeclaration(
+                    id="today",
+                    target="desktop.home",
+                    kind="list",
+                    priority=20,
+                )
+            ]
+        ),
+    )
+    api, _, _, _ = _api(
+        tmp_path,
+        manifest=manifest,
+        desktop_surface_registry=registry,
+    )
+
+    async def provider(context: object) -> None:
+        return None
+
+    api.register_desktop_surface_provider("today", provider)
+    assert registry.list_entries() == []
+
+    api.activate_registrations()
+    assert [
+        (entry.plugin_id, entry.surface_id) for entry in registry.list_entries()
+    ] == [("example.schedule", "today")]
+
+    api.request_desktop_surface_refresh("today")
+    with pytest.raises(KeyError, match="is not registered"):
+        api.request_desktop_surface_refresh("missing")
+
+    api.deactivate_registrations()
+    assert registry.list_entries() == []
 
 
 @pytest.mark.asyncio

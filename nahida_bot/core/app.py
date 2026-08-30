@@ -123,6 +123,7 @@ class Application:
         self.webapi_service: WebAPIApp | None = None
         self.desktop_announcement_service: Any | None = None
         self.desktop_control_service: Any | None = None
+        self.desktop_surface_service: Any | None = None
         from nahida_bot.gateway.services.webhost import WebHostService
 
         self.webhost_service: WebHostService = WebHostService()

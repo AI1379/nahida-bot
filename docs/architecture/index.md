@@ -51,6 +51,7 @@ Nahida Bot 的核心目标：
 | [model-context-budget.md](model-context-budget.md) | 模型上下文窗口与动态预算机制 |
 | [model-routing.md](model-routing.md) | Model spec 解析与 ModelRouter 路由机制 |
 | [plugin-system.md](plugin-system.md) | Plugin 系统完整设计（SDK、Manifest、生命周期、权限、事件集成） |
+| [plugin-runtime-facets.md](plugin-runtime-facets.md) | 单一插件控制面、多运行时 facet、Page 与 Desktop Surface 的边界和同步协议 |
 | [channel-plugin.md](channel-plugin.md) | ChannelService 设计与通信协议 |
 | [security-observability.md](security-observability.md) | 安全基线与可观测性要求 |
 | [priorities-and-strategy.md](priorities-and-strategy.md) | 模块优先级与开发策略 |

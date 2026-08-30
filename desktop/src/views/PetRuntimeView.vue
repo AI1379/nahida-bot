@@ -5,6 +5,7 @@ import { useMediaQuery } from "@vueuse/core";
 
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionFeedbackPanel from "@/components/MotionFeedbackPanel.vue";
+import PluginSurfaceHost from "@/components/PluginSurfaceHost.vue";
 import RuntimeConversationPanel from "@/components/RuntimeConversationPanel.vue";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
@@ -86,6 +87,12 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       @expressions-loaded="store.setModelExpressions"
       @motions-loaded="store.setModelMotions"
       @motion-executed="handleMotionExecuted"
+    />
+
+    <PluginSurfaceHost
+      class="pet-runtime__plugin-surfaces"
+      :surfaces="store.pluginSurfaces"
+      target="desktop.home"
     />
 
     <button

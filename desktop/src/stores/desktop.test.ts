@@ -158,16 +158,28 @@ describe("desktop store pet transitions", () => {
     expect(store.localConfig.performanceMode).toBe("active");
   });
 
-  it("applies the pomodoro state carried by runtime snapshots", () => {
+  it("applies plugin surfaces carried by runtime snapshots", () => {
     const store = useDesktopStore();
-    const running: NonNullable<DesktopRuntimeSnapshot["pomodoro"]> = {
-      phase: "working",
-      round: 2,
-      totalRounds: 4,
-      startedAt: "2026-08-23T00:00:00.000Z",
-      expiresAt: "2026-08-23T00:20:00.000Z",
-      remainingSeconds: 1200,
-    };
+    const surfaces: NonNullable<DesktopRuntimeSnapshot["pluginSurfaces"]> = [
+      {
+        ownerPluginId: "example.schedule",
+        id: "today",
+        target: "desktop.home",
+        kind: "list",
+        priority: 20,
+        source: "gateway",
+        view: {
+          title: "今日安排",
+          text: "",
+          status: "",
+          detail: "",
+          expiresAt: "",
+          progress: null,
+          items: [{ text: "写周报", detail: "10:00", completed: false }],
+          tone: "neutral",
+        },
+      },
+    ];
 
     store.applyRuntimeSnapshot({
       connected: true,
@@ -179,10 +191,12 @@ describe("desktop store pet transitions", () => {
       localConfigVersion: store.localConfigVersion,
       expressionMapVersion: store.expressionMapVersion,
       motionMapVersion: store.motionMapVersion,
-      pomodoro: running,
+      pluginSurfaces: surfaces,
+      pluginSurfaceRevision: 3,
     });
 
-    expect(store.pomodoroState).toEqual(running);
+    expect(store.pluginSurfaces).toEqual(surfaces);
+    expect(store.pluginSurfaceRevision).toBe(3);
 
     store.applyRuntimeSnapshot({
       connected: true,
@@ -196,7 +210,8 @@ describe("desktop store pet transitions", () => {
       motionMapVersion: store.motionMapVersion,
     });
 
-    expect(store.pomodoroState).toEqual(running);
+    expect(store.pluginSurfaces).toEqual(surfaces);
+    expect(store.pluginSurfaceRevision).toBe(3);
   });
 
   it("persists gateway connection updates and bumps the revision", () => {
@@ -341,6 +356,48 @@ describe("desktop store pet transitions", () => {
     expect(store.gatewayConnectionError).toBe("node token expired");
   });
 
+  it("clears stale gateway surfaces on disconnect and accepts a new revision epoch", () => {
+    const store = useDesktopStore();
+    store.setPomodoroState({
+      phase: "working",
+      round: 1,
+      totalRounds: 1,
+      startedAt: "2026-08-30T00:00:00.000Z",
+      expiresAt: "2026-08-30T00:25:00.000Z",
+      remainingSeconds: 1500,
+    });
+    store.applyCapabilityInvoke("desktop.surface.sync", {
+      revision: 99,
+      surfaces: [
+        {
+          owner_plugin_id: "example.schedule",
+          id: "today",
+          target: "desktop.home",
+          kind: "card",
+          view: { title: "旧状态" },
+        },
+      ],
+    });
+
+    store.applyDesktopEvent({
+      type: "connection.changed",
+      source: "gateway",
+      at: "2026-08-30T00:10:00.000Z",
+      connected: false,
+      reason: "Gateway restarted",
+    });
+
+    expect(store.pluginSurfaceRevision).toBe(0);
+    expect(store.pluginSurfaces).toHaveLength(1);
+    expect(store.pluginSurfaces[0]?.source).toBe("local");
+    expect(
+      store.applyCapabilityInvoke("desktop.surface.sync", {
+        revision: 1,
+        surfaces: [],
+      }),
+    ).toMatchObject({ ok: true, result: { applied: true } });
+  });
+
   it("reports capability success only after applying it", () => {
     const store = useDesktopStore();
 
@@ -355,6 +412,87 @@ describe("desktop store pet transitions", () => {
 
     expect(result).toEqual({ ok: true, result: { applied: true } });
     expect(store.transcript[0]?.text).toBe("Renderer applied this");
+  });
+
+  it("replaces gateway plugin surfaces without removing local surfaces", () => {
+    const store = useDesktopStore();
+    store.setPomodoroState({
+      phase: "working",
+      round: 1,
+      totalRounds: 4,
+      startedAt: "2026-08-30T00:00:00.000Z",
+      expiresAt: "2026-08-30T00:25:00.000Z",
+      remainingSeconds: 1500,
+    });
+
+    const result = store.applyCapabilityInvoke("desktop.surface.sync", {
+      revision: 7,
+      surfaces: [
+        {
+          owner_plugin_id: "example.schedule",
+          id: "today",
+          target: "desktop.home",
+          kind: "list",
+          priority: 10,
+          view: {
+            title: "今日安排",
+            items: [{ text: "整理插件协议", detail: "上午" }],
+          },
+        },
+        {
+          owner_plugin_id: "nahida.pomodoro",
+          id: "timer",
+          target: "pet.overlay",
+          kind: "badge",
+          priority: 100,
+          view: { title: "Remote collision" },
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      result: { revision: 7, surfaces: 2, applied: true },
+    });
+    expect(store.pluginSurfaces).toHaveLength(2);
+    expect(store.pluginSurfaces.map((surface) => surface.source).sort()).toEqual([
+      "gateway",
+      "local",
+    ]);
+
+    expect(
+      store.applyCapabilityInvoke("desktop.surface.sync", {
+        revision: 6,
+        surfaces: [],
+      }),
+    ).toEqual({
+      ok: true,
+      result: { revision: 6, surfaces: 0, applied: false },
+    });
+    expect(store.pluginSurfaces).toHaveLength(2);
+  });
+
+  it("rejects malformed plugin surface snapshots atomically", () => {
+    const store = useDesktopStore();
+
+    expect(
+      store.applyCapabilityInvoke("desktop.surface.sync", {
+        revision: 1,
+        surfaces: [
+          {
+            owner_plugin_id: "example.schedule",
+            id: "today",
+            target: "desktop.home",
+            kind: "progress",
+            view: { progress: 2 },
+          },
+        ],
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_arguments", retryable: false },
+    });
+    expect(store.pluginSurfaces).toEqual([]);
   });
 
   it("queues notification announcements with spoken playback", () => {

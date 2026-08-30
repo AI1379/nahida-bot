@@ -11,6 +11,7 @@ import structlog
 
 from nahida_bot.agent.context import MessageRole
 from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.exceptions import PermissionDenied
 from nahida_bot.plugins.base import (
     AttentionFrame,
     ChannelService,
@@ -164,6 +165,7 @@ class RealBotAPI:
         memory_cross_chat_enabled: bool = True,
         memory_cross_chat_weights: dict[str, float] | None = None,
         speech_service: Any | None = None,  # SpeechService (shared)
+        desktop_surface_registry: Any | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -227,6 +229,9 @@ class RealBotAPI:
         ] = {}  # global_key -> StatusProviderEntry
         self._active_status_providers: set[str] = set()
         self._webhook_registrations: list[_WebhookRegistration] = []
+        self._desktop_surface_registry = desktop_surface_registry
+        self._registered_desktop_surface_providers: dict[str, Any] = {}
+        self._active_desktop_surface_providers: set[str] = set()
 
     # ── Messaging ──────────────────────────────────────
 
@@ -658,6 +663,72 @@ class RealBotAPI:
         if self._registrations_active:
             self._activate_provider_type(type_key)
         self._logger.debug("provider_type_registered", provider_type=type_key)
+
+    # ── Desktop Surface Registration ───────────────────
+
+    def register_desktop_surface_provider(
+        self,
+        surface_id: str,
+        handler: Callable[..., Awaitable[Any]],
+    ) -> None:
+        """Register one manifest-declared, host-rendered Desktop surface."""
+        declaration = next(
+            (
+                item
+                for item in self._manifest.contributes.desktop_surfaces
+                if item.id == surface_id
+            ),
+            None,
+        )
+        if declaration is None:
+            raise PermissionDenied(
+                f"Plugin '{self._plugin_id}' did not declare Desktop surface "
+                f"'{surface_id}' in contributes.desktop_surfaces"
+            )
+        if surface_id in self._registered_desktop_surface_providers:
+            raise KeyError(
+                f"Desktop surface '{surface_id}' is already registered by plugin "
+                f"'{self._plugin_id}'"
+            )
+
+        from nahida_bot.plugins.desktop_surfaces import DesktopSurfaceProviderEntry
+
+        entry = DesktopSurfaceProviderEntry(
+            plugin_id=self._plugin_id,
+            surface_id=surface_id,
+            target=declaration.target,
+            kind=declaration.kind,
+            priority=declaration.priority,
+            handler=handler,
+        )
+        self._registered_desktop_surface_providers[surface_id] = entry
+        if self._registrations_active:
+            self._activate_desktop_surface_provider(surface_id)
+        self._logger.debug("desktop_surface_registered", surface_id=surface_id)
+
+    def unregister_desktop_surface_provider(self, surface_id: str) -> bool:
+        entry = self._registered_desktop_surface_providers.pop(surface_id, None)
+        if entry is None:
+            return False
+        if (
+            surface_id in self._active_desktop_surface_providers
+            and self._desktop_surface_registry is not None
+        ):
+            self._desktop_surface_registry.unregister(self._plugin_id, surface_id)
+            self._active_desktop_surface_providers.discard(surface_id)
+        return True
+
+    def request_desktop_surface_refresh(self, surface_id: str) -> None:
+        if surface_id not in self._registered_desktop_surface_providers:
+            raise KeyError(
+                f"Desktop surface '{surface_id}' is not registered by plugin "
+                f"'{self._plugin_id}'"
+            )
+        if (
+            surface_id in self._active_desktop_surface_providers
+            and self._desktop_surface_registry is not None
+        ):
+            self._desktop_surface_registry.refresh(self._plugin_id, surface_id)
 
     # ── Prompt Supplement Registration ─────────────────
 
@@ -1859,6 +1930,8 @@ class RealBotAPI:
             self._activate_supplement(global_key)
         for global_key in self._registered_status_providers:
             self._activate_status_provider(global_key)
+        for surface_id in self._registered_desktop_surface_providers:
+            self._activate_desktop_surface_provider(surface_id)
 
     def deactivate_registrations(self) -> None:
         """Deactivate all active registrations without forgetting them."""
@@ -1888,6 +1961,10 @@ class RealBotAPI:
             if self._status_provider_registry is not None:
                 self._status_provider_registry.unregister(global_key)
             self._active_status_providers.discard(global_key)
+        for surface_id in list(self._active_desktop_surface_providers):
+            if self._desktop_surface_registry is not None:
+                self._desktop_surface_registry.unregister(self._plugin_id, surface_id)
+            self._active_desktop_surface_providers.discard(surface_id)
         self._registrations_active = False
 
     def clear_registrations(self) -> None:
@@ -1902,6 +1979,7 @@ class RealBotAPI:
         self._registered_provider_types.clear()
         self._registered_supplements.clear()
         self._registered_status_providers.clear()
+        self._registered_desktop_surface_providers.clear()
         self._decorated_registrations_added = False
 
     def _activate_command(self, name: str) -> None:
@@ -1977,6 +2055,16 @@ class RealBotAPI:
             owner_plugin_id=self._plugin_id,
         )
         self._active_provider_types.add(type_key)
+
+    def _activate_desktop_surface_provider(self, surface_id: str) -> None:
+        if surface_id in self._active_desktop_surface_providers:
+            return
+        if self._desktop_surface_registry is None:
+            raise RuntimeError("Desktop surface registry is not available")
+        self._desktop_surface_registry.register(
+            self._registered_desktop_surface_providers[surface_id]
+        )
+        self._active_desktop_surface_providers.add(surface_id)
 
     def _remove_event_registration(self, registration: _EventRegistration) -> None:
         if registration.active:

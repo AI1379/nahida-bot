@@ -15,6 +15,7 @@ from nahida_bot.plugins.api_bridge import RealBotAPI
 from nahida_bot.plugins.commands import CommandRegistry
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.loader import PluginLoader
+from nahida_bot.plugins.desktop_surfaces import DesktopSurfaceRegistry
 from nahida_bot.plugins.manifest import PluginManifest, parse_manifest
 from nahida_bot.plugins.registry import (
     HandlerRegistry,
@@ -122,6 +123,7 @@ class PluginManager:
         self._command_registry = CommandRegistry()
         self._supplement_registry = PromptSupplementRegistry()
         self._status_provider_registry = StatusProviderRegistry()
+        self._desktop_surface_registry = DesktopSurfaceRegistry()
         self._records: dict[str, PluginRecord] = {}
 
     def set_runtime_services(
@@ -205,6 +207,11 @@ class PluginManager:
     def status_provider_registry(self) -> StatusProviderRegistry:
         """Public read-only access to the status provider registry."""
         return self._status_provider_registry
+
+    @property
+    def desktop_surface_registry(self) -> DesktopSurfaceRegistry:
+        """Registry of active host-rendered Desktop surface providers."""
+        return self._desktop_surface_registry
 
     @property
     def scheduler_service(self) -> Any | None:
@@ -317,6 +324,7 @@ class PluginManager:
             command_registry=self._command_registry,
             supplement_registry=self._supplement_registry,
             status_provider_registry=self._status_provider_registry,
+            desktop_surface_registry=self._desktop_surface_registry,
             webhost_service=self._webhost_service,
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,

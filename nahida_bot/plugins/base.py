@@ -12,6 +12,12 @@ from nahida_bot_sdk.api import (  # noqa: F401
     WebhookResponse,
 )
 from nahida_bot_sdk.chat_address import ChatAddress  # noqa: F401
+from nahida_bot_sdk.desktop import (  # noqa: F401
+    DesktopSurfaceContext,
+    DesktopSurfaceItem,
+    DesktopSurfaceSnapshotItem,
+    DesktopSurfaceView,
+)
 from nahida_bot_sdk.commands import (  # noqa: F401
     CommandHandlerResult,
     CommandInfo,

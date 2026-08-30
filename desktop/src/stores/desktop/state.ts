@@ -27,6 +27,7 @@ import type { TurnRecord } from "@/domain/conversation";
 import { readPersistedGatewayConnection } from "@/services/gatewayConnectionStorage";
 import type { GatewayConnectionSettings } from "@/domain/gatewayConnection";
 import type { GatewayConnectionStatus } from "@/domain/gatewayConnection";
+import type { PluginSurfaceContribution } from "@/domain/pluginSurface";
 import { sanitizeGatewayConnectionSettings } from "@/domain/gatewayConnection";
 import { withPersistedModelMappings } from "./modelConfig";
 
@@ -107,6 +108,8 @@ export function createDesktopState() {
     gatewayConnectionError: null as string | null,
     gatewayPairing: { status: "idle" } as GatewayPairingState,
     pomodoroState: { ...idlePomodoroState } as PomodoroState,
+    pluginSurfaces: [] as PluginSurfaceContribution[],
+    pluginSurfaceRevision: 0,
     persistenceError: null as string | null,
   };
 }

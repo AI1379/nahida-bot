@@ -73,6 +73,15 @@ import {
 import { presentationPlanFromDesktopEvent } from "@/services/presentationPlanner";
 import { showDesktopNotification } from "@/services/desktopNotification";
 import {
+  parseGatewayPluginSurfaceSnapshot,
+  type PluginSurfaceContribution,
+  type PluginSurfaceSnapshot,
+} from "@/domain/pluginSurface";
+import {
+  localPomodoroSurfaceIdentity,
+  surfaceFromPomodoroState,
+} from "@/services/pomodoroSurface";
+import {
   nextCustomExpressionKeyword,
   type ExpressionKeywordMap,
   withModelConfig,
@@ -549,7 +558,10 @@ export const useDesktopStore = defineStore("desktop", {
         this.activeMotionFeedbackPlaybackId =
           snapshot.activeMotionFeedbackPlaybackId;
       }
-      if (snapshot.pomodoro) this.pomodoroState = snapshot.pomodoro;
+      if (snapshot.pluginSurfaces) this.pluginSurfaces = snapshot.pluginSurfaces;
+      if (snapshot.pluginSurfaceRevision !== undefined) {
+        this.pluginSurfaceRevision = snapshot.pluginSurfaceRevision;
+      }
       this.syncPetRuntime(snapshot.petRuntime);
     },
     updateTtsSettings(settings: LocalDesktopConfig["ttsSettings"]) {
@@ -590,6 +602,56 @@ export const useDesktopStore = defineStore("desktop", {
     },
     setPomodoroState(state: PomodoroState) {
       this.pomodoroState = state;
+      const surface = surfaceFromPomodoroState(state);
+      if (surface) {
+        this.upsertLocalPluginSurface(surface);
+      } else {
+        this.removeLocalPluginSurface(
+          localPomodoroSurfaceIdentity.ownerPluginId,
+          localPomodoroSurfaceIdentity.id,
+        );
+      }
+    },
+    syncGatewayPluginSurfaces(snapshot: PluginSurfaceSnapshot) {
+      if (snapshot.revision <= this.pluginSurfaceRevision) return false;
+      const local = this.pluginSurfaces.filter(
+        (surface) => surface.source === "local",
+      );
+      const localIdentities = new Set(
+        local.map((surface) => `${surface.ownerPluginId}:${surface.id}`),
+      );
+      this.pluginSurfaces = [
+        ...local,
+        ...snapshot.surfaces.filter(
+          (surface) =>
+            !localIdentities.has(`${surface.ownerPluginId}:${surface.id}`),
+        ),
+      ];
+      this.pluginSurfaceRevision = snapshot.revision;
+      return true;
+    },
+    upsertLocalPluginSurface(surface: PluginSurfaceContribution) {
+      const identity = `${surface.ownerPluginId}:${surface.id}`;
+      this.pluginSurfaces = [
+        ...this.pluginSurfaces.filter(
+          (item) => `${item.ownerPluginId}:${item.id}` !== identity,
+        ),
+        { ...surface, source: "local" },
+      ];
+    },
+    removeLocalPluginSurface(ownerPluginId: string, id: string) {
+      const identity = `${ownerPluginId}:${id}`;
+      this.pluginSurfaces = this.pluginSurfaces.filter(
+        (surface) =>
+          surface.source !== "local" ||
+          `${surface.ownerPluginId}:${surface.id}` !== identity,
+      );
+    },
+    clearGatewayPluginSurfaces() {
+      this.pluginSurfaces = this.pluginSurfaces.filter(
+        (surface) => surface.source === "local",
+      );
+      this.pluginSurfaceRevision = 0;
     },
     updatePetTriggerSettings(settings: LocalDesktopConfig["petTriggers"]) {
       const petTriggers = sanitizePetTriggerSettings(
@@ -962,6 +1024,9 @@ export const useDesktopStore = defineStore("desktop", {
               ),
             );
           } else {
+            if (event.source === "gateway") {
+              this.clearGatewayPluginSurfaces();
+            }
             this.failPendingGatewayTurns(
               event.reason || "The connection closed before the reply completed.",
             );
@@ -1116,6 +1181,22 @@ export const useDesktopStore = defineStore("desktop", {
       capability: string,
       args: Record<string, unknown>,
     ) {
+      if (capability === "desktop.surface.sync") {
+        const snapshot = parseGatewayPluginSurfaceSnapshot(args);
+        if (!snapshot) {
+          return invalidCapabilityArguments(
+            capability,
+            "revision and surfaces must form a valid surface snapshot",
+          );
+        }
+        const applied = this.syncGatewayPluginSurfaces(snapshot);
+        return capabilityApplied({
+          revision: snapshot.revision,
+          surfaces: snapshot.surfaces.length,
+          applied,
+        });
+      }
+
       if (capability === "desktop.live2d.set_expression") {
         const expression =
           readStringArg(args.expression) ??
@@ -1201,8 +1282,8 @@ function readStringArg(value: unknown): string | null {
 
 const maximumAnnouncementLength = 300;
 
-function capabilityApplied() {
-  return { ok: true as const, result: { applied: true } };
+function capabilityApplied(result: Record<string, unknown> = { applied: true }) {
+  return { ok: true as const, result };
 }
 
 function invalidCapabilityArguments(capability: string, message: string) {

@@ -17,6 +17,10 @@
 - **最小权限**：插件只能访问 manifest 中声明的资源和 API。
 - **显式优于隐式**：所有事件监听、工具注册、钩子挂载都通过显式声明完成。
 
+Gateway、Node 与 Desktop 的扩展不是三套插件系统。安装、权限和生命周期归属于同一个
+manifest；不同进程只承载不同 runtime facet，轻量 Desktop UI 使用宿主渲染的声明式
+surface。详见 [Plugin 运行时与 UI Surface](plugin-runtime-facets.md)。
+
 ## 2. 整体架构
 
 ```text
@@ -73,6 +77,7 @@ nahida-bot-sdk/nahida_bot_sdk/
   messaging.py           # InboundMessage, OutboundMessage, 消息段类型
   events.py              # Event / Payload 类型、EventT、MessageReceived 等
   manifest.py            # PluginManifest 数据模型 (Pydantic)
+  desktop.py             # Desktop surface 的语言中立 view model
   commands.py            # 命令注册相关类型
   chat_address.py        # ChatAddress / SessionKey
   scaffold.py            # 插件脚手架（nahida-bot-plugin init）

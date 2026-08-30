@@ -23,6 +23,7 @@ from nahida_bot.gateway.services.webui_auth import WebUIAuthService
 if TYPE_CHECKING:
     from nahida_bot.core.app import Application
     from nahida_bot.gateway.services.node_event_bridge import NodeEventBridge
+    from nahida_bot.gateway.services.desktop_surfaces import DesktopSurfaceService
 
 logger = structlog.get_logger(__name__)
 
@@ -72,6 +73,7 @@ class WebAPIApp:
         self._server: uvicorn.Server | None = None
         self._serve_task: asyncio.Task[None] | None = None
         self._node_event_bridge: NodeEventBridge | None = None
+        self.desktop_surface_service: DesktopSurfaceService | None = None
         self._init_node_services(application)
         self._fastapi = self._build_fastapi(cors_origins or ["*"])
 
@@ -92,6 +94,7 @@ class WebAPIApp:
             DesktopAnnouncementService,
         )
         from nahida_bot.gateway.services.desktop_control import DesktopControlService
+        from nahida_bot.gateway.services.desktop_surfaces import DesktopSurfaceService
         from nahida_bot.gateway.services.node_input_sink import ApplicationNodeInputSink
         from nahida_bot.gateway.services.node_invoker import NodeInvoker
         from nahida_bot.gateway.services.node_registry import NodeRegistry
@@ -136,8 +139,28 @@ class WebAPIApp:
             if self.node_registry is not None and self.node_invoker is not None
             else None
         )
+        plugin_manager = getattr(application, "plugin_manager", None)
+        surface_registry = (
+            plugin_manager.desktop_surface_registry
+            if plugin_manager is not None
+            else None
+        )
+        self.desktop_surface_service = (
+            DesktopSurfaceService(
+                surface_registry,
+                self.node_registry,
+                self.node_invoker,
+            )
+            if surface_registry is not None
+            and self.node_registry is not None
+            and self.node_invoker is not None
+            else None
+        )
+        if self.desktop_surface_service is not None:
+            self.desktop_surface_service.start()
         application.desktop_announcement_service = self.desktop_announcement_service
         application.desktop_control_service = self.desktop_control_service
+        application.desktop_surface_service = self.desktop_surface_service
 
     @property
     def fastapi_app(self) -> FastAPI:
@@ -156,6 +179,7 @@ class WebAPIApp:
         app.state.node_registry = self.node_registry
         app.state.node_auth = self.node_auth
         app.state.node_invoker = self.node_invoker
+        app.state.desktop_surface_service = self.desktop_surface_service
         app.state.speech_service = getattr(self._application, "speech_service", None)
         app.state.speech_artifact_store = getattr(
             self._application, "speech_artifact_store", None
@@ -381,6 +405,9 @@ class WebAPIApp:
         logger.info("webapi.started", host=self._host, port=self._port)
 
     async def stop(self) -> None:
+        if self.desktop_surface_service is not None:
+            self.desktop_surface_service.stop()
+
         # Stop node event bridge
         if self._node_event_bridge is not None:
             await self._node_event_bridge.stop()

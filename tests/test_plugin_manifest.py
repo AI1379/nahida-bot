@@ -7,11 +7,14 @@ import pytest
 from nahida_bot.core.exceptions import PluginLoadError
 from nahida_bot.plugins.manifest import (
     Capabilities,
+    DesktopSurfaceDeclaration,
     FilesystemPermission,
     MemoryPermission,
     NetworkPermission,
     Permissions,
     PluginManifest,
+    PluginContributions,
+    PluginPageDeclaration,
     SystemPermission,
     parse_manifest,
 )
@@ -81,6 +84,35 @@ class TestPluginManifest:
         assert m.permissions.system.subprocess is False
         assert m.permissions.system.env_vars == []
 
+    def test_ui_contributions_share_the_plugin_manifest(self) -> None:
+        m = PluginManifest(
+            id="com.example.schedule",
+            name="Schedule",
+            version="0.1.0",
+            entrypoint="schedule:SchedulePlugin",
+            contributes=PluginContributions(
+                desktop_surfaces=[
+                    DesktopSurfaceDeclaration(
+                        id="today",
+                        target="desktop.home",
+                        kind="list",
+                        priority=20,
+                    )
+                ],
+                pages=[
+                    PluginPageDeclaration(
+                        id="settings",
+                        target="webui.admin",
+                        entry="dist/settings.html",
+                        title="日程设置",
+                    )
+                ],
+            ),
+        )
+
+        assert m.contributes.desktop_surfaces[0].target == "desktop.home"
+        assert m.contributes.pages[0].target == "webui.admin"
+
 
 class TestParseManifest:
     """Tests for YAML manifest parsing."""
@@ -108,6 +140,53 @@ permissions:
         assert manifest.name == "Hello Plugin"
         assert manifest.permissions.network.outbound == ["https://api.example.com/*"]
         assert manifest.permissions.memory.read is True
+
+    def test_parse_surface_contributions(self, tmp_path: Path) -> None:
+        path = _write_manifest(
+            tmp_path,
+            """
+id: com.example.schedule
+name: Schedule
+version: "1.0.0"
+entrypoint: schedule:SchedulePlugin
+contributes:
+  desktop_surfaces:
+    - id: today
+      target: pet.drawer
+      kind: list
+      priority: 15
+  pages:
+    - id: settings
+      target: desktop.main
+      entry: dist/settings.html
+      title: Schedule settings
+""",
+        )
+
+        manifest = parse_manifest(path)
+
+        assert manifest.contributes.desktop_surfaces[0].id == "today"
+        assert manifest.contributes.desktop_surfaces[0].priority == 15
+        assert manifest.contributes.pages[0].entry == "dist/settings.html"
+
+    def test_rejects_invalid_surface_identifiers(self, tmp_path: Path) -> None:
+        path = _write_manifest(
+            tmp_path,
+            """
+id: com.example.schedule
+name: Schedule
+version: "1.0.0"
+entrypoint: schedule:SchedulePlugin
+contributes:
+  desktop_surfaces:
+    - id: "../today"
+      target: desktop.home
+      kind: list
+""",
+        )
+
+        with pytest.raises(PluginLoadError, match="Invalid manifest"):
+            parse_manifest(path)
 
     def test_parse_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(PluginLoadError, match="not found"):

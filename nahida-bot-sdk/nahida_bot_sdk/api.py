@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         CompletionQuery,
     )
     from nahida_bot_sdk.plugin import MemoryRef
+    from nahida_bot_sdk.desktop import DesktopSurfaceContext, DesktopSurfaceView
 
 
 # ── LLM / Subagent data types ──────────────────────────
@@ -346,6 +347,24 @@ class BotAPI(Protocol):
         methods: tuple[str, ...] = ("POST",),
     ) -> WebhookHandle:
         """Register a plugin-owned raw HTTP webhook endpoint."""
+        ...
+
+    def register_desktop_surface_provider(
+        self,
+        surface_id: str,
+        handler: Callable[
+            [DesktopSurfaceContext], Awaitable[DesktopSurfaceView | None]
+        ],
+    ) -> None:
+        """Register the provider declared by ``contributes.desktop_surfaces``."""
+        ...
+
+    def unregister_desktop_surface_provider(self, surface_id: str) -> bool:
+        """Remove a Desktop surface provider owned by this plugin."""
+        ...
+
+    def request_desktop_surface_refresh(self, surface_id: str) -> None:
+        """Request a new snapshot after one surface's backing data changes."""
         ...
 
     def register_prompt_supplement(

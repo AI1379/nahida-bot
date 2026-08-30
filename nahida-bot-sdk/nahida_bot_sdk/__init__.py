@@ -42,6 +42,17 @@ from nahida_bot_sdk.api import (  # noqa: F401
     WebhookResponse,
 )
 
+# Desktop surfaces
+from nahida_bot_sdk.desktop import (  # noqa: F401
+    DesktopSurfaceContext,
+    DesktopSurfaceItem,
+    DesktopSurfaceKind,
+    DesktopSurfaceSnapshotItem,
+    DesktopSurfaceTarget,
+    DesktopSurfaceTone,
+    DesktopSurfaceView,
+)
+
 # Plugin base
 from nahida_bot_sdk.plugin import (  # noqa: F401
     MemoryRef,
@@ -54,6 +65,7 @@ from nahida_bot_sdk.plugin import (  # noqa: F401
 # Manifest
 from nahida_bot_sdk.manifest import (  # noqa: F401
     Capabilities,
+    DesktopSurfaceDeclaration,
     FilesystemPermission,
     ManifestParseError,
     MemoryPermission,
@@ -61,7 +73,9 @@ from nahida_bot_sdk.manifest import (  # noqa: F401
     Permissions,
     PluginDataPermission,
     PluginDependency,
+    PluginContributions,
     PluginManifest,
+    PluginPageDeclaration,
     SystemPermission,
     parse_manifest,
 )
@@ -153,6 +167,14 @@ __all__ = [
     "WebhookHandle",
     "WebhookRequest",
     "WebhookResponse",
+    # Desktop surfaces
+    "DesktopSurfaceContext",
+    "DesktopSurfaceItem",
+    "DesktopSurfaceKind",
+    "DesktopSurfaceSnapshotItem",
+    "DesktopSurfaceTarget",
+    "DesktopSurfaceTone",
+    "DesktopSurfaceView",
     # Plugin base
     "MemoryRef",
     "Plugin",
@@ -161,6 +183,7 @@ __all__ = [
     "subscribe",
     # Manifest
     "Capabilities",
+    "DesktopSurfaceDeclaration",
     "FilesystemPermission",
     "ManifestParseError",
     "MemoryPermission",
@@ -168,7 +191,9 @@ __all__ = [
     "Permissions",
     "PluginDataPermission",
     "PluginDependency",
+    "PluginContributions",
     "PluginManifest",
+    "PluginPageDeclaration",
     "SystemPermission",
     "parse_manifest",
     # Events

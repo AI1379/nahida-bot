@@ -93,7 +93,8 @@ export function useDesktopRuntimeController(
     motionMapVersion: store.motionMapVersion,
     turns: store.turns,
     activeMotionFeedbackPlaybackId: store.activeMotionFeedbackPlaybackId,
-    pomodoro: store.pomodoroState,
+    pluginSurfaces: store.pluginSurfaces,
+    pluginSurfaceRevision: store.pluginSurfaceRevision,
   }));
 
   let transitionTimer: ReturnType<typeof setTimeout> | null = null;

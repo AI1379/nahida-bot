@@ -192,6 +192,7 @@ def _record_to_response(record: PluginRecord) -> PluginSummaryResponse:
         error_message=record.error_message,
         permissions=_dump_model(manifest.permissions),
         capabilities=_dump_model(manifest.capabilities),
+        contributes=_dump_model(manifest.contributes),
         depends_on=[_dump_model(item) for item in manifest.depends_on],
         config_keys=sorted(str(key) for key in config.keys()),
         config_schema=dict(manifest.config_schema or {}),
