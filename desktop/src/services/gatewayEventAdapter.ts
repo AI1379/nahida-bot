@@ -3,6 +3,7 @@ import {
   planFromText,
 } from "@/domain/displayPlan";
 import type { DesktopEvent } from "@/domain/runtime";
+import { parsePluginRuntimeSnapshot } from "@/domain/pluginRuntime";
 import { isGatewayAuthError } from "@/domain/gatewayConnection";
 import type { MockGatewayEvent } from "@/services/mockBackend";
 
@@ -146,6 +147,16 @@ function gatewayEnvelopeToDesktopEvent(
   const payload = envelope.payload ?? {};
 
   switch (envelope.event) {
+    case "plugin.runtime.sync": {
+      const snapshot = parsePluginRuntimeSnapshot(payload);
+      if (!snapshot) return null;
+      return {
+        type: "plugin.runtime.sync",
+        source: "gateway",
+        at,
+        snapshot,
+      };
+    }
     case "agent.message.started": {
       const sessionId = readString(payload.session_id ?? payload.sessionId);
       if (!sessionId) return null;

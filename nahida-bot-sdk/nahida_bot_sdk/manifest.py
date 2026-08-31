@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from nahida_bot_sdk.desktop import DesktopSurfaceKind, DesktopSurfaceTarget
 
@@ -91,15 +91,42 @@ class PluginPageDeclaration(BaseModel):
 
     id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     target: Literal["webui.admin", "desktop.main", "desktop.popup"]
-    entry: str
+    entry: str = Field(min_length=1, max_length=256)
     title: str = ""
 
 
 class PluginContributions(BaseModel):
     """Declarative UI contributions shipped in one logical plugin package."""
 
-    desktop_surfaces: list[DesktopSurfaceDeclaration] = Field(default_factory=list)
-    pages: list[PluginPageDeclaration] = Field(default_factory=list)
+    desktop_surfaces: list[DesktopSurfaceDeclaration] = Field(
+        default_factory=list, max_length=64
+    )
+    pages: list[PluginPageDeclaration] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def require_unique_ids(self) -> "PluginContributions":
+        for label, items in (
+            ("desktop surface", self.desktop_surfaces),
+            ("page", self.pages),
+        ):
+            ids = [item.id for item in items]
+            if len(ids) != len(set(ids)):
+                raise ValueError(f"duplicate {label} contribution id")
+        return self
+
+
+class GatewayRuntimeFacet(BaseModel):
+    """Gateway implementation executed by the Python plugin host."""
+
+    entrypoint: str = Field(min_length=1, max_length=256)
+    mode: Literal["python"] = "python"
+
+
+class NodeRuntimeFacet(BaseModel):
+    """Worker implementation shipped for a Node runtime."""
+
+    entrypoint: str = Field(min_length=1, max_length=256)
+    mode: Literal["python", "javascript", "wasm", "sidecar"] = "python"
 
 
 class DesktopRuntimeFacet(BaseModel):
@@ -112,6 +139,8 @@ class DesktopRuntimeFacet(BaseModel):
 class PluginRuntimeFacets(BaseModel):
     """Technology-specific execution facets governed by one plugin manifest."""
 
+    gateway: GatewayRuntimeFacet | None = None
+    node: NodeRuntimeFacet | None = None
     desktop: DesktopRuntimeFacet | None = None
 
 
@@ -122,7 +151,9 @@ class PluginManifest(BaseModel):
     name: str
     version: str
     description: str = ""
-    entrypoint: str  # "module_path:ClassName"
+    # Legacy shorthand for runtimes.gateway.entrypoint. It remains populated
+    # for backward compatibility when a gateway facet is declared explicitly.
+    entrypoint: str = ""
     nahida_bot_version: str = ""
     sdk_version: str = ""
     load_phase: Literal["pre-agent", "post-agent"] = "post-agent"
@@ -134,6 +165,23 @@ class PluginManifest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     config_schema: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[PluginDependency] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_runtime_facets(self) -> "PluginManifest":
+        """Normalize the legacy Python entrypoint into the runtime map."""
+        gateway = self.runtimes.gateway
+        if self.entrypoint and gateway is None:
+            self.runtimes.gateway = GatewayRuntimeFacet(entrypoint=self.entrypoint)
+        elif gateway is not None and not self.entrypoint:
+            self.entrypoint = gateway.entrypoint
+        elif gateway is not None and gateway.entrypoint != self.entrypoint:
+            raise ValueError(
+                "entrypoint must match runtimes.gateway.entrypoint when both are set"
+            )
+
+        if not any((self.runtimes.gateway, self.runtimes.node, self.runtimes.desktop)):
+            raise ValueError("plugin must declare at least one runtime facet")
+        return self
 
 
 def parse_manifest(yaml_path: Path) -> PluginManifest:
@@ -164,7 +212,7 @@ def parse_manifest(yaml_path: Path) -> PluginManifest:
             f"Manifest at {yaml_path} must be a YAML mapping, got {type(data).__name__}"
         )
 
-    missing = {"id", "name", "version", "entrypoint"} - set(data.keys())
+    missing = {"id", "name", "version"} - set(data.keys())
     if missing:
         raise ManifestParseError(
             f"Manifest at {yaml_path} missing required fields: {', '.join(sorted(missing))}"

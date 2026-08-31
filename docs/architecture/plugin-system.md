@@ -19,8 +19,9 @@
 
 Gateway、Node 与 Desktop 的扩展不是三套插件系统。安装、权限和生命周期归属于同一个
 manifest；不同进程只承载不同 runtime facet，轻量 Desktop UI 使用宿主渲染的声明式
-surface。manifest 已支持 `runtimes.desktop`，首个 `nahida.pomodoro` 插件同时包含 Gateway
-工具 facet 与内置 Desktop 计时 facet。详见 [Plugin 运行时与 UI Surface](plugin-runtime-facets.md)。
+surface。manifest 已支持 `runtimes.gateway/node/desktop`，首个 `nahida.pomodoro` 插件同时
+包含 Gateway 工具 facet 与内置 Desktop 计时 facet。详见
+[Plugin 运行时与 UI Surface](plugin-runtime-facets.md)。
 
 ## 2. 整体架构
 
@@ -559,7 +560,7 @@ async def test_plugin_responds_to_message(plugin):
 
 为降低加载器与热重载复杂度，项目采用以下硬约束：
 
-- 一个 `plugin.yaml` 只能绑定一个插件类（`entrypoint` 必须为 `module:Class`）。
+- 一个 `plugin.yaml` 的 Gateway facet 只能绑定一个插件类（入口必须为 `module:Class`）。
 - 一个 Python 模块只能承载一个可加载插件类。
 - 若作者需要多个插件能力，必须拆分到多个模块，并使用多个独立 manifest。
 
@@ -579,14 +580,32 @@ name: "My Awesome Plugin"        # 人类可读名称
 version: "1.0.0"                 # 语义版本
 description: "做某件很酷的事情"
 
-# 入口点：Plugin 子类的完全限定名
-entrypoint: "my_plugin:MyPlugin"
-
-# 同一插件在 Desktop 技术栈中的可选执行 facet
+# 同一插件在不同技术栈中的可选执行 facet
 runtimes:
+  gateway:
+    entrypoint: "my_plugin:MyPlugin"
+    mode: python
+  node:
+    entrypoint: "dist/worker.js"
+    mode: javascript  # 目前只声明/同步，执行器尚未开放
   desktop:
     entrypoint: "builtin:my_plugin"
     mode: builtin  # builtin | javascript | wasm | sidecar
+
+# 旧版顶层 entrypoint 仍兼容，等价于 runtimes.gateway.entrypoint。
+# 只含 Node/Desktop facet 的清单无需伪造 Python 入口。
+
+contributes:
+  pages:
+    - id: settings
+      target: webui.admin  # webui.admin | desktop.main | desktop.popup
+      entry: dist/settings.html
+      title: 插件设置
+  desktop_surfaces:
+    - id: status
+      target: desktop.home
+      kind: card
+      priority: 20
 
 # 兼容性声明
 nahida_bot_version: ">=0.1.0,<1.0.0"   # 兼容的 bot 版本范围
@@ -704,12 +723,14 @@ class PluginManifest(BaseModel):
     name: str
     version: str
     description: str = ""
-    entrypoint: str                      # "module_path:ClassName"
+    entrypoint: str = ""                 # legacy Gateway shorthand
     nahida_bot_version: str = ""
     sdk_version: str = ""
     load_phase: Literal["pre-agent", "post-agent"] = "post-agent"
     permissions: Permissions = Field(default_factory=Permissions)
     capabilities: Capabilities = Field(default_factory=Capabilities)
+    contributes: PluginContributions = Field(default_factory=PluginContributions)
+    runtimes: PluginRuntimeFacets = Field(default_factory=PluginRuntimeFacets)
     config: dict[str, Any] = Field(default_factory=dict)
 ```
 

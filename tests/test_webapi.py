@@ -506,7 +506,77 @@ async def test_plugins_list_returns_sanitized_manifest(
     assert plugin["configured_enabled"] is True
     assert plugin["has_config"] is True
     assert plugin["config_keys"] == ["api_key", "mode"]
+    assert plugin["runtimes"]["gateway"]["mode"] == "python"
     assert "secret-value" not in resp.text
+
+
+async def test_plugin_page_returns_declared_enabled_html(
+    client_no_auth: AsyncClient,
+    tmp_path,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    record = _make_plugin_record(tmp_path)
+    record.manifest = type(record.manifest).model_validate(
+        {
+            **record.manifest.model_dump(mode="json", exclude={"contributes"}),
+            "contributes": {
+                "pages": [
+                    {
+                        "id": "settings",
+                        "target": "webui.admin",
+                        "entry": "dist/settings.html",
+                        "title": "Demo settings",
+                    }
+                ]
+            },
+        }
+    )
+    page = record.plugin_dir / "dist" / "settings.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<h1>Demo plugin settings</h1>", encoding="utf-8")
+    manager = MagicMock()
+    manager.get_record.return_value = record
+    mock_app.plugin_manager = manager
+
+    resp = await client_no_auth.get("/api/plugins/demo.plugin/pages/settings")
+
+    assert resp.status_code == 200
+    assert resp.json()["target"] == "webui.admin"
+    assert resp.json()["html"] == "<h1>Demo plugin settings</h1>"
+
+
+async def test_plugin_page_rejects_disabled_and_escaping_entries(
+    client_no_auth: AsyncClient,
+    tmp_path,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    record = _make_plugin_record(tmp_path, state="disabled")
+    record.manifest = type(record.manifest).model_validate(
+        {
+            **record.manifest.model_dump(mode="json"),
+            "contributes": {
+                "pages": [
+                    {
+                        "id": "settings",
+                        "target": "webui.admin",
+                        "entry": "../outside.html",
+                    }
+                ]
+            },
+        }
+    )
+    manager = MagicMock()
+    manager.get_record.return_value = record
+    mock_app.plugin_manager = manager
+
+    disabled = await client_no_auth.get("/api/plugins/demo.plugin/pages/settings")
+    assert disabled.status_code == 409
+
+    from nahida_bot.plugins.manager import PluginState
+
+    record.state = PluginState.ENABLED
+    escaping = await client_no_auth.get("/api/plugins/demo.plugin/pages/settings")
+    assert escaping.status_code == 400
 
 
 async def test_plugins_returns_503_without_manager(client_no_auth: AsyncClient) -> None:

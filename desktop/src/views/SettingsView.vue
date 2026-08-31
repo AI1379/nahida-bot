@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 
+import DesktopPluginPageHost from "@/components/DesktopPluginPageHost.vue";
 import DesktopPluginSettingsHost from "@/components/DesktopPluginSettingsHost.vue";
 import DesktopPetSettingsPanel from "@/components/DesktopPetSettingsPanel.vue";
 import GatewayConnectionPanel from "@/components/GatewayConnectionPanel.vue";
@@ -18,6 +19,12 @@ const props = defineProps<{
 const store = useDesktopStore();
 
 const activeSection = ref("connection");
+const remotePluginPages = computed(() =>
+  props.runtime.desktopPlugins.runtimePages("desktop.main"),
+);
+const runtimeSyncIssues = computed(() =>
+  props.runtime.desktopPlugins.listSyncIssues(),
+);
 const coreSections = [
   { id: "connection", label: "连接", hint: "Gateway 与设备配对", order: 10 },
   { id: "pet", label: "桌宠", hint: "模型、位置和触发方式", order: 20 },
@@ -30,10 +37,28 @@ const sections = computed(() => {
   for (const section of props.runtime.desktopPlugins.settingsSections()) {
     if (!byId.has(section.id)) byId.set(section.id, section);
   }
+  remotePluginPages.value.forEach((pluginPage, index) => {
+    const id = pluginPageSectionId(pluginPage.pluginId, pluginPage.page.id);
+    if (!byId.has(id)) {
+      byId.set(id, {
+        id,
+        label: pluginPage.page.title || pluginPage.pluginName,
+        hint: `${pluginPage.pluginName} 插件页面`,
+        order: 70 + index,
+      });
+    }
+  });
   return [...byId.values()].toSorted(
     (left, right) => left.order - right.order,
   );
 });
+const activePluginPage = computed(() =>
+  remotePluginPages.value.find(
+    (pluginPage) =>
+      pluginPageSectionId(pluginPage.pluginId, pluginPage.page.id) ===
+      activeSection.value,
+  ),
+);
 
 watch(sections, (nextSections) => {
   if (!nextSections.some((section) => section.id === activeSection.value)) {
@@ -52,6 +77,10 @@ function updateMotionDataCollectionEnabled(enabled: boolean) {
 function updatePetTriggerSettings(next: typeof store.localConfig.petTriggers) {
   store.updatePetTriggerSettings(next);
 }
+
+function pluginPageSectionId(pluginId: string, pageId: string): string {
+  return `plugin-page:${pluginId}:${pageId}`;
+}
 </script>
 
 <template>
@@ -69,6 +98,17 @@ function updatePetTriggerSettings(next: typeof store.localConfig.petTriggers) {
     <p v-if="store.persistenceError" class="settings-view__error" role="alert">
       {{ store.persistenceError }}
     </p>
+
+    <div
+      v-if="runtimeSyncIssues.length"
+      class="settings-view__warning"
+      role="status"
+    >
+      <strong>部分 Gateway 插件无法在当前 Desktop 运行：</strong>
+      <span v-for="issue in runtimeSyncIssues" :key="`${issue.pluginId}:${issue.code}`">
+        {{ issue.pluginId }} — {{ issue.message }}
+      </span>
+    </div>
 
     <div class="settings-view__layout">
       <nav class="settings-view__nav" aria-label="设置分类">
@@ -112,6 +152,12 @@ function updatePetTriggerSettings(next: typeof store.localConfig.petTriggers) {
           v-else-if="activeSection === 'advanced'"
           :enabled="store.localConfig.motionDataCollectionEnabled"
           @update-enabled="updateMotionDataCollectionEnabled"
+        />
+
+        <DesktopPluginPageHost
+          v-else-if="activePluginPage"
+          :connection="store.gatewayConnection"
+          :plugin-page="activePluginPage"
         />
 
         <DesktopPluginSettingsHost

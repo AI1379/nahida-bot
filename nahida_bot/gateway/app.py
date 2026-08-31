@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from nahida_bot.core.app import Application
     from nahida_bot.gateway.services.node_event_bridge import NodeEventBridge
     from nahida_bot.gateway.services.desktop_surfaces import DesktopSurfaceService
+    from nahida_bot.gateway.services.plugin_runtimes import PluginRuntimeService
 
 logger = structlog.get_logger(__name__)
 
@@ -74,6 +75,7 @@ class WebAPIApp:
         self._serve_task: asyncio.Task[None] | None = None
         self._node_event_bridge: NodeEventBridge | None = None
         self.desktop_surface_service: DesktopSurfaceService | None = None
+        self.plugin_runtime_service: PluginRuntimeService | None = None
         self._init_node_services(application)
         self._fastapi = self._build_fastapi(cors_origins or ["*"])
 
@@ -98,6 +100,7 @@ class WebAPIApp:
         from nahida_bot.gateway.services.node_input_sink import ApplicationNodeInputSink
         from nahida_bot.gateway.services.node_invoker import NodeInvoker
         from nahida_bot.gateway.services.node_registry import NodeRegistry
+        from nahida_bot.gateway.services.plugin_runtimes import PluginRuntimeService
 
         cfg = application.settings.webapi.nodes
         engine = getattr(application, "_db_engine", None)
@@ -158,9 +161,21 @@ class WebAPIApp:
         )
         if self.desktop_surface_service is not None:
             self.desktop_surface_service.start()
+        self.plugin_runtime_service = (
+            PluginRuntimeService(
+                plugin_manager,
+                self.node_registry,
+                application.event_bus,
+            )
+            if plugin_manager is not None and self.node_registry is not None
+            else None
+        )
+        if self.plugin_runtime_service is not None:
+            self.plugin_runtime_service.start()
         application.desktop_announcement_service = self.desktop_announcement_service
         application.desktop_control_service = self.desktop_control_service
         application.desktop_surface_service = self.desktop_surface_service
+        application.plugin_runtime_service = self.plugin_runtime_service
 
     @property
     def fastapi_app(self) -> FastAPI:
@@ -180,6 +195,7 @@ class WebAPIApp:
         app.state.node_auth = self.node_auth
         app.state.node_invoker = self.node_invoker
         app.state.desktop_surface_service = self.desktop_surface_service
+        app.state.plugin_runtime_service = self.plugin_runtime_service
         app.state.speech_service = getattr(self._application, "speech_service", None)
         app.state.speech_artifact_store = getattr(
             self._application, "speech_artifact_store", None
@@ -407,6 +423,8 @@ class WebAPIApp:
     async def stop(self) -> None:
         if self.desktop_surface_service is not None:
             self.desktop_surface_service.stop()
+        if self.plugin_runtime_service is not None:
+            self.plugin_runtime_service.stop()
 
         # Stop node event bridge
         if self._node_event_bridge is not None:

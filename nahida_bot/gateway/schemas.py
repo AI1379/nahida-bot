@@ -92,6 +92,7 @@ class PluginSummaryResponse(BaseModel):
     permissions: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, Any] = Field(default_factory=dict)
     contributes: dict[str, Any] = Field(default_factory=dict)
+    runtimes: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[dict[str, str]] = Field(default_factory=list)
     config_keys: list[str] = Field(default_factory=list)
     config_schema: dict[str, Any] = Field(default_factory=dict)
@@ -109,6 +110,15 @@ class PluginActionResponse(BaseModel):
     action: str
     state: str
     status: str
+
+
+class PluginPageResponse(BaseModel):
+    plugin_id: str
+    plugin_name: str
+    page_id: str
+    target: str
+    title: str
+    html: str
 
 
 # -- Config ---------------------------------------------------------------

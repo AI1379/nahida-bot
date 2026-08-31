@@ -10,8 +10,10 @@ from nahida_bot.plugins.manifest import (
     DesktopRuntimeFacet,
     DesktopSurfaceDeclaration,
     FilesystemPermission,
+    GatewayRuntimeFacet,
     MemoryPermission,
     NetworkPermission,
+    NodeRuntimeFacet,
     Permissions,
     PluginManifest,
     PluginContributions,
@@ -43,6 +45,7 @@ class TestPluginManifest:
         assert m.enabled is True
         assert m.permissions.network.outbound == []
         assert m.permissions.filesystem.read == ["workspace"]
+        assert m.runtimes.gateway == GatewayRuntimeFacet(entrypoint="test:TestPlugin")
 
     def test_full_manifest(self) -> None:
         m = PluginManifest(
@@ -111,10 +114,14 @@ class TestPluginManifest:
                 ],
             ),
             runtimes=PluginRuntimeFacets(
+                node=NodeRuntimeFacet(
+                    entrypoint="dist/worker.js",
+                    mode="javascript",
+                ),
                 desktop=DesktopRuntimeFacet(
                     entrypoint="builtin:com.example.schedule",
                     mode="builtin",
-                )
+                ),
             ),
         )
 
@@ -122,6 +129,8 @@ class TestPluginManifest:
         assert m.contributes.pages[0].target == "webui.admin"
         assert m.runtimes.desktop is not None
         assert m.runtimes.desktop.entrypoint == "builtin:com.example.schedule"
+        assert m.runtimes.node is not None
+        assert m.runtimes.node.mode == "javascript"
 
 
 class TestParseManifest:
@@ -184,6 +193,82 @@ runtimes:
         assert manifest.contributes.pages[0].entry == "dist/settings.html"
         assert manifest.runtimes.desktop is not None
         assert manifest.runtimes.desktop.mode == "builtin"
+
+    def test_parse_facets_only_manifest_without_gateway_entrypoint(
+        self, tmp_path: Path
+    ) -> None:
+        path = _write_manifest(
+            tmp_path,
+            """
+id: com.example.desktop-only
+name: Desktop Only
+version: "1.0.0"
+runtimes:
+  desktop:
+    entrypoint: builtin:com.example.desktop-only
+    mode: builtin
+""",
+        )
+
+        manifest = parse_manifest(path)
+
+        assert manifest.entrypoint == ""
+        assert manifest.runtimes.gateway is None
+        assert manifest.runtimes.desktop is not None
+
+    def test_rejects_manifest_without_any_runtime(self, tmp_path: Path) -> None:
+        path = _write_manifest(
+            tmp_path,
+            """
+id: com.example.empty
+name: Empty
+version: "1.0.0"
+""",
+        )
+
+        with pytest.raises(PluginLoadError, match="at least one runtime facet"):
+            parse_manifest(path)
+
+    def test_rejects_conflicting_gateway_entrypoints(self, tmp_path: Path) -> None:
+        path = _write_manifest(
+            tmp_path,
+            """
+id: com.example.conflict
+name: Conflict
+version: "1.0.0"
+entrypoint: legacy:Plugin
+runtimes:
+  gateway:
+    entrypoint: current:Plugin
+""",
+        )
+
+        with pytest.raises(PluginLoadError, match="entrypoint must match"):
+            parse_manifest(path)
+
+    def test_rejects_duplicate_page_ids(self, tmp_path: Path) -> None:
+        path = _write_manifest(
+            tmp_path,
+            """
+id: com.example.pages
+name: Pages
+version: "1.0.0"
+runtimes:
+  desktop:
+    entrypoint: builtin:com.example.pages
+contributes:
+  pages:
+    - id: settings
+      target: webui.admin
+      entry: dist/webui.html
+    - id: settings
+      target: desktop.main
+      entry: dist/desktop.html
+""",
+        )
+
+        with pytest.raises(PluginLoadError, match="duplicate page contribution id"):
+            parse_manifest(path)
 
     def test_rejects_invalid_surface_identifiers(self, tmp_path: Path) -> None:
         path = _write_manifest(

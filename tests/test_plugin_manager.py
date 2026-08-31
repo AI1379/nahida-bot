@@ -88,6 +88,22 @@ class CrashPlugin(Plugin):
     return plugin_dir
 
 
+def _create_facets_only_plugin(parent: Path, plugin_id: str) -> Path:
+    plugin_dir = parent / plugin_id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    manifest = f"""
+id: {plugin_id}
+name: Facets Only
+version: "1.0.0"
+runtimes:
+  desktop:
+    entrypoint: builtin:{plugin_id}
+    mode: builtin
+"""
+    (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+    return plugin_dir
+
+
 def _make_event_bus() -> EventBus:
     """Create a minimal EventBus for testing."""
     from unittest.mock import MagicMock
@@ -148,7 +164,6 @@ class TestPluginLifecycle:
         await manager.disable("lifecycle_test")
         assert record.state == PluginState.DISABLED
         assert record.instance is None
-        assert record.api_bridge is None
 
         # Administrators may still load without activating, then unload.
         await manager.load("lifecycle_test")
@@ -156,6 +171,31 @@ class TestPluginLifecycle:
         await manager.unload("lifecycle_test")
         assert record.state == PluginState.UNLOADED
         assert record.instance is None
+
+    async def test_facets_only_plugin_uses_shared_lifecycle_without_python(
+        self, tmp_path: Path
+    ) -> None:
+        _create_facets_only_plugin(tmp_path, "desktop_only")
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+
+        await manager.load("desktop_only")
+        record = manager.get_record("desktop_only")
+        assert record is not None
+        assert record.state == PluginState.LOADED
+        assert record.instance is None
+        assert record.api_bridge is None
+
+        await manager.enable("desktop_only")
+        assert record.state == PluginState.ENABLED
+
+        await manager.disable("desktop_only")
+        assert record.state == PluginState.DISABLED
+
+        await manager.enable("desktop_only")
+        await manager.reload("desktop_only")
+        assert record.state == PluginState.ENABLED
+        assert record.api_bridge is None
 
     async def test_enable_all_load_all(self, tmp_path: Path) -> None:
         _create_test_plugin(tmp_path, "p1")

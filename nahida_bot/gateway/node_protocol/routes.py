@@ -189,6 +189,7 @@ async def node_websocket(websocket: WebSocket) -> None:
     auth_service: NodeAuthService | None = getattr(app.state, "node_auth", None)
     invoker: NodeInvoker | None = getattr(app.state, "node_invoker", None)
     surface_service = getattr(app.state, "desktop_surface_service", None)
+    runtime_service = getattr(app.state, "plugin_runtime_service", None)
 
     if registry is None:
         await websocket.close(
@@ -251,14 +252,21 @@ async def node_websocket(websocket: WebSocket) -> None:
     )
 
     logger.info("node_protocol.connected", node_id=session.node_id)
+    registration_hooks = [
+        service.sync_node
+        for service in (surface_service, runtime_service)
+        if service is not None
+    ]
+
+    async def sync_registered_node(node_id: str) -> bool:
+        return await _run_registration_sync(registration_hooks, node_id)
+
     try:
         await _read_loop(
             websocket,
             dispatcher,
             session,
-            on_registered=(
-                surface_service.sync_node if surface_service is not None else None
-            ),
+            on_registered=(sync_registered_node if registration_hooks else None),
         )
     except WebSocketDisconnect:
         pass
@@ -320,6 +328,13 @@ async def _run_registration_hook(
         await callback(node_id)
     except Exception:  # noqa: BLE001 - registration has already succeeded
         logger.exception("node_protocol.registration_hook_failed", node_id=node_id)
+
+
+async def _run_registration_sync(
+    callbacks: list[Callable[[str], Awaitable[bool]]], node_id: str
+) -> bool:
+    results = await asyncio.gather(*(callback(node_id) for callback in callbacks))
+    return any(results)
 
 
 async def _handle_heartbeat(

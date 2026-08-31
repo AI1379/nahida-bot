@@ -9,6 +9,7 @@ import type {
   CapabilityExecutionResult,
   DesktopEvent,
 } from "@/domain/runtime";
+import type { RemotePluginPage } from "@/domain/pluginRuntime";
 
 export type DesktopPluginSettingsPlacement = "settings" | "workbench";
 
@@ -95,4 +96,28 @@ export interface DesktopPluginRecord {
   status: "active" | "error" | "disposed";
   runtime: DesktopPluginRuntime | null;
   error: string;
+}
+
+export interface DesktopPluginSyncIssue {
+  pluginId: string;
+  code:
+    | "artifact_missing"
+    | "entrypoint_mismatch"
+    | "unsupported_mode"
+    | "version_mismatch";
+  message: string;
+}
+
+export interface DesktopPluginReconcileResult {
+  applied: boolean;
+  revision: number;
+  activated: string[];
+  deactivated: string[];
+  issues: DesktopPluginSyncIssue[];
+}
+
+export interface ActiveRemotePluginPage {
+  pluginId: string;
+  pluginName: string;
+  page: RemotePluginPage;
 }

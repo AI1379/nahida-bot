@@ -1,5 +1,6 @@
 import type { PerformanceMode } from "./config";
 import type { DisplayEmotion, DisplayMotion, DisplayPlan } from "./displayPlan";
+import type { PluginRuntimeSnapshot } from "./pluginRuntime";
 
 export type DesktopEventSource = "local" | "mock" | "gateway";
 export type RenderMode = "suspended" | "idle" | "speaking" | "active";
@@ -66,6 +67,10 @@ export type DesktopEvent =
       invocationId: string;
       capability: string;
       arguments: Record<string, unknown>;
+    })
+  | (DesktopEventBase & {
+      type: "plugin.runtime.sync";
+      snapshot: PluginRuntimeSnapshot;
     })
   | (DesktopEventBase & {
       type: "user.message.submitted";

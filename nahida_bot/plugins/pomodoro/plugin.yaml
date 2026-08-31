@@ -2,7 +2,6 @@ id: nahida.pomodoro
 name: "Pomodoro"
 version: "0.1.0"
 description: "Local Desktop focus timer with pet reminders and agent control"
-entrypoint: "nahida_bot.plugins.pomodoro.plugin:PomodoroPlugin"
 enabled: true
 capabilities:
   tools:
@@ -15,6 +14,9 @@ contributes:
       kind: countdown
       priority: 50
 runtimes:
+  gateway:
+    entrypoint: "nahida_bot.plugins.pomodoro.plugin:PomodoroPlugin"
+    mode: python
   desktop:
     entrypoint: builtin:nahida.pomodoro
     mode: builtin

@@ -6,6 +6,46 @@ import {
 } from "./gatewayEventAdapter";
 
 describe("GatewayNodeEventAdapter", () => {
+  it("maps plugin runtime snapshots", () => {
+    const event = gatewayNodeEventAdapter.toDesktopEvent({
+      type: "gateway_event",
+      at: "2026-08-31T00:00:00Z",
+      envelope: {
+        version: "1.0",
+        kind: "event",
+        event: "plugin.runtime.sync",
+        payload: {
+          generation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          revision: 1,
+          plugins: [
+            {
+              id: "nahida.pomodoro",
+              name: "Pomodoro",
+              version: "0.1.0",
+              state: "enabled",
+              configured_enabled: true,
+              runtimes: {
+                desktop: {
+                  entrypoint: "builtin:nahida.pomodoro",
+                  mode: "builtin",
+                },
+              },
+              contributes: {},
+            },
+          ],
+        },
+      },
+    });
+
+    expect(event).toMatchObject({
+      type: "plugin.runtime.sync",
+      snapshot: {
+        generation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        revision: 1,
+      },
+    });
+  });
+
   it("preserves the invocation id for renderer acknowledgement", () => {
     const event = gatewayNodeEventAdapter.toDesktopEvent({
       type: "capability_invoke",

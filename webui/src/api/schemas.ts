@@ -431,6 +431,13 @@ export interface PluginDependency {
   version: string;
 }
 
+export interface PluginPageContribution {
+  id: string;
+  target: "webui.admin" | "desktop.main" | "desktop.popup";
+  entry: string;
+  title?: string;
+}
+
 export interface PluginContributions {
   desktop_surfaces?: Array<{
     id: string;
@@ -438,12 +445,19 @@ export interface PluginContributions {
     kind: "text" | "badge" | "countdown" | "progress" | "list" | "card";
     priority?: number;
   }>;
-  pages?: Array<{
-    id: string;
-    target: "webui.admin" | "desktop.main" | "desktop.popup";
-    entry: string;
-    title?: string;
-  }>;
+  pages?: PluginPageContribution[];
+}
+
+export interface PluginRuntimeFacets {
+  gateway?: { entrypoint: string; mode: "python" };
+  node?: {
+    entrypoint: string;
+    mode: "python" | "javascript" | "wasm" | "sidecar";
+  };
+  desktop?: {
+    entrypoint: string;
+    mode: "builtin" | "javascript" | "wasm" | "sidecar";
+  };
 }
 
 export interface PluginSummary {
@@ -462,6 +476,7 @@ export interface PluginSummary {
   permissions: PluginPermissions;
   capabilities: PluginCapabilities;
   contributes: PluginContributions;
+  runtimes: PluginRuntimeFacets;
   depends_on: PluginDependency[];
   config_keys: string[];
   config_schema: Record<string, unknown>;
@@ -479,6 +494,15 @@ export interface PluginActionResponse {
   action: PluginAction;
   state: PluginState;
   status: string;
+}
+
+export interface PluginPageDocument {
+  plugin_id: string;
+  plugin_name: string;
+  page_id: string;
+  target: PluginPageContribution["target"];
+  title: string;
+  html: string;
 }
 
 // -- Request / mutation types --

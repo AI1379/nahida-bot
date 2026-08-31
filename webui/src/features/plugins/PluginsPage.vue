@@ -11,6 +11,7 @@ import {
 import { usePluginAction, usePluginList } from "@/api/queries";
 import type {
   PluginAction,
+  PluginPageContribution,
   PluginState,
   PluginSummary,
 } from "@/api/schemas";
@@ -18,6 +19,7 @@ import Alert from "@/components/ui/Alert.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
+import PluginPageHost from "./PluginPageHost.vue";
 
 type BadgeVariant =
   | "default"
@@ -100,6 +102,26 @@ watch(
 const selectedPlugin = computed(() =>
   filteredPlugins.value.find((plugin) => plugin.id === selectedId.value),
 );
+const adminPages = computed(() =>
+  selectedPlugin.value?.state === "enabled"
+    ? (selectedPlugin.value.contributes.pages ?? []).filter(
+        (page) => page.target === "webui.admin",
+      )
+    : [],
+);
+const selectedPageId = ref("");
+watch(
+  adminPages,
+  (pages) => {
+    if (!pages.some((page) => page.id === selectedPageId.value)) {
+      selectedPageId.value = pages[0]?.id ?? "";
+    }
+  },
+  { immediate: true },
+);
+const selectedPage = computed<PluginPageContribution | null>(
+  () => adminPages.value.find((page) => page.id === selectedPageId.value) ?? null,
+);
 
 const stateCounts = computed(() => {
   const counts = Object.fromEntries(states.map((state) => [state, 0])) as Record<
@@ -172,6 +194,14 @@ function toolName(tool: Record<string, string>, index: number): string {
 
 function schemaKeys(plugin: PluginSummary): string[] {
   return Object.keys(plugin.config_schema ?? {});
+}
+
+function runtimeEntries(plugin: PluginSummary) {
+  return Object.entries(plugin.runtimes ?? {}).map(([name, runtime]) => ({
+    name,
+    entrypoint: runtime.entrypoint,
+    mode: runtime.mode,
+  }));
 }
 </script>
 
@@ -345,6 +375,10 @@ function schemaKeys(plugin: PluginSummary): string[] {
               <dt>API bridge</dt>
               <dd>{{ boolValue(selectedPlugin.has_runtime_api) }}</dd>
             </div>
+            <div v-for="runtime in runtimeEntries(selectedPlugin)" :key="runtime.name">
+              <dt>{{ runtime.name }} facet</dt>
+              <dd><code>{{ runtime.mode }} · {{ runtime.entrypoint }}</code></dd>
+            </div>
           </dl>
         </section>
 
@@ -485,6 +519,31 @@ function schemaKeys(plugin: PluginSummary): string[] {
               </dd>
             </div>
           </dl>
+        </section>
+
+        <section v-if="adminPages.length" class="detail-section plugin-pages">
+          <h3>Plugin page</h3>
+          <p class="section-note">
+            Runs in an opaque sandbox with network, forms, popups, storage, and
+            host navigation disabled.
+          </p>
+          <div v-if="adminPages.length > 1" class="badge-group">
+            <Button
+              v-for="page in adminPages"
+              :key="page.id"
+              size="sm"
+              :variant="page.id === selectedPageId ? 'default' : 'outline'"
+              @click="selectedPageId = page.id"
+            >
+              {{ page.title || page.id }}
+            </Button>
+          </div>
+          <PluginPageHost
+            v-if="selectedPage"
+            :plugin-id="selectedPlugin.id"
+            :plugin-name="selectedPlugin.name"
+            :page="selectedPage"
+          />
         </section>
 
         <section v-if="selectedPlugin.depends_on.length" class="detail-section">

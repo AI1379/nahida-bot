@@ -2,6 +2,7 @@ import { computed, type Component } from "vue";
 import { describe, expect, it, vi } from "vitest";
 
 import type { PluginSurfaceView } from "@/domain/pluginSurface";
+import type { PluginRuntimeSnapshot } from "@/domain/pluginRuntime";
 import {
   DesktopPluginHost,
   type DesktopPluginDefinition,
@@ -81,6 +82,32 @@ function createHost() {
     removeSurface: vi.fn(),
   };
   return { adapter, host: new DesktopPluginHost(adapter) };
+}
+
+function runtimeSnapshot(
+  revision: number,
+  state: "enabled" | "disabled",
+  overrides: Partial<PluginRuntimeSnapshot["plugins"][number]> = {},
+): PluginRuntimeSnapshot {
+  return {
+    generation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    revision,
+    plugins: [
+      {
+        id: "example.focus",
+        name: "example.focus",
+        version: "1.0.0",
+        state,
+        configuredEnabled: state === "enabled",
+        desktop: {
+          entrypoint: "builtin:example.focus",
+          mode: "builtin",
+        },
+        pages: [],
+        ...overrides,
+      },
+    ],
+  };
 }
 
 describe("DesktopPluginHost", () => {
@@ -163,5 +190,70 @@ describe("DesktopPluginHost", () => {
       "example.invalid",
       "timer",
     );
+  });
+
+  it("reconciles Gateway enablement and ignores stale snapshots", () => {
+    const { host } = createHost();
+    host.activateAll([definition("example.focus")]);
+
+    expect(host.reconcile(runtimeSnapshot(1, "disabled"))).toMatchObject({
+      applied: true,
+      deactivated: ["example.focus"],
+    });
+    expect(host.settingsPanels("settings")).toHaveLength(0);
+
+    expect(host.reconcile(runtimeSnapshot(2, "enabled"))).toMatchObject({
+      applied: true,
+      activated: ["example.focus"],
+    });
+    expect(host.settingsPanels("settings")).toHaveLength(1);
+    expect(host.reconcile(runtimeSnapshot(1, "disabled")).applied).toBe(false);
+    expect(host.settingsPanels("settings")).toHaveLength(1);
+  });
+
+  it("fails closed on incompatible or missing Desktop artifacts", () => {
+    const { host } = createHost();
+    host.activateAll([definition("example.focus")]);
+
+    host.reconcile(
+      runtimeSnapshot(1, "enabled", {
+        version: "2.0.0",
+      }),
+    );
+    expect(host.getRuntime("example.focus")).toBeNull();
+    expect(host.listSyncIssues()).toEqual([
+      expect.objectContaining({ code: "version_mismatch" }),
+    ]);
+
+    host.reconcile({
+      generation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      revision: 2,
+      plugins: [
+        {
+          ...runtimeSnapshot(2, "enabled").plugins[0]!,
+          id: "example.external",
+          desktop: { entrypoint: "dist/plugin.js", mode: "javascript" },
+        },
+      ],
+    });
+    expect(host.listSyncIssues()).toEqual([
+      expect.objectContaining({
+        pluginId: "example.external",
+        code: "unsupported_mode",
+      }),
+    ]);
+  });
+
+  it("accepts a lower revision after the Gateway generation changes", () => {
+    const { host } = createHost();
+    host.activateAll([definition("example.focus")]);
+    host.reconcile(runtimeSnapshot(8, "disabled"));
+
+    expect(
+      host.reconcile({
+        ...runtimeSnapshot(1, "enabled"),
+        generation: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      }),
+    ).toMatchObject({ applied: true, activated: ["example.focus"] });
   });
 });

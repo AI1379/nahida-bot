@@ -232,6 +232,9 @@ export function useDesktopRuntimeController(
   }
 
   function handleDesktopEvent(event: DesktopEvent): unknown {
+    if (event.type === "plugin.runtime.sync") {
+      return desktopPlugins.reconcile(event.snapshot);
+    }
     if (event.type === "capability.invoked") {
       const pluginResult = desktopPlugins.executeCapability(
         event.capability,

@@ -1,7 +1,12 @@
 import { shallowRef } from "vue";
 
+import type {
+  PluginRuntimeSnapshot,
+  RemotePluginRuntime,
+} from "@/domain/pluginRuntime";
 import type { CapabilityExecutionResult } from "@/domain/runtime";
 import type {
+  ActiveRemotePluginPage,
   ActiveDesktopPluginSettingsPanel,
   DesktopPluginContext,
   DesktopPluginDefinition,
@@ -9,9 +14,11 @@ import type {
   DesktopPluginHandler,
   DesktopPluginHostAdapter,
   DesktopPluginRecord,
+  DesktopPluginReconcileResult,
   DesktopPluginRuntime,
   DesktopPluginSettingsPlacement,
   DesktopPluginSettingsSection,
+  DesktopPluginSyncIssue,
 } from "./desktopPluginContract";
 import { DesktopPluginSurfaceManager } from "./desktopPluginSurfaces";
 import {
@@ -22,17 +29,20 @@ import {
 
 export type {
   ActiveDesktopPluginSettingsPanel,
+  ActiveRemotePluginPage,
   DesktopPluginContext,
   DesktopPluginDefinition,
   DesktopPluginFacetManifest,
   DesktopPluginHandler,
   DesktopPluginHostAdapter,
   DesktopPluginRecord,
+  DesktopPluginReconcileResult,
   DesktopPluginRuntime,
   DesktopPluginSettingsPanelContribution,
   DesktopPluginSettingsPlacement,
   DesktopPluginSettingsSection,
   DesktopPluginSurfaceDeclaration,
+  DesktopPluginSyncIssue,
 } from "./desktopPluginContract";
 
 /**
@@ -42,16 +52,78 @@ export type {
  */
 export class DesktopPluginHost {
   private readonly records = new Map<string, DesktopPluginRecord>();
+  private readonly definitions = new Map<string, DesktopPluginDefinition>();
+  private readonly remotePlugins = new Map<string, RemotePluginRuntime>();
   private readonly capabilityOwners = new Map<string, DesktopPluginRecord>();
   private readonly surfaces: DesktopPluginSurfaceManager;
   private readonly revision = shallowRef(0);
+  private runtimeGeneration = "";
+  private runtimeRevision = 0;
+  private syncIssues: DesktopPluginSyncIssue[] = [];
 
   constructor(adapter: DesktopPluginHostAdapter) {
     this.surfaces = new DesktopPluginSurfaceManager(adapter);
   }
 
   activateAll(definitions: DesktopPluginDefinition[]): DesktopPluginRecord[] {
+    for (const definition of definitions) {
+      this.definitions.set(definition.manifest.id, definition);
+    }
     return definitions.map((definition) => this.activate(definition));
+  }
+
+  reconcile(snapshot: PluginRuntimeSnapshot): DesktopPluginReconcileResult {
+    if (
+      snapshot.generation === this.runtimeGeneration &&
+      snapshot.revision <= this.runtimeRevision
+    ) {
+      return this.reconcileResult(false, [], []);
+    }
+    this.runtimeGeneration = snapshot.generation;
+    this.runtimeRevision = snapshot.revision;
+    this.remotePlugins.clear();
+    for (const plugin of snapshot.plugins) this.remotePlugins.set(plugin.id, plugin);
+
+    const activated: string[] = [];
+    const deactivated: string[] = [];
+    const issues: DesktopPluginSyncIssue[] = [];
+    for (const definition of this.definitions.values()) {
+      const remote = this.remotePlugins.get(definition.manifest.id);
+      const issue = remote
+        ? compatibilityIssue(definition.manifest, remote)
+        : null;
+      if (!remote || remote.state !== "enabled" || !remote.desktop || issue) {
+        if (this.deactivate(definition.manifest.id)) {
+          deactivated.push(definition.manifest.id);
+        }
+        if (remote?.state === "enabled" && issue) issues.push(issue);
+        continue;
+      }
+      if (this.records.get(definition.manifest.id)?.status !== "active") {
+        const record = this.activate(definition);
+        if (record.status === "active") activated.push(definition.manifest.id);
+        else {
+          issues.push({
+            pluginId: definition.manifest.id,
+            code: "artifact_missing",
+            message: record.error,
+          });
+        }
+      }
+    }
+    for (const remote of this.remotePlugins.values()) {
+      if (
+        remote.state !== "enabled" ||
+        !remote.desktop ||
+        this.definitions.has(remote.id)
+      ) {
+        continue;
+      }
+      issues.push(missingArtifactIssue(remote));
+    }
+    this.syncIssues = issues;
+    this.touch();
+    return this.reconcileResult(true, activated, deactivated);
   }
 
   activate(definition: DesktopPluginDefinition): DesktopPluginRecord {
@@ -155,6 +227,26 @@ export class DesktopPluginHost {
   listRecords(): DesktopPluginRecord[] {
     void this.revision.value;
     return [...this.records.values()];
+  }
+
+  listSyncIssues(): DesktopPluginSyncIssue[] {
+    void this.revision.value;
+    return [...this.syncIssues];
+  }
+
+  runtimePages(
+    target: ActiveRemotePluginPage["page"]["target"],
+  ): ActiveRemotePluginPage[] {
+    void this.revision.value;
+    const pages: ActiveRemotePluginPage[] = [];
+    for (const plugin of this.remotePlugins.values()) {
+      if (plugin.state !== "enabled") continue;
+      for (const page of plugin.pages) {
+        if (page.target !== target) continue;
+        pages.push({ pluginId: plugin.id, pluginName: plugin.name, page });
+      }
+    }
+    return pages;
   }
 
   settingsSections(): DesktopPluginSettingsSection[] {
@@ -273,4 +365,65 @@ export class DesktopPluginHost {
   private touch(): void {
     this.revision.value += 1;
   }
+
+  private reconcileResult(
+    applied: boolean,
+    activated: string[],
+    deactivated: string[],
+  ): DesktopPluginReconcileResult {
+    return {
+      applied,
+      revision: this.runtimeRevision,
+      activated,
+      deactivated,
+      issues: [...this.syncIssues],
+    };
+  }
+}
+
+function compatibilityIssue(
+  local: DesktopPluginFacetManifest,
+  remote: RemotePluginRuntime,
+): DesktopPluginSyncIssue | null {
+  const facet = remote.desktop;
+  if (!facet) return null;
+  if (facet.mode !== "builtin") {
+    return {
+      pluginId: remote.id,
+      code: "unsupported_mode",
+      message: `Desktop runtime mode ${facet.mode} is not supported yet`,
+    };
+  }
+  if (remote.version !== local.version) {
+    return {
+      pluginId: remote.id,
+      code: "version_mismatch",
+      message: `Gateway has ${remote.version}, Desktop bundle has ${local.version}`,
+    };
+  }
+  if (facet.entrypoint !== local.entrypoint) {
+    return {
+      pluginId: remote.id,
+      code: "entrypoint_mismatch",
+      message: `Gateway requested ${facet.entrypoint}, Desktop provides ${local.entrypoint}`,
+    };
+  }
+  return null;
+}
+
+function missingArtifactIssue(
+  remote: RemotePluginRuntime,
+): DesktopPluginSyncIssue {
+  const mode = remote.desktop?.mode;
+  return mode !== "builtin"
+    ? {
+        pluginId: remote.id,
+        code: "unsupported_mode",
+        message: `Desktop runtime mode ${mode} is not supported yet`,
+      }
+    : {
+        pluginId: remote.id,
+        code: "artifact_missing",
+        message: "The Gateway plugin is enabled but this Desktop bundle has no artifact",
+      };
 }

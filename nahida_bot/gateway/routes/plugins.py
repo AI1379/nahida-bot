@@ -13,13 +13,15 @@ from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import (
     PluginActionResponse,
     PluginListResponse,
+    PluginPageResponse,
     PluginSummaryResponse,
 )
-from nahida_bot.plugins.manager import PluginRecord
+from nahida_bot.plugins.manager import PluginRecord, PluginState
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+_MAX_PLUGIN_PAGE_BYTES = 1024 * 1024
 
 
 @runtime_checkable
@@ -61,6 +63,57 @@ async def get_plugin(
             detail="Plugin not found",
         )
     return _record_to_response(record)
+
+
+@router.get(
+    "/api/plugins/{plugin_id}/pages/{page_id}",
+    response_model=PluginPageResponse,
+)
+async def get_plugin_page(
+    plugin_id: str,
+    page_id: str,
+    app=Depends(get_application),
+) -> PluginPageResponse:
+    manager = _require_plugin_manager(app)
+    record = manager.get_record(plugin_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+    if record.state != PluginState.ENABLED:
+        raise HTTPException(status_code=409, detail="Plugin is not enabled")
+
+    page = next(
+        (item for item in record.manifest.contributes.pages if item.id == page_id),
+        None,
+    )
+    if page is None:
+        raise HTTPException(status_code=404, detail="Plugin page not found")
+    entry = record.plugin_dir / page.entry
+    plugin_root = record.plugin_dir.resolve()
+    candidate = entry.resolve()
+    try:
+        candidate.relative_to(plugin_root)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Plugin page escapes plugin root"
+        ) from None
+    if candidate.suffix.lower() != ".html" or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Plugin page entry not found")
+    if candidate.stat().st_size > _MAX_PLUGIN_PAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Plugin page exceeds 1 MiB")
+    try:
+        html = candidate.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail="Plugin page must be UTF-8"
+        ) from exc
+    return PluginPageResponse(
+        plugin_id=record.manifest.id,
+        plugin_name=record.manifest.name,
+        page_id=page.id,
+        target=page.target,
+        title=page.title or page.id,
+        html=html,
+    )
 
 
 @router.post("/api/plugins/{plugin_id}/load", response_model=PluginActionResponse)
@@ -193,6 +246,7 @@ def _record_to_response(record: PluginRecord) -> PluginSummaryResponse:
         permissions=_dump_model(manifest.permissions),
         capabilities=_dump_model(manifest.capabilities),
         contributes=_dump_model(manifest.contributes),
+        runtimes=_dump_model(manifest.runtimes),
         depends_on=[_dump_model(item) for item in manifest.depends_on],
         config_keys=sorted(str(key) for key in config.keys()),
         config_schema=dict(manifest.config_schema or {}),

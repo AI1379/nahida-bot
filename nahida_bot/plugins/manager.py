@@ -295,6 +295,16 @@ class PluginManager:
             PluginState.UNLOADED,
         )
 
+        if record.manifest.runtimes.gateway is None:
+            record.state = PluginState.LOADED
+            record.error_message = ""
+            logger.info(
+                "plugin_manager.loaded_facets_only",
+                plugin_id=plugin_id,
+            )
+            await self._publish_plugin_event("PluginLoaded", record)
+            return
+
         try:
             plugin_class = self._loader.load(record.manifest, record.plugin_dir)
         except PluginLoadError as exc:
@@ -387,6 +397,12 @@ class PluginManager:
             if record.state != PluginState.LOADED:
                 return
 
+        if record.manifest.runtimes.gateway is None:
+            record.state = PluginState.ENABLED
+            record.error_message = ""
+            await self._publish_plugin_event("PluginEnabled", record)
+            return
+
         assert record.instance is not None
         assert record.api_bridge is not None
 
@@ -448,7 +464,8 @@ class PluginManager:
 
         if record.api_bridge is not None:
             record.api_bridge.clear_registrations()
-        self._loader.unload(record.manifest)
+        if record.manifest.runtimes.gateway is not None:
+            self._loader.unload(record.manifest)
         record.instance = None
         record.api_bridge = None
         record.state = PluginState.DISABLED
@@ -499,7 +516,8 @@ class PluginManager:
         if self._task_manager is not None:
             await self._task_manager.cancel_by_owner_and_await(plugin_id, timeout=5.0)
 
-        self._loader.unload(record.manifest)
+        if record.manifest.runtimes.gateway is not None:
+            self._loader.unload(record.manifest)
         record.instance = None
         record.api_bridge = None
         record.state = PluginState.UNLOADED
