@@ -327,9 +327,10 @@ conversation_joiner:
     score_decay_half_life_seconds: 600
     score_decay_floor: 0.0
     batching:
-      window_seconds: 8             # 后续群消息进入 batch 的短窗口
+      window_seconds: 8             # 安静窗口；每条新消息都会重新计时，避免打断连续发言
       max_messages: 6               # 窗口内消息过多时提前 flush
       max_chars: 2000
+      max_batch_age_seconds: 120     # 超过此年龄的 batch 直接丢弃，避免回应过时话题
       flush_on_mention: true
     continue_gate:
       enabled: true                 # 每个 flushed batch 交给秘书模型判断是否继续接话
@@ -337,6 +338,13 @@ conversation_joiner:
       threshold: 0.55
       min_messages: 1
       evaluate_interval_seconds: 8
+      max_failures: 3               # gate 连续失败达到上限后放弃当前 batch
+      max_retry_seconds: 60         # 指数退避的最大间隔
+    presence:
+      enabled: true                 # 最近说得越多，继续发言所需置信度越高
+      window_seconds: 300
+      comfortable_bot_share: 0.25
+      max_threshold_penalty: 0.2
     exit_gate:
       enabled: true
       low_value_threshold: 0.35

@@ -63,6 +63,7 @@ config:
       window_seconds: 8
       max_messages: 6
       max_chars: 2000
+      max_batch_age_seconds: 120
       flush_on_mention: true
     continue_gate:
       enabled: true
@@ -70,6 +71,13 @@ config:
       threshold: 0.55
       min_messages: 1
       evaluate_interval_seconds: 8
+      max_failures: 3
+      max_retry_seconds: 60
+    presence:
+      enabled: true
+      window_seconds: 300
+      comfortable_bot_share: 0.25
+      max_threshold_penalty: 0.2
     exit_gate:
       enabled: true
       low_value_threshold: 0.35

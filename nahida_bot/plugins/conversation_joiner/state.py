@@ -28,6 +28,7 @@ class GroupJoinerState:
     last_observed_at: float = 0.0
     triggered_timestamps: list[float] = field(default_factory=list)
     observation_timestamps: list[float] = field(default_factory=list)
+    agent_reply_timestamps: list[float] = field(default_factory=list)
     low_value_strikes: int = 0
     engagement_score: float = 0.5
     score_updated_at: float = 0.0
@@ -41,6 +42,16 @@ class ObservedMessageBatch:
     started_at: float
     messages: list[Any] = field(default_factory=list)  # list[InboundMessage]
     total_chars: int = 0
+    gate_failures: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class PresenceSnapshot:
+    """Recent human/bot participation used by the continuation gate."""
+
+    observed_messages: int
+    agent_replies: int
+    bot_share: float
 
 
 class EngagementStateMachine:
@@ -74,6 +85,7 @@ class EngagementStateMachine:
 
     def remove_state(self, chat_key: str) -> None:
         """Clean up state and batch for *chat_key*."""
+        self._cancel_window_timer(chat_key)
         self._states.pop(chat_key, None)
         self._batches.pop(chat_key, None)
 
@@ -91,7 +103,13 @@ class EngagementStateMachine:
         state.topic_started_at = now
         self._log_transition(chat_key, old, "joining")
 
-    def transition_to_engaged(self, chat_key: str, now: float) -> None:
+    def transition_to_engaged(
+        self,
+        chat_key: str,
+        now: float,
+        *,
+        reply_window_seconds: float = 300.0,
+    ) -> None:
         """joining -> engaged.  Called when agent sends a real reply."""
         state = self.get_state(chat_key)
         old = state.state
@@ -104,15 +122,22 @@ class EngagementStateMachine:
             state.episode_id = uuid4().hex
         if old == "observing" or state.topic_started_at <= 0:
             state.topic_started_at = now
-        state.last_agent_reply_at = now
+        self.record_agent_reply(
+            chat_key,
+            now,
+            max_age_seconds=reply_window_seconds,
+        )
         state.engagement_score = min(1.0, state.engagement_score + 0.1)
         state.score_updated_at = now
         state.low_value_strikes = 0
-        # Create a fresh batch for the engaged window.
-        self._batches[chat_key] = ObservedMessageBatch(
-            chat_key=chat_key,
-            started_at=now,
-        )
+        # A direct reply while already engaged is part of the same episode.
+        # Preserve messages that arrived before the reply instead of silently
+        # replacing the in-flight batch.
+        if old not in ("engaged", "cooling") or chat_key not in self._batches:
+            self._batches[chat_key] = ObservedMessageBatch(
+                chat_key=chat_key,
+                started_at=now,
+            )
         self._log_transition(chat_key, old, "engaged")
 
     def transition_to_observing(
@@ -213,6 +238,14 @@ class EngagementStateMachine:
             )
         self._cancel_window_timer(chat_key)
 
+    def record_batch_gate_failure(self, chat_key: str) -> int:
+        """Increment and return the current batch's gate failure count."""
+        batch = self._batches.get(chat_key)
+        if batch is None:
+            return 0
+        batch.gate_failures += 1
+        return batch.gate_failures
+
     # ------------------------------------------------------------------
     # Window timer
     # ------------------------------------------------------------------
@@ -308,13 +341,17 @@ class EngagementStateMachine:
                 if elapsed >= exit_cfg.activity_window_seconds:
                     return "low_activity"
 
-        # 5. Engagement score + low value strikes
+        # 5. Repeated confident decisions to stay silent.  Treating strikes as
+        # an independent exit signal mirrors a person naturally dropping out
+        # after several turns where they had nothing useful to add.
+        if exit_cfg.enabled and state.low_value_strikes >= exit_cfg.low_value_strikes:
+            return "low_value_strikes"
         if (
             exit_cfg.enabled
+            and state.low_value_strikes > 0
             and state.engagement_score < cfg.engagement_score_exit_threshold
-            and state.low_value_strikes >= exit_cfg.low_value_strikes
         ):
-            return "low_value_strikes"
+            return "low_engagement_score"
 
         return None
 
@@ -334,6 +371,48 @@ class EngagementStateMachine:
             obs = state.observation_timestamps
             while obs and obs[0] < cutoff:
                 obs.pop(0)
+
+    def record_agent_reply(
+        self,
+        chat_key: str,
+        now: float,
+        *,
+        max_age_seconds: float,
+    ) -> None:
+        """Record a visible bot reply for recent-presence accounting."""
+        state = self.get_state(chat_key)
+        state.last_agent_reply_at = now
+        state.agent_reply_timestamps.append(now)
+        if max_age_seconds <= 0:
+            return
+        cutoff = now - max_age_seconds
+        replies = state.agent_reply_timestamps
+        while replies and replies[0] < cutoff:
+            replies.pop(0)
+
+    def presence_snapshot(
+        self,
+        chat_key: str,
+        now: float,
+        window_seconds: float,
+    ) -> PresenceSnapshot:
+        """Return recent human/bot participation after trimming stale samples."""
+        state = self.get_state(chat_key)
+        cutoff = now - window_seconds
+        observations = state.observation_timestamps
+        while observations and observations[0] < cutoff:
+            observations.pop(0)
+        replies = state.agent_reply_timestamps
+        while replies and replies[0] < cutoff:
+            replies.pop(0)
+        observed_count = len(observations)
+        reply_count = len(replies)
+        total = observed_count + reply_count
+        return PresenceSnapshot(
+            observed_messages=observed_count,
+            agent_replies=reply_count,
+            bot_share=reply_count / total if total else 0.0,
+        )
 
     def update_engagement_score(
         self,
@@ -405,6 +484,7 @@ class EngagementStateMachine:
             "last_observed_at": state.last_observed_at,
             "triggered_timestamps": list(state.triggered_timestamps),
             "observation_timestamps": list(state.observation_timestamps),
+            "agent_reply_timestamps": list(state.agent_reply_timestamps),
             "low_value_strikes": state.low_value_strikes,
             "engagement_score": state.engagement_score,
             "score_updated_at": state.score_updated_at,
@@ -424,6 +504,7 @@ class EngagementStateMachine:
             last_observed_at=data.get("last_observed_at", 0.0),
             triggered_timestamps=data.get("triggered_timestamps", []),
             observation_timestamps=data.get("observation_timestamps", []),
+            agent_reply_timestamps=data.get("agent_reply_timestamps", []),
             low_value_strikes=data.get("low_value_strikes", 0),
             engagement_score=data.get("engagement_score", 0.5),
             score_updated_at=data.get(

@@ -47,6 +47,7 @@ class BatchingConfig(BaseModel):
     window_seconds: float = Field(default=8.0, ge=1.0, le=60.0)
     max_messages: int = Field(default=6, ge=1, le=20)
     max_chars: int = Field(default=2000, ge=100, le=10000)
+    max_batch_age_seconds: float = Field(default=120.0, ge=10.0, le=900.0)
     flush_on_mention: bool = True
 
 
@@ -60,6 +61,19 @@ class ContinueGateConfig(BaseModel):
     threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     min_messages: int = Field(default=1, ge=1)
     evaluate_interval_seconds: float = Field(default=8.0, ge=1.0)
+    max_failures: int = Field(default=3, ge=1, le=10)
+    max_retry_seconds: float = Field(default=60.0, ge=1.0, le=300.0)
+
+
+class PresenceConfig(BaseModel):
+    """Discourages the bot from dominating a recently active conversation."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    enabled: bool = True
+    window_seconds: float = Field(default=300.0, ge=30.0, le=3600.0)
+    comfortable_bot_share: float = Field(default=0.25, ge=0.0, le=0.95)
+    max_threshold_penalty: float = Field(default=0.2, ge=0.0, le=0.5)
 
 
 class ExitGateConfig(BaseModel):
@@ -90,6 +104,7 @@ class EngagementConfig(BaseModel):
     score_decay_floor: float = Field(default=0.0, ge=0.0, le=1.0)
     batching: BatchingConfig = Field(default_factory=BatchingConfig)
     continue_gate: ContinueGateConfig = Field(default_factory=ContinueGateConfig)
+    presence: PresenceConfig = Field(default_factory=PresenceConfig)
     exit_gate: ExitGateConfig = Field(default_factory=ExitGateConfig)
 
 

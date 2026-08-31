@@ -232,9 +232,10 @@ conversation_joiner:
     score_decay_floor: 0.0
 
     batching:
-      window_seconds: 8             # 收集后续消息的短窗口
+      window_seconds: 8             # 安静窗口；每条新消息都会重新计时
       max_messages: 6
       max_chars: 2000
+      max_batch_age_seconds: 120     # 过时 batch 不再回复
       flush_on_mention: true
 
     continue_gate:
@@ -243,6 +244,14 @@ conversation_joiner:
       threshold: 0.55
       min_messages: 1
       evaluate_interval_seconds: 8
+      max_failures: 3               # 连续失败后放弃当前 batch
+      max_retry_seconds: 60         # 指数退避上限
+
+    presence:
+      enabled: true                 # 最近说得越多，继续接话的门槛越高
+      window_seconds: 300
+      comfortable_bot_share: 0.25
+      max_threshold_penalty: 0.2
 
     exit_gate:
       enabled: true
@@ -293,9 +302,11 @@ Observed group message
   -> update observation timestamps
   -> check exit conditions
   -> append to batch with max_messages / max_chars sliding caps
-  -> wait for batching.window_seconds, unless full or flush_on_mention
+  -> wait for batching.window_seconds of quiet, unless full or flush_on_mention
+  -> drop stale batches; retry gate failures with bounded exponential backoff
   -> when flushed: run continue_gate on the whole batch
-  -> reply_mode=no_reply or should_join=false: keep listening or exit by low-value policy
+  -> apply recent bot-presence penalty to the continue threshold
+  -> reply_mode=no_reply or should_join=false: add a no-action strike, then listen or exit
   -> reply_mode=direct_reply: request Agent with a specific reply anchor
   -> reply_mode=group_comment: request Agent without quoting one specific message
 ```
@@ -365,9 +376,10 @@ Observed group message
 
 批处理原则：
 
-- 使用短窗口，例如 5-12 秒，避免主 Agent 对每条消息碎片化回复。
+- 使用 5-12 秒安静窗口；每条新消息重新计时，避免在人类连续发言中途插话。
 - 使用 `max_messages` / `max_chars` 防止 batch 过大；超过上限时从 batch 头部滑动丢弃旧消息，避免 blocked flush 导致 buffer 无界增长。
-- mention 或命令仍然走硬触发，可以同时刷新 engaged 状态，但不由 joiner 吞掉。
+- 使用 `max_batch_age_seconds` 丢弃已经错过时机的 batch；gate 失败按指数退避，并受 `max_failures` 限制。
+- mention 或命令仍然走硬触发，不由 joiner 吞掉；首次可进入 engaged，已参与时的可见回复会保留现有 batch 并进入 cooling。
 - 如果窗口内用户已经换话题，continue gate 可以返回 false 或要求退出。
 - 主 Agent 仍可返回 `NO_REPLY`，这会降低 engagement score。
 
@@ -396,6 +408,8 @@ time decay:   score = floor + (score - floor) * 0.5 ** (elapsed / half_life)
 - `half_life` 来自 `score_decay_half_life_seconds`，表示每过一个半衰期，分数距离 floor 的部分衰减一半。
 - `floor` 来自 `score_decay_floor`，默认 0。
 - 时间衰减是 lazy 计算，不持续挂后台任务；在观察消息、batch flush、`MessageSent` / `NO_REPLY` 反馈和 `/status` 状态提供器读取时更新。
+- `presence` 在最近窗口内统计人类消息和 Bot 可见回复。Bot 发言占比超过 `comfortable_bot_share` 时，continue threshold 最多提高 `max_threshold_penalty`；直接 mention 不受该惩罚。
+- 高置信度的 `should_join=false` / `reply_mode=no_reply` 表示“明确没必要接话”，应降低 score 并累积 strike，而不是因为 confidence 高反向提高 engagement。
 
 ### 8.3 退出策略
 
@@ -407,7 +421,8 @@ time decay:   score = floor + (score - floor) * 0.5 ** (elapsed / half_life)
 | 空闲超时 | `idle_exit_seconds` 内没有足够新消息则退出 |
 | 绝对上限 | `max_engaged_seconds` 防止单次话题无限持续 |
 | 消息密度 | `activity_window_seconds` 内消息数低于阈值时退出 |
-| 价值下降 | 连续 `continue_gate=false`、低置信度或主 Agent `NO_REPLY` 累积为 low value strike |
+| 连续无动作 | `continue_gate=false` / `no_reply` 累积 strike，达到阈值后像人一样退出话题 |
+| 价值下降 | score 已衰减到阈值以下且出现过无动作信号时退出 |
 | active run | 主 Agent 已在跑时不新增主动请求，只继续缓冲或丢弃过期 batch |
 
 当前实现已覆盖固定 TTL、空闲超时、绝对上限、消息密度、low-value strikes 和 engagement score 阈值。`exit_gate.enabled=false` 只关闭低活跃度和低价值退出；TTL、idle 和绝对上限仍然作为安全边界保留。

@@ -19,11 +19,18 @@ from nahida_bot.core.events import (
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.plugins.base import ChatContext, InboundMessage, SenderContext
 from nahida_bot.plugins.conversation_joiner.config import (
+    EngagementConfig,
     effective_group_config,
     parse_conversation_joiner_config,
 )
-from nahida_bot.plugins.conversation_joiner.plugin import ConversationJoinerPlugin
-from nahida_bot.plugins.conversation_joiner.state import EngagementStateMachine
+from nahida_bot.plugins.conversation_joiner.plugin import (
+    ConversationJoinerPlugin,
+    _effective_continue_threshold,
+)
+from nahida_bot.plugins.conversation_joiner.state import (
+    EngagementStateMachine,
+    PresenceSnapshot,
+)
 from nahida_bot.plugins.manifest import (
     Capabilities,
     FilesystemPermission,
@@ -559,6 +566,41 @@ class TestEngagementStateMachine:
         assert first_episode
         assert sm.get_state("g1").episode_id == first_episode
 
+    def test_direct_reengagement_preserves_buffered_messages(self) -> None:
+        sm = self._make_sm()
+        now = time.monotonic()
+        sm.transition_to_engaged("g1", now)
+        message = InboundMessage(
+            message_id="m1",
+            platform="test",
+            chat_id="g1",
+            user_id="u1",
+            text="unfinished thought",
+            raw_event={},
+            is_group=True,
+            chat_context=ChatContext(platform="test", chat_type="group"),
+        )
+        sm.append_to_batch("g1", message, EngagementConfig(), now + 1)
+
+        sm.transition_to_engaged("g1", now + 2)
+
+        batch = sm.get_batch("g1")
+        assert batch is not None
+        assert [item.message_id for item in batch.messages] == ["m1"]
+
+    def test_presence_snapshot_tracks_recent_human_and_bot_turns(self) -> None:
+        sm = self._make_sm()
+        now = time.monotonic()
+        sm.record_observation("g1", now - 20, max_age_seconds=300)
+        sm.record_observation("g1", now - 10, max_age_seconds=300)
+        sm.record_agent_reply("g1", now - 5, max_age_seconds=300)
+
+        snapshot = sm.presence_snapshot("g1", now, 300)
+
+        assert snapshot.observed_messages == 2
+        assert snapshot.agent_replies == 1
+        assert snapshot.bot_share == pytest.approx(1 / 3)
+
     def test_transition_to_cooling(self) -> None:
         sm = self._make_sm()
         now = time.monotonic()
@@ -710,6 +752,24 @@ class TestEngagementStateMachine:
         )
         assert sm.check_exit_conditions("g1", now + 10, cfg) == "low_value_strikes"
 
+    def test_repeated_no_action_strikes_exit_even_with_high_score(self) -> None:
+        sm = self._make_sm()
+        now = time.monotonic()
+        sm.transition_to_engaged("g1", now)
+        state = sm.get_state("g1")
+        state.engagement_score = 0.9
+        state.last_observed_at = now + 100
+        for _ in range(3):
+            sm.increment_low_value_strike("g1")
+        cfg = EngagementConfig(
+            idle_exit_seconds=9999.0,
+            join_state_ttl_seconds=9999.0,
+            max_engaged_seconds=9999.0,
+            exit_gate={"enabled": True, "low_value_strikes": 3},
+        )
+
+        assert sm.check_exit_conditions("g1", now + 10, cfg) == "low_value_strikes"
+
     def test_exit_gate_disabled_disables_low_value_exit(self) -> None:
         from nahida_bot.plugins.conversation_joiner.config import EngagementConfig
 
@@ -848,6 +908,40 @@ class TestEngagementStateMachine:
         assert restored.low_value_strikes == 1
 
 
+def test_recent_bot_presence_raises_continue_threshold() -> None:
+    engagement = EngagementConfig(
+        presence={
+            "enabled": True,
+            "comfortable_bot_share": 0.25,
+            "max_threshold_penalty": 0.2,
+        }
+    )
+    presence = PresenceSnapshot(
+        observed_messages=2,
+        agent_replies=2,
+        bot_share=0.5,
+    )
+
+    threshold = _effective_continue_threshold(
+        0.55,
+        engagement,
+        presence,
+        has_direct_signal=False,
+    )
+
+    assert threshold > 0.55
+    assert threshold < 0.75
+    assert (
+        _effective_continue_threshold(
+            0.55,
+            engagement,
+            presence,
+            has_direct_signal=True,
+        )
+        == 0.55
+    )
+
+
 # ---------------------------------------------------------------------------
 # Engagement integration tests
 # ---------------------------------------------------------------------------
@@ -980,6 +1074,30 @@ async def test_joining_to_engaged_on_message_sent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_message_sent_feedback_waits_for_inflight_chat_lock() -> None:
+    api = _JoinerAPI(
+        ['{"should_join": true, "confidence": 0.9, "reason": "good topic"}'],
+    )
+    plugin = await _load_engaged_plugin(api)
+    handler = api.registered_event_handlers[MessageObserved][0]
+    await handler(_event_for_group("good topic"))
+    await _drain_plugin_tasks(plugin)
+
+    sm = cast(Any, plugin)._sm
+    lock = cast(Any, plugin)._locks["test:group:g1"]
+    await lock.acquire()
+    try:
+        sent_handler = api.registered_event_handlers[MessageSent][0]
+        await sent_handler(_sent_event("test:group:g1"))
+        assert sm.get_state("test:group:g1").state == "joining"
+    finally:
+        lock.release()
+
+    await _drain_plugin_tasks(plugin)
+    assert sm.get_state("test:group:g1").state == "engaged"
+
+
+@pytest.mark.asyncio
 async def test_direct_mention_reply_enters_engaged_state() -> None:
     """A visible reply to @bot starts participation without a joiner request."""
     api = _JoinerAPI([])
@@ -1011,6 +1129,43 @@ async def test_direct_mention_reply_enters_engaged_state() -> None:
     topic_started_at = state.topic_started_at
     await sent_handler(_direct_mention_sent_event())
     assert sm.get_state("test:group:g1").topic_started_at == topic_started_at
+
+
+@pytest.mark.asyncio
+async def test_direct_reply_during_engagement_preserves_batch_and_cools_down() -> None:
+    api = _JoinerAPI(
+        ['{"should_join": true, "confidence": 0.9, "reason": "topic"}'],
+    )
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={
+            "batching": {
+                "max_messages": 20,
+                "max_chars": 10000,
+                "window_seconds": 60,
+            },
+        },
+    )
+    observed_handler = api.registered_event_handlers[MessageObserved][0]
+    received_handler = api.registered_event_handlers[MessageReceived][0]
+    sent_handler = api.registered_event_handlers[MessageSent][0]
+    await observed_handler(_event_for_group("topic starter"))
+    await _drain_plugin_tasks(plugin)
+    await sent_handler(_sent_event("test:group:g1"))
+    await observed_handler(_event_for_group("ambient follow-up", message_id="m2"))
+    await _drain_plugin_tasks(plugin)
+
+    await received_handler(_direct_mention_received_event())
+    await _drain_plugin_tasks(plugin)
+    await sent_handler(_direct_mention_sent_event())
+
+    sm = cast(Any, plugin)._sm
+    state = sm.get_state("test:group:g1")
+    batch = sm.get_batch("test:group:g1")
+    assert state.state == "cooling"
+    assert batch is not None
+    assert [message.message_id for message in batch.messages] == ["m2"]
+    sm.cancel_all_timers()
 
 
 @pytest.mark.asyncio
@@ -1075,6 +1230,74 @@ async def test_engaged_state_appends_to_batch() -> None:
     batch = sm.get_batch("test:group:g1")
     assert batch is not None
     assert len(batch.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_engaged_batch_window_moves_with_latest_message() -> None:
+    api = _JoinerAPI(
+        ['{"should_join": true, "confidence": 0.9, "reason": "topic"}'],
+    )
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={
+            "batching": {
+                "max_messages": 20,
+                "max_chars": 10000,
+                "window_seconds": 60,
+            },
+        },
+    )
+    handler = api.registered_event_handlers[MessageObserved][0]
+    sent_handler = api.registered_event_handlers[MessageSent][0]
+    await handler(_event_for_group("topic starter"))
+    await _drain_plugin_tasks(plugin)
+    await sent_handler(_sent_event("test:group:g1"))
+
+    await handler(_event_for_group("first thought", message_id="m2"))
+    await _drain_plugin_tasks(plugin)
+    sm = cast(Any, plugin)._sm
+    first_timer = sm._window_timers["test:group:g1"]
+
+    await handler(_event_for_group("finishing the thought", message_id="m3"))
+    await _drain_plugin_tasks(plugin)
+    second_timer = sm._window_timers["test:group:g1"]
+
+    assert first_timer is not second_timer
+    assert first_timer.cancelled()
+    assert not second_timer.cancelled()
+    sm.cancel_all_timers()
+
+
+@pytest.mark.asyncio
+async def test_message_during_cooling_arms_deferred_flush() -> None:
+    api = _JoinerAPI(
+        ['{"should_join": true, "confidence": 0.9, "reason": "topic"}'],
+    )
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={
+            "response_cooldown_seconds": 30,
+            "batching": {
+                "max_messages": 20,
+                "max_chars": 10000,
+                "window_seconds": 5,
+            },
+        },
+    )
+    handler = api.registered_event_handlers[MessageObserved][0]
+    sent_handler = api.registered_event_handlers[MessageSent][0]
+    await handler(_event_for_group("topic starter"))
+    await _drain_plugin_tasks(plugin)
+    await sent_handler(_sent_event("test:group:g1"))
+
+    sm = cast(Any, plugin)._sm
+    sm.transition_to_cooling("test:group:g1", time.monotonic())
+    await handler(_event_for_group("message during cooldown", message_id="m2"))
+    await _drain_plugin_tasks(plugin)
+
+    assert sm.get_state("test:group:g1").state == "cooling"
+    assert sm.has_window_timer("test:group:g1")
+    sm.cancel_all_timers()
 
 
 @pytest.mark.asyncio
@@ -1371,6 +1594,8 @@ async def test_batch_full_triggers_continue_gate_and_agent_request() -> None:
     continue_prompt = api.llm_calls[1]["messages"][1]["content"]
     assert "[m2] Alice: follow up one" in continue_prompt
     assert "[m3] Alice: follow up two" in continue_prompt
+    assert "Recent participation window" in continue_prompt
+    assert "Avoid speaking again merely to remain visible" in continue_prompt
     state = sm.get_state("test:group:g1")
     assert state.state == "engaged"
     assert "test:group:g1" in cast(Any, plugin)._pending_requests
@@ -1418,6 +1643,127 @@ async def test_continue_gate_false_keeps_silent() -> None:
     assert state.state == "engaged"
     # Strikes should have incremented.
     assert state.low_value_strikes >= 1
+
+
+@pytest.mark.asyncio
+async def test_confident_silence_exits_after_no_action_strike_limit() -> None:
+    api = _JoinerAPI(
+        [
+            '{"should_join": true, "confidence": 0.9, "reason": "topic"}',
+            '{"should_join": false, "confidence": 0.95, "reason": "stay quiet"}',
+        ],
+    )
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={
+            "batching": {"max_messages": 2},
+            "exit_gate": {"enabled": True, "low_value_strikes": 1},
+        },
+    )
+    handler = api.registered_event_handlers[MessageObserved][0]
+    sent_handler = api.registered_event_handlers[MessageSent][0]
+    await handler(_event_for_group("topic starter"))
+    await _drain_plugin_tasks(plugin)
+    await sent_handler(_sent_event("test:group:g1"))
+
+    await handler(_event_for_group("side note one", message_id="m2"))
+    await handler(_event_for_group("side note two", message_id="m3"))
+    await _drain_plugin_tasks(plugin)
+
+    sm = cast(Any, plugin)._sm
+    assert sm.get_state("test:group:g1").state == "observing"
+    assert len(api.agent_response_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_continue_gate_failures_back_off_then_drop_batch() -> None:
+    api = _JoinerAPI(
+        [
+            '{"should_join": true, "confidence": 0.9, "reason": "topic"}',
+            "not-json",
+            "still-not-json",
+        ],
+    )
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={
+            "batching": {"max_messages": 2},
+            "continue_gate": {
+                "enabled": True,
+                "max_failures": 2,
+                "evaluate_interval_seconds": 30,
+            },
+        },
+    )
+    handler = api.registered_event_handlers[MessageObserved][0]
+    sent_handler = api.registered_event_handlers[MessageSent][0]
+    await handler(_event_for_group("topic starter"))
+    await _drain_plugin_tasks(plugin)
+    await sent_handler(_sent_event("test:group:g1"))
+
+    await handler(_event_for_group("follow up one", message_id="m2"))
+    await handler(_event_for_group("follow up two", message_id="m3"))
+    await _drain_plugin_tasks(plugin)
+
+    sm = cast(Any, plugin)._sm
+    batch = sm.get_batch("test:group:g1")
+    assert batch is not None
+    assert batch.gate_failures == 1
+    cfg = effective_group_config(cast(Any, plugin)._config, "test:group:g1")
+    await cast(Any, plugin)._flush_batch(
+        "test:group:g1",
+        ChatAddress.parse("test:group:g1"),
+        cfg,
+        cfg.engagement,
+        "test:group:g1",
+    )
+
+    batch = sm.get_batch("test:group:g1")
+    assert batch is not None
+    assert batch.messages == []
+    assert batch.gate_failures == 0
+    assert len(api.llm_calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_stale_batch_is_dropped_without_another_gate_call() -> None:
+    api = _JoinerAPI(
+        ['{"should_join": true, "confidence": 0.9, "reason": "topic"}'],
+    )
+    plugin = await _load_engaged_plugin(
+        api,
+        engagement_overrides={
+            "batching": {
+                "max_messages": 20,
+                "max_chars": 10000,
+                "window_seconds": 60,
+                "max_batch_age_seconds": 10,
+            },
+        },
+    )
+    handler = api.registered_event_handlers[MessageObserved][0]
+    sent_handler = api.registered_event_handlers[MessageSent][0]
+    await handler(_event_for_group("topic starter"))
+    await _drain_plugin_tasks(plugin)
+    await sent_handler(_sent_event("test:group:g1"))
+    await handler(_event_for_group("old follow up", message_id="m2"))
+    await _drain_plugin_tasks(plugin)
+
+    sm = cast(Any, plugin)._sm
+    batch = sm.get_batch("test:group:g1")
+    assert batch is not None
+    batch.started_at = time.monotonic() - 20
+    cfg = effective_group_config(cast(Any, plugin)._config, "test:group:g1")
+    await cast(Any, plugin)._flush_batch(
+        "test:group:g1",
+        ChatAddress.parse("test:group:g1"),
+        cfg,
+        cfg.engagement,
+        "test:group:g1",
+    )
+
+    assert len(api.llm_calls) == 1
+    assert sm.get_batch("test:group:g1").messages == []
 
 
 @pytest.mark.asyncio
