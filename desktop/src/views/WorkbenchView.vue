@@ -8,12 +8,14 @@ import Live2DStage from "@/components/Live2DStage.vue";
 import MotionMappingPanel from "@/components/MotionMappingPanel.vue";
 import MotionPerformancePanel from "@/components/MotionPerformancePanel.vue";
 import MotionHistoryPanel from "@/components/MotionHistoryPanel.vue";
+import PortableMotionPanel from "@/components/PortableMotionPanel.vue";
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
 import DesktopPluginSettingsHost from "@/components/DesktopPluginSettingsHost.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import type { NormalizedMotionClip } from "@/domain/normalizedPose";
+import type { PortableMotionTargetModel } from "@/domain/portableMotion";
 import { useDesktopStore } from "@/stores/desktop";
 
 const props = defineProps<{
@@ -26,6 +28,8 @@ const live2dStage = ref<{
 } | null>(null);
 const replayStatus = ref("");
 const replayedPlanId = ref("");
+const portableMotionTarget = ref<PortableMotionTargetModel | null>(null);
+const portablePreviewStatus = ref("");
 
 const activeSegment = computed(
   () => store.activePlan?.segments[store.currentSegmentIndex] ?? null,
@@ -44,6 +48,13 @@ function replayMotion(playback: MotionPlaybackSummary): void {
     ? `Replaying ${playback.primitive} from ${new Date(playback.timestamp).toLocaleString()}.`
     : "Live2D is not ready to replay this motion yet.";
   replayedPlanId.value = applied ? playback.motionPlanId : "";
+}
+
+function previewPortableMotion(clip: NormalizedMotionClip): void {
+  const applied = live2dStage.value?.replayNormalizedClip(clip) ?? false;
+  portablePreviewStatus.value = applied
+    ? `Preview accepted: ${clip.id} on ${store.model.name}.`
+    : "Live2D is not ready to preview this motion.";
 }
 </script>
 
@@ -66,6 +77,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       :motion-map-version="store.motionMapVersion"
       @expressions-loaded="store.setModelExpressions"
       @motions-loaded="store.setModelMotions"
+      @portable-motion-target-loaded="portableMotionTarget = $event"
     />
 
     <aside class="side-rail">
@@ -107,6 +119,12 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       <MotionPerformancePanel
         :profile="store.model.performanceProfile!"
         @update="store.updateModelPerformanceProfile"
+      />
+      <PortableMotionPanel
+        :target="portableMotionTarget"
+        :preview-status="portablePreviewStatus"
+        @preview="previewPortableMotion"
+        @reset-preview-status="portablePreviewStatus = ''"
       />
       <MotionHistoryPanel
         :recent="store.recentMotionPlaybacks"

@@ -8,6 +8,7 @@ import type {
   MotionPlaybackSurface,
 } from "@/domain/motionTelemetry";
 import type { NormalizedMotionClip } from "@/domain/normalizedPose";
+import type { PortableMotionTargetModel } from "@/domain/portableMotion";
 import type { RenderMode } from "@/domain/runtime";
 import type { Live2DRendererProfile } from "@/config/desktopRuntimeDefaults";
 import type {
@@ -22,6 +23,7 @@ import type {
   WebLive2DRenderer,
 } from "@/renderers/live2dRenderer";
 import { Live2DPresentationController } from "@/services/live2dPresentationController";
+import { createPortableMotionTargetModel } from "@/services/portableMotionWorkbench";
 
 const props = withDefaults(defineProps<{
   emotion: DisplayEmotion;
@@ -56,6 +58,7 @@ const emit = defineEmits<{
   expressionsLoaded: [expressions: Live2DExpressionOption[]];
   motionsLoaded: [motions: Live2DMotionOption[]];
   motionExecuted: [playback: MotionPlaybackSummary];
+  portableMotionTargetLoaded: [target: PortableMotionTargetModel | null];
 }>();
 
 const live2dHost = ref<HTMLElement | null>(null);
@@ -97,6 +100,7 @@ function loadLive2D(): Promise<void> {
   loadState.value = "loading";
   loadError.value = "";
   debugSnapshot.value = null;
+  emit("portableMotionTargetLoaded", null);
   emit("expressionsLoaded", []);
   emit("motionsLoaded", []);
   controller.value?.dispose();
@@ -154,6 +158,12 @@ async function performLive2DLoad(generation: number): Promise<void> {
     }
     loadState.value = "ready";
     refreshDebugSnapshot();
+    emit(
+      "portableMotionTargetLoaded",
+      debugSnapshot.value
+        ? createPortableMotionTargetModel(props.model, debugSnapshot.value)
+        : null,
+    );
   } catch (error) {
     presentationController.dispose();
     if (generation !== loadGeneration) return;
@@ -162,6 +172,7 @@ async function performLive2DLoad(generation: number): Promise<void> {
     controller.value = null;
     renderer.value = null;
     debugSnapshot.value = null;
+    emit("portableMotionTargetLoaded", null);
   }
 }
 
@@ -241,7 +252,16 @@ watch(
 
 watch(
   () => props.model,
-  (model) => controller.value?.setManifest(model),
+  (model) => {
+    controller.value?.setManifest(model);
+    const snapshot = renderer.value?.getDebugSnapshot() ?? null;
+    if (snapshot) {
+      emit(
+        "portableMotionTargetLoaded",
+        createPortableMotionTargetModel(model, snapshot),
+      );
+    }
+  },
   { deep: true },
 );
 

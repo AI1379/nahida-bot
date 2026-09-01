@@ -409,3 +409,199 @@
 .motion-history__error {
   color: var(--rose);
 }
+
+.portable-motion__body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+.portable-motion__toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 7px;
+}
+
+.portable-motion__file {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 9px;
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.portable-motion__file span {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portable-motion__file input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.portable-motion__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.portable-motion__summary div {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 7px;
+  background: var(--surface-muted);
+}
+
+.portable-motion__summary dt,
+.portable-motion__summary dd {
+  overflow: hidden;
+  margin: 0;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portable-motion__summary dt {
+  color: var(--text-muted);
+}
+
+.portable-motion__summary dd {
+  margin-top: 3px;
+  font-weight: 800;
+}
+
+.portable-motion__summary dd[data-status="full"] {
+  color: var(--green);
+}
+
+.portable-motion__summary dd[data-status="partial"],
+.portable-motion__summary dd[data-status="incompatible"] {
+  color: var(--rose);
+}
+
+.portable-motion__note,
+.portable-motion__status,
+.portable-motion__error {
+  margin: 0;
+  border-radius: 7px;
+  padding: 7px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.portable-motion__note {
+  color: var(--text-muted);
+  background: var(--surface-muted);
+}
+
+.portable-motion__status {
+  color: var(--green);
+  background: #edf8f0;
+}
+
+.portable-motion__error {
+  color: var(--rose);
+  background: #fff0f0;
+}
+
+.portable-motion__curves,
+.portable-motion__losses {
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+
+.portable-motion__curves summary,
+.portable-motion__losses summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.portable-motion__curves ol,
+.portable-motion__losses ul {
+  display: grid;
+  gap: 7px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portable-motion__curves li {
+  display: grid;
+  grid-template-columns: 104px minmax(120px, 1fr) 104px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px;
+}
+
+.portable-motion__curves li.is-missing {
+  border-color: #e8b9b9;
+  background: #fff7f7;
+}
+
+.portable-motion__curve-label,
+.portable-motion__curve-values {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.portable-motion__curve-label strong,
+.portable-motion__curve-label span,
+.portable-motion__curve-values span {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portable-motion__curve-label span,
+.portable-motion__curve-values {
+  color: var(--text-muted);
+}
+
+.portable-motion__curve-values {
+  text-align: right;
+}
+
+.portable-motion__curves svg {
+  width: 100%;
+  height: 42px;
+  overflow: visible;
+}
+
+.portable-motion__curves line {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.portable-motion__curves polyline {
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.portable-motion__losses li {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.portable-motion__losses code {
+  color: var(--text);
+}

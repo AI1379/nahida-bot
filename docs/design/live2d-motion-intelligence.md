@@ -270,6 +270,48 @@ export interface ModelPerformanceProfile {
 }
 ```
 
+### 5.5 PortableMotionAsset 与跨模型动作重定向
+
+用户自定义模型不能依赖每个模型都自带完整动作集。外部 `.motion3.json`
+和 Cubism 2 `.mtn` 因此只作为导入源，不直接成为运行时协议：
+
+```text
+.motion3.json / .mtn
+        │ importer + source parameter ranges
+        ▼
+PortableMotionAsset (normalized pose + optional feature cues)
+        │ ModelPerformanceProfile / retarget profile
+        ▼
+NormalizedMotionClip + compatibility report
+        │ validator / mixer
+        ▼
+Live2D renderer
+```
+
+`PortableMotionAsset` 的连续通道只保存模型无关的 normalized pose；抬手、姿态切换、
+特殊效果等非通用能力保存为可选 feature cue。目标模型没有对应能力时必须安全跳过，
+不能把来源模型的 ArtMesh、PartOpacity 或私有参数 ID 直接写入目标模型。
+
+首个纵向切片已经提供：
+
+- `motion3` Version 3 曲线解析，覆盖 linear、Bezier、stepped 和 inverse-stepped；
+- Cubism 2 `.mtn` 的逐帧参数、FPS、全局/逐参数淡入淡出解析；
+- 基于源模型参数最小值、最大值和默认值的归一化，不按动作曲线极值猜范围；
+- `.mtn` 缺少模型参数范围时使用 Live2D 标准范围，并报告假设范围、越界裁剪、
+  未映射私有参数和不支持的指令；模型实测范围可显式覆盖；
+- 曲线数量、数据量、时长和采样率上限；
+- 标准参数自动映射与非标准参数显式映射；
+- 目标模型 pose/feature 覆盖率、缺失能力和 full/partial/incompatible 结论；
+- 只携带目标模型支持通道的 `NormalizedMotionClip` 输出；
+- 将 portable frames 按目标参数范围导出为仅含 linear segment 的 Cubism 3
+  `.motion3.json`，保留源逐帧采样，不伪造目标模型私有参数；
+- Workbench `Portable Motion` 面板读取当前 Cubism Core 的真实参数范围，支持导入
+  `.mtn` / 目标模型专用 `.motion3.json`、曲线摘要、损失/裁剪审计和一键预览。
+
+尚未接入面向最终用户的持久化导入流程、app-data 动作库和运行时 feature cue 执行。
+Workbench 当前用于开发期验证；正式导入 UI 仍需让用户确认标准范围假设、越界裁剪和
+自动识别失败的参数语义。
+
 ## 6. 运行时架构
 
 建议新增以下边界：
