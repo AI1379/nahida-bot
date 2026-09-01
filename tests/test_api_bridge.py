@@ -29,6 +29,10 @@ from nahida_bot.core.events import (
     EventContext,
 )
 from nahida_bot.core.temp_files import ManagedTempFileService
+from nahida_bot.db.engine import DatabaseEngine
+from nahida_bot.db.repositories.sqlite_plugin_secret_repo import (
+    SQLitePluginSecretRepository,
+)
 from nahida_bot.plugins.api_bridge import RealBotAPI
 from nahida_bot.plugins.base import ChatContext, InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import CommandRegistry
@@ -41,6 +45,7 @@ from nahida_bot.plugins.manifest import (
     NetworkPermission,
     Permissions,
     PluginDataPermission,
+    PluginSecretsPermission,
     PluginManifest,
     PluginContributions,
 )
@@ -239,6 +244,7 @@ def _api(
     memory_cross_chat_enabled: bool = True,
     memory_cross_chat_weights: dict[str, float] | None = None,
     desktop_surface_registry: DesktopSurfaceRegistry | None = None,
+    plugin_secret_repo: SQLitePluginSecretRepository | None = None,
 ) -> tuple[RealBotAPI, _ChannelRegistry, ToolRegistry, CommandRegistry]:
     manifest = manifest or _manifest()
     app = SimpleNamespace(
@@ -279,6 +285,7 @@ def _api(
         provider_manager=_ProviderManager(),
         model_router=None,
         desktop_surface_registry=desktop_surface_registry,
+        plugin_secret_repo=plugin_secret_repo,
     )
     return api, channel_registry, tool_registry, command_registry
 
@@ -360,6 +367,54 @@ async def test_plugin_data_raises_when_repository_unavailable(tmp_path: Path) ->
 
     with pytest.raises(RuntimeError, match="Plugin data store is not available"):
         await api.plugin_data_set("key", {"value": 1})
+
+
+@pytest.mark.asyncio
+async def test_plugin_secret_store_roundtrip(tmp_path: Path) -> None:
+    engine = DatabaseEngine(tmp_path / "secrets.db")
+    await engine.initialize()
+    try:
+        manifest = PluginManifest(
+            id="bridge-test",
+            name="Bridge Test",
+            version="1.0.0",
+            entrypoint="x:Y",
+            permissions=Permissions(
+                plugin_secrets=PluginSecretsPermission(read=True, write=True)
+            ),
+        )
+        api, _, _, _ = _api(
+            tmp_path,
+            manifest=manifest,
+            plugin_secret_repo=SQLitePluginSecretRepository(engine),
+        )
+
+        await api.plugin_secret_set("account", "opaque-value")
+        assert await api.plugin_secret_get("account") == "opaque-value"
+        assert await api.plugin_secret_delete("account") is True
+        assert await api.plugin_secret_get("account") is None
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_plugin_secret_store_checks_permission_and_availability(
+    tmp_path: Path,
+) -> None:
+    api, _, _, _ = _api(tmp_path)
+    with pytest.raises(PermissionDenied, match="no plugin_secrets read"):
+        await api.plugin_secret_get("account")
+
+    manifest = PluginManifest(
+        id="bridge-test",
+        name="Bridge Test",
+        version="1.0.0",
+        entrypoint="x:Y",
+        permissions=Permissions(plugin_secrets=PluginSecretsPermission(read=True)),
+    )
+    api, _, _, _ = _api(tmp_path, manifest=manifest)
+    with pytest.raises(RuntimeError, match="Plugin secret store is not available"):
+        await api.plugin_secret_get("account")
 
 
 @pytest.mark.asyncio

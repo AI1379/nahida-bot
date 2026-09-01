@@ -505,6 +505,21 @@ _SCHEMA_MIGRATIONS = [
         updated_at   TEXT NOT NULL
     );
     """,
+    # Migration 027: opaque per-plugin secrets. Unlike plugin_data, this table
+    # has no list API and only accepts strings, reducing accidental exposure.
+    """
+    CREATE TABLE IF NOT EXISTS plugin_secrets (
+        plugin_id  TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        secret     TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_id, key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_plugin_secrets_plugin
+        ON plugin_secrets(plugin_id);
+    """,
 ]
 
 

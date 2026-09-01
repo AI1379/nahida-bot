@@ -86,6 +86,8 @@ class TestPluginManifest:
         m = PluginManifest(id="test", name="T", version="0.1.0", entrypoint="t:T")
         assert m.permissions.memory.read is False
         assert m.permissions.memory.write is False
+        assert m.permissions.plugin_secrets.read is False
+        assert m.permissions.plugin_secrets.write is False
         assert m.permissions.system.subprocess is False
         assert m.permissions.system.env_vars == []
 
@@ -152,6 +154,9 @@ permissions:
   memory:
     read: true
     write: true
+  plugin_secrets:
+    read: true
+    write: true
 """,
         )
         manifest = parse_manifest(path)
@@ -159,6 +164,8 @@ permissions:
         assert manifest.name == "Hello Plugin"
         assert manifest.permissions.network.outbound == ["https://api.example.com/*"]
         assert manifest.permissions.memory.read is True
+        assert manifest.permissions.plugin_secrets.read is True
+        assert manifest.permissions.plugin_secrets.write is True
 
     def test_parse_surface_contributions(self, tmp_path: Path) -> None:
         path = _write_manifest(

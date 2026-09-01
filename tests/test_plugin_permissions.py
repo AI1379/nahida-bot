@@ -9,6 +9,7 @@ from nahida_bot.plugins.manifest import (
     NetworkPermission,
     Permissions,
     PluginManifest,
+    PluginSecretsPermission,
     SystemPermission,
 )
 from nahida_bot.plugins.permissions import PermissionChecker
@@ -119,3 +120,19 @@ class TestSystemPermissions:
         checker = _checker()
         with pytest.raises(PermissionDenied, match="no environment variable"):
             checker.check_env_var("ANY_KEY")
+
+
+class TestPluginSecretPermissions:
+    def test_read_and_write_allowed(self) -> None:
+        checker = _checker(
+            plugin_secrets=PluginSecretsPermission(read=True, write=True)
+        )
+        checker.check_plugin_secrets_read()
+        checker.check_plugin_secrets_write()
+
+    def test_read_and_write_denied_by_default(self) -> None:
+        checker = _checker()
+        with pytest.raises(PermissionDenied, match="no plugin_secrets read"):
+            checker.check_plugin_secrets_read()
+        with pytest.raises(PermissionDenied, match="no plugin_secrets write"):
+            checker.check_plugin_secrets_write()

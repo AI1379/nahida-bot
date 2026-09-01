@@ -24,7 +24,7 @@ from nahida_bot.core.config import Settings
 # Fallback heuristic for keys outside the typed model tree (channels,
 # plugin config, ``extra="allow"`` sections).
 SENSITIVE_KEY_PATTERN = re.compile(
-    r"(api_key|token|secret|password|private_key)", re.IGNORECASE
+    r"(api_key|token|secret|password|private_key|cookies?)", re.IGNORECASE
 )
 
 

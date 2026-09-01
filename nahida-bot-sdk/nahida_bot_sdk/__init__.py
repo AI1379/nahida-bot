@@ -76,6 +76,7 @@ from nahida_bot_sdk.manifest import (  # noqa: F401
     Permissions,
     PluginDataPermission,
     PluginDependency,
+    PluginSecretsPermission,
     PluginContributions,
     PluginManifest,
     PluginPageDeclaration,
@@ -122,10 +123,15 @@ from nahida_bot_sdk.events import (  # noqa: F401
 
 # Commands
 from nahida_bot_sdk.commands import (  # noqa: F401
+    CommandArgument,
     CommandHandlerResult,
     CommandInfo,
     CommandMatch,
     CommandResult,
+    CompleterFn,
+    CompletionChoice,
+    CompletionChoiceLike,
+    CompletionQuery,
 )
 
 # Testing utilities
@@ -198,6 +204,7 @@ __all__ = [
     "Permissions",
     "PluginDataPermission",
     "PluginDependency",
+    "PluginSecretsPermission",
     "PluginContributions",
     "PluginManifest",
     "PluginPageDeclaration",
@@ -238,10 +245,15 @@ __all__ = [
     "SchedulerNotification",
     "SchedulerNotificationPayload",
     # Commands
+    "CommandArgument",
     "CommandHandlerResult",
     "CommandInfo",
     "CommandMatch",
     "CommandResult",
+    "CompleterFn",
+    "CompletionChoice",
+    "CompletionChoiceLike",
+    "CompletionQuery",
     # Testing
     "ConsoleMockBotAPI",
     "MockBotAPI",

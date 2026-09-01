@@ -237,6 +237,7 @@ class Application:
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
                 plugin_data_repo=self._plugin_data_repo,
+                plugin_secret_repo=self._plugin_secret_repo,
                 provider_manager=self._provider_manager,
                 model_router=self._model_router,
                 orchestration_service=self.orchestration_service,
@@ -258,6 +259,7 @@ class Application:
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
                 plugin_data_repo=self._plugin_data_repo,
+                plugin_secret_repo=self._plugin_secret_repo,
                 provider_manager=self._provider_manager,
                 model_router=self._model_router,
                 scheduler_service=self.scheduler_service,
@@ -301,6 +303,9 @@ class Application:
         from nahida_bot.db.repositories.sqlite_plugin_data_repo import (
             SQLitePluginDataRepository,
         )
+        from nahida_bot.db.repositories.sqlite_plugin_secret_repo import (
+            SQLitePluginSecretRepository,
+        )
         from nahida_bot.db.repositories.sqlite_provider_credential_repo import (
             SQLiteProviderCredentialRepository,
         )
@@ -313,6 +318,7 @@ class Application:
         self.memory_store = SQLiteMemoryStore(engine)
         self.message_delivery_store = SQLiteMessageDeliveryStore(engine)
         self._plugin_data_repo = SQLitePluginDataRepository(engine)
+        self._plugin_secret_repo = SQLitePluginSecretRepository(engine)
         self._provider_credential_repo = SQLiteProviderCredentialRepository(engine)
         from nahida_bot.db.repositories.sqlite_chat_metadata_repo import (
             SQLiteChatMetadataRepository,
@@ -862,6 +868,7 @@ class Application:
                 memory_store=self.memory_store,
                 message_delivery_store=self.message_delivery_store,
                 plugin_data_repo=self._plugin_data_repo,
+                plugin_secret_repo=self._plugin_secret_repo,
                 provider_manager=self._provider_manager,
                 model_router=self._model_router,
                 scheduler_service=self.scheduler_service,

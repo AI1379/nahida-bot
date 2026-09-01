@@ -688,6 +688,20 @@ class BotAPI(Protocol):
         """List key-value pairs, optionally filtered by key prefix."""
         ...
 
+    # ── Plugin Secret Store ───────────────────────────
+
+    async def plugin_secret_get(self, key: str) -> str | None:
+        """Retrieve one opaque secret owned by this plugin."""
+        ...
+
+    async def plugin_secret_set(self, key: str, secret: str) -> None:
+        """Store one opaque secret owned by this plugin."""
+        ...
+
+    async def plugin_secret_delete(self, key: str) -> bool:
+        """Delete one opaque secret owned by this plugin."""
+        ...
+
     # ── Workspace ──────────────────────────────────────
 
     async def workspace_read(self, path: str) -> str:

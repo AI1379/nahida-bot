@@ -45,6 +45,16 @@
 - 主键为 `(plugin_id, key)` 复合主键，自动按插件隔离。
 - 硬删除（非归档），适用于配置数据而非审计日志。
 
+### Plugin Secret Store
+
+动态凭据不应进入可枚举、可保存任意 JSON 的 `plugin_data`。`plugin_secrets` 提供按
+`(plugin_id, key)` 隔离的 opaque string KV，仅暴露 get/set/delete，不暴露 list。
+插件需要显式声明 `plugin_secrets.read/write` 权限。
+
+该接口降低误用和批量泄露风险，但不是加密 vault：当前 SQLite 中为明文存储，安全边界
+与 `provider_credentials` 相同，依赖数据库文件和备份的操作系统访问控制。后续若接入
+系统密钥环或外部 vault，可保持 BotAPI 契约不变并替换 repository 实现。
+
 ---
 
 ## Phase 2 架构细化（Agent 与 Workspace 联合阶段）

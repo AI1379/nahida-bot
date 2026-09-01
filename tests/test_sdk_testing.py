@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from nahida_bot_sdk import (
+    CommandArgument,
     CommandResult,
     InboundMessage,
     MessagePayload,
@@ -12,6 +13,7 @@ from nahida_bot_sdk import (
     OutboundMessage,
     Plugin,
     PluginManifest,
+    SenderContext,
     register_command,
     register_tool,
     subscribe,
@@ -24,7 +26,12 @@ from nahida_bot_sdk.testing import (
 
 
 class _DecoratedPlugin(Plugin):
-    @register_command("hello", description="Say hello", aliases=["hi"])
+    @register_command(
+        "hello",
+        description="Say hello",
+        aliases=["hi"],
+        arguments=(CommandArgument(name="person", required=True),),
+    )
     async def _cmd_hello(
         self,
         *,
@@ -65,6 +72,33 @@ async def _noop_task() -> None:
     pass
 
 
+def test_inbound_sender_account_key_prefers_normalized_sender_context() -> None:
+    inbound = InboundMessage(
+        message_id="m1",
+        platform="milky",
+        chat_id="group-1",
+        user_id="legacy-id",
+        text="",
+        raw_event={},
+        sender_context=SenderContext(platform_user_id="10001"),
+    )
+
+    assert inbound.sender_account_key == "milky:user:10001"
+
+
+def test_inbound_sender_account_key_requires_stable_sender() -> None:
+    inbound = InboundMessage(
+        message_id="m1",
+        platform="milky",
+        chat_id="group-1",
+        user_id="",
+        text="",
+        raw_event={},
+    )
+
+    assert inbound.sender_account_key == ""
+
+
 def test_decorated_command_rejects_name_alias_conflicts() -> None:
     with pytest.raises(ValueError, match="Duplicate @register_command"):
 
@@ -90,9 +124,23 @@ async def test_load_plugin_for_test_records_decorated_handlers() -> None:
 
     assert "hello" in api.registered_commands
     assert "hi" in api.registered_commands
+    assert api.registered_commands["hello"]["arguments"] == (
+        CommandArgument(name="person", required=True),
+    )
     assert "uppercase" in api.registered_tools
     assert api.registered_tools["uppercase"]["requires_admin"] is True
     assert MessageReceived in api.registered_event_handlers
+
+
+async def test_console_mock_exposes_command_arguments() -> None:
+    api = ConsoleMockBotAPI()
+    plugin = _DecoratedPlugin(api=api, manifest=_manifest())
+
+    await load_plugin_for_test(plugin)
+
+    assert api.list_commands()[0]["arguments"] == (
+        CommandArgument(name="person", required=True),
+    )
 
 
 async def test_console_mock_command_and_event_contracts() -> None:
@@ -146,3 +194,13 @@ def test_console_mock_records_spawned_tasks_and_closes_coroutines() -> None:
     assert api.spawned_tasks["job"]["kind"] == "oneshot"
     assert api.spawned_tasks["ticker"]["kind"] == "interval"
     assert coro.cr_frame is None
+
+
+@pytest.mark.parametrize("api_type", [RecordingMockBotAPI, ConsoleMockBotAPI])
+async def test_stateful_mocks_support_opaque_plugin_secrets(api_type: type) -> None:
+    api = api_type()
+
+    await api.plugin_secret_set("account", "secret")
+    assert await api.plugin_secret_get("account") == "secret"
+    assert await api.plugin_secret_delete("account") is True
+    assert await api.plugin_secret_get("account") is None

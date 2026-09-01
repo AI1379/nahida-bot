@@ -53,6 +53,9 @@ if TYPE_CHECKING:
     from nahida_bot.db.repositories.sqlite_plugin_data_repo import (
         SQLitePluginDataRepository,
     )
+    from nahida_bot.db.repositories.sqlite_plugin_secret_repo import (
+        SQLitePluginSecretRepository,
+    )
     from nahida_bot.plugins.manifest import PluginManifest
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -155,6 +158,7 @@ class RealBotAPI:
         orchestration_service: Any | None = None,  # AgentOrchestrator
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
+        plugin_secret_repo: SQLitePluginSecretRepository | None = None,
         supplement_registry: Any | None = None,  # PromptSupplementRegistry
         status_provider_registry: Any | None = None,  # StatusProviderRegistry
         webhost_service: Any | None = None,  # WebHostService
@@ -189,6 +193,7 @@ class RealBotAPI:
         self._memory_service_cache: Any = None
         self._message_delivery_store = message_delivery_store
         self._plugin_data_repo = plugin_data_repo
+        self._plugin_secret_repo = plugin_secret_repo
         self._permissions = permission_checker
         self._tool_registry = tool_registry
         self._handler_registry = handler_registry
@@ -1410,6 +1415,29 @@ class RealBotAPI:
             return await self._plugin_data_repo.get_by_prefix(self._plugin_id, prefix)
         return await self._plugin_data_repo.get_all(self._plugin_id)
 
+    # ── Plugin Secret Store ───────────────────────────
+
+    async def plugin_secret_get(self, key: str) -> str | None:
+        """Retrieve one opaque secret owned by this plugin."""
+        self._permissions.check_plugin_secrets_read()
+        if self._plugin_secret_repo is None:
+            raise RuntimeError("Plugin secret store is not available")
+        return await self._plugin_secret_repo.get(self._plugin_id, key)
+
+    async def plugin_secret_set(self, key: str, secret: str) -> None:
+        """Store one opaque secret owned by this plugin."""
+        self._permissions.check_plugin_secrets_write()
+        if self._plugin_secret_repo is None:
+            raise RuntimeError("Plugin secret store is not available")
+        await self._plugin_secret_repo.set(self._plugin_id, key, secret)
+
+    async def plugin_secret_delete(self, key: str) -> bool:
+        """Delete one opaque secret owned by this plugin."""
+        self._permissions.check_plugin_secrets_write()
+        if self._plugin_secret_repo is None:
+            raise RuntimeError("Plugin secret store is not available")
+        return await self._plugin_secret_repo.delete(self._plugin_id, key)
+
     # ── Workspace ──────────────────────────────────────
 
     def _session_workspace_id(self) -> str | None:
@@ -2126,6 +2154,7 @@ class RealBotAPI:
         scheduler_service: Any | None = None,
         orchestration_service: Any | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
+        plugin_secret_repo: SQLitePluginSecretRepository | None = None,
         webhost_service: Any | None = None,
         task_manager: Any | None = None,
         document_store_manager: Any | None = None,
@@ -2150,6 +2179,8 @@ class RealBotAPI:
             self._webhost_service = webhost_service
         if plugin_data_repo is not None:
             self._plugin_data_repo = plugin_data_repo
+        if plugin_secret_repo is not None:
+            self._plugin_secret_repo = plugin_secret_repo
         if task_manager is not None:
             self._task_manager = task_manager
         if document_store_manager is not None:

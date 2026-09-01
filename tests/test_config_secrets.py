@@ -60,6 +60,7 @@ class TestIsSensitive:
         # Channels/plugin sections are not part of the typed Settings tree.
         assert is_sensitive_path("telegram.bot_token", "bot_token")
         assert is_sensitive_path("integrations[0].api_key", "api_key")
+        assert is_sensitive_path("hoyoverse-assistant.cookies", "cookies")
 
     def test_non_sensitive(self) -> None:
         assert not is_sensitive_path("app_name", "app_name")

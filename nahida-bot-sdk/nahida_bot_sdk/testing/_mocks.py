@@ -310,6 +310,15 @@ class MockBotAPI:
     async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
         return {}
 
+    async def plugin_secret_get(self, key: str) -> str | None:
+        return None
+
+    async def plugin_secret_set(self, key: str, secret: str) -> None:
+        pass
+
+    async def plugin_secret_delete(self, key: str) -> bool:
+        return False
+
     async def workspace_read(self, path: str) -> str:
         return ""
 
@@ -373,6 +382,7 @@ class RecordingMockBotAPI(MockBotAPI):
         self.registered_desktop_surfaces: dict[str, Any] = {}
         self.spawned_tasks: dict[str, dict[str, Any]] = {}
         self._plugin_data: dict[str, Any] = {}
+        self._plugin_secrets: dict[str, str] = {}
 
     def on_event(self, event_type: type) -> Callable:
         def decorator(handler: Callable[..., Awaitable[None]]) -> Callable:
@@ -433,6 +443,7 @@ class RecordingMockBotAPI(MockBotAPI):
             "handler": handler,
             "description": description,
             "aliases": aliases or [],
+            "arguments": tuple(arguments or ()),
         }
         for command_name in names:
             self.registered_commands[command_name] = entry
@@ -554,6 +565,15 @@ class RecordingMockBotAPI(MockBotAPI):
             return {k: v for k, v in self._plugin_data.items() if k.startswith(prefix)}
         return dict(self._plugin_data)
 
+    async def plugin_secret_get(self, key: str) -> str | None:
+        return self._plugin_secrets.get(key)
+
+    async def plugin_secret_set(self, key: str, secret: str) -> None:
+        self._plugin_secrets[key] = secret
+
+    async def plugin_secret_delete(self, key: str) -> bool:
+        return self._plugin_secrets.pop(key, _SENTINEL) is not _SENTINEL
+
     def register_status_provider(
         self,
         key: str,
@@ -652,6 +672,7 @@ class ConsoleMockBotAPI:
         self._desktop_surfaces: dict[str, Any] = {}
         self._workspace: dict[str, str] = {}
         self.spawned_tasks: dict[str, dict[str, Any]] = {}
+        self._plugin_secrets: dict[str, str] = {}
 
     # ── Messaging ──────────────────────────────────────
 
@@ -782,6 +803,7 @@ class ConsoleMockBotAPI:
             "description": description,
             "aliases": aliases or [],
             "name": name,
+            "arguments": tuple(arguments or ()),
         }
         for command_name in names:
             self._commands[command_name] = entry
@@ -798,6 +820,7 @@ class ConsoleMockBotAPI:
                         "name": entry["name"],
                         "description": entry["description"],
                         "aliases": entry["aliases"],
+                        "arguments": entry["arguments"],
                     }
                 )
         return result
@@ -991,6 +1014,15 @@ class ConsoleMockBotAPI:
 
     async def plugin_data_list(self, prefix: str = "") -> dict[str, Any]:
         return {}
+
+    async def plugin_secret_get(self, key: str) -> str | None:
+        return self._plugin_secrets.get(key)
+
+    async def plugin_secret_set(self, key: str, secret: str) -> None:
+        self._plugin_secrets[key] = secret
+
+    async def plugin_secret_delete(self, key: str) -> bool:
+        return self._plugin_secrets.pop(key, _SENTINEL) is not _SENTINEL
 
     # ── Workspace ──────────────────────────────────────
 

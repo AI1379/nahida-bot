@@ -85,6 +85,10 @@ permissions:
     read: true                                # 可读取插件数据存储
     write: true                               # 可写入插件数据存储
 
+  plugin_secrets:
+    read: true                                # 可读取本插件的不透明 secret
+    write: true                               # 可创建或删除本插件的 secret
+
   system:
     env_vars: ["MY_PLUGIN_*"]                 # 可读取的环境变量（前缀匹配）
     subprocess: false                          # 是否允许执行子进程
@@ -295,6 +299,7 @@ def register_command(
     *,
     description: str = "",
     aliases: list[str] | None = None,
+    arguments: Sequence[CommandArgument] | None = None,
 ) -> None:
 ```
 
@@ -308,13 +313,20 @@ async def handler(
 ```
 
 ```python
-from nahida_bot_sdk.commands import CommandResult
+from nahida_bot_sdk import CommandArgument, CommandResult
 
 async def on_load(self) -> None:
     self.api.register_command(
         "hello", self._hello,
         description="Say hello",
         aliases=["hi", "greet"],
+        arguments=[
+            CommandArgument(
+                name="person",
+                description="Who to greet",
+                required=True,
+            )
+        ],
     )
 
 async def _hello(
@@ -322,6 +334,13 @@ async def _hello(
 ) -> CommandResult:
     return CommandResult.text(f"Hello, {inbound.user_id}!")
 ```
+
+`arguments` 为 Discord 等原生命令界面提供参数类型、必填状态、静态选项和动态补全；
+文本命令仍由 handler 从 `args` 字符串自行解析。
+
+命令需要保存用户级状态时，使用 `inbound.sender_account_key`。它返回身份系统统一的
+`{channel}:user:{platform_user_id}`，标识发送者账号而非群聊/私聊地址；渠道无法提供
+稳定用户 ID 时返回空字符串。
 
 **返回值类型**（`CommandHandlerResult`）：
 
@@ -488,9 +507,24 @@ deleted = await self.api.plugin_data_delete("server:my-server")
 - 运行时状态持久化
 - 跨会话共享的结构化数据
 
-**不适用：** 语义记忆（用 `memory_search`/`memory_store`）、文件存储（用 `workspace_read`/`workspace_write`）。
+**不适用：** 凭据等秘密（用下方 `plugin_secret_*`）、语义记忆（用 `memory_search`/`memory_store`）、文件存储（用 `workspace_read`/`workspace_write`）。
 
-### 3.8 会话管理
+### 3.8 插件 Secret 存储
+
+插件专属的不透明字符串存储，适合动态用户凭据。API 自动注入当前 `plugin_id`，且刻意
+不提供 list 操作，以减少批量误暴露的风险。
+
+```python
+async def plugin_secret_get(self, key: str) -> str | None
+async def plugin_secret_set(self, key: str, secret: str) -> None
+async def plugin_secret_delete(self, key: str) -> bool
+```
+
+需要 `permissions.plugin_secrets.read: true` / `write: true`。不要把 secret 放入 key、
+日志或普通 `plugin_data`。当前 SQLite 后端的安全边界与 Provider 凭据一致：数据库内容
+未做应用层加密，部署者必须保护数据库文件及备份的访问权限。
+
+### 3.9 会话管理
 
 ```python
 async def get_session_info(self, session_id: str) -> dict[str, Any]
@@ -503,7 +537,7 @@ def list_commands(self) -> list[CommandInfo]
 def list_models(self) -> list[dict[str, str]]
 ```
 
-### 3.9 服务注册
+### 3.10 服务注册
 
 ```python
 def register_channel(self, channel: ChannelService) -> None
@@ -516,7 +550,7 @@ def register_provider_type(
 - `register_channel` 需要 `permissions.network.inbound: true`
 - `register_provider_type` 仅允许在 `load_phase: "pre-agent"` 的插件中调用
 
-### 3.9 日志
+### 3.11 日志
 
 ```python
 @property
@@ -688,6 +722,7 @@ class CommandInfo:
     description: str
     aliases: tuple[str, ...]
     plugin_id: str
+    arguments: tuple[CommandArgument, ...]
 ```
 
 ---
@@ -715,7 +750,7 @@ assert len(api.published_events) > 0
 
 `RecordingMockBotAPI` 跟踪：
 - `registered_tools` — `dict[name, {description, parameters, handler}]`
-- `registered_commands` — `dict[name_or_alias, {name, description, aliases, handler}]`
+- `registered_commands` — `dict[name_or_alias, {name, description, aliases, arguments, handler}]`
 - `registered_event_handlers` — `dict[event_type, list[handler]]`
 - `registered_provider_types` — `dict[type_key, {factory, config_schema, description}]`
 - `published_events` — `list[event]`

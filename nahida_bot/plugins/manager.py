@@ -34,6 +34,9 @@ if TYPE_CHECKING:
     from nahida_bot.db.repositories.sqlite_plugin_data_repo import (
         SQLitePluginDataRepository,
     )
+    from nahida_bot.db.repositories.sqlite_plugin_secret_repo import (
+        SQLitePluginSecretRepository,
+    )
     from nahida_bot.plugins.base import Plugin
     from nahida_bot.workspace.manager import WorkspaceManager
 
@@ -85,6 +88,7 @@ class PluginManager:
         memory_store: SQLiteMemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
+        plugin_secret_repo: SQLitePluginSecretRepository | None = None,
         channel_registry: Any | None = None,
         provider_manager: Any | None = None,
         model_router: Any | None = None,
@@ -106,6 +110,7 @@ class PluginManager:
         self._memory_cross_chat_weights = memory_cross_chat_weights
         self._message_delivery_store = message_delivery_store
         self._plugin_data_repo = plugin_data_repo
+        self._plugin_secret_repo = plugin_secret_repo
         self._channel_registry = channel_registry
         self._provider_manager = provider_manager
         self._model_router = model_router
@@ -133,6 +138,7 @@ class PluginManager:
         memory_store: SQLiteMemoryStore | None = None,
         message_delivery_store: SQLiteMessageDeliveryStore | None = None,
         plugin_data_repo: SQLitePluginDataRepository | None = None,
+        plugin_secret_repo: SQLitePluginSecretRepository | None = None,
         provider_manager: Any | None = None,
         model_router: Any | None = None,
         scheduler_service: Any | None = None,
@@ -150,6 +156,8 @@ class PluginManager:
         self._message_delivery_store = message_delivery_store
         if plugin_data_repo is not None:
             self._plugin_data_repo = plugin_data_repo
+        if plugin_secret_repo is not None:
+            self._plugin_secret_repo = plugin_secret_repo
         self._provider_manager = provider_manager
         self._model_router = model_router
         self._scheduler_service = scheduler_service
@@ -173,6 +181,7 @@ class PluginManager:
                     memory_store=memory_store,
                     message_delivery_store=message_delivery_store,
                     plugin_data_repo=self._plugin_data_repo,
+                    plugin_secret_repo=self._plugin_secret_repo,
                     provider_manager=provider_manager,
                     scheduler_service=scheduler_service,
                     orchestration_service=orchestration_service,
@@ -328,6 +337,7 @@ class PluginManager:
             memory_cross_chat_weights=self._memory_cross_chat_weights,
             message_delivery_store=self._message_delivery_store,
             plugin_data_repo=self._plugin_data_repo,
+            plugin_secret_repo=self._plugin_secret_repo,
             permission_checker=checker,
             tool_registry=self._tool_registry,
             handler_registry=self._handler_registry,

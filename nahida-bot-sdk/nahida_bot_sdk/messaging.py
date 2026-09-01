@@ -83,6 +83,23 @@ class InboundMessage:
     mentions_bot: bool = False
     mentioned_user_ids: tuple[str, ...] = ()
 
+    @property
+    def sender_account_key(self) -> str:
+        """Return the stable sender key used by the host identity system.
+
+        The key identifies a platform account, not a chat destination. An
+        empty string means the channel did not provide a stable sender id.
+        """
+        channel = self.platform.strip()
+        platform_user_id = ""
+        if self.sender_context is not None:
+            platform_user_id = self.sender_context.platform_user_id.strip()
+        if not platform_user_id:
+            platform_user_id = self.user_id.strip()
+        if not channel or not platform_user_id:
+            return ""
+        return f"{channel}:user:{platform_user_id}"
+
 
 @dataclass(slots=True, frozen=True)
 class AttentionFrame:

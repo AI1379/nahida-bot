@@ -5,13 +5,15 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypeVar
 
 from nahida_bot_sdk.api import BotAPI
 from nahida_bot_sdk.commands import CommandArgument
 from nahida_bot_sdk.manifest import PluginManifest
 
 # ── Registration decorators ─────────────────────────────────
+
+_HandlerT = TypeVar("_HandlerT", bound=Callable[..., Any])
 
 
 def register_command(
@@ -20,7 +22,7 @@ def register_command(
     description: str = "",
     aliases: list[str] | None = None,
     arguments: Sequence[CommandArgument] | None = None,
-) -> Callable:
+) -> Callable[[_HandlerT], _HandlerT]:
     """Decorator to mark a method as a slash-command handler.
 
     The decorated method must accept keyword arguments
@@ -38,13 +40,17 @@ def register_command(
                 return CommandResult.text(f"Hello, {args}")
     """
 
-    def deco(func):
-        func.__nahida_cmd__ = {
-            "name": name,
-            "description": description,
-            "aliases": aliases or [],
-            "arguments": tuple(arguments or ()),
-        }
+    def deco(func: _HandlerT) -> _HandlerT:
+        setattr(
+            func,
+            "__nahida_cmd__",
+            {
+                "name": name,
+                "description": description,
+                "aliases": aliases or [],
+                "arguments": tuple(arguments or ()),
+            },
+        )
         return func
 
     return deco
@@ -56,7 +62,7 @@ def register_tool(
     description: str = "",
     parameters: dict[str, Any] | None = None,
     requires_admin: bool = False,
-) -> Callable:
+) -> Callable[[_HandlerT], _HandlerT]:
     """Decorator to mark a method as an LLM-callable tool handler.
 
     The decorated method should accept ``**kwargs`` and return ``str``.
@@ -70,20 +76,24 @@ def register_tool(
                 return "done"
     """
 
-    def deco(func):
-        func.__nahida_tool__ = {
-            "name": name,
-            "description": description,
-            "parameters": parameters
-            or {"type": "object", "properties": {}, "required": []},
-            "requires_admin": requires_admin,
-        }
+    def deco(func: _HandlerT) -> _HandlerT:
+        setattr(
+            func,
+            "__nahida_tool__",
+            {
+                "name": name,
+                "description": description,
+                "parameters": parameters
+                or {"type": "object", "properties": {}, "required": []},
+                "requires_admin": requires_admin,
+            },
+        )
         return func
 
     return deco
 
 
-def subscribe(event_type: type) -> Callable:
+def subscribe(event_type: type) -> Callable[[_HandlerT], _HandlerT]:
     """Decorator to mark a method as an event subscriber.
 
     The decorated method should accept a single ``event`` argument
@@ -98,8 +108,8 @@ def subscribe(event_type: type) -> Callable:
                 pass
     """
 
-    def deco(func):
-        func.__nahida_sub__ = {"event_type": event_type}
+    def deco(func: _HandlerT) -> _HandlerT:
+        setattr(func, "__nahida_sub__", {"event_type": event_type})
         return func
 
     return deco

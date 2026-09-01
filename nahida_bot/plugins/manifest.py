@@ -20,6 +20,7 @@ from nahida_bot_sdk.manifest import (  # noqa: F401
     Permissions,
     PluginDataPermission,
     PluginDependency,
+    PluginSecretsPermission,
     PluginContributions,
     PluginManifest,
     PluginPageDeclaration,

@@ -84,6 +84,20 @@ class PermissionChecker:
                 f"Plugin '{self._manifest.id}' has no plugin_data write permission"
             )
 
+    def check_plugin_secrets_read(self) -> None:
+        """Check whether the plugin may retrieve its own opaque secrets."""
+        if not self._manifest.permissions.plugin_secrets.read:
+            raise PermissionDenied(
+                f"Plugin '{self._manifest.id}' has no plugin_secrets read permission"
+            )
+
+    def check_plugin_secrets_write(self) -> None:
+        """Check whether the plugin may create or delete its own secrets."""
+        if not self._manifest.permissions.plugin_secrets.write:
+            raise PermissionDenied(
+                f"Plugin '{self._manifest.id}' has no plugin_secrets write permission"
+            )
+
     def check_subprocess(self) -> None:
         """Check if the plugin may execute subprocesses."""
         if not self._manifest.permissions.system.subprocess:

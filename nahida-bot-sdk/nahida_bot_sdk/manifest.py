@@ -43,6 +43,13 @@ class PluginDataPermission(BaseModel):
     write: bool = False
 
 
+class PluginSecretsPermission(BaseModel):
+    """Access to the host's opaque per-plugin secret store."""
+
+    read: bool = False
+    write: bool = False
+
+
 class SystemPermission(BaseModel):
     """System-level access permissions."""
 
@@ -58,6 +65,9 @@ class Permissions(BaseModel):
     filesystem: FilesystemPermission = Field(default_factory=FilesystemPermission)
     memory: MemoryPermission = Field(default_factory=MemoryPermission)
     plugin_data: PluginDataPermission = Field(default_factory=PluginDataPermission)
+    plugin_secrets: PluginSecretsPermission = Field(
+        default_factory=PluginSecretsPermission
+    )
     system: SystemPermission = Field(default_factory=SystemPermission)
     llm_access: bool = False
 
