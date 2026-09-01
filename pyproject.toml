@@ -76,6 +76,9 @@ discord = [
 builtin-plugins = [
     "nahida-plugin-echo",
 ]
+hoyoverse-assistant = [
+    "nahida-plugin-hoyoverse-assistant",
+]
 document-import = [
     "markitdown[docx,outlook,pdf,pptx,xls,xlsx]>=0.1.6,<0.2",
 ]
@@ -93,6 +96,7 @@ members = ["nahida-bot-sdk"]
 [tool.uv.sources]
 nahida-bot-sdk = { workspace = true }
 nahida-plugin-echo = { path = "./plugins/echo" }
+nahida-plugin-hoyoverse-assistant = { path = "./plugins/hoyoverse-assistant" }
 
 [tool.ruff]
 target-version = "py312"

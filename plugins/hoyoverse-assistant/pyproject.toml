@@ -1,0 +1,18 @@
+[project]
+name = "nahida-plugin-hoyoverse-assistant"
+version = "0.1.0"
+description = "Multi-game HoYoverse account assistant for nahida-bot"
+requires-python = ">=3.12"
+dependencies = [
+    "genshin>=1.7.29,<1.8",
+    "nahida-bot-sdk>=0.1.0",
+    "pydantic>=2.0.0",
+    "qrcode[pil]>=7.4.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nahida_plugin_hoyoverse_assistant"]

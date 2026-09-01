@@ -822,6 +822,20 @@ wheels = [
 ]
 
 [[package]]
+name = "genshin"
+version = "1.7.29"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "pydantic" },
+    { name = "tenacity" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/98/59/5d9a987d97e40128bce7cef0dc2961c38f98337b58efebe716c659998361/genshin-1.7.29.tar.gz", hash = "sha256:7d258314ec63ac6fa54d4f2449e4c7e1149452daaab9d63ad20923c0583fd2a9", size = 137071, upload-time = "2026-08-01T03:39:33.389Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/ec/2835f04e772249b003c564797f24d24a6e7613362be7fbcf924d3ea81fc1/genshin-1.7.29-py3-none-any.whl", hash = "sha256:fedea1b317ccd1093042f9b13d6be166eea62339a084f8faec5c6bc3bbe32978", size = 193067, upload-time = "2026-08-01T03:39:31.838Z" },
+]
+
+[[package]]
 name = "griffe"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1430,6 +1444,9 @@ builtin-plugins = [
 document-import = [
     { name = "markitdown", extra = ["docx", "outlook", "pdf", "pptx", "xls", "xlsx"] },
 ]
+hoyoverse-assistant = [
+    { name = "nahida-plugin-hoyoverse-assistant" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1469,6 +1486,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.27.0" },
     { name = "nahida-bot-sdk", editable = "nahida-bot-sdk" },
     { name = "nahida-plugin-echo", marker = "extra == 'builtin-plugins'", directory = "plugins/echo" },
+    { name = "nahida-plugin-hoyoverse-assistant", marker = "extra == 'hoyoverse-assistant'", directory = "plugins/hoyoverse-assistant" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
@@ -1483,7 +1501,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.27.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["builtin-plugins", "document-import"]
+provides-extras = ["builtin-plugins", "hoyoverse-assistant", "document-import"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1532,6 +1550,25 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "nahida-bot-sdk", specifier = ">=0.1.0" }]
+
+[[package]]
+name = "nahida-plugin-hoyoverse-assistant"
+version = "0.1.0"
+source = { directory = "plugins/hoyoverse-assistant" }
+dependencies = [
+    { name = "genshin" },
+    { name = "nahida-bot-sdk" },
+    { name = "pydantic" },
+    { name = "qrcode", extra = ["pil"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "genshin", specifier = ">=1.7.29,<1.8" },
+    { name = "nahida-bot-sdk", specifier = ">=0.1.0" },
+    { name = "pydantic", specifier = ">=2.0.0" },
+    { name = "qrcode", extras = ["pil"], specifier = ">=7.4.2" },
+]
 
 [[package]]
 name = "nodeenv"
@@ -2336,6 +2373,23 @@ wheels = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "8.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/b2/7fc2931bfae0af02d5f53b174e9cf701adbb35f39d69c2af63d4a39f81a9/qrcode-8.2.tar.gz", hash = "sha256:35c3f2a4172b33136ab9f6b3ef1c00260dd2f66f858f24d88418a015f446506c", size = 43317, upload-time = "2025-05-01T15:44:24.726Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/b8/d2d6d731733f51684bbf76bf34dab3b70a9148e8f2cef2bb544fccec681a/qrcode-8.2-py3-none-any.whl", hash = "sha256:16e64e0716c14960108e85d853062c9e8bba5ca8252c0b4d0231b9df4060ff4f", size = 45986, upload-time = "2025-05-01T15:44:22.781Z" },
+]
+
+[package.optional-dependencies]
+pil = [
+    { name = "pillow" },
+]
+
+[[package]]
 name = "readability-lxml"
 version = "0.8.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2590,6 +2644,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
+
+[[package]]
+name = "tenacity"
+version = "9.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697ee8a44d3d69222b344920433d3b6666ccd9b374630c/tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a", size = 49413, upload-time = "2026-02-07T10:45:33.841Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
 ]
 
 [[package]]

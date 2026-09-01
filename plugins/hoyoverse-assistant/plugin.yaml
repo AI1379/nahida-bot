@@ -1,0 +1,72 @@
+id: hoyoverse-assistant
+name: "HoYoverse Assistant"
+version: "0.1.0"
+description: "Genshin Impact, Honkai: Star Rail, and Zenless Zone Zero account queries"
+entrypoint: "nahida_plugin_hoyoverse_assistant.plugin:HoyoverseAssistantPlugin"
+load_phase: "post-agent"
+enabled: false
+
+permissions:
+  network:
+    outbound:
+      - "https://*.mihoyo.com/*"
+      - "https://*.miyoushe.com/*"
+      - "https://*.hoyolab.com/*"
+      - "https://*.hoyoverse.com/*"
+  plugin_data:
+    read: true
+    write: true
+  plugin_secrets:
+    read: true
+    write: true
+
+config:
+  region: "cn"
+  language: "zh-cn"
+  proxy: ""
+  request_timeout_seconds: 20
+  max_concurrency: 2
+  qr_login_ttl_seconds: 180
+  include_real_time_notes: true
+
+config_schema:
+  type: object
+  properties:
+    region:
+      type: string
+      enum: ["cn", "os"]
+    language:
+      type: string
+      enum:
+        - "zh-cn"
+        - "zh-tw"
+        - "de-de"
+        - "en-us"
+        - "es-es"
+        - "fr-fr"
+        - "id-id"
+        - "it-it"
+        - "ja-jp"
+        - "ko-kr"
+        - "pt-pt"
+        - "ru-ru"
+        - "th-th"
+        - "vi-vn"
+        - "tr-tr"
+    proxy:
+      type: string
+    request_timeout_seconds:
+      type: number
+      minimum: 3
+      maximum: 120
+    max_concurrency:
+      type: integer
+      minimum: 1
+      maximum: 10
+    qr_login_ttl_seconds:
+      type: integer
+      minimum: 30
+      maximum: 600
+      description: "Miyoushe login QR validity in seconds"
+    include_real_time_notes:
+      type: boolean
