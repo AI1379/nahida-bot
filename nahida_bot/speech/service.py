@@ -9,6 +9,7 @@ playback) is deferred.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -17,6 +18,11 @@ from nahida_bot.speech.base import SpeechArtifact, SpeechRequest, TtsError, TtsP
 from nahida_bot.speech.config import TtsConfig
 from nahida_bot.speech.providers.gpt_sovits import GPTSoVITSProvider
 from nahida_bot.speech.providers.minimax import MiniMaxTtsProvider
+from nahida_bot.speech.streaming import (
+    OpenedSpeechStream,
+    SpeechStreamRequest,
+    StreamingTtsProvider,
+)
 
 # Built-in provider adapter classes keyed by their ``type`` discriminator.
 # Each provider nominally inherits TtsProvider and accepts ``Any`` at the
@@ -25,6 +31,15 @@ _BUILTIN_PROVIDERS: dict[str, type[TtsProvider]] = {
     GPTSoVITSProvider.type: GPTSoVITSProvider,
     MiniMaxTtsProvider.type: MiniMaxTtsProvider,
 }
+
+
+@dataclass(slots=True, frozen=True)
+class _ResolvedProvider:
+    voice_name: str
+    backend_name: str
+    provider_type: str
+    provider: TtsProvider
+    voice_config: Any
 
 
 class SpeechService:
@@ -89,25 +104,7 @@ class SpeechService:
         defaults when non-empty/non-zero. Raises :class:`TtsError` on failure.
         """
 
-        voice_name, backend_name, voice_raw = self._config.resolve_voice(voice)
-        _backend_name, backend_raw = self._config.backend_raw(backend_name)
-        provider_type = str(backend_raw.get("type", "")).strip()
-        adapter_cls = self._adapter_classes.get(provider_type)
-        if adapter_cls is None:
-            raise TtsError(
-                "tts_unsupported_provider",
-                (
-                    f"TTS provider type {provider_type!r} has no registered adapter. "
-                    f"Registered: {', '.join(self.supported_provider_types()) or '(none)'}"
-                ),
-                provider=provider_type,
-                backend=backend_name,
-            )
-
-        provider = await self._get_or_create_client(
-            backend_name, provider_type, backend_raw
-        )
-        voice_config = adapter_cls.parse_voice_config(voice_raw)
+        resolved = await self._resolve_provider(voice)
         request = SpeechRequest(
             text=text,
             text_lang=text_lang.strip(),
@@ -117,18 +114,71 @@ class SpeechService:
             output_format=output_format,
         )
         try:
-            artifact = await provider.synthesize(request, voice_config)
+            artifact = await resolved.provider.synthesize(
+                request, resolved.voice_config
+            )
         except TtsError as exc:
             if not exc.backend:
-                exc.backend = backend_name
+                exc.backend = resolved.backend_name
             raise
         # Attach resolved voice name for downstream attribution.
         return SpeechArtifact(
             data=artifact.data,
             mime_type=artifact.mime_type,
             duration_ms=artifact.duration_ms,
-            provider=artifact.provider or provider_type,
-            voice=voice_name,
+            provider=artifact.provider or resolved.provider_type,
+            voice=resolved.voice_name,
+        )
+
+    async def open_stream(
+        self,
+        *,
+        voice: str = "",
+        text_lang: str = "",
+        style: str = "",
+        speed: float = 0.0,
+        pitch: float = 0.0,
+        output_format: str = "audio/pcm",
+    ) -> OpenedSpeechStream:
+        """Open a true incremental TTS session for realtime voice.
+
+        Artifact-only providers fail explicitly instead of buffering a complete
+        clip and presenting it as streaming output.  This distinction is
+        important for interruption latency and bounded playback queues.
+        """
+
+        resolved = await self._resolve_provider(voice)
+        if not isinstance(resolved.provider, StreamingTtsProvider):
+            raise TtsError(
+                "tts_streaming_unsupported",
+                (
+                    f"TTS backend {resolved.backend_name!r} does not support "
+                    "realtime streaming."
+                ),
+                provider=resolved.provider_type,
+                backend=resolved.backend_name,
+            )
+
+        request = SpeechStreamRequest(
+            text_lang=text_lang.strip(),
+            style=style,
+            speed=speed,
+            pitch=pitch,
+            output_format=output_format.strip() or "audio/pcm",
+        )
+        try:
+            session = await resolved.provider.open_stream(
+                request, resolved.voice_config
+            )
+        except TtsError as exc:
+            if not exc.backend:
+                exc.backend = resolved.backend_name
+            raise
+        return OpenedSpeechStream(
+            session=session,
+            provider=resolved.provider_type,
+            backend=resolved.backend_name,
+            voice=resolved.voice_name,
         )
 
     async def close(self) -> None:
@@ -155,3 +205,29 @@ class SpeechService:
         client = adapter_cls(backend_config, http_client=self._shared_client)
         self._clients[backend_name] = client
         return client
+
+    async def _resolve_provider(self, voice: str) -> _ResolvedProvider:
+        voice_name, backend_name, voice_raw = self._config.resolve_voice(voice)
+        _backend_name, backend_raw = self._config.backend_raw(backend_name)
+        provider_type = str(backend_raw.get("type", "")).strip()
+        adapter_cls = self._adapter_classes.get(provider_type)
+        if adapter_cls is None:
+            raise TtsError(
+                "tts_unsupported_provider",
+                (
+                    f"TTS provider type {provider_type!r} has no registered adapter. "
+                    f"Registered: {', '.join(self.supported_provider_types()) or '(none)'}"
+                ),
+                provider=provider_type,
+                backend=backend_name,
+            )
+        provider = await self._get_or_create_client(
+            backend_name, provider_type, backend_raw
+        )
+        return _ResolvedProvider(
+            voice_name=voice_name,
+            backend_name=backend_name,
+            provider_type=provider_type,
+            provider=provider,
+            voice_config=adapter_cls.parse_voice_config(voice_raw),
+        )

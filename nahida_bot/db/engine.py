@@ -520,6 +520,12 @@ _SCHEMA_MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_plugin_secrets_plugin
         ON plugin_secrets(plugin_id);
     """,
+    # Migration 028: CRON execution strategy. Columns are installed by the
+    # PRAGMA-guarded post-migration helper so an interrupted multi-column ALTER
+    # can recover safely. Existing jobs intentionally remain Agent jobs.
+    """
+    -- See DatabaseEngine._ensure_cron_executor_columns().
+    """,
 ]
 
 
@@ -628,6 +634,7 @@ class DatabaseEngine:
         await self._ensure_memory_sensitivity_source_column()
         await self._ensure_agent_runs_transcript_column()
         await self._ensure_background_task_delivery_columns()
+        await self._ensure_cron_executor_columns()
 
     async def _ensure_memory_tree_columns(self) -> None:
         """Idempotently add the memory-tree columns + index to ``memory_items``.
@@ -719,5 +726,23 @@ class DatabaseEngine:
                 if name not in existing:
                     await self.db.execute(
                         f"ALTER TABLE background_tasks ADD COLUMN {name} {decl}"
+                    )
+            await self.db.commit()
+
+    async def _ensure_cron_executor_columns(self) -> None:
+        """Idempotently add script-executor fields to ``cron_jobs``."""
+        rows = await self.fetch_all("PRAGMA table_info(cron_jobs)")
+        existing = {str(row["name"]) for row in rows}
+        additions = [
+            ("executor_type", "TEXT NOT NULL DEFAULT 'agent'"),
+            ("script_command", "TEXT NOT NULL DEFAULT ''"),
+            ("script_working_dir", "TEXT NOT NULL DEFAULT ''"),
+            ("script_timeout_seconds", "INTEGER NOT NULL DEFAULT 30"),
+        ]
+        async with self.write_lock:
+            for name, declaration in additions:
+                if name not in existing:
+                    await self.db.execute(
+                        f"ALTER TABLE cron_jobs ADD COLUMN {name} {declaration}"
                     )
             await self.db.commit()

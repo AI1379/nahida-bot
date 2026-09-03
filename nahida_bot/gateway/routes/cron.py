@@ -104,6 +104,10 @@ async def create_cron_job(
             max_runs=body.max_runs,
             session_mode=body.session_mode,
             session_name=body.session_name,
+            executor_type=body.executor_type,
+            script_command=body.script_command,
+            script_working_dir=body.script_working_dir,
+            script_timeout_seconds=body.script_timeout_seconds,
             created_by_user_id="webapi",
             created_from_session_id=created_from_session_id,
             created_from_chat_address=address.chat_key,
@@ -143,6 +147,10 @@ async def update_cron_job(
             max_runs=body.max_runs,
             session_mode=body.session_mode,
             session_name=body.session_name,
+            executor_type=body.executor_type,
+            script_command=body.script_command,
+            script_working_dir=body.script_working_dir,
+            script_timeout_seconds=body.script_timeout_seconds,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -254,6 +262,10 @@ def _job_to_response(job: CronJob) -> CronJobResponse:
         created_from_session_id=job.created_from_session_id,
         created_from_chat_address=job.created_from_chat_address,
         sender_account_key=job.sender_account_key,
+        executor_type=job.executor_type,
+        script_command=job.script_command,
+        script_working_dir=job.script_working_dir,
+        script_timeout_seconds=job.script_timeout_seconds,
     )
 
 

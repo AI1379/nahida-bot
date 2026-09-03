@@ -1642,6 +1642,8 @@ async def test_send_success(client_no_auth: AsyncClient) -> None:
     data = resp.json()
     assert data["status"] == "sent"
     assert data["session_id"] == "telegram:private:123:abc"
+    assert data["message_id"] == "msg-456"
+    assert data["delivery_id"] is None
     mock_channel.send_message.assert_called_once()
     sent_target, sent_message = mock_channel.send_message.call_args.args
     assert sent_target == "123"
@@ -1661,6 +1663,7 @@ async def test_send_success_records_delivery_audit(
     mock_channel.send_message = AsyncMock(return_value="msg-456")
     mock_app.channel_registry.get.return_value = mock_channel
     mock_store = AsyncMock()
+    mock_store.record.return_value = SimpleNamespace(delivery_id="delivery-1")
     mock_app.message_delivery_store = mock_store
 
     resp = await client_no_auth.post(
@@ -1669,6 +1672,7 @@ async def test_send_success_records_delivery_audit(
     )
 
     assert resp.status_code == 200
+    assert resp.json()["delivery_id"] == "delivery-1"
     mock_store.record.assert_awaited_once()
     call = mock_store.record.await_args.kwargs
     assert call["target_chat_address"] == "telegram:private:123"
@@ -1676,6 +1680,30 @@ async def test_send_success_records_delivery_audit(
     assert call["source"] == "webapi_send"
     assert call["message_id"] == "msg-456"
     assert call["text"] == "hello"
+
+
+async def test_send_returns_502_when_channel_does_not_confirm_delivery(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_router = MagicMock()
+    mock_router.get_active_session_id.return_value = "telegram:private:123:abc"
+    mock_app.message_router = mock_router
+    mock_channel = AsyncMock()
+    mock_channel.send_message = AsyncMock(return_value="")
+    mock_app.channel_registry.get.return_value = mock_channel
+    mock_store = AsyncMock()
+    mock_app.message_delivery_store = mock_store
+
+    resp = await client_no_auth.post(
+        "/api/send",
+        json={"target": "telegram:private:123", "text": "hello"},
+    )
+
+    assert resp.status_code == 502
+    call = mock_store.record.await_args.kwargs
+    assert call["status"] == "failed"
+    assert call["error"] == "channel returned no message id"
 
 
 async def test_send_with_typed_target_resolves_typed_session(
@@ -1885,6 +1913,82 @@ async def test_cron_create_accepts_fresh_session_mode(
     assert mock_scheduler.create_job.await_args.kwargs["session_mode"] == "fresh"
 
 
+async def test_cron_create_accepts_script_then_agent_executor(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.scheduler.models import CronJob
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_scheduler = AsyncMock()
+    mock_scheduler.create_job.return_value = CronJob(
+        job_id="script-job",
+        platform="telegram",
+        chat_id="123",
+        session_key="telegram:private:123",
+        prompt="Fallback and report the failure.",
+        mode="interval",
+        fire_at=None,
+        interval_seconds=120,
+        cron_expression=None,
+        max_runs=None,
+        run_count=0,
+        is_active=True,
+        created_at="2026-01-01T00:00:00",
+        next_fire_at="2026-01-01T00:02:00",
+        last_fired_at=None,
+        workspace_id=None,
+        session_mode="fresh",
+        chat_type="private",
+        executor_type="script_then_agent",
+        script_command="/opt/check/.venv/bin/python /opt/check/main.py",
+        script_working_dir="/opt/check",
+        script_timeout_seconds=20,
+    )
+    mock_app.scheduler_service = mock_scheduler
+
+    resp = await client_no_auth.post(
+        "/api/cron",
+        json={
+            "target": "telegram:private:123",
+            "prompt": "Fallback and report the failure.",
+            "mode": "interval",
+            "interval_seconds": 120,
+            "session_mode": "fresh",
+            "executor_type": "script_then_agent",
+            "script_command": "/opt/check/.venv/bin/python /opt/check/main.py",
+            "script_working_dir": "/opt/check",
+            "script_timeout_seconds": 20,
+        },
+    )
+
+    assert resp.status_code == 201
+    kwargs = mock_scheduler.create_job.await_args.kwargs
+    assert kwargs["executor_type"] == "script_then_agent"
+    assert kwargs["script_command"].endswith("main.py")
+    assert kwargs["script_working_dir"] == "/opt/check"
+    assert kwargs["script_timeout_seconds"] == 20
+
+
+async def test_cron_create_rejects_script_executor_without_command(
+    client_no_auth: AsyncClient,
+) -> None:
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_app.scheduler_service = AsyncMock()
+
+    resp = await client_no_auth.post(
+        "/api/cron",
+        json={
+            "target": "telegram:private:123",
+            "prompt": "Fallback prompt",
+            "mode": "interval",
+            "interval_seconds": 120,
+            "executor_type": "script_then_agent",
+        },
+    )
+
+    assert resp.status_code == 422
+
+
 async def test_cron_update_accepts_session_mode_and_name(
     client_no_auth: AsyncClient,
 ) -> None:
@@ -1933,6 +2037,56 @@ async def test_cron_update_accepts_session_mode_and_name(
     kwargs = mock_scheduler.update_job.await_args.kwargs
     assert kwargs["session_mode"] == "named"
     assert kwargs["session_name"] == "daily-summary"
+
+
+async def test_cron_update_accepts_script_executor_settings(
+    client_no_auth: AsyncClient,
+) -> None:
+    from nahida_bot.scheduler.models import CronJob
+
+    mock_app = client_no_auth._transport.app.state.application  # type: ignore[attr-defined]
+    mock_scheduler = AsyncMock()
+    mock_scheduler.update_job.return_value = CronJob(
+        job_id="script-job",
+        platform="telegram",
+        chat_id="123",
+        session_key="telegram:private:123",
+        prompt="Fallback prompt",
+        mode="interval",
+        fire_at=None,
+        interval_seconds=120,
+        cron_expression=None,
+        max_runs=None,
+        run_count=0,
+        is_active=True,
+        created_at="2026-01-01T00:00:00",
+        next_fire_at="2026-01-01T00:02:00",
+        last_fired_at=None,
+        workspace_id=None,
+        executor_type="script_then_agent",
+        script_command="/opt/check/run.sh",
+        script_working_dir="/opt/check",
+        script_timeout_seconds=15,
+    )
+    mock_app.scheduler_service = mock_scheduler
+
+    resp = await client_no_auth.patch(
+        "/api/cron/script-job",
+        json={
+            "executor_type": "script_then_agent",
+            "script_command": "/opt/check/run.sh",
+            "script_working_dir": "/opt/check",
+            "script_timeout_seconds": 15,
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["executor_type"] == "script_then_agent"
+    assert data["script_command"] == "/opt/check/run.sh"
+    kwargs = mock_scheduler.update_job.await_args.kwargs
+    assert kwargs["executor_type"] == "script_then_agent"
+    assert kwargs["script_timeout_seconds"] == 15
 
 
 async def test_cron_mutations_notify_event_broadcaster(

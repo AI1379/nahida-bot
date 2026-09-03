@@ -58,8 +58,31 @@ async def send_message(
         OutboundMessage(text=body.text, extra={"chat_address": address.chat_key}),
     )
     delivery_store = getattr(app, "message_delivery_store", None)
+    if not message_id:
+        if delivery_store is not None:
+            await delivery_store.record(
+                target_chat_address=address.chat_key,
+                platform=address.channel,
+                target_type=address.target_type,
+                target_id=address.target_id,
+                source_session_id=session_id,
+                source_chat_address=address.chat_key,
+                source_user_id="webapi",
+                source="webapi_send",
+                delivery_mode="notify",
+                status="failed",
+                text=body.text,
+                error="channel returned no message id",
+                metadata={"requested_session_id": body.session_id or ""},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Channel did not confirm message delivery",
+        )
+
+    delivery_id: str | None = None
     if delivery_store is not None:
-        await delivery_store.record(
+        delivery = await delivery_store.record(
             target_chat_address=address.chat_key,
             platform=address.channel,
             target_type=address.target_type,
@@ -74,6 +97,9 @@ async def send_message(
             text=body.text,
             metadata={"requested_session_id": body.session_id or ""},
         )
+        stored_delivery_id = getattr(delivery, "delivery_id", "")
+        if isinstance(stored_delivery_id, str) and stored_delivery_id:
+            delivery_id = stored_delivery_id
 
     logger.info(
         "webapi.message_sent",
@@ -82,4 +108,9 @@ async def send_message(
         text_len=len(body.text),
     )
 
-    return SendMessageResponse(status="sent", session_id=session_id)
+    return SendMessageResponse(
+        status="sent",
+        session_id=session_id,
+        message_id=message_id,
+        delivery_id=delivery_id,
+    )

@@ -36,6 +36,10 @@ class CronJob:
     created_from_session_id: str = ""
     created_from_chat_address: str = ""
     sender_account_key: str = ""
+    executor_type: Literal["agent", "script_then_agent"] = "agent"
+    script_command: str = ""
+    script_working_dir: str = ""
+    script_timeout_seconds: int = 30
 
 
 @dataclass(slots=True, frozen=True)

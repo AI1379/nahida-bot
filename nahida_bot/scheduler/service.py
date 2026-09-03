@@ -21,6 +21,11 @@ from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.plugins.base import MessageContext, OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
+from nahida_bot.scheduler.script_executor import (
+    ScriptExecutionResult,
+    execute_script,
+    render_fallback_context,
+)
 
 if TYPE_CHECKING:
     from nahida_bot.core.channel_registry import ChannelRegistry
@@ -36,6 +41,7 @@ logger = structlog.get_logger(__name__)
 _CRON_TOOL_NAMES = frozenset(
     {"cron_create", "cron_update", "cron_list", "cron_cancel", "cron_delete"}
 )
+_DEFAULT_SCRIPT_TIMEOUT_SECONDS = 30
 
 
 class SchedulerService:
@@ -175,6 +181,10 @@ class SchedulerService:
         workspace_id: str | None = None,
         session_mode: Literal["main", "isolated", "fresh", "named"] = "main",
         session_name: str | None = None,
+        executor_type: Literal["agent", "script_then_agent"] = "agent",
+        script_command: str = "",
+        script_working_dir: str = "",
+        script_timeout_seconds: int = _DEFAULT_SCRIPT_TIMEOUT_SECONDS,
         created_by_user_id: str = "",
         created_from_session_id: str = "",
         created_from_chat_address: str = "",
@@ -197,6 +207,17 @@ class SchedulerService:
         job_id = uuid4().hex[:16]
         self._validate_prompt(prompt)
         self._validate_max_runs(max_runs)
+        (
+            normalized_executor_type,
+            normalized_script_command,
+            normalized_script_working_dir,
+            normalized_script_timeout,
+        ) = self._normalize_executor_settings(
+            executor_type=executor_type,
+            script_command=script_command,
+            script_working_dir=script_working_dir,
+            script_timeout_seconds=script_timeout_seconds,
+        )
 
         # Compute next_fire_at
         if mode == "once":
@@ -239,6 +260,10 @@ class SchedulerService:
             created_from_session_id=created_from_session_id,
             created_from_chat_address=created_from_chat_address,
             sender_account_key=sender_account_key,
+            executor_type=normalized_executor_type,
+            script_command=normalized_script_command,
+            script_working_dir=normalized_script_working_dir,
+            script_timeout_seconds=normalized_script_timeout,
         )
 
         await self._repo.insert_job_with_quota(
@@ -249,6 +274,7 @@ class SchedulerService:
             job_id=job_id,
             mode=mode,
             next_fire_at=next_fire_at,
+            executor_type=normalized_executor_type,
         )
         return job
 
@@ -264,6 +290,10 @@ class SchedulerService:
         max_runs: int | None = None,
         session_mode: Literal["main", "isolated", "fresh", "named"] | None = None,
         session_name: str | None = None,
+        executor_type: Literal["agent", "script_then_agent"] | None = None,
+        script_command: str | None = None,
+        script_working_dir: str | None = None,
+        script_timeout_seconds: int | None = None,
     ) -> CronJob:
         """Update a scheduled job that is not currently running.
 
@@ -283,6 +313,31 @@ class SchedulerService:
             existing,
             session_mode=session_mode,
             session_name=session_name,
+        )
+        (
+            new_executor_type,
+            new_script_command,
+            new_script_working_dir,
+            new_script_timeout,
+        ) = self._normalize_executor_settings(
+            executor_type=(
+                executor_type if executor_type is not None else existing.executor_type
+            ),
+            script_command=(
+                script_command
+                if script_command is not None
+                else existing.script_command
+            ),
+            script_working_dir=(
+                script_working_dir
+                if script_working_dir is not None
+                else existing.script_working_dir
+            ),
+            script_timeout_seconds=(
+                script_timeout_seconds
+                if script_timeout_seconds is not None
+                else existing.script_timeout_seconds
+            ),
         )
 
         new_mode = mode or existing.mode
@@ -354,6 +409,10 @@ class SchedulerService:
             next_fire_at=next_fire_at,
             session_mode=new_session_mode,
             session_name=new_session_name,
+            executor_type=new_executor_type,
+            script_command=new_script_command,
+            script_working_dir=new_script_working_dir,
+            script_timeout_seconds=new_script_timeout,
         )
         if not updated:
             raise RuntimeError(f"Job '{job_id}' is currently running")
@@ -361,7 +420,12 @@ class SchedulerService:
         job = await self._repo.get_job(job_id)
         if job is None:
             raise RuntimeError(f"Job '{job_id}' disappeared during update")
-        logger.info("scheduler.job_updated", job_id=job_id, mode=new_mode)
+        logger.info(
+            "scheduler.job_updated",
+            job_id=job_id,
+            mode=new_mode,
+            executor_type=new_executor_type,
+        )
         return job
 
     async def list_jobs(self, address: ChatAddress) -> list[CronJob]:
@@ -835,10 +899,40 @@ class SchedulerService:
         )
 
     async def _execute_fire(self, job: CronJob) -> None:
-        """Run the agent with the job's prompt and send the response."""
+        """Execute a job through its configured executor."""
+        script_result: ScriptExecutionResult | None = None
+        if job.executor_type == "script_then_agent":
+            script_result = await execute_script(job)
+            if script_result.succeeded:
+                logger.info(
+                    "scheduler.script_succeeded",
+                    job_id=job.job_id,
+                    return_code=script_result.return_code,
+                    duration_seconds=round(script_result.duration_seconds, 3),
+                )
+                return
+            logger.warning(
+                "scheduler.script_fallback",
+                job_id=job.job_id,
+                return_code=script_result.return_code,
+                timed_out=script_result.timed_out,
+                spawn_failed=bool(script_result.spawn_error),
+                duration_seconds=round(script_result.duration_seconds, 3),
+            )
+        elif job.executor_type != "agent":
+            raise ValueError(f"Invalid cron executor_type: {job.executor_type}")
+
+        await self._execute_agent_fire(job, script_result=script_result)
+
+    async def _execute_agent_fire(
+        self,
+        job: CronJob,
+        *,
+        script_result: ScriptExecutionResult | None = None,
+    ) -> None:
+        """Run the Agent executor and send its response."""
         if self._runner is None or not self._runner.has_agent:
-            logger.warning("scheduler.no_agent", job_id=job.job_id)
-            return
+            raise RuntimeError("Scheduler Agent executor is not available")
 
         address = ChatAddress.from_inbound(
             job.platform,
@@ -892,7 +986,13 @@ class SchedulerService:
             )
         )
         try:
-            await self._do_fire(job, session_id, address, message_context)
+            await self._do_fire(
+                job,
+                session_id,
+                address,
+                message_context,
+                script_result=script_result,
+            )
         finally:
             current_session.reset(ctx_token)
 
@@ -902,6 +1002,8 @@ class SchedulerService:
         session_id: str,
         address: ChatAddress,
         message_context: MessageContext,
+        *,
+        script_result: ScriptExecutionResult | None = None,
     ) -> None:
         """The actual agent execution + response delivery."""
         assert self._runner is not None  # guarded by _execute_fire
@@ -913,6 +1015,11 @@ class SchedulerService:
             message_context=message_context,
             tool_filter=_CRON_TOOL_NAMES,
             source_tag="cron_trigger",
+            ephemeral_context=(
+                render_fallback_context(job, script_result)
+                if script_result is not None
+                else ""
+            ),
         )
 
         # Send response via channel
@@ -959,6 +1066,12 @@ class SchedulerService:
                         "session_mode": job.session_mode,
                         "sentinel_action": sentinel_action,
                         "sentinel_suppressed": sentinel_suppressed,
+                        "script_fallback_used": script_result is not None,
+                        "script_return_code": (
+                            script_result.return_code
+                            if script_result is not None
+                            else None
+                        ),
                     },
                 )
             else:
@@ -973,6 +1086,7 @@ class SchedulerService:
             job_id=job.job_id,
             session_id=session_id,
             response_len=len(result.final_response),
+            script_fallback_used=script_result is not None,
         )
 
     async def _send_error(self, job: CronJob, message: str) -> None:
@@ -1093,6 +1207,33 @@ class SchedulerService:
             raise ValueError(
                 f"prompt must be <= {self._config.max_prompt_chars} characters"
             )
+
+    @staticmethod
+    def _normalize_executor_settings(
+        *,
+        executor_type: str,
+        script_command: str,
+        script_working_dir: str,
+        script_timeout_seconds: int,
+    ) -> tuple[Literal["agent", "script_then_agent"], str, str, int]:
+        if executor_type not in {"agent", "script_then_agent"}:
+            raise ValueError("executor_type must be one of: agent, script_then_agent")
+        if executor_type == "agent":
+            return "agent", "", "", _DEFAULT_SCRIPT_TIMEOUT_SECONDS
+
+        normalized_command = script_command.strip()
+        if not normalized_command:
+            raise ValueError(
+                "script_command is required for executor_type='script_then_agent'"
+            )
+        if script_timeout_seconds <= 0:
+            raise ValueError("script_timeout_seconds must be > 0")
+        return (
+            "script_then_agent",
+            normalized_command,
+            script_working_dir.strip(),
+            script_timeout_seconds,
+        )
 
     def _validate_interval(self, interval_seconds: int | None) -> None:
         if (

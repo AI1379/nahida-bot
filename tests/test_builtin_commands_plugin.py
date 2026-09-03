@@ -357,8 +357,19 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "isolated",
         "fresh",
     ]
+    assert create_params["properties"]["executor_type"]["enum"] == [
+        "agent",
+        "script_then_agent",
+    ]
+    assert "script_command" in create_params["properties"]
+    assert "script_working_dir" in create_params["properties"]
+    assert "script_timeout_seconds" in create_params["properties"]
     assert "cron_expression" in create_params["properties"]
     assert update_params["properties"]["mode"]["enum"] == ["once", "interval", "cron"]
+    assert update_params["properties"]["executor_type"]["enum"] == [
+        "agent",
+        "script_then_agent",
+    ]
     assert "cron_expression" in update_params["properties"]
     assert set(api.tools["desktop_exec"]["parameters"]["properties"]) == {
         "program",
@@ -1650,6 +1661,10 @@ async def test_cron_update_and_delete_tools_use_scheduler_api() -> None:
         "interval_seconds": 180,
         "cron_expression": None,
         "max_runs": 3,
+        "executor_type": None,
+        "script_command": None,
+        "script_working_dir": None,
+        "script_timeout_seconds": None,
     }
     assert deleted == "Deleted task job1."
     assert api.scheduler_service.deleted == ["job1"]
@@ -1688,6 +1703,115 @@ async def test_cron_create_records_creator_and_source_session() -> None:
     assert api.scheduler_service.created["created_from_chat_address"] == (
         "telegram:private:c1"
     )
+
+
+@pytest.mark.asyncio
+async def test_cron_create_passes_script_executor_settings() -> None:
+    api = _FakeAPI()
+    api.scheduler_service = _FakeScheduler()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1:abc",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
+    )
+    try:
+        result = await plugin._cron_tools.create(
+            prompt="Fallback and explain the script failure.",
+            mode="interval",
+            interval_seconds=120,
+            executor_type="script_then_agent",
+            script_command="/opt/check/.venv/bin/python /opt/check/main.py",
+            script_working_dir="/opt/check",
+            script_timeout_seconds=20,
+        )
+    finally:
+        current_session.reset(token)
+
+    assert "Scheduled task created" in result
+    assert api.scheduler_service.created["executor_type"] == "script_then_agent"
+    assert api.scheduler_service.created["script_command"].endswith("main.py")
+    assert api.scheduler_service.created["script_working_dir"] == "/opt/check"
+    assert api.scheduler_service.created["script_timeout_seconds"] == 20
+
+
+@pytest.mark.asyncio
+async def test_cron_script_executor_requires_admin_when_identity_is_enabled() -> None:
+    api = _FakeAPI()
+    api.scheduler_service = _FakeScheduler()
+    api._event_bus = SimpleNamespace(
+        context=SimpleNamespace(
+            app=SimpleNamespace(
+                _authorization_gate=SimpleNamespace(
+                    enabled=True,
+                    is_admin=lambda account_key: account_key == "admin",
+                )
+            )
+        )
+    )
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            sender_account_key="user",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
+    )
+    try:
+        result = await plugin._cron_tools.create(
+            prompt="Run the local check.",
+            mode="interval",
+            interval_seconds=120,
+            executor_type="script_then_agent",
+            script_command="/opt/check/run.sh",
+        )
+    finally:
+        current_session.reset(token)
+
+    assert result == "Error: script_then_agent requires an admin sender."
+    assert api.scheduler_service.created == {}
+
+
+@pytest.mark.asyncio
+async def test_cron_update_passes_script_executor_settings() -> None:
+    api = _FakeAPI()
+    api.scheduler_service = _FakeScheduler()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
+    )
+    try:
+        result = await plugin._cron_tools.update(
+            "job1",
+            executor_type="script_then_agent",
+            script_command="/opt/check/run.sh",
+            script_working_dir="/opt/check",
+            script_timeout_seconds=15,
+        )
+    finally:
+        current_session.reset(token)
+
+    assert "Updated task job1." in result
+    assert api.scheduler_service.updated["executor_type"] == "script_then_agent"
+    assert api.scheduler_service.updated["script_command"] == "/opt/check/run.sh"
+    assert api.scheduler_service.updated["script_working_dir"] == "/opt/check"
+    assert api.scheduler_service.updated["script_timeout_seconds"] == 15
 
 
 @pytest.mark.asyncio

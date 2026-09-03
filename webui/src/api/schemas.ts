@@ -123,6 +123,10 @@ export interface CronJob {
   created_from_session_id: string;
   created_from_chat_address: string;
   sender_account_key: string;
+  executor_type: "agent" | "script_then_agent";
+  script_command: string;
+  script_working_dir: string;
+  script_timeout_seconds: number;
 }
 
 export interface CronListResponse {
@@ -559,6 +563,10 @@ export interface CreateCronRequest {
   max_runs?: number | null;
   session_mode: "main" | "isolated" | "fresh" | "named";
   session_name?: string | null;
+  executor_type: "agent" | "script_then_agent";
+  script_command?: string;
+  script_working_dir?: string;
+  script_timeout_seconds?: number;
 }
 
 export interface CreateCronResponse {
@@ -575,6 +583,10 @@ export interface UpdateCronRequest {
   max_runs?: number | null;
   session_mode?: "main" | "isolated" | "fresh" | "named" | null;
   session_name?: string | null;
+  executor_type?: "agent" | "script_then_agent" | null;
+  script_command?: string | null;
+  script_working_dir?: string | null;
+  script_timeout_seconds?: number | null;
 }
 
 export interface CronActionResponse {

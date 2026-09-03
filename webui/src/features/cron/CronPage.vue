@@ -329,7 +329,10 @@ const sortedJobs = computed(() => {
                 <div class="sub">{{ job.chat_type }}:{{ job.chat_id }}</div>
               </td>
               <td>
-                <Badge variant="outline">{{ modeLabel(job.mode) }}</Badge>
+                <div class="type-badges">
+                  <Badge variant="outline">{{ modeLabel(job.mode) }}</Badge>
+                  <Badge variant="secondary">{{ job.executor_type }}</Badge>
+                </div>
               </td>
               <td>
                 <Badge variant="secondary">{{ job.session_mode }}</Badge>
@@ -392,6 +395,7 @@ const sortedJobs = computed(() => {
         <div class="job-card-badges">
           <Badge variant="outline">{{ modeLabel(job.mode) }}</Badge>
           <Badge variant="secondary">{{ job.session_mode }}</Badge>
+          <Badge variant="secondary">{{ job.executor_type }}</Badge>
         </div>
 
         <div class="job-card-prompt">
@@ -612,6 +616,13 @@ const sortedJobs = computed(() => {
 .sub {
   font-size: 0.6875rem;
   color: var(--color-muted-foreground);
+}
+
+.type-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
 }
 
 .prompt-cell {

@@ -43,9 +43,20 @@ const cronExpression = ref("");
 const maxRuns = ref("");
 const sessionMode = ref<"main" | "isolated" | "fresh" | "named">("main");
 const sessionName = ref("");
+const executorType = ref<"agent" | "script_then_agent">("agent");
+const scriptCommand = ref("");
+const scriptWorkingDir = ref("");
+const scriptTimeoutSeconds = ref("30");
 const canSubmit = computed(() => (
   !!prompt.value.trim()
   && (sessionMode.value !== "named" || !!sessionName.value.trim())
+  && (
+    executorType.value !== "script_then_agent"
+    || (
+      !!scriptCommand.value.trim()
+      && Number(scriptTimeoutSeconds.value) > 0
+    )
+  )
 ));
 
 watch(
@@ -61,6 +72,10 @@ watch(
       maxRuns.value = props.job.max_runs != null ? String(props.job.max_runs) : "";
       sessionMode.value = props.job.session_mode as "main" | "isolated" | "fresh" | "named";
       sessionName.value = props.job.session_name ?? "";
+      executorType.value = props.job.executor_type;
+      scriptCommand.value = props.job.script_command;
+      scriptWorkingDir.value = props.job.script_working_dir;
+      scriptTimeoutSeconds.value = String(props.job.script_timeout_seconds);
       target.value = "";
     } else {
       target.value = "";
@@ -72,6 +87,10 @@ watch(
       maxRuns.value = "";
       sessionMode.value = "main";
       sessionName.value = "";
+      executorType.value = "agent";
+      scriptCommand.value = "";
+      scriptWorkingDir.value = "";
+      scriptTimeoutSeconds.value = "30";
     }
   },
 );
@@ -87,6 +106,12 @@ function buildCreatePayload(): CreateCronRequest {
     max_runs: maxRuns.value ? Number(maxRuns.value) : null,
     session_mode: sessionMode.value,
     session_name: sessionMode.value === "named" ? sessionName.value : null,
+    executor_type: executorType.value,
+    script_command: executorType.value === "script_then_agent" ? scriptCommand.value : "",
+    script_working_dir: executorType.value === "script_then_agent" ? scriptWorkingDir.value : "",
+    script_timeout_seconds: executorType.value === "script_then_agent"
+      ? Number(scriptTimeoutSeconds.value)
+      : 30,
   };
 }
 
@@ -100,6 +125,12 @@ function buildUpdatePayload(): UpdateCronRequest {
     max_runs: maxRuns.value ? Number(maxRuns.value) : null,
     session_mode: sessionMode.value,
     session_name: sessionMode.value === "named" ? sessionName.value : null,
+    executor_type: executorType.value,
+    script_command: executorType.value === "script_then_agent" ? scriptCommand.value : "",
+    script_working_dir: executorType.value === "script_then_agent" ? scriptWorkingDir.value : "",
+    script_timeout_seconds: executorType.value === "script_then_agent"
+      ? Number(scriptTimeoutSeconds.value)
+      : 30,
   };
 }
 
@@ -136,6 +167,9 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
           <div class="field">
             <label class="field-label">Prompt <span class="required">*</span></label>
             <Textarea v-model="prompt" placeholder="What should the bot do?" :rows="3" />
+            <span v-if="executorType === 'script_then_agent'" class="field-help">
+              Used as the Agent fallback request when the script does not exit successfully.
+            </span>
           </div>
 
           <div class="field-row">
@@ -148,15 +182,47 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
               </select>
             </div>
             <div class="field">
-              <label class="field-label">Session Mode</label>
-              <select v-model="sessionMode" class="field-select">
-                <option value="main">Main</option>
-                <option value="isolated">Isolated</option>
-                <option value="fresh">Fresh</option>
-                <option value="named">Named</option>
+              <label class="field-label">Executor</label>
+              <select v-model="executorType" class="field-select">
+                <option value="agent">Agent</option>
+                <option value="script_then_agent">Script, then Agent on failure</option>
               </select>
             </div>
           </div>
+
+          <div class="field">
+            <label class="field-label">Session Mode</label>
+            <select v-model="sessionMode" class="field-select">
+              <option value="main">Main</option>
+              <option value="isolated">Isolated</option>
+              <option value="fresh">Fresh</option>
+              <option value="named">Named</option>
+            </select>
+            <span class="field-help">Used by Agent jobs and script failure fallback runs.</span>
+          </div>
+
+          <template v-if="executorType === 'script_then_agent'">
+            <div class="field">
+              <label class="field-label">Script Command <span class="required">*</span></label>
+              <Textarea
+                v-model="scriptCommand"
+                placeholder="/path/to/venv/bin/python /path/to/script.py"
+                :rows="2"
+              />
+              <span class="field-help">Exit code 0 completes the job; any failure falls back to the Agent prompt.</span>
+            </div>
+
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label">Working Directory</label>
+                <Input v-model="scriptWorkingDir" placeholder="Optional" />
+              </div>
+              <div class="field">
+                <label class="field-label">Script Timeout (seconds)</label>
+                <Input v-model="scriptTimeoutSeconds" type="number" min="1" />
+              </div>
+            </div>
+          </template>
 
           <div v-if="mode === 'once'" class="field">
             <label class="field-label">Fire At</label>
@@ -319,6 +385,11 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
 .field-label {
   font-size: 0.75rem;
   font-weight: 500;
+  color: var(--color-muted-foreground);
+}
+
+.field-help {
+  font-size: 0.6875rem;
   color: var(--color-muted-foreground);
 }
 

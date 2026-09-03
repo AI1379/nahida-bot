@@ -296,6 +296,8 @@ class SendMessageRequest(BaseModel):
 class SendMessageResponse(BaseModel):
     status: str
     session_id: str
+    message_id: str
+    delivery_id: str | None = None
 
 
 # -- Cron -----------------------------------------------------------------
@@ -329,6 +331,10 @@ class CronJobResponse(BaseModel):
     created_from_session_id: str = ""
     created_from_chat_address: str = ""
     sender_account_key: str = ""
+    executor_type: Literal["agent", "script_then_agent"] = "agent"
+    script_command: str = ""
+    script_working_dir: str = ""
+    script_timeout_seconds: int = 30
 
 
 class CronListResponse(BaseModel):
@@ -345,6 +351,10 @@ class CreateCronRequest(BaseModel):
     max_runs: int | None = None
     session_mode: Literal["main", "isolated", "fresh", "named"] = "main"
     session_name: str | None = None
+    executor_type: Literal["agent", "script_then_agent"] = "agent"
+    script_command: str = ""
+    script_working_dir: str = ""
+    script_timeout_seconds: int = Field(default=30, ge=1)
 
     @model_validator(mode="after")
     def _validate_session(self) -> "CreateCronRequest":
@@ -359,6 +369,17 @@ class CreateCronRequest(BaseModel):
                 )
         elif self.session_name:
             raise ValueError("session_name is only valid when session_mode is 'named'")
+        if self.executor_type == "script_then_agent":
+            if not self.script_command.strip():
+                raise ValueError(
+                    "script_command is required when executor_type is "
+                    "'script_then_agent'"
+                )
+        elif self.script_command.strip() or self.script_working_dir.strip():
+            raise ValueError(
+                "script settings are only valid when executor_type is "
+                "'script_then_agent'"
+            )
         return self
 
 
@@ -376,6 +397,10 @@ class UpdateCronRequest(BaseModel):
     max_runs: int | None = None
     session_mode: Literal["main", "isolated", "fresh", "named"] | None = None
     session_name: str | None = None
+    executor_type: Literal["agent", "script_then_agent"] | None = None
+    script_command: str | None = None
+    script_working_dir: str | None = None
+    script_timeout_seconds: int | None = Field(default=None, ge=1)
 
 
 class CronActionResponse(BaseModel):

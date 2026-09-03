@@ -55,6 +55,14 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         sender_account_key=(
             r["sender_account_key"] if "sender_account_key" in keys else ""
         ),
+        executor_type=(r["executor_type"] if "executor_type" in keys else "agent"),
+        script_command=(r["script_command"] if "script_command" in keys else ""),
+        script_working_dir=(
+            r["script_working_dir"] if "script_working_dir" in keys else ""
+        ),
+        script_timeout_seconds=(
+            r["script_timeout_seconds"] if "script_timeout_seconds" in keys else 30
+        ),
     )
 
 
@@ -75,8 +83,10 @@ class CronRepository:
                     last_fired_at, workspace_id, claimed_at, failure_count,
                     last_error, session_mode, session_name, chat_type,
                     created_by_user_id, created_from_session_id,
-                    created_from_chat_address, sender_account_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_from_chat_address, sender_account_key,
+                    executor_type, script_command, script_working_dir,
+                    script_timeout_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -105,6 +115,10 @@ class CronRepository:
                     job.created_from_session_id,
                     job.created_from_chat_address,
                     job.sender_account_key,
+                    job.executor_type,
+                    job.script_command,
+                    job.script_working_dir,
+                    job.script_timeout_seconds,
                 ),
             )
             await self._engine.db.commit()
@@ -309,6 +323,10 @@ class CronRepository:
         next_fire_at: str,
         session_mode: str,
         session_name: str | None,
+        executor_type: str,
+        script_command: str,
+        script_working_dir: str,
+        script_timeout_seconds: int,
     ) -> bool:
         """Update an unclaimed job. Returns False if it cannot update."""
         async with self._engine.write_lock:
@@ -324,6 +342,10 @@ class CronRepository:
                     next_fire_at = ?,
                     session_mode = ?,
                     session_name = ?,
+                    executor_type = ?,
+                    script_command = ?,
+                    script_working_dir = ?,
+                    script_timeout_seconds = ?,
                     failure_count = 0,
                     last_error = NULL
                 WHERE job_id = ?
@@ -339,6 +361,10 @@ class CronRepository:
                     next_fire_at,
                     session_mode,
                     session_name,
+                    executor_type,
+                    script_command,
+                    script_working_dir,
+                    script_timeout_seconds,
                     job_id,
                 ),
             )
@@ -405,8 +431,10 @@ class CronRepository:
                     last_fired_at, workspace_id, claimed_at, failure_count,
                     last_error, session_mode, session_name, chat_type,
                     created_by_user_id, created_from_session_id,
-                    created_from_chat_address, sender_account_key
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_from_chat_address, sender_account_key,
+                    executor_type, script_command, script_working_dir,
+                    script_timeout_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -435,6 +463,10 @@ class CronRepository:
                     job.created_from_session_id,
                     job.created_from_chat_address,
                     job.sender_account_key,
+                    job.executor_type,
+                    job.script_command,
+                    job.script_working_dir,
+                    job.script_timeout_seconds,
                 ),
             )
             await self._engine.db.commit()

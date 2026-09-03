@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import aiosqlite
 import pytest
 
 from nahida_bot.agent.context import ContextBuilder, ContextMessage
@@ -29,7 +32,7 @@ from nahida_bot.core.events import (
     SchedulerNotificationPayload,
 )
 from nahida_bot.core.session_runner import SessionRunner
-from nahida_bot.db.engine import DatabaseEngine
+from nahida_bot.db.engine import DatabaseEngine, _SCHEMA_MIGRATIONS
 from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
@@ -158,6 +161,34 @@ class _Channels:
         return None
 
 
+class _ScriptProcess:
+    def __init__(
+        self,
+        *,
+        returncode: int,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        delay_seconds: float = 0.0,
+    ) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.delay_seconds = delay_seconds
+        self.killed = False
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
+        return self.stdout, self.stderr
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
 def _make_service(
     engine: DatabaseEngine,
     repo: CronRepository,
@@ -254,6 +285,170 @@ async def test_fire_job_completes_once_job_after_success() -> None:
         assert stored.claimed_at is None
         assert stored.run_count == 1
         assert channel.sent[0][1].text == "done"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_script_executor_success_skips_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, repo = await _repo()
+    process = _ScriptProcess(returncode=0, stdout=b"handled")
+
+    async def create_process(*args: Any, **kwargs: Any) -> _ScriptProcess:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", create_process)
+    agent = _Agent()
+    job = replace(
+        _job(),
+        executor_type="script_then_agent",
+        script_command="/opt/check/.venv/bin/python /opt/check/main.py",
+        script_working_dir="/opt/check",
+    )
+    await repo.insert_job(job)
+    try:
+        service = _make_service(engine, repo, agent=agent)
+        await service._fire_job(job)
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.run_count == 1
+        assert stored.is_active is False
+        assert agent.calls == 0
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_script_executor_failure_passes_context_to_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, repo = await _repo()
+    process = _ScriptProcess(
+        returncode=2,
+        stdout=b'{"ok": false}',
+        stderr=b"HTTP 503 from local send API",
+    )
+
+    async def create_process(*args: Any, **kwargs: Any) -> _ScriptProcess:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", create_process)
+    agent = _Agent()
+    channel = _Channel()
+    job = replace(
+        _job(),
+        executor_type="script_then_agent",
+        script_command="/opt/check/.venv/bin/python /opt/check/main.py",
+    )
+    await repo.insert_job(job)
+    try:
+        service = _make_service(engine, repo, agent=agent, channel=channel)
+        await service._fire_job(job)
+
+        assert agent.calls == 1
+        history = cast(list[ContextMessage], agent.last_kwargs["history_messages"])
+        fallback = next(
+            message.content
+            for message in history
+            if "script_execution_context" in message.content
+        )
+        assert '"return_code": 2' in fallback
+        assert "HTTP 503 from local send API" in fallback
+        assert "partial external side effects" in fallback
+        assert channel.sent[0][1].text == "done"
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_script_executor_timeout_falls_back_to_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, repo = await _repo()
+    process = _ScriptProcess(returncode=0, delay_seconds=1.0)
+
+    async def create_process(*args: Any, **kwargs: Any) -> _ScriptProcess:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", create_process)
+    agent = _Agent()
+    job = replace(
+        _job(),
+        executor_type="script_then_agent",
+        script_command="slow-script",
+        script_timeout_seconds=0.01,  # type: ignore[arg-type]
+    )
+    await repo.insert_job(job)
+    try:
+        service = _make_service(engine, repo, agent=agent)
+        await service._fire_job(job)
+
+        assert process.killed is True
+        assert agent.calls == 1
+        history = cast(list[ContextMessage], agent.last_kwargs["history_messages"])
+        fallback = next(
+            message.content
+            for message in history
+            if "script_execution_context" in message.content
+        )
+        assert '"timed_out": true' in fallback
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_executor_migration_defaults_existing_jobs_to_agent(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "cron-executor-migration.sqlite3"
+    db = await aiosqlite.connect(db_path)
+    await db.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+    for migration in _SCHEMA_MIGRATIONS[:27]:
+        await db.executescript(migration)
+    await db.execute("INSERT INTO schema_version (version) VALUES (27)")
+    # Simulate a process that added the first executor column and then stopped.
+    await db.execute(
+        "ALTER TABLE cron_jobs ADD COLUMN executor_type TEXT NOT NULL DEFAULT 'agent'"
+    )
+    await db.execute(
+        """
+        INSERT INTO cron_jobs (
+            job_id, platform, chat_id, session_key, prompt, mode,
+            run_count, is_active, created_at, next_fire_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "legacy-job",
+            "telegram",
+            "c1",
+            "telegram:private:c1",
+            "legacy prompt",
+            "interval",
+            0,
+            1,
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-01T00:02:00+00:00",
+        ),
+    )
+    await db.commit()
+    await db.close()
+
+    engine = DatabaseEngine(db_path)
+    await engine.initialize()
+    try:
+        row = await engine.fetch_one(
+            "SELECT executor_type, script_command, script_working_dir, "
+            "script_timeout_seconds FROM cron_jobs WHERE job_id = ?",
+            ("legacy-job",),
+        )
+        assert row is not None
+        assert row["executor_type"] == "agent"
+        assert row["script_command"] == ""
+        assert row["script_working_dir"] == ""
+        assert row["script_timeout_seconds"] == 30
     finally:
         await engine.close()
 
@@ -578,6 +773,56 @@ async def test_update_job_changes_session_mode_and_name() -> None:
         main = await service.update_job(job.job_id, session_mode="main")
         assert main.session_mode == "main"
         assert main.session_name is None
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_update_job_switches_executor_and_clears_script_settings() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        job = await service.create_job(
+            address=_address(),
+            prompt="Fallback prompt",
+            mode="interval",
+            interval_seconds=120,
+        )
+
+        scripted = await service.update_job(
+            job.job_id,
+            executor_type="script_then_agent",
+            script_command="/opt/check/.venv/bin/python /opt/check/main.py",
+            script_working_dir="/opt/check",
+            script_timeout_seconds=20,
+        )
+        assert scripted.executor_type == "script_then_agent"
+        assert scripted.script_command.endswith("main.py")
+        assert scripted.script_working_dir == "/opt/check"
+        assert scripted.script_timeout_seconds == 20
+
+        agent = await service.update_job(job.job_id, executor_type="agent")
+        assert agent.executor_type == "agent"
+        assert agent.script_command == ""
+        assert agent.script_working_dir == ""
+        assert agent.script_timeout_seconds == 30
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_script_executor_requires_command() -> None:
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo)
+        with pytest.raises(ValueError, match="script_command is required"):
+            await service.create_job(
+                address=_address(),
+                prompt="Fallback prompt",
+                mode="interval",
+                interval_seconds=120,
+                executor_type="script_then_agent",
+            )
     finally:
         await engine.close()
 

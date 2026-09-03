@@ -75,6 +75,30 @@ _CREATE_PARAMETERS: dict[str, Any] = {
                 "each fire."
             ),
         },
+        "executor_type": {
+            "type": "string",
+            "enum": ["agent", "script_then_agent"],
+            "description": (
+                "'agent' (default) runs the prompt through the Agent. "
+                "'script_then_agent' runs an external command first and only "
+                "uses the Agent when the command fails, times out, or cannot start."
+            ),
+        },
+        "script_command": {
+            "type": "string",
+            "description": (
+                "Shell command for executor_type='script_then_agent'. Use an "
+                "explicit interpreter path when the script needs its own venv."
+            ),
+        },
+        "script_working_dir": {
+            "type": "string",
+            "description": "Optional working directory for the external command.",
+        },
+        "script_timeout_seconds": {
+            "type": "integer",
+            "description": "External command timeout in seconds. Default 30.",
+        },
     },
     "required": ["prompt", "mode"],
     "additionalProperties": False,
@@ -115,6 +139,23 @@ _UPDATE_PARAMETERS: dict[str, Any] = {
                 "Max number of successful fires for interval or cron mode."
             ),
         },
+        "executor_type": {
+            "type": "string",
+            "enum": ["agent", "script_then_agent"],
+            "description": "Switch between the Agent and script-first executor.",
+        },
+        "script_command": {
+            "type": "string",
+            "description": "Replacement external command for a script-first task.",
+        },
+        "script_working_dir": {
+            "type": "string",
+            "description": "Replacement working directory for the external command.",
+        },
+        "script_timeout_seconds": {
+            "type": "integer",
+            "description": "Replacement external command timeout in seconds.",
+        },
     },
     "required": ["job_id"],
     "additionalProperties": False,
@@ -130,6 +171,10 @@ class _CreateRequest:
     cron_expression: str | None = None
     max_runs: int | None = None
     session_mode: str = "main"
+    executor_type: str = "agent"
+    script_command: str = ""
+    script_working_dir: str = ""
+    script_timeout_seconds: int = 30
 
     @classmethod
     def from_arguments(
@@ -146,6 +191,10 @@ class _CreateRequest:
             cron_expression=arguments.get("cron_expression"),
             max_runs=arguments.get("max_runs"),
             session_mode=str(arguments.get("session_mode", "main")),
+            executor_type=str(arguments.get("executor_type", "agent")),
+            script_command=str(arguments.get("script_command", "")),
+            script_working_dir=str(arguments.get("script_working_dir", "")),
+            script_timeout_seconds=int(arguments.get("script_timeout_seconds", 30)),
         )
 
 
@@ -158,6 +207,10 @@ class _UpdateRequest:
     interval_seconds: int | None = None
     cron_expression: str | None = None
     max_runs: int | None = None
+    executor_type: str | None = None
+    script_command: str | None = None
+    script_working_dir: str | None = None
+    script_timeout_seconds: int | None = None
 
     @classmethod
     def from_arguments(cls, job_id: str, arguments: dict[str, Any]) -> _UpdateRequest:
@@ -169,6 +222,10 @@ class _UpdateRequest:
             interval_seconds=arguments.get("interval_seconds"),
             cron_expression=arguments.get("cron_expression"),
             max_runs=arguments.get("max_runs"),
+            executor_type=arguments.get("executor_type"),
+            script_command=arguments.get("script_command"),
+            script_working_dir=arguments.get("script_working_dir"),
+            script_timeout_seconds=arguments.get("script_timeout_seconds"),
         )
 
 
@@ -237,6 +294,11 @@ class CronTools:
         validation_error, normalized_fire_at = self._validate_create(request)
         if validation_error:
             return validation_error
+        authorization_error = self._script_executor_authorization_error(
+            request.executor_type
+        )
+        if authorization_error:
+            return authorization_error
         address = typed_address_from_session_context(context)
         if address is None:
             return "Error: Current chat does not have a typed delivery target."
@@ -252,6 +314,10 @@ class CronTools:
                 max_runs=request.max_runs,
                 workspace_id=context.workspace_id,
                 session_mode=request.session_mode,
+                executor_type=request.executor_type,
+                script_command=request.script_command,
+                script_working_dir=request.script_working_dir,
+                script_timeout_seconds=request.script_timeout_seconds,
                 created_by_user_id=context.user_id,
                 created_from_session_id=context.session_id,
                 created_from_chat_address=address.chat_key,
@@ -303,6 +369,14 @@ class CronTools:
         validation_error = self._validate_update(request)
         if validation_error:
             return validation_error
+        effective_executor_type = request.executor_type or str(
+            getattr(_job, "executor_type", "agent")
+        )
+        authorization_error = self._script_executor_authorization_error(
+            effective_executor_type
+        )
+        if authorization_error:
+            return authorization_error
 
         try:
             updated = await scheduler.update_job(
@@ -313,6 +387,10 @@ class CronTools:
                 interval_seconds=request.interval_seconds,
                 cron_expression=request.cron_expression,
                 max_runs=request.max_runs,
+                executor_type=request.executor_type,
+                script_command=request.script_command,
+                script_working_dir=request.script_working_dir,
+                script_timeout_seconds=request.script_timeout_seconds,
             )
         except Exception as exc:
             return f"Error updating scheduled task: {exc}"
@@ -417,6 +495,22 @@ class CronTools:
 
     @staticmethod
     def _validate_create(request: _CreateRequest) -> tuple[str | None, str | None]:
+        if request.executor_type not in {"agent", "script_then_agent"}:
+            return (
+                "Error: 'executor_type' must be 'agent' or 'script_then_agent'.",
+                None,
+            )
+        if (
+            request.executor_type == "script_then_agent"
+            and not request.script_command.strip()
+        ):
+            return (
+                "Error: 'script_command' is required for "
+                "executor_type='script_then_agent'.",
+                None,
+            )
+        if request.script_timeout_seconds <= 0:
+            return "Error: 'script_timeout_seconds' must be > 0.", None
         if request.mode == "once":
             if not request.fire_at:
                 return "Error: 'fire_at' is required for mode='once'.", None
@@ -460,7 +554,35 @@ class CronTools:
             return "Error: 'interval_seconds' must be >= 60 for mode='interval'."
         if request.max_runs is not None and request.max_runs <= 0:
             return "Error: 'max_runs' must be > 0 when provided."
+        if request.executor_type is not None and request.executor_type not in {
+            "agent",
+            "script_then_agent",
+        }:
+            return "Error: 'executor_type' must be 'agent' or 'script_then_agent'."
+        if (
+            request.script_timeout_seconds is not None
+            and request.script_timeout_seconds <= 0
+        ):
+            return "Error: 'script_timeout_seconds' must be > 0."
         return None
+
+    def _script_executor_authorization_error(self, executor_type: str) -> str | None:
+        """Require an admin sender when a cron job will run a local shell."""
+        if executor_type != "script_then_agent":
+            return None
+        context = current_session.get()
+        if context is None:
+            # WebAPI mutations already pass through the authenticated Gateway
+            # boundary and do not carry a channel sender context.
+            return None
+        event_bus = getattr(self._api, "_event_bus", None)
+        app = getattr(getattr(event_bus, "context", None), "app", None)
+        gate = getattr(app, "_authorization_gate", None)
+        if gate is None or not getattr(gate, "enabled", False):
+            return None
+        if gate.is_admin(context.actor_account_key):
+            return None
+        return "Error: script_then_agent requires an admin sender."
 
     @staticmethod
     def _format_created(job: Any, request: _CreateRequest) -> str:
@@ -475,6 +597,12 @@ class CronTools:
             lines.append(f"  Max runs: {request.max_runs or 'infinite'}")
         lines.append(f"  Next fire: {job.next_fire_at}")
         lines.append(f"  Session: {job.session_mode}")
+        lines.append(f"  Executor: {job.executor_type}")
+        if job.executor_type == "script_then_agent":
+            command = job.script_command
+            lines.append(
+                f"  Script: {command[:100]}{'...' if len(command) > 100 else ''}"
+            )
         prompt = request.prompt
         lines.append(f"  Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
         return "\n".join(lines)
@@ -485,7 +613,8 @@ class CronTools:
         for job in jobs:
             preview = job.prompt[:60] + ("..." if len(job.prompt) > 60 else "")
             lines.append(
-                f"  {job.job_id}: [{job.mode}/{job.session_mode}] "
+                f"  {job.job_id}: "
+                f"[{job.mode}/{job.session_mode}/{job.executor_type}] "
                 f"{cls._schedule_description(job)} — {preview}"
             )
             lines.append(f"    runs: {job.run_count}, next: {job.next_fire_at}")
@@ -507,6 +636,7 @@ class CronTools:
             lines.append(f"  Mode: every {job.interval_seconds}s")
             lines.append(f"  Max runs: {job.max_runs or 'infinite'}")
         lines.append(f"  Next fire: {job.next_fire_at}")
+        lines.append(f"  Executor: {job.executor_type}")
         prompt = job.prompt
         lines.append(f"  Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
         return "\n".join(lines)
@@ -518,7 +648,8 @@ class CronTools:
             status = "active" if job.is_active else "inactive"
             next_at = f", next: {job.next_fire_at}" if job.is_active else ""
             lines.append(
-                f"  {job.job_id}  [{job.mode}] {status}  runs: {job.run_count}{next_at}"
+                f"  {job.job_id}  [{job.mode}/{job.executor_type}] {status}  "
+                f"runs: {job.run_count}{next_at}"
             )
             preview = job.prompt[:80] + ("..." if len(job.prompt) > 80 else "")
             lines.append(f"    {preview}")
