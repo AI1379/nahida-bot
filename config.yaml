@@ -395,6 +395,39 @@ telegram:
 #   forward_render_max_chars: 12000
 #   scene_cache_size: 4096
 
+# Feishu 飞书 Channel（可选）
+# 启用前需在飞书开放平台创建「企业自建应用」，开启机器人能力，事件订阅方式
+# 选择「使用长连接接收事件」并订阅「接收消息 im.message.receive_v1」；
+# 权限至少勾选：读取单聊消息（im:message.p2p_msg:readonly）、
+# 获取群组中用户@机器人消息（im:message.group_at_msg:readonly），
+# 以及发送消息/上传图片文件/获取群信息/获取群成员列表等按文档页要求的权限。
+# 依赖安装：uv sync --group feishu
+#
+# feishu:
+#   enabled: true
+#   app_id: "${FEISHU_APP_ID:}"          # cli_ 开头的应用 ID
+#   app_secret: "${FEISHU_APP_SECRET:}"
+#   # domain: "https://open.feishu.cn"   # 国际版 Lark 改为 https://open.larksuite.com
+#   command_prefix: "/"
+#   group_trigger_mode: "mention"        # none / mention / command / always
+#   # 群上下文捕获（conversation_joiner 的输入）。注意：需要申请敏感权限
+#   # 「获取群组中所有消息 im:message.group_msg」（管理员审批）；未申请时平台
+#   # 只推送 @机器人 的消息，此开关不会有实际效果。
+#   group_context_capture: false
+#   reply_to_inbound: null               # true/false 覆盖 router.reply_to_inbound
+#   allowed_chats: []                    # chat_id（oc_ 开头）白名单；空 = 不限
+#   allowed_users: []                    # 单聊发送者 open_id（ou_ 开头）白名单；空 = 不限
+#   send_retry_attempts: 3
+#   send_retry_backoff: 1.5
+#   max_text_length: 3500                # 分片阈值（post/卡片硬上限 30KB）
+#   markdown_enabled: true               # 出站 Markdown 渲染为富文本（post）
+#   outbound_mentions_enabled: true      # 出站 [CQ:at,qq=ou_xxx] token → 真 @（群成员校验）
+#   max_mentions_per_message: 3
+#   member_cache_seconds: 1800           # 群成员缓存（mention 校验 + 发言者名字共用）
+#   media_download_dir: "./data/temp/media"
+#   enable_media_download_tool: true
+#   cache_media_on_receive: true
+
 # Discord Channel（可选）
 # 启用前需在 Discord Developer Portal 创建 Bot、开启 Message Content Intent
 # （Privileged Intent，必须在后台手动开启），并执行 `uv sync --group discord`。

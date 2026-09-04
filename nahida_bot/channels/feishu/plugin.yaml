@@ -1,0 +1,35 @@
+id: feishu
+name: "Feishu Channel"
+version: "0.1.0"
+description: "Feishu/Lark channel via an official custom app (lark-oapi WebSocket events + OpenAPI REST)"
+entrypoint: "nahida_bot.channels.feishu.plugin:FeishuPlugin"
+enabled: false
+
+permissions:
+  network:
+    outbound:
+      - "open.feishu.cn"
+      - "open.larksuite.com"
+    inbound: true
+
+config:
+  app_id: ""
+  app_secret: ""
+  domain: "https://open.feishu.cn"
+  command_prefix: "/"
+  group_trigger_mode: "mention"
+  group_context_capture: false
+  reply_to_inbound: null
+  allowed_chats: []
+  allowed_users: []
+  connect_timeout: 15.0
+  send_retry_attempts: 3
+  send_retry_backoff: 1.5
+  max_text_length: 3500
+  markdown_enabled: true
+  outbound_mentions_enabled: true
+  max_mentions_per_message: 3
+  member_cache_seconds: 1800.0
+  media_download_dir: "./data/temp/media"
+  enable_media_download_tool: true
+  cache_media_on_receive: true
