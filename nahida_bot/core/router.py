@@ -1418,7 +1418,7 @@ class MessageRouter:
 
         outbound_message = (
             _with_chat_address(outbound, _address_from_inbound(inbound))
-            if inbound.platform in {"milky", "onebot"}
+            if inbound.platform in {"milky", "onebot", "feishu"}
             else outbound
         )
 

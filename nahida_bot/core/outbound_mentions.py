@@ -6,11 +6,13 @@ reply text. The canonical taught format is the CQ at-code::
     [CQ:at,qq=123456]
 
 The alias forms ``@[qq=123456]`` and ``@[user_id=123456]`` are also parsed
-because the model may copy them from rendered history. Tokens are only
-converted to real mention segments by channels after the target has been
-validated (see the Milky plugin's group-membership check); unvalidated tokens
-stay in the text verbatim, so a wrong or hallucinated user id degrades to
-literal text instead of breaking the send.
+because the model may copy them from rendered history. Ids are either numeric
+platform ids (QQ) or Feishu open_ids (``ou_xxxxxxxx``), matched by prefix so
+stray tokens with other shapes stay literal. Tokens are only converted to
+real mention segments by channels after the target has been validated (see
+the Milky and Feishu plugins' membership checks); unvalidated tokens stay in
+the text verbatim, so a wrong or hallucinated user id degrades to literal
+text instead of breaking the send.
 """
 
 from __future__ import annotations
@@ -18,17 +20,20 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# FIXME: This seems to be a part of channel plugins instead of core
+
 # Platforms whose outbound path converts mention tokens into real mention
 # segments. Other platforms leave tokens as literal text.
-MENTION_CAPABLE_PLATFORMS = frozenset({"milky"})
+MENTION_CAPABLE_PLATFORMS = frozenset({"milky", "feishu"})
 
 # One scanner over all accepted token forms. The CQ form is checked first so
-# the canonical syntax wins when forms overlap. Digits-only ids mean @all and
-# other non-numeric targets simply never match and stay literal.
+# the canonical syntax wins when forms overlap. Ids are digits (QQ) or a
+# Feishu open_id (ou_ + alphanumeric); other shapes never match and stay
+# literal.
 _MENTION_TOKEN_RE = re.compile(
-    r"\[CQ:at,qq=(?P<cq_id>\d+)\]"
-    r"|@\[qq=(?P<qq_id>\d+)\]"
-    r"|@\[user_id=(?P<uid_id>\d+)\]"
+    r"\[CQ:at,qq=(?P<cq_id>\d+|ou_[0-9A-Za-z]+)\]"
+    r"|@\[qq=(?P<qq_id>\d+|ou_[0-9A-Za-z]+)\]"
+    r"|@\[user_id=(?P<uid_id>\d+|ou_[0-9A-Za-z]+)\]"
 )
 
 

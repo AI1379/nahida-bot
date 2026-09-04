@@ -65,3 +65,26 @@ def test_extract_ids_dedupes_and_caps_in_order() -> None:
 
 def test_extract_ids_empty_when_no_tokens() -> None:
     assert extract_mention_ids("no tokens here", limit=3) == []
+
+
+def test_parses_feishu_open_id_tokens() -> None:
+    open_id = "ou_84aad35d084aa403a838cf73ee18467"
+    parts = parse_outbound_parts(f"[CQ:at,qq={open_id}] 看这里")
+
+    assert parts[0].is_mention
+    assert parts[0].user_id == open_id
+    assert parts[1].text == " 看这里"
+
+    assert parse_outbound_parts(f"hi @[user_id={open_id}]")[1].user_id == open_id
+    assert extract_mention_ids(f"@[qq={open_id}] [CQ:at,qq=7]", limit=5) == [
+        open_id,
+        "7",
+    ]
+
+
+def test_malformed_open_id_prefixes_stay_literal() -> None:
+    # ou_ must be followed by alphanumerics; anything else stays literal.
+    parts = parse_outbound_parts("[CQ:at,qq=ou_] and [CQ:at,qq=ox_123]")
+
+    assert len(parts) == 1
+    assert parts[0].text == "[CQ:at,qq=ou_] and [CQ:at,qq=ox_123]"

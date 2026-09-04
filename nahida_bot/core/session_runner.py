@@ -43,11 +43,11 @@ from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
     HEARTBEAT_INSTRUCTION,
     CRON_DESKTOP_ANNOUNCEMENT_INSTRUCTION,
-    MENTION_INSTRUCTION,
     PROACTIVE_JOIN_INSTRUCTION,
     SILENT_REPLY_INSTRUCTION,
     assistant_context,
     context_from_inbound,
+    mention_instruction_for_channel,
     message_context_from_metadata,
     message_context_to_metadata,
     render_message_with_context,
@@ -2818,7 +2818,7 @@ class SessionRunner:
         if context is not None and context.channel not in ("", "bot"):
             parts.append(ENVELOPE_INSTRUCTION)
         if context is not None and context.channel in MENTION_CAPABLE_PLATFORMS:
-            parts.append(MENTION_INSTRUCTION)
+            parts.append(mention_instruction_for_channel(context.channel))
         if enable_silent_reply:
             parts.append(SILENT_REPLY_INSTRUCTION)
         if source_tag == "cron_trigger":

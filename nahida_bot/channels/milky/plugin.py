@@ -1043,9 +1043,16 @@ class MilkyPlugin(Plugin):
         """
         if not any(part.is_mention for part in parse_outbound_parts(message.text)):
             return message
-        requested = extract_mention_ids(
-            message.text, limit=self.config.max_mentions_per_message
-        )
+        # Milky user ids are numeric QQ ids; non-numeric mention tokens (e.g.
+        # Feishu open_ids copied from cross-channel context) can never be
+        # validated here and stay literal text.
+        requested = [
+            user_id
+            for user_id in extract_mention_ids(
+                message.text, limit=self.config.max_mentions_per_message * 2
+            )
+            if user_id.isdigit()
+        ][: self.config.max_mentions_per_message]
         validated = [
             user_id
             for user_id in requested
