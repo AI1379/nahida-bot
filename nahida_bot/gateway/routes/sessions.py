@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, cast
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from nahida_bot.core.chat_address import classify_session_key
+from nahida_bot.core.chat_address import chat_key_from_session_id, classify_session_key
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import (
@@ -259,15 +259,4 @@ def _delivery_sentinel(delivery) -> tuple[str | None, bool]:
 
 
 def _chat_address_from_session_id(session_id: str) -> str:
-    parts = session_id.split(":")
-    if len(parts) >= 3 and parts[1] in {
-        "private",
-        "group",
-        "channel",
-        "thread",
-        "unknown",
-    }:
-        return ":".join(parts[:3])
-    if len(parts) >= 2:
-        return ":".join(parts[:2])
-    return session_id
+    return chat_key_from_session_id(session_id)

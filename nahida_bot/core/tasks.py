@@ -46,6 +46,7 @@ class _ManagedTask:
 
     name: str
     owner: str
+    source_coro: Coroutine[Any, Any, Any]
     task: asyncio.Task[Any]
     created_at: datetime
     kind: str  # oneshot | interval | reconnecting
@@ -53,6 +54,7 @@ class _ManagedTask:
     # Mutable status — updated via done_callback
     status: Literal["running", "cancelled", "done", "failed"] = "running"
     error: str | None = None
+    started: bool = False
 
 
 # ── TaskManager ────────────────────────────────────────────
@@ -115,6 +117,7 @@ class TaskManager:
         managed = _ManagedTask(
             name=name,
             owner=owner,
+            source_coro=coro,
             task=None,  # type: ignore[arg-type] — set below
             created_at=datetime.now(UTC),
             kind=kind,
@@ -122,7 +125,15 @@ class TaskManager:
         )
 
         wrapped = self._run_tracked(coro, managed)
-        task = asyncio.create_task(wrapped, name=f"tm:{key}")
+        try:
+            task = asyncio.create_task(wrapped, name=f"tm:{key}")
+        except BaseException:
+            # create_task can fail before the wrapper gets a chance to start
+            # (for example, when no loop is available).  Close both coroutine
+            # objects so rejected plugin work is never left unawaited.
+            wrapped.close()
+            coro.close()
+            raise
         managed.task = task
 
         self._tasks[key] = managed
@@ -344,6 +355,7 @@ class TaskManager:
         managed: _ManagedTask,
     ) -> None:
         """Wrap a coroutine with error handling and status tracking."""
+        managed.started = True
         try:
             await coro
         except asyncio.CancelledError:
@@ -401,6 +413,8 @@ class TaskManager:
         if not task.done():
             return
         if task.cancelled():
+            if not managed.started:
+                managed.source_coro.close()
             managed.status = "cancelled"
         else:
             exc = task.exception()

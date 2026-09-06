@@ -31,6 +31,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from nahida_bot_sdk.chat_address import chat_key_from_session_id
+
 
 # Tool names that require an admin sender. These have system-side or
 # cross-session effects. ``memory_write`` is deliberately NOT here: it writes
@@ -55,20 +57,6 @@ PRIVILEGED_TOOLS: frozenset[str] = frozenset(
 # domains instead of the binary admin gate: a non-admin sender may use them
 # only against chats in the same declared domain as the current chat.
 TOOL_SCOPE_CHAT_DOMAIN = "chat_domain"
-
-
-def chat_key_from_session_id(session_id: str) -> str:
-    """Strip a derived session id down to its chat key.
-
-    Session ids look like ``milky:group:833325688:8d738f35`` — the first three
-    colon segments are the chat address; anything after is per-session suffix.
-    """
-    if not session_id:
-        return ""
-    parts = session_id.split(":")
-    if len(parts) >= 3:
-        return ":".join(parts[:3])
-    return session_id
 
 
 class ChatDomainIndex:

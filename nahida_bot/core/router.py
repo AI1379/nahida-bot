@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from collections import deque
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ import structlog
 from nahida_bot.core.channel_registry import ChannelRegistry
 from nahida_bot.core.chat_address import ChatAddress, SessionKey, classify_session_key
 from nahida_bot.core.context import SessionContext, current_session
+from nahida_bot.core.config import PendingMessagesConfig
 from nahida_bot.core.events import (
     AgentResponseRequested,
     AgentRunCancelled,
@@ -73,6 +75,9 @@ class RouterConfig:
     reasoning_max_chars: int = 2000
     group_context_enabled: bool = True
     enable_silent_reply: bool = True
+    pending_messages: PendingMessagesConfig = field(
+        default_factory=PendingMessagesConfig
+    )
 
 
 @dataclass(slots=True, frozen=True)
@@ -107,6 +112,20 @@ class _AgentDeliveryState:
     cancelled: bool = False
     crashed: bool = False
     done_error: str = ""
+
+
+@dataclass(slots=True, frozen=True)
+class PendingMessage:
+    """Accepted input awaiting this session's next run."""
+
+    inbound: InboundMessage
+    workspace_id: str | None
+    source_tag: str = "user_input"
+    agent_instruction: str = ""
+    reply_to_override: str | None = None
+    proactive_context: str = ""
+    attention_episode_id: str = ""
+    queued_at: float = field(default_factory=time.monotonic)
 
 
 class MessageRouter:
@@ -151,23 +170,7 @@ class MessageRouter:
         # untrusted traffic can create many distinct chat keys.
         self._active_sessions: dict[str, str] = {}
         # Per-session queues for messages arriving while agent is busy
-        # TODO(backpressure): add a per-session pending-message limit and a
-        # defined drop/reject policy for bursts during long-running agent runs.
-        self._pending: dict[
-            str,
-            list[
-                tuple[
-                    InboundMessage,
-                    str,
-                    str | None,
-                    str,
-                    str,
-                    str | None,
-                    str,
-                    str,
-                ]
-            ],
-        ] = {}
+        self._pending: dict[str, deque[PendingMessage]] = {}
         self._stopping = False
 
     async def _build_session_context(
@@ -926,16 +929,29 @@ class MessageRouter:
 
         tracker = runner.run_tracker
         if tracker.is_active(session_id):
-            self._pending.setdefault(session_id, []).append(
-                (
-                    inbound,
-                    session_id,
-                    workspace_id,
-                    source_tag,
-                    agent_instruction,
-                    reply_to_override,
-                    proactive_context,
-                    attention_episode_id,
+            self._expire_pending(session_id)
+            queue = self._pending.setdefault(session_id, deque())
+            if len(queue) >= self._config.pending_messages.max_messages:
+                logger.warning("router.message_queue_full", session_id=session_id)
+                if source_tag == "user_input":
+                    await self._send_outbound(
+                        inbound,
+                        session_id,
+                        OutboundMessage(
+                            text="The pending message queue is full. Please try again later.",
+                            reply_to=self._default_reply_to(inbound),
+                        ),
+                    )
+                return
+            queue.append(
+                PendingMessage(
+                    inbound=inbound,
+                    workspace_id=workspace_id,
+                    source_tag=source_tag,
+                    agent_instruction=agent_instruction,
+                    reply_to_override=reply_to_override,
+                    proactive_context=proactive_context,
+                    attention_episode_id=attention_episode_id,
                 )
             )
             logger.debug(
@@ -1194,32 +1210,39 @@ class MessageRouter:
             return "failed"
         return "completed"
 
+    def _expire_pending(self, session_id: str) -> None:
+        """Discard stale queued inputs before admission or dispatch."""
+        queue = self._pending.get(session_id)
+        cutoff = time.monotonic() - self._config.pending_messages.ttl_seconds
+        expired = 0
+        while queue and queue[0].queued_at <= cutoff:
+            queue.popleft()
+            expired += 1
+        if queue is not None and not queue:
+            self._pending.pop(session_id, None)
+        if expired:
+            logger.warning(
+                "router.pending_messages_expired", session_id=session_id, count=expired
+            )
+
     async def _drain_pending(self, session_id: str) -> None:
         """Process the next queued message for a session, if any."""
+        self._expire_pending(session_id)
         queue = self._pending.get(session_id)
         if not queue:
             return
-        (
-            next_inbound,
-            next_sid,
-            next_wid,
-            next_source_tag,
-            next_instruction,
-            next_reply_to_override,
-            next_proactive_context,
-            next_attention_episode_id,
-        ) = queue.pop(0)
+        pending = queue.popleft()
         if not queue:
             del self._pending[session_id]
         await self._dispatch_message(
-            next_inbound,
-            next_sid,
-            next_wid,
-            source_tag=next_source_tag,
-            agent_instruction=next_instruction,
-            reply_to_override=next_reply_to_override,
-            proactive_context=next_proactive_context,
-            attention_episode_id=next_attention_episode_id,
+            pending.inbound,
+            session_id,
+            pending.workspace_id,
+            source_tag=pending.source_tag,
+            agent_instruction=pending.agent_instruction,
+            reply_to_override=pending.reply_to_override,
+            proactive_context=pending.proactive_context,
+            attention_episode_id=pending.attention_episode_id,
         )
 
     async def _load_reasoning_display_config(
@@ -1550,11 +1573,8 @@ class MessageRouter:
         """Load full skill content for a slash-command with no built-in handler."""
         if workspace_id is None or self._workspace is None:
             return None
-        from nahida_bot.agent.context import SkillCatalog
-
         try:
-            workspace_root = self._workspace.workspace_path(workspace_id)
-            return SkillCatalog.load_skill_content(workspace_root, name)
+            return self._workspace.read_skill(workspace_id, name)
         except Exception:
             logger.debug(
                 "router.skill_match_failed",

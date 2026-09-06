@@ -10,6 +10,7 @@ from nahida_bot_sdk.chat_address import (  # noqa: F401
     SessionKey,
     SessionKeyKind,
     TargetType,
+    chat_key_from_session_id,
     classify_session_key,
     is_valid_target_type,
     normalize_target_type,

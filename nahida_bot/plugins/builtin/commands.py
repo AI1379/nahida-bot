@@ -930,12 +930,11 @@ class BuiltinCommandsPlugin(Plugin):
         )
 
     async def _tool_skill(self, name: str, args: str = "") -> str:
-        from nahida_bot.agent.context import SkillCatalog
+        from nahida_bot.workspace.skills import SkillCatalog
 
         ctx = current_session.get()
         if ctx is None or not ctx.workspace_id:
             return "Error: No active workspace. Skills require a workspace context."
-        # TODO: Move the skill management to WorkspaceManager
         workspace_root_str = self.api.get_workspace_root(ctx.workspace_id)
         if workspace_root_str is None:
             return "Error: Workspace manager is not available."
@@ -955,7 +954,7 @@ class BuiltinCommandsPlugin(Plugin):
     async def _cmd_help(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
-        from nahida_bot.agent.context import SkillCatalog
+        from nahida_bot.workspace.skills import SkillCatalog
 
         commands = self.api.list_commands()
         lines: list[str] = []

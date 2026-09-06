@@ -15,6 +15,7 @@ from nahida_bot.core.app import Application
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.config import Settings
 from nahida_bot.core.context import SessionContext, current_session
+from nahida_bot.core.tasks import TaskManager
 from nahida_bot.plugins.base import ChatContext, InboundMessage, OutboundMessage
 from nahida_bot.plugins.image_generation.client import (
     GeneratedImage,
@@ -36,6 +37,26 @@ class _ImageAPI(RecordingMockBotAPI):
         super().__init__()
         self.workspace_root = workspace_root
         self.sent_messages: list[tuple[str, OutboundMessage, str]] = []
+        self.task_manager = TaskManager()
+        self.tasks: dict[str, asyncio.Task[Any]] = {}
+
+    def spawn_task(
+        self,
+        name: str,
+        coro: Any,
+        *,
+        kind: str = "oneshot",
+    ) -> None:
+        self.spawned_tasks[name] = {"kind": kind}
+        self.tasks[name] = self.task_manager.spawn(
+            name,
+            coro,
+            owner="image_generation",
+            kind=kind,  # type: ignore[arg-type]
+        )
+
+    def cancel_task(self, name: str) -> bool:
+        return self.task_manager.cancel(f"image_generation:{name}")
 
     async def send_message(
         self,
@@ -52,6 +73,11 @@ class _ImageAPI(RecordingMockBotAPI):
 
     def resolve_workspace_path(self, path: str) -> str:
         return str(self.workspace_root / path)
+
+
+class _RejectingTaskAPI(_ImageAPI):
+    def spawn_task(self, name: str, coro: Any, *, kind: str = "oneshot") -> None:
+        raise RuntimeError("task manager unavailable")
 
 
 class _FakeImageClient:
@@ -93,6 +119,36 @@ class _FakeImageClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _BlockingImageClient(_FakeImageClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        model: str = "",
+        size: str = "",
+        quality: str = "",
+        n: int = 1,
+        response_format: str = "",
+        output_format: str = "",
+    ) -> list[GeneratedImage]:
+        self.started.set()
+        await self.release.wait()
+        return await super().generate(
+            prompt,
+            model=model,
+            size=size,
+            quality=quality,
+            n=n,
+            response_format=response_format,
+            output_format=output_format,
+        )
 
 
 def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
@@ -232,6 +288,19 @@ async def test_plugin_registers_command_alias_and_tool(tmp_path: Path) -> None:
     assert "image_generate" in api.registered_tools
 
 
+def test_task_creation_failure_closes_pending_coroutine(tmp_path: Path) -> None:
+    api = _RejectingTaskAPI(tmp_path)
+    plugin = ImageGenerationPlugin(api=api, manifest=_manifest())
+
+    async def pending() -> None:
+        await asyncio.sleep(60)
+
+    coro = pending()
+    with pytest.raises(RuntimeError, match="task manager unavailable"):
+        plugin._spawn_task("draw", coro)
+    assert coro.cr_frame is None
+
+
 @pytest.mark.asyncio
 async def test_draw_command_generates_saves_and_sends(tmp_path: Path) -> None:
     api = _ImageAPI(tmp_path)
@@ -262,7 +331,7 @@ async def test_draw_command_generates_saves_and_sends(tmp_path: Path) -> None:
         result
         == "Image generation started. Generated image will be sent to this chat when ready."
     )
-    tasks = list(plugin._background_tasks)
+    tasks = list(api.tasks.values())
     assert len(tasks) == 1
     await asyncio.gather(*tasks)
 
@@ -335,6 +404,53 @@ async def test_tool_enforces_24h_image_limit(tmp_path: Path) -> None:
     assert error_payload["status"] == "error"
     assert "quota exceeded" in error_payload["error"]
     assert len(fake_client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_quota_released_when_send_fails(tmp_path: Path, monkeypatch) -> None:
+    api = _ImageAPI(tmp_path)
+    plugin, _ = await _load_plugin(api, {"max_images_per_24h": 1})
+
+    async def fail_send(*args: Any, **kwargs: Any) -> list[str]:
+        raise RuntimeError("send failed")
+
+    monkeypatch.setattr(plugin, "_send_images", fail_send)
+    with pytest.raises(RuntimeError, match="send failed"):
+        await plugin._generate_and_maybe_send(
+            prompt="first",
+            n=1,
+            send=True,
+            caption="",
+        )
+
+    monkeypatch.undo()
+    result = json.loads(await plugin._tool_image_generate("second", send=False))
+    assert result["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_quota_released_when_generation_is_cancelled(tmp_path: Path) -> None:
+    api = _ImageAPI(tmp_path)
+    plugin, _ = await _load_plugin(api, {"max_images_per_24h": 1})
+    blocking = _BlockingImageClient()
+    plugin._clients["default"] = blocking  # type: ignore[assignment]
+
+    task = asyncio.create_task(
+        plugin._generate_and_maybe_send(
+            prompt="hold",
+            n=1,
+            send=False,
+            caption="",
+        )
+    )
+    await blocking.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    plugin._clients["default"] = _FakeImageClient()  # type: ignore[assignment]
+    result = json.loads(await plugin._tool_image_generate("after", send=False))
+    assert result["status"] == "ok"
 
 
 @pytest.mark.asyncio

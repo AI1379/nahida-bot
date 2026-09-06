@@ -7,18 +7,20 @@ import hashlib
 import json
 import mimetypes
 import time
-from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Coroutine
 
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.plugins.base import OutboundMessage, Attachment, Plugin
+from nahida_bot.plugins.rolling_quota import (
+    QuotaReservation,
+    RollingQuotaExceeded,
+    RollingQuotaLimiter,
+)
 from nahida_bot.speech import SpeechService, TtsError, parse_tts_config
-
-_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
 
 
 @dataclass(slots=True, frozen=True)
@@ -33,22 +35,6 @@ class SavedAudio:
     text: str = ""
 
 
-@dataclass(slots=True, frozen=True)
-class QuotaReservation:
-    """In-memory reservation for TTS quota slots."""
-
-    reservation_id: str
-    count: int
-
-
-class _QuotaExceeded(Exception):
-    """Raised when the rolling 24h synthesis quota is exhausted."""
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
-        self.message = message
-
-
 class TtsPlugin(Plugin):
     """Synthesize voice through the unified TTS layer and deliver it."""
 
@@ -57,11 +43,9 @@ class TtsPlugin(Plugin):
         self._config = parse_tts_config(self.manifest.config)
         self._service: SpeechService | None = None
         self._semaphore: asyncio.Semaphore | None = None
-        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._task_next_id = 0
         # TODO: persist quota ledger if 24h limits need to survive restarts.
-        self._quota_events: deque[tuple[float, str]] = deque()
-        self._quota_lock = asyncio.Lock()
-        self._quota_next_id = 0
+        self._quota = RollingQuotaLimiter(self._config.max_calls_per_24h)
 
     async def on_load(self) -> None:
         # Prefer the shared Application-level SpeechService (configured via
@@ -88,11 +72,10 @@ class TtsPlugin(Plugin):
         )
 
     async def on_disable(self) -> None:
-        await self._stop_background_tasks()
+        # PluginManager cancels and awaits API-owned tasks before this hook.
         await self._close_service()
 
     async def on_unload(self) -> None:
-        await self._stop_background_tasks()
         await self._close_service()
 
     def _register_command(self) -> None:
@@ -157,7 +140,10 @@ class TtsPlugin(Plugin):
         session_ctx = current_session.get()
         if session_ctx is None:
             return "Error: No active session context; cannot send voice."
-        self._spawn_task(self._run_speak_job(text=text, session_ctx=session_ctx))
+        self._spawn_task(
+            "speak",
+            self._run_speak_job(text=text, session_ctx=session_ctx),
+        )
         return "Voice synthesis started. The voice message will be sent to this chat when ready."
 
     async def _run_speak_job(self, *, text: str, session_ctx: SessionContext) -> None:
@@ -217,47 +203,52 @@ class TtsPlugin(Plugin):
 
         try:
             reservation = await self._reserve_quota()
-        except _QuotaExceeded as exc:
+        except RollingQuotaExceeded as exc:
             return {
                 "status": "error",
                 "code": "tts_quota_exceeded",
-                "error": exc.message,
+                "error": _tts_quota_error(exc),
             }
 
-        voice_name = self._resolve_voice_name()
+        committed = False
         try:
-            async with self._semaphore:
-                artifact = await self._service.synthesize(
-                    clean_text, voice=voice_name, text_lang=text_lang
+            voice_name = self._resolve_voice_name()
+            try:
+                async with self._semaphore:
+                    artifact = await self._service.synthesize(
+                        clean_text, voice=voice_name, text_lang=text_lang
+                    )
+            except TtsError as exc:
+                self.api.logger.warning(
+                    "tts.synthesis_failed",
+                    code=exc.code,
+                    retryable=exc.retryable,
+                    backend=exc.backend,
+                    error=exc.message,
                 )
-        except TtsError as exc:
-            await self._release_quota(reservation)
-            self.api.logger.warning(
-                "tts.synthesis_failed",
-                code=exc.code,
-                retryable=exc.retryable,
-                backend=exc.backend,
-                error=exc.message,
-            )
-            return await self._degrade_to_text(exc, clean_text, send=send)
+                return await self._degrade_to_text(exc, clean_text, send=send)
 
-        saved = await self._save_audio(artifact)
-        sent_message_ids: list[str] = []
-        delivered_text = ""
-        if send:
-            sent_message_ids = await self._send_voice(saved, caption=caption)
-            delivered_text = clean_text
+            saved = await self._save_audio(artifact)
+            sent_message_ids: list[str] = []
+            delivered_text = ""
+            if send:
+                sent_message_ids = await self._send_voice(saved, caption=caption)
+                delivered_text = clean_text
 
-        payload: dict[str, Any] = {
-            "status": "ok",
-            "delivered_text": delivered_text,
-            "audio": _audio_payload(saved),
-            "media": [_media_payload(saved)],
-            "truncated": truncated,
-        }
-        if sent_message_ids:
-            payload["sent_message_ids"] = sent_message_ids
-        return payload
+            payload: dict[str, Any] = {
+                "status": "ok",
+                "delivered_text": delivered_text,
+                "audio": _audio_payload(saved),
+                "media": [_media_payload(saved)],
+                "truncated": truncated,
+            }
+            if sent_message_ids:
+                payload["sent_message_ids"] = sent_message_ids
+            committed = True
+            return payload
+        finally:
+            if not committed:
+                await self._release_quota(reservation)
 
     async def _degrade_to_text(
         self,
@@ -383,75 +374,24 @@ class TtsPlugin(Plugin):
     # ── quota ────────────────────────────────────────────────────────────
 
     async def _reserve_quota(self) -> QuotaReservation | None:
-        limit = self._config.max_calls_per_24h
-        if limit <= 0:
-            return None
-        now = time.time()
-        async with self._quota_lock:
-            self._prune_quota_events(now)
-            used = len(self._quota_events)
-            if used >= limit:
-                retry_after = self._quota_retry_after_seconds(now)
-                raise _QuotaExceeded(
-                    "TTS quota exceeded: "
-                    f"{used}/{limit} calls used in the last 24 hours. "
-                    f"Try again in about {_format_duration(retry_after)}."
-                )
-            self._quota_next_id += 1
-            reservation_id = str(self._quota_next_id)
-            self._quota_events.append((now, reservation_id))
-            return QuotaReservation(reservation_id=reservation_id, count=1)
+        return await self._quota.reserve()
 
     async def _release_quota(self, reservation: QuotaReservation | None) -> None:
-        if reservation is None:
-            return
-        async with self._quota_lock:
-            remaining: deque[tuple[float, str]] = deque()
-            removed = 0
-            for event in self._quota_events:
-                if (
-                    event[1] == reservation.reservation_id
-                    and removed < reservation.count
-                ):
-                    removed += 1
-                    continue
-                remaining.append(event)
-            self._quota_events = remaining
-
-    def _prune_quota_events(self, now: float) -> None:
-        cutoff = now - _QUOTA_WINDOW_SECONDS
-        while self._quota_events and self._quota_events[0][0] <= cutoff:
-            self._quota_events.popleft()
-
-    def _quota_retry_after_seconds(self, now: float) -> float:
-        if not self._quota_events:
-            return float(_QUOTA_WINDOW_SECONDS)
-        return max(0.0, self._quota_events[0][0] + _QUOTA_WINDOW_SECONDS - now)
+        await self._quota.release(reservation)
 
     # ── task lifecycle ───────────────────────────────────────────────────
 
-    def _spawn_task(self, coro: Any) -> None:
-        task = asyncio.create_task(coro)
-        self._background_tasks.add(task)
-
-        def _discard(done: asyncio.Task[None]) -> None:
-            self._background_tasks.discard(done)
-            try:
-                done.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                self.api.logger.exception("tts.background_task_failed", error=str(exc))
-
-        task.add_done_callback(_discard)
-
-    async def _stop_background_tasks(self) -> None:
-        tasks = list(self._background_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._background_tasks.clear()
+    def _spawn_task(self, name: str, coro: Coroutine[Any, Any, Any]) -> None:
+        self._task_next_id += 1
+        task_name = f"{name}-{self._task_next_id}"
+        try:
+            # The host owns this task and cancels/awaits it before invoking
+            # on_disable.  Keeping a second local task registry would make
+            # cancellation and error reporting diverge from the host.
+            self.api.spawn_task(task_name, coro)
+        except BaseException:
+            coro.close()
+            raise
 
     async def _close_service(self) -> None:
         if self._service is not None:
@@ -529,6 +469,14 @@ def _format_duration(seconds: float) -> str:
     if hours:
         return f"{hours}h"
     return f"{max(1, minutes)}m"
+
+
+def _tts_quota_error(exc: RollingQuotaExceeded) -> str:
+    return (
+        "TTS quota exceeded: "
+        f"{exc.used}/{exc.limit} calls used in the last 24 hours. "
+        f"Try again in about {_format_duration(exc.retry_after)}."
+    )
 
 
 def _address_from_session_context(ctx: Any) -> ChatAddress:

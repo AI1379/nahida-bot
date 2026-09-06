@@ -9,10 +9,16 @@ from nahida_bot.core.events import (
     EventBus,
     EventContext,
 )
-from nahida_bot.core.exceptions import PluginStateError
+from nahida_bot.core.exceptions import PluginLoadError, PluginStateError
 from nahida_bot.core.tasks import TaskManager
 from nahida_bot.plugins.manager import PluginManager, PluginState
 from nahida_bot.workspace.manager import WorkspaceManager
+
+
+def _test_module_name(parent: Path, plugin_id: str) -> str:
+    """Give each temporary plugin an isolated import name."""
+    suffix = abs(hash(str(parent.resolve()))) % 1_000_000
+    return f"{plugin_id}_mod_{suffix}"
 
 
 class _ChannelRegistry:
@@ -40,8 +46,8 @@ def _create_test_plugin(
     plugin_dir = parent / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use plugin_id as module name to satisfy one-module-one-plugin rule.
-    module_name = f"{plugin_id}_mod"
+    # Use a per-test module name so fixtures do not leave cross-test imports.
+    module_name = _test_module_name(parent, plugin_id)
     manifest = f"""
 id: {plugin_id}
 name: {plugin_id.replace("_", " ").title()}
@@ -68,7 +74,7 @@ def _create_crashing_plugin(parent: Path, plugin_id: str) -> Path:
     plugin_dir = parent / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
-    module_name = f"{plugin_id}_mod"
+    module_name = _test_module_name(parent, plugin_id)
     manifest = f"""
 id: {plugin_id}
 name: {plugin_id.replace("_", " ").title()}
@@ -85,6 +91,26 @@ class CrashPlugin(Plugin):
         raise RuntimeError("deliberate crash")
 """
     (plugin_dir / f"{module_name}.py").write_text(code, encoding="utf-8")
+    return plugin_dir
+
+
+def _create_import_crashing_plugin(parent: Path, plugin_id: str) -> Path:
+    """Create a plugin whose module fails during its top-level import."""
+    plugin_dir = parent / plugin_id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+
+    module_name = _test_module_name(parent, plugin_id)
+    manifest = f"""
+id: {plugin_id}
+name: {plugin_id.replace("_", " ").title()}
+version: "1.0.0"
+entrypoint: "{module_name}:TopLevelCrashPlugin"
+"""
+    (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+    (plugin_dir / f"{module_name}.py").write_text(
+        "raise RuntimeError('top-level import crash')\n",
+        encoding="utf-8",
+    )
     return plugin_dir
 
 
@@ -234,6 +260,36 @@ class TestPluginLifecycle:
         assert record.api_bridge is not None
         assert record.api_bridge.get_document_store_manager() is document_store_manager
 
+    async def test_runtime_service_updates_reach_existing_bridge_completely(
+        self, tmp_path: Path
+    ) -> None:
+        """Staged updates preserve omitted services and support explicit clears."""
+        _create_test_plugin(tmp_path, "runtime_services")
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+        await manager.load("runtime_services")
+
+        model_router = object()
+        speech_service = object()
+        manager.set_runtime_services(
+            model_router=model_router,
+            speech_service=speech_service,
+        )
+        record = manager.get_record("runtime_services")
+        assert record is not None and record.api_bridge is not None
+        assert record.api_bridge.get_model_router() is model_router
+        assert record.api_bridge.speech_service is speech_service
+
+        # An omitted service is retained while another staged dependency is
+        # updated.  This is the call shape used between app init phases.
+        manager.set_runtime_services(provider_manager=object())
+        assert record.api_bridge.get_model_router() is model_router
+        assert record.api_bridge.speech_service is speech_service
+
+        manager.set_runtime_services(model_router=None, speech_service=None)
+        assert record.api_bridge.get_model_router() is None
+        assert record.api_bridge.speech_service is None
+
     async def test_load_all_and_enable_all_can_filter_by_phase(
         self, tmp_path: Path
     ) -> None:
@@ -279,7 +335,7 @@ class TestPluginLifecycle:
 id: imperative_lifecycle
 name: Imperative Lifecycle
 version: "1.0.0"
-entrypoint: "plugin:LifecyclePlugin"
+entrypoint: "imperative_module:LifecyclePlugin"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
         code = """
@@ -314,7 +370,7 @@ class LifecyclePlugin(Plugin):
     async def _on_event(self, event):
         return None
 """
-        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+        (plugin_dir / "imperative_module.py").write_text(code, encoding="utf-8")
 
         manager = PluginManager(event_bus=_make_event_bus())
         await manager.discover([tmp_path])
@@ -364,7 +420,7 @@ class LifecyclePlugin(Plugin):
 id: decorator_lifecycle
 name: Decorator Lifecycle
 version: "1.0.0"
-entrypoint: "plugin:DecoratorPlugin"
+entrypoint: "decorator_module:DecoratorPlugin"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
         code = """
@@ -389,7 +445,7 @@ class DecoratorPlugin(Plugin):
     async def _on_event(self, event):
         return None
 """
-        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+        (plugin_dir / "decorator_module.py").write_text(code, encoding="utf-8")
 
         manager = PluginManager(event_bus=_make_event_bus())
         await manager.discover([tmp_path])
@@ -499,6 +555,23 @@ class TestPluginStateTransitions:
 
 
 class TestPluginExceptionIsolation:
+    async def test_import_failure_sets_error_state_and_preserves_cause(
+        self, tmp_path: Path
+    ) -> None:
+        _create_import_crashing_plugin(tmp_path, "import_crasher")
+
+        manager = PluginManager(event_bus=_make_event_bus())
+        await manager.discover([tmp_path])
+
+        with pytest.raises(PluginLoadError) as exc_info:
+            await manager.load("import_crasher")
+
+        record = manager.get_record("import_crasher")
+        assert record is not None
+        assert record.state == PluginState.ERROR
+        assert "top-level import crash" in record.error_message
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
     async def test_crashing_plugin_goes_to_error_state(self, tmp_path: Path) -> None:
         _create_crashing_plugin(tmp_path, "crasher")
 
@@ -544,7 +617,7 @@ id: registering_crasher
 name: Registering Crasher
 version: "1.0.0"
 load_phase: "pre-agent"
-entrypoint: "plugin:RegisteringCrashPlugin"
+entrypoint: "registering_crasher_module:RegisteringCrashPlugin"
 permissions:
   network:
     inbound: true
@@ -584,7 +657,9 @@ class RegisteringCrashPlugin(Plugin):
     async def _handle(self) -> str:
         return "unused"
 '''
-        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+        (plugin_dir / "registering_crasher_module.py").write_text(
+            code, encoding="utf-8"
+        )
 
         channel_registry = _ChannelRegistry()
         manager = PluginManager(
@@ -618,7 +693,7 @@ class RegisteringCrashPlugin(Plugin):
 id: passive_channel
 name: Passive Channel
 version: "1.0.0"
-entrypoint: "plugin:PassiveChannel"
+entrypoint: "passive_channel_module:PassiveChannel"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 
@@ -639,7 +714,7 @@ class PassiveChannel(Plugin):
     async def send_message(self, target: str, message) -> str:
         return ""
 """
-        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+        (plugin_dir / "passive_channel_module.py").write_text(code, encoding="utf-8")
 
         channel_registry = _ChannelRegistry()
         manager = PluginManager(
@@ -664,7 +739,7 @@ class TestPluginToolRegistration:
 id: tool_plugin
 name: Tool Plugin
 version: "1.0.0"
-entrypoint: "plugin:ToolPlugin"
+entrypoint: "tool_module:ToolPlugin"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 
@@ -683,7 +758,7 @@ class ToolPlugin(Plugin):
     async def _handle(self, query: str) -> str:
         return f"result: {query}"
 """
-        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+        (plugin_dir / "tool_module.py").write_text(code, encoding="utf-8")
 
         manager = PluginManager(event_bus=_make_event_bus())
         await manager.discover([tmp_path])
@@ -706,7 +781,7 @@ class ToolPlugin(Plugin):
 id: enable_tool_plugin
 name: Enable Tool Plugin
 version: "1.0.0"
-entrypoint: "plugin:EnableToolPlugin"
+entrypoint: "enable_tool_module:EnableToolPlugin"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 
@@ -725,7 +800,7 @@ class EnableToolPlugin(Plugin):
     async def _handle(self, query: str) -> str:
         return f"result: {query}"
 """
-        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+        (plugin_dir / "enable_tool_module.py").write_text(code, encoding="utf-8")
 
         manager = PluginManager(event_bus=_make_event_bus())
         await manager.discover([tmp_path])
@@ -756,7 +831,7 @@ class EnableToolPlugin(Plugin):
 id: task_plugin
 name: Task Plugin
 version: "1.0.0"
-entrypoint: "plugin:TaskPlugin"
+entrypoint: "task_module:TaskPlugin"
 """
         (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
 
@@ -772,7 +847,7 @@ class TaskPlugin(Plugin):
     async def _worker(self) -> None:
         await asyncio.Event().wait()
 """
-        (plugin_dir / "plugin.py").write_text(code, encoding="utf-8")
+        (plugin_dir / "task_module.py").write_text(code, encoding="utf-8")
 
         task_manager = TaskManager()
         manager = PluginManager(event_bus=_make_event_bus(), task_manager=task_manager)

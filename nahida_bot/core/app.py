@@ -844,6 +844,7 @@ class Application:
                 max_jobs_per_chat=scheduler_cfg.max_jobs_per_chat,
                 failure_retry_seconds=scheduler_cfg.failure_retry_seconds,
                 max_consecutive_failures=scheduler_cfg.max_consecutive_failures,
+                max_fire_lateness_seconds=scheduler_cfg.max_fire_lateness_seconds,
                 memory_dreaming_enabled=scheduler_cfg.memory_dreaming_enabled,
                 memory_dreaming_interval_seconds=(
                     scheduler_cfg.memory_dreaming_interval_seconds
@@ -1040,6 +1041,7 @@ class Application:
                     show_reasoning=self.settings.router.show_reasoning,
                     reasoning_max_chars=self.settings.router.reasoning_max_chars,
                     group_context_enabled=self.settings.router.group_context.enabled,
+                    pending_messages=self.settings.router.pending_messages,
                     enable_silent_reply=self.settings.enable_silent_reply,
                 ),
                 identity_resolver=self._identity_resolver,

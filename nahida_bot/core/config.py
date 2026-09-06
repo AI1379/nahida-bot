@@ -403,6 +403,14 @@ class IdentityConfig(BaseModel):
     chat_domains: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class PendingMessagesConfig(BaseModel):
+    """Admission policy for messages received while a session is running."""
+
+    model_config = ConfigDict(frozen=True)
+    max_messages: int = Field(default=20, ge=1)
+    ttl_seconds: float = Field(default=900.0, gt=0)
+
+
 class RouterConfigModel(BaseModel):
     """Message router configuration."""
 
@@ -419,6 +427,9 @@ class RouterConfigModel(BaseModel):
     reasoning_max_chars: int = Field(default=2000, ge=0)
     enable_silent_reply: bool = True
     group_context: GroupContextConfig = GroupContextConfig()
+    pending_messages: PendingMessagesConfig = Field(
+        default_factory=PendingMessagesConfig
+    )
 
 
 class MotionPlannerConfigModel(BaseModel):

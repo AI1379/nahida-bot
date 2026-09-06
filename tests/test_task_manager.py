@@ -133,6 +133,17 @@ class TestCancel:
         assert tm.get_task("test:t1") is not None
         assert tm.get_task("test:t1").status == "cancelled"  # type: ignore[union-attr]
 
+    async def test_cancel_before_wrapper_starts_closes_source_coroutine(self) -> None:
+        tm = TaskManager()
+        source = _hang_forever()
+        task = tm.spawn("not_started", source, owner="test")
+
+        task.cancel()
+        await tm.cancel_by_owner_and_await("test", timeout=2.0)
+
+        assert source.cr_frame is None
+        assert tm.get_task("test:not_started").status == "cancelled"  # type: ignore[union-attr]
+
     async def test_spawn_can_reuse_name_after_cancel(self) -> None:
         tm = TaskManager()
         tm.spawn("t1", _hang_forever(), owner="test")

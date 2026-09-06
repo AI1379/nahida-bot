@@ -246,7 +246,7 @@ class FeishuEventStream:
 
 1. `reasoning` 前缀 `[💭 思考过程]\n` 纯文本块。
 2. `resolve_target`：优先 `message.extra["chat_address"]`（cron/主动发送路径）→ `feishu:group:oc_x`/`feishu:private:oc_x` → receive_id_type=chat_id；target 以 `ou_` 开头 → receive_id_type=open_id（私聊直发）；`oc_` → chat_id。
-3. 群消息 + `outbound_mentions_enabled`：`core/outbound_mentions.parse_outbound_parts(text)` 提取 `[CQ:at,qq=ou_xxx]` token → 成员缓存校验（member_id_type=open_id 分页拉全量，TTL `member_cache_seconds`，入站显示名共用）→ 通过者写 `message.extra["feishu_mention_ids"]`，未通过 token 保持字面文本（防幻觉 id；@bot 的 token 必然失败——members 接口不返回机器人——安全降级）。校验/降级打 `feishu.mention_outbound` 日志事件（对齐 milky 观测点）。
+3. 群消息 + `outbound_mentions_enabled`：`channels/mentions.parse_outbound_parts(text)` 提取 `[CQ:at,qq=ou_xxx]` token → 成员缓存校验（member_id_type=open_id 分页拉全量，TTL `member_cache_seconds`，入站显示名共用）→ 通过者写 `message.extra["feishu_mention_ids"]`，未通过 token 保持字面文本（防幻觉 id；@bot 的 token 必然失败——members 接口不返回机器人——安全降级）。校验/降级打 `feishu.mention_outbound` 日志事件（对齐 milky 观测点）。
 4. 文本转换：通过校验的 mention token → `<at user_id="ou_xxx"></at>` 内联；按 `max_text_length` 分片（30 KB 上限内）；逐条 `im/v1/messages` 发送，`uuid` 幂等，首条带 `reply_to`（走 reply API）。
 5. 附件逐个：photo → `im/v1/images` 上传 → image 消息；document/audio/video → `im/v1/files`（file_type 按扩展名映射，其余 stream）→ file 消息。上传或富消息失败 → 纯文本 fallback 重发（对齐 milky 的 fallback 策略）。
 6. 230020 频率限制 / 5xx / 网络错 → 指数退避重试（FeishuClient 内置，对齐 MilkyClient.post_api retry）。
@@ -264,7 +264,7 @@ ChatAddress.from_inbound(platform="feishu", chat_id="oc_xxx", chat_type="group"|
 
 ### 3.6 核心侧改动（横切）
 
-- `core/outbound_mentions.py:23` `MENTION_CAPABLE_PLATFORMS` 加 `"feishu"`；`MENTION_INSTRUCTION`（core/message_context.py:88-105）需要平台参数化措辞（token 里填 open_id 而非 QQ 号）。
+- 渠道在 `on_load` 通过 `register_prompt_supplement` 注册 mention 提示，由 `channels/mentions.py` 根据 ID 说明和 `max_mentions_per_message` 生成；关闭出站 mention 时不注册，且仅群聊注入。core 不维护平台名单或专属提示。
 - router 的 `_with_chat_address`（router.py:1688）把 feishu 加进注入 `extra["chat_address"]` 的平台集合（milky/onebot 之后的第三个）。
 - `register_prompt_supplement(key="no_markdown", channel="feishu")`：v1 纯文本发送，注入与 milky 相同的"不支持 Markdown"提示。
 

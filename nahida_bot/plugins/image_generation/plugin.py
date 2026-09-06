@@ -7,12 +7,11 @@ import hashlib
 import json
 import mimetypes
 import time
-from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Coroutine
 
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
@@ -30,6 +29,11 @@ from nahida_bot.plugins.image_generation.config import (
     OpenAIImagesBackendConfig,
     parse_image_generation_config,
 )
+from nahida_bot.plugins.rolling_quota import (
+    QuotaReservation,
+    RollingQuotaExceeded,
+    RollingQuotaLimiter,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -44,18 +48,11 @@ class SavedGeneratedImage:
     source: str = ""
 
 
-@dataclass(slots=True, frozen=True)
-class ImageQuotaReservation:
-    """In-memory reservation for image generation quota slots."""
-
-    reservation_id: str
-    count: int
+ImageQuotaReservation = QuotaReservation
 
 
 class ImageGenerationPlugin(Plugin):
     """Generate images through an OpenAI-compatible backend."""
-
-    _QUOTA_WINDOW_SECONDS = 24 * 60 * 60
 
     def __init__(self, api: Any, manifest: Any) -> None:
         super().__init__(api, manifest)
@@ -67,11 +64,9 @@ class ImageGenerationPlugin(Plugin):
             | CodexImageGenerationClient,
         ] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
-        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._task_next_id = 0
         # TODO: Persist this quota ledger if 24h limits need to survive restarts.
-        self._image_quota_events: deque[tuple[float, str]] = deque()
-        self._image_quota_lock = asyncio.Lock()
-        self._image_quota_next_id = 0
+        self._image_quota = RollingQuotaLimiter(self._config.max_images_per_24h)
 
     async def on_load(self) -> None:
         self._register_command()
@@ -83,11 +78,10 @@ class ImageGenerationPlugin(Plugin):
         )
 
     async def on_disable(self) -> None:
-        await self._stop_background_tasks()
+        # PluginManager cancels and awaits API-owned tasks before this hook.
         await self._close_clients()
 
     async def on_unload(self) -> None:
-        await self._stop_background_tasks()
         await self._close_clients()
 
     def _register_command(self) -> None:
@@ -165,7 +159,10 @@ class ImageGenerationPlugin(Plugin):
         session_ctx = current_session.get()
         if session_ctx is None:
             return "Error: No active session context; cannot send generated image."
-        self._spawn_task(self._run_draw_job(prompt=prompt, session_ctx=session_ctx))
+        self._spawn_task(
+            "draw",
+            self._run_draw_job(prompt=prompt, session_ctx=session_ctx),
+        )
         return "Image generation started. Generated image will be sent to this chat when ready."
 
     async def _run_draw_job(self, *, prompt: str, session_ctx: SessionContext) -> None:
@@ -203,31 +200,17 @@ class ImageGenerationPlugin(Plugin):
             sent_message_ids=result.get("sent_message_ids") or [],
         )
 
-    def _spawn_task(self, coro: Any) -> None:
-        task = asyncio.create_task(coro)
-        self._background_tasks.add(task)
-
-        def _discard(done: asyncio.Task[None]) -> None:
-            self._background_tasks.discard(done)
-            try:
-                done.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                self.api.logger.exception(
-                    "image_generation.background_task_failed",
-                    error=str(exc),
-                )
-
-        task.add_done_callback(_discard)
-
-    async def _stop_background_tasks(self) -> None:
-        tasks = list(self._background_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._background_tasks.clear()
+    def _spawn_task(self, name: str, coro: Coroutine[Any, Any, Any]) -> None:
+        self._task_next_id += 1
+        task_name = f"{name}-{self._task_next_id}"
+        try:
+            # The host owns this task and cancels/awaits it before invoking
+            # on_disable.  Keeping a second local task registry would make
+            # cancellation and error reporting diverge from the host.
+            self.api.spawn_task(task_name, coro)
+        except BaseException:
+            coro.close()
+            raise
 
     async def _send_text_to_session(
         self,
@@ -286,9 +269,10 @@ class ImageGenerationPlugin(Plugin):
         model: str = "",
         provider: str = "",
     ) -> dict[str, Any] | str:
+        reservation: ImageQuotaReservation | None = None
         try:
             selected_provider = provider.strip() or self._config.provider
-            images, backend = await self._generate_and_save(
+            images, backend, reservation = await self._generate_and_save(
                 prompt=prompt,
                 n=n,
                 size=size,
@@ -305,6 +289,7 @@ class ImageGenerationPlugin(Plugin):
                     caption=caption,
                 )
         except ImageGenerationError as exc:
+            await self._release_image_quota(reservation)
             self.api.logger.warning(
                 "image_generation.failed",
                 code=exc.code,
@@ -313,7 +298,11 @@ class ImageGenerationPlugin(Plugin):
             )
             return f"Error: {exc.message}"
         except ValueError as exc:
+            await self._release_image_quota(reservation)
             return f"Error: {exc}"
+        except BaseException:
+            await self._release_image_quota(reservation)
+            raise
 
         payload = {
             "status": "ok",
@@ -340,6 +329,7 @@ class ImageGenerationPlugin(Plugin):
     ) -> tuple[
         list[SavedGeneratedImage],
         OpenAIImagesBackendConfig | MiniMaxBackendConfig | CodexImagesBackendConfig,
+        ImageQuotaReservation | None,
     ]:
         backend = self._config.backend(provider)
         output_dir, relative_dir = self._resolve_output_dir()
@@ -357,61 +347,49 @@ class ImageGenerationPlugin(Plugin):
                     quality=quality,
                     n=image_count,
                 )
-        except Exception:  # noqa: BLE001
+            if len(generated) < image_count:
+                await self._release_image_quota(
+                    reservation,
+                    count=image_count - len(generated),
+                )
+
+            saved: list[SavedGeneratedImage] = []
+            for index, image in enumerate(generated, start=1):
+                filename = self._build_filename(prompt, image, index, backend)
+                path = output_dir / filename
+                path.write_bytes(image.data)
+                relative_path = (relative_dir / filename).as_posix()
+                saved.append(
+                    SavedGeneratedImage(
+                        path=path,
+                        relative_path=relative_path,
+                        mime_type=image.mime_type,
+                        file_size=len(image.data),
+                        revised_prompt=image.revised_prompt,
+                        source=image.source,
+                    )
+                )
+        except BaseException:
             await self._release_image_quota(reservation)
             raise
-        if len(generated) < image_count:
-            await self._release_image_quota(
-                reservation,
-                count=image_count - len(generated),
-            )
-
-        saved: list[SavedGeneratedImage] = []
-        for index, image in enumerate(generated, start=1):
-            filename = self._build_filename(prompt, image, index, backend)
-            path = output_dir / filename
-            path.write_bytes(image.data)
-            relative_path = (relative_dir / filename).as_posix()
-            saved.append(
-                SavedGeneratedImage(
-                    path=path,
-                    relative_path=relative_path,
-                    mime_type=image.mime_type,
-                    file_size=len(image.data),
-                    revised_prompt=image.revised_prompt,
-                    source=image.source,
-                )
-            )
-        return saved, backend
+        return saved, backend, reservation
 
     async def _reserve_image_quota(
         self,
         count: int,
     ) -> ImageQuotaReservation | None:
-        limit = self._config.max_images_per_24h
-        if limit <= 0:
-            return None
-        now = time.time()
-        async with self._image_quota_lock:
-            self._prune_image_quota_events(now)
-            used = len(self._image_quota_events)
-            remaining = max(0, limit - used)
-            if count > remaining:
-                retry_after = self._image_quota_retry_after_seconds(now)
-                raise ImageGenerationError(
-                    "image_generation_quota_exceeded",
-                    (
-                        "Image generation quota exceeded: "
-                        f"{used}/{limit} images used in the last 24 hours; "
-                        f"requested {count}. "
-                        f"Try again in about {_format_duration(retry_after)}."
-                    ),
-                )
-            self._image_quota_next_id += 1
-            reservation_id = str(self._image_quota_next_id)
-            for _ in range(count):
-                self._image_quota_events.append((now, reservation_id))
-            return ImageQuotaReservation(reservation_id=reservation_id, count=count)
+        try:
+            return await self._image_quota.reserve(count)
+        except RollingQuotaExceeded as exc:
+            raise ImageGenerationError(
+                "image_generation_quota_exceeded",
+                (
+                    "Image generation quota exceeded: "
+                    f"{exc.used}/{exc.limit} images used in the last 24 hours; "
+                    f"requested {exc.requested}. "
+                    f"Try again in about {_format_duration(exc.retry_after)}."
+                ),
+            ) from exc
 
     async def _release_image_quota(
         self,
@@ -419,33 +397,7 @@ class ImageGenerationPlugin(Plugin):
         *,
         count: int | None = None,
     ) -> None:
-        if reservation is None:
-            return
-        release_count = reservation.count if count is None else max(0, count)
-        if release_count <= 0:
-            return
-        async with self._image_quota_lock:
-            remaining: deque[tuple[float, str]] = deque()
-            removed = 0
-            for event in self._image_quota_events:
-                if event[1] == reservation.reservation_id and removed < release_count:
-                    removed += 1
-                    continue
-                remaining.append(event)
-            self._image_quota_events = remaining
-
-    def _prune_image_quota_events(self, now: float) -> None:
-        cutoff = now - self._QUOTA_WINDOW_SECONDS
-        while self._image_quota_events and self._image_quota_events[0][0] <= cutoff:
-            self._image_quota_events.popleft()
-
-    def _image_quota_retry_after_seconds(self, now: float) -> float:
-        if not self._image_quota_events:
-            return float(self._QUOTA_WINDOW_SECONDS)
-        return max(
-            0.0,
-            self._image_quota_events[0][0] + self._QUOTA_WINDOW_SECONDS - now,
-        )
+        await self._image_quota.release(reservation, count=count)
 
     async def _send_images(
         self,

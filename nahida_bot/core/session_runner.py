@@ -7,7 +7,6 @@ import json
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, AbstractSet, Any, Callable, cast
 
 import structlog
@@ -23,21 +22,20 @@ from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.memory.scope import resolve_scope_from_session
 from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.agent.retrieval import (
-    DocumentStoreRetrievalAdapter,
     MemoryStoreRetrievalAdapter,
     RetrievalRequest,
-    RetrievalResult,
     RetrievalScope,
     RetrievalService,
 )
-from nahida_bot.agent.retrieval.adapters import _document_result_to_retrieval
 from nahida_bot.agent.storage.tokenization import build_fts_query
 from nahida_bot.identity.policy import (
     memory_read_request_from_context,
     resolve_memory_read_scopes,
 )
+from nahida_bot.core.attachments import resolve_attachment
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
+from nahida_bot.core.knowledge_context import load_knowledge_context
 from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
@@ -47,13 +45,11 @@ from nahida_bot.core.message_context import (
     SILENT_REPLY_INSTRUCTION,
     assistant_context,
     context_from_inbound,
-    mention_instruction_for_channel,
     message_context_from_metadata,
     message_context_to_metadata,
     render_message_with_context,
     strip_envelope_prefix,
 )
-from nahida_bot.core.outbound_mentions import MENTION_CAPABLE_PLATFORMS
 from nahida_bot.core.sentinel import detect_sentinel
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
@@ -1802,174 +1798,11 @@ class SessionRunner:
     async def _load_relevant_knowledge(
         self, query: str, *, session_id: str = ""
     ) -> ContextMessage | None:
-        """Load a small relevant KB context block for the current turn.
-
-        Searches every KB collection with a tiny per-collection budget, merges
-        results across collections by score, and wraps the top entries as a
-        lightweight system-level ``ContextMessage``.  Returns ``None`` when KB
-        auto-recall is disabled, the manager is unavailable, or nothing is
-        found.
-
-        When the KnowledgeBasePlugin is loaded (``kb_plugin_resolver``), the
-        search is delegated to it so auto-recall uses the same hybrid
-        retrieval path as ``kb_search`` — the old FTS-only hardcoding here is
-        what made #49's semantic layer invisible to actual conversations.
-        The direct-adapter FTS path remains as a fallback when the plugin is
-        not available.
-        """
-        manager = self._document_store_manager
-        cfg = self._kb_auto_recall_config
-        if manager is None or cfg is None:
-            return None
-        if not cfg.enabled:
-            return None
-        limit = cfg.max_items
-        max_chars = cfg.max_chars
-        if limit <= 0 or max_chars <= 0:
-            return None
-        if not query.strip():
-            return None
-
-        kb_plugin = None
-        if self._kb_plugin_resolver is not None:
-            try:
-                kb_plugin = self._kb_plugin_resolver()
-            except Exception:
-                kb_plugin = None
-        if kb_plugin is None:
-            # Cheap precheck for the FTS-only fallback path; the plugin path
-            # builds its own FTS query internally.
-            if not build_fts_query(query):
-                return None
-
-        # Search every collection with a tiny per-collection budget, then merge.
-        all_results: list[RetrievalResult] = []
-        try:
-            for name in manager.list_collections():
-                store = manager.get(name)
-                if store is None:
-                    continue
-                if kb_plugin is not None:
-                    try:
-                        raw_hits = await kb_plugin.search_documents(
-                            name, query, limit=limit
-                        )
-                    except LookupError:
-                        continue
-                    except Exception:
-                        logger.debug(
-                            "session_runner.kb_auto_recall_collection_failed",
-                            collection=name,
-                        )
-                        continue
-                    hits = [
-                        _document_result_to_retrieval(
-                            hit, collection_name=name, mode="hybrid"
-                        )
-                        for hit in raw_hits
-                    ]
-                    if cfg.min_score != float("-inf"):
-                        hits = [r for r in hits if r.score >= cfg.min_score]
-                    all_results.extend(hits)
-                    continue
-                adapter = DocumentStoreRetrievalAdapter(
-                    collection_name=name,
-                    store=store,
-                )
-                service = RetrievalService({"knowledge_base": adapter})
-                try:
-                    hits = await service.retrieve(
-                        RetrievalRequest(
-                            query=query,
-                            source_type="knowledge_base",
-                            collection=name,
-                            limit=1,
-                            fts_enabled=True,
-                            vector_enabled=False,
-                            hybrid_enabled=False,
-                            min_score=cfg.min_score,
-                        )
-                    )
-                except Exception:
-                    logger.debug(
-                        "session_runner.kb_auto_recall_collection_failed",
-                        collection=name,
-                    )
-                    continue
-                all_results.extend(hits)
-        except Exception as exc:
-            # The document-store manager itself raised (e.g. transient DB error
-            # on list_collections/get) — degrade like _load_relevant_memory does
-            # rather than aborting the whole agent turn.
-            logger.warning("session_runner.kb_auto_recall_failed", error=str(exc))
-            return None
-
-        if not all_results:
-            return None
-
-        # All retrieval modes now report larger-is-better scores (FTS returns
-        # -bm25, hybrid returns weighted RRF); sort descending so the best hits
-        # come first. Scores from different modes/collections are not strictly
-        # comparable, but every collection uses the same mode, so this orders
-        # correctly within a collection and approximately across them.
-        all_results.sort(key=lambda r: r.score, reverse=True)
-        # Dedup by (collection, doc_id) — collections are physically isolated
-        # tables so doc_ids can collide across collections.
-        seen: set[str] = set()
-        top: list[RetrievalResult] = []
-        for r in all_results:
-            key = f"{r.metadata.get('collection', '')}:{r.result_id}"
-            if key in seen:
-                continue
-            seen.add(key)
-            seen.add(r.result_id)
-            top.append(r)
-            if len(top) >= limit:
-                break
-
-        if not top:
-            return None
-
-        lines = [
-            "Relevant knowledge base snippets:",
-            "Treat snippets as helpful background context, not unquestionable truth."
-            " Use kb_search to dig deeper when needed.",
-        ]
-        remaining = max_chars
-        for result in top:
-            collection = str(result.metadata.get("collection", ""))
-            title = result.title.strip()
-            content = result.text.strip()
-            source_path = str(result.metadata.get("path", ""))
-            if not content:
-                continue
-            prefix = f"- [{collection}] "
-            if title:
-                prefix += f"{title}"
-                if source_path:
-                    prefix += f" [{source_path}]"
-                prefix += ": "
-            allowance = max(remaining - len(prefix), 0)
-            if allowance <= 0:
-                break
-            if len(content) > allowance:
-                content = content[:allowance].rstrip() + "..."
-            line = prefix + content
-            lines.append(line)
-            remaining -= len(line)
-            if remaining <= 0:
-                break
-
-        if len(lines) <= 2:
-            return None
-        return ContextMessage(
-            role="system",
-            source="knowledge_base",
-            content="\n".join(lines),
-            metadata={
-                "kb_backend": "hybrid" if kb_plugin is not None else "fts",
-                "kb_count": len(lines) - 2,
-            },
+        return await load_knowledge_context(
+            query,
+            manager=self._document_store_manager,
+            config=self._kb_auto_recall_config,
+            resolve_plugin=self._kb_plugin_resolver,
         )
 
     @staticmethod
@@ -2661,116 +2494,10 @@ class SessionRunner:
         return attachment.alt_text or f"[Image: {attachment.platform_id}]"
 
     async def _resolve_attachment(self, attachment: InboundAttachment) -> Any:
-        """Resolve an attachment via MediaResolver if available."""
-        attachment = await self._download_platform_attachment_if_needed(attachment)
-        if self._media_resolver is None:
-            from nahida_bot.agent.media.resolver import ResolvedMedia
-
-            return ResolvedMedia(
-                media_id=attachment.platform_id,
-                mime_type=attachment.mime_type,
-                local_path=attachment.path,
-                file_size=attachment.file_size,
-                width=attachment.width,
-                height=attachment.height,
-                description=attachment.alt_text,
-            )
-        return await self._media_resolver.resolve(attachment)
-
-    async def _download_platform_attachment_if_needed(
-        self, attachment: InboundAttachment
-    ) -> InboundAttachment:
-        """Use the current channel service to materialize opaque platform media IDs."""
-        if attachment.path and Path(attachment.path).is_file():
-            logger.debug(
-                "session_runner.platform_media_download_skipped",
-                reason="already_resolved",
-                media_id=attachment.platform_id,
-            )
-            return attachment
-        if attachment.path:
-            logger.debug(
-                "session_runner.platform_media_path_expired",
-                media_id=attachment.platform_id,
-                path=attachment.path,
-            )
-            attachment = replace(attachment, path="")
-        if attachment.url or not attachment.platform_id:
-            logger.debug(
-                "session_runner.platform_media_download_skipped",
-                reason="already_resolved" if attachment.url else "missing_platform_id",
-                media_id=attachment.platform_id,
-            )
-            return attachment
-        if self._channel_registry is None:
-            logger.debug(
-                "session_runner.platform_media_download_skipped",
-                reason="no_channel_registry",
-                media_id=attachment.platform_id,
-            )
-            return attachment
-        ctx = current_session.get()
-        if ctx is None:
-            logger.debug(
-                "session_runner.platform_media_download_skipped",
-                reason="no_session_context",
-                media_id=attachment.platform_id,
-            )
-            return attachment
-        channel = self._channel_registry.get(ctx.platform)
-        if channel is None:
-            logger.debug(
-                "session_runner.platform_media_download_skipped",
-                reason="channel_not_found",
-                platform=ctx.platform,
-                media_id=attachment.platform_id,
-            )
-            return attachment
-        download = getattr(channel, "download_media", None)
-        if download is None:
-            logger.debug(
-                "session_runner.platform_media_download_skipped",
-                reason="download_media_unavailable",
-                platform=ctx.platform,
-                media_id=attachment.platform_id,
-            )
-            return attachment
-
-        try:
-            logger.debug(
-                "session_runner.platform_media_download_start",
-                platform=ctx.platform,
-                media_id=attachment.platform_id,
-            )
-            result = await download(attachment.platform_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "session_runner.platform_media_download_failed",
-                platform=ctx.platform,
-                media_id=attachment.platform_id,
-                error=str(exc),
-            )
-            return attachment
-
-        if result is None or not getattr(result, "path", ""):
-            logger.debug(
-                "session_runner.platform_media_download_empty",
-                platform=ctx.platform,
-                media_id=attachment.platform_id,
-            )
-            return attachment
-        logger.debug(
-            "session_runner.platform_media_download_success",
-            platform=ctx.platform,
-            media_id=attachment.platform_id,
-            mime_type=result.mime_type or attachment.mime_type,
-            file_size=result.file_size or attachment.file_size,
-        )
-        return replace(
+        return await resolve_attachment(
             attachment,
-            path=result.path,
-            mime_type=result.mime_type or attachment.mime_type,
-            file_size=result.file_size or attachment.file_size,
+            media_resolver=self._media_resolver,
+            channel_registry=self._channel_registry,
         )
 
     async def _find_attachment_in_history(
@@ -2817,8 +2544,6 @@ class SessionRunner:
         parts = [system_prompt.rstrip()]
         if context is not None and context.channel not in ("", "bot"):
             parts.append(ENVELOPE_INSTRUCTION)
-        if context is not None and context.channel in MENTION_CAPABLE_PLATFORMS:
-            parts.append(mention_instruction_for_channel(context.channel))
         if enable_silent_reply:
             parts.append(SILENT_REPLY_INSTRUCTION)
         if source_tag == "cron_trigger":

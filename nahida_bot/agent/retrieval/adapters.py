@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+from nahida_bot_sdk.chat_address import chat_key_from_session_id
+
 from nahida_bot.agent.memory.portability import item_is_portable
 from nahida_bot.agent.memory.scope import (
     SCOPE_ID_GLOBAL,
@@ -469,16 +471,6 @@ class ConversationTurnsRetrievalAdapter:
         return list(dict.fromkeys(filters))
 
 
-def _base_chat_key(session_id: str) -> str:
-    """Strip an optional suffix from a derived session id to the chat key."""
-    if not session_id:
-        return ""
-    parts = session_id.split(":")
-    if len(parts) >= 3:
-        return ":".join(parts[:3])
-    return session_id
-
-
 def _turn_record_to_retrieval(record: Any) -> RetrievalResult:
     """Convert one ``MemoryRecord`` row into a retrieval result."""
     turn = getattr(record, "turn", None)
@@ -493,7 +485,7 @@ def _turn_record_to_retrieval(record: Any) -> RetrievalResult:
         if created_at is not None and hasattr(created_at, "isoformat")
         else ""
     )
-    chat_key = _base_chat_key(session_id)
+    chat_key = chat_key_from_session_id(session_id)
     return RetrievalResult(
         result_id=f"turn-{turn_id}" if turn_id else f"turn@{session_id}",
         title=f"[{role or 'turn'}] {chat_key or session_id}",

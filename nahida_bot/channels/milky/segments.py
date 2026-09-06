@@ -12,6 +12,11 @@ from nahida_bot.channels.milky._parsing import (
     field_int,
     field_str,
 )
+from nahida_bot.channels.milky.card_links import (
+    CardShareInfo,
+    extract_light_app_info,
+    extract_xml_card_info,
+)
 
 ImageSubType: TypeAlias = Literal["normal", "sticker"]
 
@@ -578,10 +583,28 @@ def render_segment_plain_text(
     if isinstance(segment, IncomingMarketFaceSegment):
         return f"[MarketFace: summary={segment.summary}, url={segment.url}]"
     if isinstance(segment, IncomingLightAppSegment):
+        info = extract_light_app_info(segment.json_payload)
+        if info.urls or info.title:
+            extra = f"app_name={segment.app_name}" if segment.app_name else ""
+            return _render_card_segment("LightApp", info, extra)
         return f"[LightApp: app_name={segment.app_name}]"
     if isinstance(segment, IncomingXmlSegment):
+        info = extract_xml_card_info(segment.xml_payload)
+        if info.urls or info.title:
+            extra = f"service_id={segment.service_id}" if segment.service_id else ""
+            return _render_card_segment("XML", info, extra)
         return f"[XML: service_id={segment.service_id}]"
     return f"[UnsupportedSegment: type={segment.type}]"
+
+
+def _render_card_segment(kind: str, info: CardShareInfo, extra: str) -> str:
+    """Render a share-card segment, surfacing extracted links for the agent."""
+    fields = [
+        part for part in (extra, f"title={info.title}" if info.title else "") if part
+    ]
+    if info.urls:
+        fields.append(f"url={' | '.join(info.urls)}")
+    return f"[{kind}: {', '.join(fields)}]"
 
 
 def _render_forward_segment(

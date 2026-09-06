@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nahida_bot.core.outbound_mentions import (
+from nahida_bot.channels.mentions import (
     extract_mention_ids,
     parse_outbound_parts,
 )

@@ -11,6 +11,7 @@ import structlog
 
 from nahida_bot.plugins.tooling import PluginToolDefinition
 from nahida_bot_sdk.api import BotAPI
+from nahida_bot_sdk.chat_address import chat_key_from_session_id
 
 
 _logger = structlog.get_logger(__name__)
@@ -576,12 +577,7 @@ class HistoryTools:
     @staticmethod
     def base_chat_key(session_id: str) -> str:
         """Strip an optional suffix from a derived session id."""
-        if not session_id:
-            return ""
-        parts = session_id.split(":")
-        if len(parts) >= 3:
-            return ":".join(parts[:3])
-        return session_id
+        return chat_key_from_session_id(session_id)
 
     @staticmethod
     def sanitize_turn(content: str) -> str:

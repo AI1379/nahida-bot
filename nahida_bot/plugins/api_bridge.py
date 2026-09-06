@@ -38,6 +38,10 @@ from nahida_bot.plugins.commands import (
 from nahida_bot_sdk.commands import CommandArgument, CompletionChoice, CompletionQuery
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, PromptSupplementEntry, ToolEntry
+from nahida_bot.plugins.runtime_services import (
+    RUNTIME_SERVICE_UNSET,
+    RuntimeServiceUnset,
+)
 from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 if TYPE_CHECKING:
@@ -58,6 +62,7 @@ if TYPE_CHECKING:
     )
     from nahida_bot.plugins.manifest import PluginManifest
     from nahida_bot.workspace.manager import WorkspaceManager
+
 
 _PROVIDER_ALLOWED_PHASES = frozenset({"pre-agent"})
 
@@ -2146,47 +2151,75 @@ class RealBotAPI:
     def set_runtime_services(
         self,
         *,
-        workspace_manager: WorkspaceManager | None = None,
-        memory_store: SQLiteMemoryStore | None = None,
-        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
-        provider_manager: Any | None = None,
-        model_router: Any | None = None,
-        scheduler_service: Any | None = None,
-        orchestration_service: Any | None = None,
-        plugin_data_repo: SQLitePluginDataRepository | None = None,
-        plugin_secret_repo: SQLitePluginSecretRepository | None = None,
-        webhost_service: Any | None = None,
-        task_manager: Any | None = None,
-        document_store_manager: Any | None = None,
-        chat_metadata_store: Any | None = None,
-        temp_file_service: ManagedTempFileService | None = None,
+        workspace_manager: WorkspaceManager
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        memory_store: SQLiteMemoryStore
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        message_delivery_store: SQLiteMessageDeliveryStore
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        provider_manager: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        model_router: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        scheduler_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        orchestration_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        plugin_data_repo: SQLitePluginDataRepository
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        plugin_secret_repo: SQLitePluginSecretRepository
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        webhost_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        task_manager: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        document_store_manager: Any
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        chat_metadata_store: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        temp_file_service: ManagedTempFileService
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        speech_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
     ) -> None:
-        """Update runtime services after early plugin loading."""
-        self._workspace = workspace_manager
-        self._memory = memory_store
-        # The lazily-built MemoryService wraps ``_memory``; a store swap (e.g.
-        # the manager injecting the real store after early plugin load) would
-        # leave a stale wrapper, so drop the cache on any reassignment.
-        self._memory_service_cache = None
-        self._message_delivery_store = message_delivery_store
-        self._provider_manager = provider_manager
-        self._model_router = model_router
-        self._scheduler_service = scheduler_service
-        self._orchestration_service = orchestration_service
-        if chat_metadata_store is not None:
+        """Update runtime services after early plugin loading.
+
+        An omitted argument preserves the current service.  Passing ``None``
+        explicitly clears it so staged initialization can update one service
+        without accidentally resetting the others.
+        """
+        if not isinstance(workspace_manager, RuntimeServiceUnset):
+            self._workspace = workspace_manager
+        if not isinstance(memory_store, RuntimeServiceUnset):
+            # The lazily-built MemoryService wraps ``_memory``; a store swap
+            # must invalidate that wrapper.
+            self._memory = memory_store
+            self._memory_service_cache = None
+        if not isinstance(message_delivery_store, RuntimeServiceUnset):
+            self._message_delivery_store = message_delivery_store
+        if not isinstance(provider_manager, RuntimeServiceUnset):
+            self._provider_manager = provider_manager
+        if not isinstance(model_router, RuntimeServiceUnset):
+            self._model_router = model_router
+        if not isinstance(scheduler_service, RuntimeServiceUnset):
+            self._scheduler_service = scheduler_service
+        if not isinstance(orchestration_service, RuntimeServiceUnset):
+            self._orchestration_service = orchestration_service
+        if not isinstance(chat_metadata_store, RuntimeServiceUnset):
             self._chat_metadata_store = chat_metadata_store
-        if webhost_service is not None:
+        if not isinstance(webhost_service, RuntimeServiceUnset):
             self._webhost_service = webhost_service
-        if plugin_data_repo is not None:
+        if not isinstance(plugin_data_repo, RuntimeServiceUnset):
             self._plugin_data_repo = plugin_data_repo
-        if plugin_secret_repo is not None:
+        if not isinstance(plugin_secret_repo, RuntimeServiceUnset):
             self._plugin_secret_repo = plugin_secret_repo
-        if task_manager is not None:
+        if not isinstance(task_manager, RuntimeServiceUnset):
             self._task_manager = task_manager
-        if document_store_manager is not None:
+        if not isinstance(document_store_manager, RuntimeServiceUnset):
             self._document_store_manager = document_store_manager
-        if temp_file_service is not None:
+        if not isinstance(temp_file_service, RuntimeServiceUnset):
             self._temp_file_service = temp_file_service
+        if not isinstance(speech_service, RuntimeServiceUnset):
+            self._speech_service = speech_service
 
     # ── Document Store ────────────────────────────────────
 

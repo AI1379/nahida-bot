@@ -26,9 +26,10 @@ import structlog
 from nahida_bot.agent.retrieval import (
     DocumentStoreRetrievalAdapter,
     RetrievalRequest,
-    RetrievalService,
+    RetrievalResult,
 )
 from nahida_bot.agent.storage.embedding import RoutedEmbeddingProvider
+from nahida_bot.agent.storage.models import SearchResult
 from nahida_bot.agent.storage.vector import SQLiteVecIndex
 from nahida_bot.plugins.base import (
     CommandHandlerResult,
@@ -785,8 +786,34 @@ class KnowledgeBasePlugin(Plugin):
         query: str,
         *,
         limit: int = 5,
-    ) -> list[Any]:
-        """Search one collection and return raw search results."""
+    ) -> list[SearchResult]:
+        """Project retrieval results into the public document-search shape."""
+        results = await self.retrieve_documents(collection_name, query, limit=limit)
+        return [
+            SearchResult(
+                doc_id=result.result_id,
+                title=result.title,
+                content=result.text,
+                score=result.score,
+                metadata=result.metadata,
+                path=str(result.metadata.get("path", "")),
+                source_id=str(result.metadata.get("source_id", "")),
+                chunk_index=int(result.metadata.get("chunk_index", 0)),
+                parent_id=str(getattr(result.raw, "parent_id", "")),
+                root_id=str(getattr(result.raw, "root_id", "")),
+                node_type=str(getattr(result.raw, "node_type", "passage")),
+            )
+            for result in results
+        ]
+
+    async def retrieve_documents(
+        self,
+        collection_name: str,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[RetrievalResult]:
+        """Retrieve one collection without losing ranking or provenance."""
         collection_name = self._validate_collection_name(collection_name)
         manager = self._require_manager()
         store = manager.get(collection_name)
@@ -796,7 +823,7 @@ class KnowledgeBasePlugin(Plugin):
         if not query:
             return []
         search_limit = min(max(1, int(limit)), self._config.max_search_results)
-        return await self._search_store(
+        return await self._retrieve_store(
             collection_name,
             store,
             query,
@@ -976,14 +1003,14 @@ class KnowledgeBasePlugin(Plugin):
         )
         return provider
 
-    async def _search_store(
+    async def _retrieve_store(
         self,
         collection_name: str,
         store: Any,
         query: str,
         *,
         limit: int,
-    ) -> list[Any]:
+    ) -> list[RetrievalResult]:
         """Search one collection using the configured retrieval mode."""
         adapter = DocumentStoreRetrievalAdapter(
             collection_name=collection_name,
@@ -997,8 +1024,7 @@ class KnowledgeBasePlugin(Plugin):
             expand_neighbors=self._config.retrieval.expand_neighbors,
             expand_neighbors_top_k=self._config.retrieval.expand_neighbors_top_k,
         )
-        service = RetrievalService({"knowledge_base": adapter})
-        results = await service.retrieve(
+        return await adapter.retrieve(
             RetrievalRequest(
                 query=query,
                 source_type="knowledge_base",
@@ -1012,7 +1038,6 @@ class KnowledgeBasePlugin(Plugin):
                 hybrid_enabled=self._config.retrieval.hybrid_enabled,
             )
         )
-        return [result.raw for result in results if result.raw is not None]
 
     async def _ensure_vector_search_ready(
         self,

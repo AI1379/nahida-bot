@@ -48,6 +48,22 @@ def classify_session_key(value: str) -> SessionKeyKind:
     return "legacy-derived" if key.is_derived else "legacy"
 
 
+def chat_key_from_session_id(value: str) -> str:
+    """Return a session's owning chat, preserving typed or legacy key spelling.
+
+    This consumes session IDs: segments after the typed target ID are session
+    suffixes, not ChatAddress thread IDs. Opaque/non-address IDs pass through
+    unchanged so internal session names retain their identity.
+    """
+    try:
+        key = SessionKey.parse(value)
+    except ValueError:
+        return value
+    if value.split(":", 2)[1] in VALID_TARGET_TYPES:
+        return key.address.chat_key
+    return key.address.legacy_key
+
+
 @dataclass(slots=True, frozen=True)
 class ChatAddress:
     """External platform address for sending/receiving messages.

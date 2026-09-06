@@ -11,10 +11,11 @@ from nahida_bot.plugins.loader import PluginLoader
 def _create_plugin_dir(
     parent: Path,
     plugin_id: str,
-    entrypoint_module: str = "plugin",
+    entrypoint_module: str | None = None,
     entrypoint_class: str = "TestPlugin",
 ) -> Path:
     """Create a minimal plugin directory with plugin.yaml and Python file."""
+    entrypoint_module = entrypoint_module or f"{plugin_id}_module"
     plugin_dir = parent / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -109,6 +110,10 @@ name: Missing
 version: "1.0.0"
 entrypoint: "plugin:NonexistentClass"
 """
+        manifest_content = manifest_content.replace(
+            'entrypoint: "plugin:NonexistentClass"',
+            'entrypoint: "missing_class_module:NonexistentClass"',
+        )
         manifest_path.write_text(manifest_content, encoding="utf-8")
 
         from nahida_bot.plugins.manifest import parse_manifest
@@ -117,6 +122,81 @@ entrypoint: "plugin:NonexistentClass"
         loader = PluginLoader()
         with pytest.raises(PluginLoadError, match="no attribute"):
             loader.load(manifest, plugin_dir)
+
+    def test_normal_load_runs_module_once_and_explicit_reload_runs_again(
+        self, tmp_path: Path
+    ) -> None:
+        """Normal load must not duplicate top-level plugin side effects."""
+        from nahida_bot.plugins.manifest import parse_manifest
+
+        plugin_dir = _create_plugin_dir(
+            tmp_path,
+            "counter_plugin",
+            entrypoint_module="counter_module",
+        )
+        counter_path = tmp_path / "import-count.txt"
+        (plugin_dir / "counter_module.py").write_text(
+            """
+from pathlib import Path
+
+from nahida_bot.plugins.base import Plugin
+
+counter = Path(%r)
+count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+counter.write_text(str(count + 1), encoding="utf-8")
+
+class TestPlugin(Plugin):
+    pass
+"""
+            % str(counter_path),
+            encoding="utf-8",
+        )
+        manifest = parse_manifest(plugin_dir / "plugin.yaml")
+        loader = PluginLoader()
+
+        loader.load(manifest, plugin_dir)
+        loader.load(manifest, plugin_dir)
+        assert counter_path.read_text(encoding="utf-8") == "1"
+
+        loader.load(manifest, plugin_dir, reload=True)
+        assert counter_path.read_text(encoding="utf-8") == "2"
+        loader.unload(manifest)
+
+    def test_top_level_exception_is_normalized_with_cause(self, tmp_path: Path) -> None:
+        from nahida_bot.plugins.manifest import parse_manifest
+
+        plugin_dir = _create_plugin_dir(
+            tmp_path,
+            "import_crasher",
+            entrypoint_module="import_crash_module",
+        )
+        (plugin_dir / "import_crash_module.py").write_text(
+            "raise RuntimeError('top-level crash')\n",
+            encoding="utf-8",
+        )
+        manifest = parse_manifest(plugin_dir / "plugin.yaml")
+
+        with pytest.raises(PluginLoadError, match="failed to import") as exc_info:
+            PluginLoader().load(manifest, plugin_dir)
+
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+    def test_base_exception_from_import_is_not_swallowed(self, tmp_path: Path) -> None:
+        from nahida_bot.plugins.manifest import parse_manifest
+
+        plugin_dir = _create_plugin_dir(
+            tmp_path,
+            "import_interrupt",
+            entrypoint_module="import_interrupt_module",
+        )
+        (plugin_dir / "import_interrupt_module.py").write_text(
+            "raise KeyboardInterrupt\n",
+            encoding="utf-8",
+        )
+        manifest = parse_manifest(plugin_dir / "plugin.yaml")
+
+        with pytest.raises(KeyboardInterrupt):
+            PluginLoader().load(manifest, plugin_dir)
 
     def test_unload_removes_module(self, tmp_path: Path) -> None:
         import sys

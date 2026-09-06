@@ -23,6 +23,10 @@ from nahida_bot.plugins.registry import (
     StatusProviderRegistry,
     ToolRegistry,
 )
+from nahida_bot.plugins.runtime_services import (
+    RUNTIME_SERVICE_UNSET,
+    RuntimeServiceUnset,
+)
 
 if TYPE_CHECKING:
     from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
@@ -134,62 +138,90 @@ class PluginManager:
     def set_runtime_services(
         self,
         *,
-        workspace_manager: WorkspaceManager | None = None,
-        memory_store: SQLiteMemoryStore | None = None,
-        message_delivery_store: SQLiteMessageDeliveryStore | None = None,
-        plugin_data_repo: SQLitePluginDataRepository | None = None,
-        plugin_secret_repo: SQLitePluginSecretRepository | None = None,
-        provider_manager: Any | None = None,
-        model_router: Any | None = None,
-        scheduler_service: Any | None = None,
-        orchestration_service: Any | None = None,
-        webhost_service: Any | None = None,
-        task_manager: Any | None = None,
-        document_store_manager: Any | None = None,
-        chat_metadata_store: Any | None = None,
-        temp_file_service: ManagedTempFileService | None = None,
-        speech_service: Any | None = None,
+        workspace_manager: WorkspaceManager
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        memory_store: SQLiteMemoryStore
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        message_delivery_store: SQLiteMessageDeliveryStore
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        plugin_data_repo: SQLitePluginDataRepository
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        plugin_secret_repo: SQLitePluginSecretRepository
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        provider_manager: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        model_router: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        scheduler_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        orchestration_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        webhost_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        task_manager: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        document_store_manager: Any
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        chat_metadata_store: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        temp_file_service: ManagedTempFileService
+        | None
+        | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
+        speech_service: Any | None | RuntimeServiceUnset = RUNTIME_SERVICE_UNSET,
     ) -> None:
-        """Update services injected into subsequently loaded plugin API bridges."""
-        self._workspace = workspace_manager
-        self._memory = memory_store
-        self._message_delivery_store = message_delivery_store
-        if plugin_data_repo is not None:
+        """Update services injected into plugin API bridges.
+
+        An omitted argument preserves the current service.  Passing ``None``
+        explicitly clears it, which lets staged application initialization
+        add or remove services without relying on positional call order.
+        """
+        if not isinstance(workspace_manager, RuntimeServiceUnset):
+            self._workspace = workspace_manager
+        if not isinstance(memory_store, RuntimeServiceUnset):
+            self._memory = memory_store
+        if not isinstance(message_delivery_store, RuntimeServiceUnset):
+            self._message_delivery_store = message_delivery_store
+        if not isinstance(plugin_data_repo, RuntimeServiceUnset):
             self._plugin_data_repo = plugin_data_repo
-        if plugin_secret_repo is not None:
+        if not isinstance(plugin_secret_repo, RuntimeServiceUnset):
             self._plugin_secret_repo = plugin_secret_repo
-        self._provider_manager = provider_manager
-        self._model_router = model_router
-        self._scheduler_service = scheduler_service
-        self._orchestration_service = orchestration_service
-        if webhost_service is not None:
+        if not isinstance(provider_manager, RuntimeServiceUnset):
+            self._provider_manager = provider_manager
+        if not isinstance(model_router, RuntimeServiceUnset):
+            self._model_router = model_router
+        if not isinstance(scheduler_service, RuntimeServiceUnset):
+            self._scheduler_service = scheduler_service
+        if not isinstance(orchestration_service, RuntimeServiceUnset):
+            self._orchestration_service = orchestration_service
+        if not isinstance(webhost_service, RuntimeServiceUnset):
             self._webhost_service = webhost_service
-        if task_manager is not None:
+        if not isinstance(task_manager, RuntimeServiceUnset):
             self._task_manager = task_manager
-        if document_store_manager is not None:
+        if not isinstance(document_store_manager, RuntimeServiceUnset):
             self._document_store_manager = document_store_manager
-        if chat_metadata_store is not None:
+        if not isinstance(chat_metadata_store, RuntimeServiceUnset):
             self._chat_metadata_store = chat_metadata_store
-        if temp_file_service is not None:
+        if not isinstance(temp_file_service, RuntimeServiceUnset):
             self._temp_file_service = temp_file_service
-        if speech_service is not None:
+        if not isinstance(speech_service, RuntimeServiceUnset):
             self._speech_service = speech_service
         for record in self._records.values():
             if record.api_bridge is not None:
                 record.api_bridge.set_runtime_services(
-                    workspace_manager=workspace_manager,
-                    memory_store=memory_store,
-                    message_delivery_store=message_delivery_store,
+                    workspace_manager=self._workspace,
+                    memory_store=self._memory,
+                    message_delivery_store=self._message_delivery_store,
                     plugin_data_repo=self._plugin_data_repo,
                     plugin_secret_repo=self._plugin_secret_repo,
-                    provider_manager=provider_manager,
-                    scheduler_service=scheduler_service,
-                    orchestration_service=orchestration_service,
+                    provider_manager=self._provider_manager,
+                    model_router=self._model_router,
+                    scheduler_service=self._scheduler_service,
+                    orchestration_service=self._orchestration_service,
                     webhost_service=self._webhost_service,
                     task_manager=self._task_manager,
-                    document_store_manager=document_store_manager,
+                    document_store_manager=self._document_store_manager,
                     chat_metadata_store=self._chat_metadata_store,
                     temp_file_service=self._temp_file_service,
+                    speech_service=self._speech_service,
                 )
 
     @property
@@ -294,8 +326,8 @@ class PluginManager:
 
     # ── Loading ────────────────────────────────────────
 
-    async def load(self, plugin_id: str) -> None:
-        """Load a discovered plugin: import module, instantiate class."""
+    async def load(self, plugin_id: str, *, reload: bool = False) -> None:
+        """Load a discovered plugin, optionally doing an explicit reload."""
         record = self._require_record(plugin_id)
         self._require_state(
             record,
@@ -315,7 +347,11 @@ class PluginManager:
             return
 
         try:
-            plugin_class = self._loader.load(record.manifest, record.plugin_dir)
+            plugin_class = self._loader.load(
+                record.manifest,
+                record.plugin_dir,
+                reload=reload,
+            )
         except PluginLoadError as exc:
             record.state = PluginState.ERROR
             record.error_message = str(exc)
@@ -391,7 +427,7 @@ class PluginManager:
 
     # ── Enabling ───────────────────────────────────────
 
-    async def enable(self, plugin_id: str) -> None:
+    async def enable(self, plugin_id: str, *, reload: bool = False) -> None:
         """Ensure a plugin is loaded, then activate its lifecycle."""
         record = self._require_record(plugin_id)
         self._require_state(
@@ -403,7 +439,7 @@ class PluginManager:
         )
 
         if record.state != PluginState.LOADED:
-            await self.load(plugin_id)
+            await self.load(plugin_id, reload=reload)
             if record.state != PluginState.LOADED:
                 return
 
@@ -496,7 +532,12 @@ class PluginManager:
 
         # Re-read manifest from disk
         manifest_path = record.plugin_dir / "plugin.yaml"
-        new_manifest = parse_manifest(manifest_path)
+        try:
+            new_manifest = parse_manifest(manifest_path)
+        except Exception as exc:  # noqa: BLE001
+            record.state = PluginState.ERROR
+            record.error_message = f"{type(exc).__name__}: {exc}"
+            raise
         record.manifest = new_manifest
         record.configured_enabled = new_manifest.enabled
         record.state = (
@@ -506,9 +547,9 @@ class PluginManager:
             self.apply_config(plugin_id, record.config_overrides)
 
         if should_reenable:
-            await self.enable(plugin_id)
+            await self.enable(plugin_id, reload=True)
         elif was_loaded:
-            await self.load(plugin_id)
+            await self.load(plugin_id, reload=True)
 
     # ── Unloading ──────────────────────────────────────
 

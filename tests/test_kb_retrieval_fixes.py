@@ -482,9 +482,22 @@ class _FakeKBPlugin:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, int]] = []
 
-    async def search_documents(self, collection: str, query: str, *, limit: int = 5):
+    async def retrieve_documents(self, collection: str, query: str, *, limit: int = 5):
+        from nahida_bot.agent.retrieval.models import RetrievalResult
+
         self.calls.append((collection, query, limit))
-        return [_fake_search_result("best", 0.9), _fake_search_result("second", 0.5)]
+        return [
+            RetrievalResult(
+                result_id=name,
+                title=name,
+                text=f"content-{name}",
+                source_type="knowledge_base",
+                mode="hybrid",
+                score=score,
+                metadata={"collection": collection},
+            )
+            for name, score in [("best", 0.9), ("second", 0.5)]
+        ]
 
 
 def _make_runner(**overrides):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from nahida_bot.channels.milky.config import parse_milky_config
@@ -507,3 +509,72 @@ async def test_group_member_owner_role() -> None:
     assert inbound is not None
     assert inbound.sender_context is not None
     assert "owner" in inbound.sender_context.role_tags
+
+
+async def test_light_app_card_share_lands_in_message_text() -> None:
+    """A QQ share card (e.g. Bilibili) surfaces its web link in the text."""
+    converter = MilkyMessageConverter(parse_milky_config({}))
+
+    inbound = await converter.to_inbound(
+        _message(
+            segments=[
+                {
+                    "type": "text",
+                    "data": {"text": "看看这个 "},
+                },
+                {
+                    "type": "light_app",
+                    "data": {
+                        "app_name": "com.tencent.structmsg",
+                        "json_payload": json.dumps(
+                            {
+                                "app": "com.tencent.structmsg",
+                                "view": "news",
+                                "prompt": "[分享]【原神】4.0 枫丹MV",
+                                "meta": {
+                                    "news": {
+                                        "title": "【原神】4.0 枫丹MV",
+                                        "desc": "up主: 某某",
+                                        "jump_url": "https://b23.tv/BV1xx411c7mD",
+                                        "cover": "https://i0.hdslb.com/bfs/archive/cover.jpg",
+                                    }
+                                },
+                            }
+                        ),
+                    },
+                },
+            ]
+        )
+    )
+
+    assert inbound is not None
+    assert "url=https://b23.tv/BV1xx411c7mD" in inbound.text
+    assert "title=【原神】4.0 枫丹MV" in inbound.text
+    assert "hdslb.com" not in inbound.text
+
+
+async def test_xml_card_share_lands_in_message_text() -> None:
+    """A legacy XML share card also surfaces its web link in the text."""
+    converter = MilkyMessageConverter(parse_milky_config({}))
+
+    inbound = await converter.to_inbound(
+        _message(
+            segments=[
+                {
+                    "type": "xml",
+                    "data": {
+                        "service_id": 1,
+                        "xml_payload": (
+                            '<msg serviceID="1" action="web" '
+                            'brief="[分享]【原神】枫丹MV" '
+                            'url="https://b23.tv/BV1xx411c7mD">'
+                            "<item><title>【原神】枫丹MV</title></item></msg>"
+                        ),
+                    },
+                }
+            ]
+        )
+    )
+
+    assert inbound is not None
+    assert "url=https://b23.tv/BV1xx411c7mD" in inbound.text

@@ -60,7 +60,11 @@ async def test_expired_cached_path_does_not_block_url_resolution(tmp_path) -> No
         path=str(tmp_path / "expired.png"),
     )
 
-    result = await runner._download_platform_attachment_if_needed(attachment)
+    from nahida_bot.core.attachments import download_platform_attachment
+
+    result = await download_platform_attachment(
+        attachment, channel_registry=runner._channel_registry
+    )
 
     assert result.path == ""
     assert result.url == attachment.url
@@ -184,17 +188,31 @@ async def test_run_forwards_ordered_transcript_from_done_event() -> None:
     assert result.ordered_transcript[0].content == "hi"
 
 
-def test_build_system_prompt_injects_mention_instruction_for_capable_channel() -> None:
-    from nahida_bot.core.message_context import MENTION_INSTRUCTION
+def test_build_system_prompt_uses_registered_channel_instructions() -> None:
     from nahida_bot.core.session_runner import SessionRunner
     from nahida_bot.plugins.base import MessageContext
+    from nahida_bot.plugins.registry import (
+        PromptSupplementEntry,
+        PromptSupplementRegistry,
+    )
 
-    runner = SessionRunner()
-    context = MessageContext(channel="milky", chat_type="group", chat_id="1")
-
-    prompt = runner._build_system_prompt("base", context)
-
-    assert MENTION_INSTRUCTION in prompt
+    supplements = PromptSupplementRegistry()
+    supplements.register(
+        PromptSupplementEntry(
+            key="custom:mentions",
+            instruction="Channel-owned mention rule",
+            plugin_id="custom",
+            channel="custom",
+        )
+    )
+    runner = SessionRunner(supplement_registry=supplements)
+    prompt = runner._build_system_prompt(
+        "base", MessageContext(channel="custom", chat_type="group", chat_id="1")
+    )
+    assert "Channel-owned mention rule" in prompt
+    assert "[CQ:at,qq=" not in runner._build_system_prompt(
+        "base", MessageContext(channel="milky", chat_type="group", chat_id="1")
+    )
 
 
 def test_build_system_prompt_skips_mention_instruction_for_other_platforms() -> None:

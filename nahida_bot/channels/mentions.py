@@ -20,12 +20,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# FIXME: This seems to be a part of channel plugins instead of core
-
-# Platforms whose outbound path converts mention tokens into real mention
-# segments. Other platforms leave tokens as literal text.
-MENTION_CAPABLE_PLATFORMS = frozenset({"milky", "feishu"})
-
 # One scanner over all accepted token forms. The CQ form is checked first so
 # the canonical syntax wins when forms overlap. Ids are digits (QQ) or a
 # Feishu open_id (ou_ + alphanumeric); other shapes never match and stay
@@ -81,6 +75,8 @@ def extract_mention_ids(text: str, *, limit: int) -> list[str]:
     Tokens beyond ``limit`` unique targets are not returned; callers leave
     those unconverted (literal) in the outgoing text.
     """
+    if limit <= 0:
+        return []
     seen: dict[str, None] = {}
     for part in parse_outbound_parts(text):
         if part.is_mention and part.user_id not in seen:
@@ -88,3 +84,18 @@ def extract_mention_ids(text: str, *, limit: int) -> list[str]:
             if len(seen) >= limit:
                 break
     return list(seen)
+
+
+def build_mention_instruction(*, id_description: str, max_targets: int) -> str:
+    """Render the active channel's mention contract from its configuration."""
+    return (
+        "## Mentioning Users\n"
+        "To notify a specific group member, write [CQ:at,qq=<user_id>] inline.\n"
+        f"- Use {id_description} exactly as shown in the sender context or received "
+        "at-tokens. Never invent or guess IDs.\n"
+        "- If you do not know the ID, address the person by name in plain text.\n"
+        "- Group chats only; in private chats just use names.\n"
+        f"- Use at most {max_targets} distinct mention targets per message, usually "
+        "only one, and only when directing the reply at someone or needing their attention.\n"
+        "- In scheduled or proactive runs be extra conservative: a mention notifies the person."
+    )

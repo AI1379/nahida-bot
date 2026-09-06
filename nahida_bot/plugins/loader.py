@@ -45,10 +45,21 @@ class PluginLoader:
             results.extend(self._scan_directory(search_path))
         return results
 
-    def load(self, manifest: PluginManifest, plugin_dir: Path) -> type[Plugin]:
+    def load(
+        self,
+        manifest: PluginManifest,
+        plugin_dir: Path,
+        *,
+        reload: bool = False,
+    ) -> type[Plugin]:
         """Import the plugin module and return the entry class.
 
         The entrypoint format is ``"module_path:ClassName"``.
+
+        A normal load imports a module once and reuses an already imported
+        module.  Callers performing an explicit hot reload may pass
+        ``reload=True``; this reloads a module that is already in
+        ``sys.modules`` (or imports it when it is not).
 
         Args:
             manifest: The plugin manifest with entrypoint info.
@@ -94,22 +105,52 @@ class PluginLoader:
                 # modules and create cross-plugin import side effects.
                 sys.path.insert(0, plugin_dir_str)
 
-        try:
-            module = importlib.import_module(module_path)
-        except ImportError as exc:
-            raise PluginLoadError(
-                f"Plugin '{manifest.id}' failed to import module '{module_path}': {exc}"
-            ) from exc
+        # A separate loader instance can encounter a short external module
+        # name (for example ``plugin``) left in sys.modules by an earlier
+        # plugin directory.  Loading it from another directory would silently
+        # bind the wrong plugin, so report the conflict and require the owner
+        # to unload it (or explicitly reload the same module).
+        if not is_builtin:
+            cached_module = sys.modules.get(module_path)
+            if cached_module is not None:
+                cached_file = getattr(cached_module, "__file__", None)
+                if cached_file is not None:
+                    try:
+                        cached_path = Path(cached_file).resolve()
+                        plugin_root = plugin_dir.resolve()
+                    except OSError:
+                        pass
+                    else:
+                        module_parts = module_path.split(".")
+                        local_module = plugin_root.joinpath(*module_parts)
+                        local_candidates = (
+                            local_module.with_suffix(".py"),
+                            local_module / "__init__.py",
+                        )
+                        if any(
+                            candidate.is_file() for candidate in local_candidates
+                        ) and not cached_path.is_relative_to(plugin_root):
+                            raise PluginLoadError(
+                                f"Plugin '{manifest.id}' entrypoint module "
+                                f"'{module_path}' is already loaded from "
+                                f"'{cached_path}'"
+                            )
 
-        # Force reload if already imported (enables hot-reload).
-        # Skip for builtin modules on first load to avoid running module
-        # top-level code twice.
-        if module_path in sys.modules and not is_builtin:
-            # FIXME: First-time load reaches this branch right after
-            # import_module(), so module top-level code runs twice
-            # (import + reload). Keep reload for explicit hot-reload paths
-            # only, not normal load.
-            importlib.reload(module)
+        module_was_loaded = module_path in sys.modules
+        action = "reload" if reload and module_was_loaded else "import"
+        try:
+            if reload and module_was_loaded:
+                module = importlib.reload(sys.modules[module_path])
+            else:
+                module = importlib.import_module(module_path)
+        except Exception as exc:  # noqa: BLE001
+            # Keep cancellation and process-level exits intact by catching
+            # Exception rather than BaseException.  The manager uses this
+            # normalized error to transition the record to ERROR.
+            raise PluginLoadError(
+                f"Plugin '{manifest.id}' failed to {action} module "
+                f"'{module_path}': {exc}"
+            ) from exc
 
         entry_class = getattr(module, class_name, None)
         if entry_class is None:

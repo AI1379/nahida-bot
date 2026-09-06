@@ -14,6 +14,7 @@ from nahida_bot.workspace.exceptions import (
 )
 from nahida_bot.workspace.models import WorkspaceMetadata
 from nahida_bot.workspace.sandbox import WorkspaceSandbox
+from nahida_bot.workspace.skills import SkillCatalog, SkillInfo
 
 
 class WorkspaceManager:
@@ -328,6 +329,14 @@ topic or a deeper look at a particular time window.
         if selected_workspace not in records:
             raise WorkspaceNotFoundError(f"Workspace not found: {selected_workspace}")
         return WorkspaceSandbox(self.workspace_path(selected_workspace))
+
+    def list_skills(self, workspace_id: str) -> list[SkillInfo]:
+        """List skills owned by one workspace."""
+        return SkillCatalog.scan_catalog(self.workspace_path(workspace_id))
+
+    def read_skill(self, workspace_id: str, name: str) -> str | None:
+        """Read a named workspace skill using the shared discovery rules."""
+        return SkillCatalog.load_skill_content(self.workspace_path(workspace_id), name)
 
     def workspace_path(self, workspace_id: str) -> Path:
         """Return root path for a workspace ID."""

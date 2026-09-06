@@ -296,6 +296,26 @@ def test_get_multimodal_image_fallback_model(tmp_path: Path) -> None:
     assert api.get_multimodal_image_fallback_model() == "vision-provider/model"
 
 
+def test_runtime_service_update_preserves_omitted_and_clears_explicit_none(
+    tmp_path: Path,
+) -> None:
+    api, _, _, _ = _api(tmp_path)
+    model_router = object()
+    speech_service = object()
+
+    api.set_runtime_services(
+        model_router=model_router,
+        speech_service=speech_service,
+    )
+    api.set_runtime_services(provider_manager=object())
+    assert api.get_model_router() is model_router
+    assert api.speech_service is speech_service
+
+    api.set_runtime_services(model_router=None, speech_service=None)
+    assert api.get_model_router() is None
+    assert api.speech_service is None
+
+
 def test_desktop_surface_registration_requires_a_manifest_declaration(
     tmp_path: Path,
 ) -> None:

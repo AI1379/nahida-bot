@@ -31,7 +31,11 @@ from nahida_bot.channels.feishu.segment_converter import (
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.events import MessageObserved, MessagePayload, MessageReceived
 from nahida_bot.core.group_policy import GroupInteractionPolicy
-from nahida_bot.core.outbound_mentions import extract_mention_ids, parse_outbound_parts
+from nahida_bot.channels.mentions import (
+    build_mention_instruction,
+    extract_mention_ids,
+    parse_outbound_parts,
+)
 from nahida_bot.core.router import MessageRouter
 from nahida_bot.plugins.base import (
     InboundAttachment,
@@ -119,6 +123,16 @@ class FeishuPlugin(Plugin):
             self_open_id=self._self_open_id,
         )
         self.api.register_channel(self)
+        if self.config.outbound_mentions_enabled:
+            self.api.register_prompt_supplement(
+                key="outbound_mentions",
+                instruction=build_mention_instruction(
+                    id_description="the Feishu open_id starting with ou_ (for example Alice(ou_123abc))",
+                    max_targets=self.config.max_mentions_per_message,
+                ),
+                channel=self.channel_id,
+                filter=lambda context: context.chat_type == "group",
+            )
         self.api.register_prompt_supplement(
             key="markdown_rendering",
             instruction=(

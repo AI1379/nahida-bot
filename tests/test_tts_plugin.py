@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.context import SessionContext, current_session
+from nahida_bot.core.tasks import TaskManager
 from nahida_bot.plugins.base import OutboundMessage
 from nahida_bot.plugins.tts.plugin import TtsPlugin
 from nahida_bot.speech.base import SpeechArtifact, TtsError
@@ -24,6 +26,26 @@ class _TtsAPI(RecordingMockBotAPI):
         super().__init__()
         self.workspace_root = workspace_root
         self.sent_messages: list[tuple[str, OutboundMessage, str]] = []
+        self.task_manager = TaskManager()
+        self.tasks: dict[str, asyncio.Task[Any]] = {}
+
+    def spawn_task(
+        self,
+        name: str,
+        coro: Any,
+        *,
+        kind: str = "oneshot",
+    ) -> None:
+        self.spawned_tasks[name] = {"kind": kind}
+        self.tasks[name] = self.task_manager.spawn(
+            name,
+            coro,
+            owner="tts",
+            kind=kind,  # type: ignore[arg-type]
+        )
+
+    def cancel_task(self, name: str) -> bool:
+        return self.task_manager.cancel(f"tts:{name}")
 
     async def send_message(
         self,
@@ -75,6 +97,30 @@ class _FakeSpeechService:
 
     async def close(self) -> None:
         pass
+
+
+class _BlockingSpeechService(_FakeSpeechService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str = "",
+        text_lang: str = "",
+        **kwargs: Any,
+    ) -> SpeechArtifact:
+        self.started.set()
+        await self.release.wait()
+        return await super().synthesize(
+            text,
+            voice=voice,
+            text_lang=text_lang,
+            **kwargs,
+        )
 
 
 def _manifest(config: dict[str, Any] | None = None) -> PluginManifest:
@@ -295,6 +341,41 @@ async def test_quota_released_on_failure_does_not_consume(tmp_path: Path) -> Non
 
     assert first["status"] == "degraded"
     assert second["status"] == "degraded"  # quota not consumed by failed attempts
+
+
+@pytest.mark.asyncio
+async def test_quota_released_when_save_fails(tmp_path: Path, monkeypatch) -> None:
+    api = _TtsAPI(tmp_path)
+    plugin, _ = await _load_plugin(api, config={"max_calls_per_24h": 1})
+
+    async def fail_save(artifact: SpeechArtifact) -> Any:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(plugin, "_save_audio", fail_save)
+    with pytest.raises(RuntimeError, match="disk full"):
+        await plugin._tool_speak("first", send=False)
+
+    monkeypatch.undo()
+    result = json.loads(await plugin._tool_speak("second", send=False))
+    assert result["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_quota_released_when_synthesis_is_cancelled(tmp_path: Path) -> None:
+    api = _TtsAPI(tmp_path)
+    plugin, _ = await _load_plugin(api, config={"max_calls_per_24h": 1})
+    blocking = _BlockingSpeechService()
+    plugin._service = blocking  # type: ignore[assignment]
+
+    task = asyncio.create_task(plugin._tool_speak("hold", send=False))
+    await blocking.started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    plugin._service = _FakeSpeechService()  # type: ignore[assignment]
+    result = json.loads(await plugin._tool_speak("after", send=False))
+    assert result["status"] == "ok"
 
 
 # ── truncation ──────────────────────────────────────────────────────────

@@ -44,7 +44,11 @@ from nahida_bot.channels.milky.segments import (
     parse_incoming_segments,
 )
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.core.outbound_mentions import extract_mention_ids, parse_outbound_parts
+from nahida_bot.channels.mentions import (
+    build_mention_instruction,
+    extract_mention_ids,
+    parse_outbound_parts,
+)
 from nahida_bot.core.events import (
     MessageObserved,
     MessagePayload,
@@ -152,6 +156,16 @@ class MilkyPlugin(Plugin):
             self_id=self._self_id,
         )
         self.api.register_channel(self)
+        if self.config.outbound_mentions_enabled:
+            self.api.register_prompt_supplement(
+                key="outbound_mentions",
+                instruction=build_mention_instruction(
+                    id_description="the numeric QQ user ID (for example Alice(12345))",
+                    max_targets=self.config.max_mentions_per_message,
+                ),
+                channel=self.channel_id,
+                filter=lambda context: context.chat_type == "group",
+            )
         self.api.register_prompt_supplement(
             key="no_markdown",
             instruction=(

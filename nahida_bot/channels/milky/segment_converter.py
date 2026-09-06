@@ -21,7 +21,7 @@ from nahida_bot.channels.milky.segments import (
     OutgoingVideoSegment,
 )
 from nahida_bot.core.chat_address import ChatAddress, normalize_target_type
-from nahida_bot.core.outbound_mentions import parse_outbound_parts
+from nahida_bot.channels.mentions import parse_outbound_parts
 from nahida_bot.plugins.base import Attachment, OutboundMessage
 
 MessageScene = Literal["friend", "group"]

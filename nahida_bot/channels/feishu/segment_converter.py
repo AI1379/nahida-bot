@@ -13,7 +13,7 @@ from nahida_bot.channels.feishu.markdown_post import (
     split_markdown,
 )
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.core.outbound_mentions import parse_outbound_parts
+from nahida_bot.channels.mentions import parse_outbound_parts
 from nahida_bot.plugins.base import Attachment, OutboundMessage
 
 
