@@ -54,6 +54,10 @@ class SchedulerConfig:
     max_jobs_per_chat: int = 20
     failure_retry_seconds: int = 300
     max_consecutive_failures: int = 3
+    # An occurrence claimed more than this many seconds after its due time is
+    # skipped instead of fired (0 disables). Guards against replaying a backlog
+    # of stale jobs into chats after downtime or a stalled event loop.
+    max_fire_lateness_seconds: int = 300
     memory_dreaming_enabled: bool = True
     memory_dreaming_interval_seconds: int = 3600
     memory_dreaming_initial_delay_seconds: int = 300

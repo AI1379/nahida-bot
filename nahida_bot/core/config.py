@@ -143,6 +143,7 @@ class SchedulerConfigModel(BaseModel):
     max_jobs_per_chat: int = Field(default=20, ge=1)
     failure_retry_seconds: int = Field(default=300, ge=1)
     max_consecutive_failures: int = Field(default=3, ge=1)
+    max_fire_lateness_seconds: int = Field(default=300, ge=0)
     memory_dreaming_enabled: bool = True
     memory_dreaming_interval_seconds: int = Field(default=3600, ge=60)
     memory_dreaming_initial_delay_seconds: int = Field(default=300, ge=0)

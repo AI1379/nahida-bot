@@ -390,6 +390,7 @@ motion_planner:
 | `max_jobs_per_chat` | `int` | `20` | 每个聊天会话的最大定时任务数 |
 | `failure_retry_seconds` | `int` | `300` | 任务失败后重试等待时间（秒） |
 | `max_consecutive_failures` | `int` | `3` | 连续失败多少次后自动禁用任务 |
+| `max_fire_lateness_seconds` | `int` | `300` | 到期后超过此秒数才被调度到的任务直接跳过不执行（`0` 关闭）。`once` 任务作废；`cron`/`interval` 任务重排到从当前时间起算的下一个周期。用于避免长时间停机后重新上线时积压任务集中触发刷屏 |
 | `memory_dreaming_enabled` | `bool` | `true` | 是否启用内部记忆 dreaming 周期任务 |
 | `memory_dreaming_interval_seconds` | `int` | `3600` | 记忆 dreaming 周期（秒） |
 | `memory_dreaming_initial_delay_seconds` | `int` | `300` | 应用启动后首次 dreaming 延迟（秒） |

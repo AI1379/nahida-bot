@@ -879,6 +879,188 @@ async def test_stale_claims_recovered_on_start() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_once_job_is_retired_without_firing() -> None:
+    engine, repo = await _repo()
+    agent = _Agent()
+    channel = _Channel()
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def on_event(event_type: str, job_id: str, **kwargs: Any) -> None:
+        events.append((event_type, job_id, kwargs))
+
+    try:
+        service = _make_service(
+            engine,
+            repo,
+            agent=agent,
+            channel=channel,
+            config=SchedulerConfig(max_fire_lateness_seconds=300),
+        )
+        service.on_job_event = on_event
+        stale_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        job = _job(next_fire_at=stale_at)
+        await repo.insert_job(job)
+        claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+        assert len(claimed) == 1
+
+        await service._fire_job(claimed[0])
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.is_active is False
+        assert stored.claimed_at is None
+        assert stored.run_count == 0
+        assert stored.last_fired_at is None
+        assert stored.last_error == "skipped_stale"
+        assert agent.calls == 0
+        assert channel.sent == []
+        assert [(e[0], e[1]) for e in events] == [("skipped", job.job_id)]
+        assert events[0][2]["retired"] is True
+        assert events[0][2]["lateness_seconds"] >= 7000
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_cron_job_is_rearmed_without_firing() -> None:
+    engine, repo = await _repo()
+    agent = _Agent()
+    channel = _Channel()
+    try:
+        service = _make_service(
+            engine,
+            repo,
+            agent=agent,
+            channel=channel,
+            config=SchedulerConfig(max_fire_lateness_seconds=300),
+        )
+        # Daily 09:00 job whose occurrence came due two hours ago (downtime).
+        stale_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        job = replace(
+            _job(next_fire_at=stale_at),
+            mode="cron",
+            fire_at=None,
+            cron_expression="0 9 * * *",
+        )
+        await repo.insert_job(job)
+        claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+        assert len(claimed) == 1
+
+        before = datetime.now(UTC)
+        await service._fire_job(claimed[0])
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.is_active is True
+        assert stored.claimed_at is None
+        assert stored.run_count == 0
+        assert stored.last_error is None
+        rearmed = datetime.fromisoformat(stored.next_fire_at)
+        assert rearmed > before
+        assert (rearmed.hour, rearmed.minute) == (9, 0)
+        assert agent.calls == 0
+        assert channel.sent == []
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_interval_job_is_rearmed_from_now() -> None:
+    engine, repo = await _repo()
+    agent = _Agent()
+    try:
+        service = _make_service(
+            engine,
+            repo,
+            agent=agent,
+            channel=_Channel(),
+            config=SchedulerConfig(max_fire_lateness_seconds=300),
+        )
+        stale_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        job = replace(
+            _job(next_fire_at=stale_at),
+            mode="interval",
+            fire_at=None,
+            interval_seconds=600,
+        )
+        await repo.insert_job(job)
+        claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+
+        before = datetime.now(UTC)
+        await service._fire_job(claimed[0])
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.is_active is True
+        assert stored.run_count == 0
+        rearmed = datetime.fromisoformat(stored.next_fire_at)
+        # Skipping does not replay the missed day; it schedules one interval out.
+        assert timedelta(seconds=595) <= rearmed - before <= timedelta(seconds=605)
+        assert agent.calls == 0
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_slightly_late_job_still_fires() -> None:
+    engine, repo = await _repo()
+    agent = _Agent()
+    channel = _Channel()
+    try:
+        service = _make_service(
+            engine,
+            repo,
+            agent=agent,
+            channel=channel,
+            config=SchedulerConfig(max_fire_lateness_seconds=300),
+        )
+        late_at = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+        job = _job(next_fire_at=late_at)
+        await repo.insert_job(job)
+        claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+
+        await service._fire_job(claimed[0])
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.run_count == 1
+        assert stored.is_active is False  # once job completed normally
+        assert agent.calls == 1
+        assert len(channel.sent) == 1
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_zero_lateness_threshold_disables_stale_skip() -> None:
+    engine, repo = await _repo()
+    agent = _Agent()
+    channel = _Channel()
+    try:
+        service = _make_service(
+            engine,
+            repo,
+            agent=agent,
+            channel=channel,
+            config=SchedulerConfig(max_fire_lateness_seconds=0),
+        )
+        stale_at = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+        job = _job(next_fire_at=stale_at)
+        await repo.insert_job(job)
+        claimed = await repo.claim_due_jobs(datetime.now(UTC).isoformat(), limit=1)
+
+        await service._fire_job(claimed[0])
+
+        stored = await repo.get_job(job.job_id)
+        assert stored is not None
+        assert stored.run_count == 1
+        assert agent.calls == 1
+        assert len(channel.sent) == 1
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_cron_mode_creates_and_fires() -> None:
     engine, repo = await _repo()
     try:

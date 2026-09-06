@@ -332,6 +332,7 @@ class SchedulerConfig:
     max_jobs_per_chat: int = 20              # 每个会话最大任务数
     failure_retry_seconds: int = 300         # 失败重试等待
     max_consecutive_failures: int = 3        # 连续失败上限
+    max_fire_lateness_seconds: int = 300     # 迟到超限即跳过（0 关闭）；once 作废、recurring 重排
     memory_dreaming_enabled: bool = True     # 是否启用记忆 dreaming
     memory_dreaming_interval_seconds: int = 3600   # dreaming 周期
     memory_dreaming_initial_delay_seconds: int = 300  # 首次延迟

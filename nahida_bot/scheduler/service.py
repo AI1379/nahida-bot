@@ -775,6 +775,8 @@ class SchedulerService:
     async def _fire_job(self, job: CronJob) -> None:
         """Execute a scheduled job: run agent and send response."""
         try:
+            if await self._skip_if_stale(job):
+                return
             await asyncio.wait_for(
                 self._execute_fire(job),
                 timeout=self._config.job_timeout_seconds,
@@ -815,6 +817,67 @@ class SchedulerService:
             )
             if self.on_job_event is not None:
                 await self.on_job_event("fired", job.job_id, success=True)
+
+    async def _skip_if_stale(self, job: CronJob) -> bool:
+        """Skip a claimed occurrence that came due too long ago.
+
+        After downtime or a stalled event loop every overdue job becomes due
+        at once; firing them would replay hours-old reminders into the chat.
+        A stale ``once`` job is retired, a recurring job is re-armed to its
+        next occurrence from now. Returns True when the fire was skipped.
+        """
+        threshold = self._config.max_fire_lateness_seconds
+        if threshold <= 0:
+            return False
+        try:
+            due_at = datetime.fromisoformat(job.next_fire_at)
+        except (TypeError, ValueError):
+            return False
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
+        lateness = (now - due_at).total_seconds()
+        if lateness <= threshold:
+            return False
+
+        rearm_at = self._compute_stale_rearm(job, now)
+        await self._repo.skip_stale_fire(
+            job.job_id,
+            next_fire_at=rearm_at,
+            skipped_at=now.isoformat(),
+        )
+        logger.warning(
+            "scheduler.stale_fire_skipped",
+            job_id=job.job_id,
+            mode=job.mode,
+            due_at=job.next_fire_at,
+            lateness_seconds=round(lateness),
+            threshold_seconds=threshold,
+            rearmed_to=rearm_at,
+            retired=rearm_at is None,
+        )
+        if self.on_job_event is not None:
+            await self.on_job_event(
+                "skipped",
+                job.job_id,
+                lateness_seconds=round(lateness),
+                retired=rearm_at is None,
+            )
+        return True
+
+    @staticmethod
+    def _compute_stale_rearm(job: CronJob, now: datetime) -> str | None:
+        """Next fire time after skipping a stale occurrence; None retires."""
+        if job.mode == "interval":
+            if job.interval_seconds is None:
+                return None
+            return (now + timedelta(seconds=job.interval_seconds)).isoformat()
+        if job.mode == "cron":
+            if not job.cron_expression:
+                return None
+            return croniter(job.cron_expression, now).get_next(datetime).isoformat()
+        # A one-shot has nothing later to re-arm to.
+        return None
 
     def _compute_next_fire(self, job: CronJob, now_iso: str) -> str | None:
         """Compute the next fire time after marking fired. None = done."""

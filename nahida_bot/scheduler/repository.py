@@ -241,6 +241,44 @@ class CronRepository:
                 )
             await self._engine.db.commit()
 
+    async def skip_stale_fire(
+        self,
+        job_id: str,
+        *,
+        next_fire_at: str | None,
+        skipped_at: str,
+    ) -> None:
+        """Release a claimed job without firing it.
+
+        ``run_count`` and ``last_fired_at`` are left untouched because the
+        occurrence never ran. A ``None`` next_fire_at retires the job (a
+        one-shot past its lateness limit); otherwise the job is re-armed.
+        """
+        async with self._engine.write_lock:
+            if next_fire_at is not None:
+                await self._engine.execute(
+                    """
+                    UPDATE cron_jobs
+                    SET claimed_at = NULL,
+                        next_fire_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (next_fire_at, job_id),
+                )
+            else:
+                await self._engine.execute(
+                    """
+                    UPDATE cron_jobs
+                    SET claimed_at = NULL,
+                        next_fire_at = ?,
+                        is_active = 0,
+                        last_error = 'skipped_stale'
+                    WHERE job_id = ?
+                    """,
+                    (skipped_at, job_id),
+                )
+            await self._engine.db.commit()
+
     async def mark_failed(
         self,
         job_id: str,
