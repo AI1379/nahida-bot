@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from time import monotonic
 
+from nahida_bot.core.process_tree import kill_process_tree
 from nahida_bot.scheduler.models import CronJob
 
 _OUTPUT_LIMIT_CHARS = 12000
@@ -39,6 +40,9 @@ async def execute_script(job: CronJob) -> ScriptExecutionResult:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=job.script_working_dir or None,
+            # Issue #57: dedicated process group so cleanup reaches the whole
+            # spawned tree (script interpreters, pipelines), not just the shell.
+            start_new_session=True,
         )
     except Exception as exc:
         return ScriptExecutionResult(
@@ -55,12 +59,10 @@ async def execute_script(job: CronJob) -> ScriptExecutionResult:
             timeout=job.script_timeout_seconds,
         )
     except asyncio.CancelledError:
-        proc.kill()
-        await proc.wait()
+        await kill_process_tree(proc)
         raise
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await kill_process_tree(proc)
         return ScriptExecutionResult(
             command=job.script_command,
             working_dir=job.script_working_dir,
@@ -70,8 +72,7 @@ async def execute_script(job: CronJob) -> ScriptExecutionResult:
         )
     except Exception as exc:
         if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+            await kill_process_tree(proc)
         return ScriptExecutionResult(
             command=job.script_command,
             working_dir=job.script_working_dir,

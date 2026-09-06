@@ -170,7 +170,11 @@ class _ScriptProcess:
         stderr: bytes = b"",
         delay_seconds: float = 0.0,
     ) -> None:
-        self.returncode = returncode
+        self.pid: int | None = None  # test double: no real process group
+        self._exit_code = returncode
+        # A delayed process is still "running": no exit code until it
+        # finishes, so kill_process_tree() does not skip the kill.
+        self.returncode: int | None = None if delay_seconds else returncode
         self.stdout = stdout
         self.stderr = stderr
         self.delay_seconds = delay_seconds
@@ -179,13 +183,20 @@ class _ScriptProcess:
     async def communicate(self) -> tuple[bytes, bytes]:
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
+        self.returncode = self._exit_code
         return self.stdout, self.stderr
+
+    def send_signal(self, sig: Any) -> None:
+        if getattr(sig, "name", "") == "SIGKILL" or sig == 9:
+            self.kill()
 
     def kill(self) -> None:
         self.killed = True
         self.returncode = -9
 
-    async def wait(self) -> int:
+    async def wait(self) -> int | None:
+        if not self.killed and self.returncode is None:
+            self.returncode = self._exit_code
         return self.returncode
 
 

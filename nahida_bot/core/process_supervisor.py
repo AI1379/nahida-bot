@@ -44,6 +44,7 @@ from nahida_bot.core.events import (
     ProcessStarted,
     ProcessStopped,
 )
+from nahida_bot.core.process_tree import signal_kill_tree, signal_process_tree
 
 if TYPE_CHECKING:
     from asyncio import StreamReader
@@ -812,25 +813,13 @@ class ProcessSupervisor:
             managed.status = "stopped"
 
     def _signal_terminate(self, proc: Process) -> None:
-        try:
-            if sys.platform == "win32":
-                proc.terminate()
-            else:
-                # start_new_session=True makes the child a group leader, so
-                # signalling the group reaches grandchildren (e.g. ssh spawned
-                # by a shell) instead of orphaning them.
-                os.killpg(proc.pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
+        # start_new_session=True makes the child a group leader, so
+        # signalling the group reaches grandchildren (e.g. ssh spawned
+        # by a shell) instead of orphaning them.
+        signal_process_tree(proc, signal.SIGTERM)
 
     def _signal_kill(self, proc: Process) -> None:
-        try:
-            if sys.platform == "win32":
-                proc.kill()
-            else:
-                os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        signal_kill_tree(proc)
 
     async def _cancel_incarnations(self, managed: _ManagedProcess) -> None:
         """Cancel reader/health tasks for the just-exited incarnation."""

@@ -41,6 +41,7 @@ from nahida_bot.core.chat_address import (
 )
 from nahida_bot.core.context import current_session
 from nahida_bot.core.events import AgentStopPayload, AgentStopRequested
+from nahida_bot.core.process_tree import kill_process_tree
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     runtime_settings_from_meta,
@@ -286,34 +287,54 @@ class BuiltinCommandsPlugin(Plugin):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                # Issue #57: dedicated session/process group so cleanup can
+                # kill the whole spawned tree (shell pipelines, interpreters)
+                # instead of orphaning everything but the shell.
+                start_new_session=True,
             )
-
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=actual_timeout
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return f"Command timed out after {actual_timeout}s.\nCommand: {command}"
-
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
-
-            output = f"Exit code: {proc.returncode}\n"
-            if stdout:
-                output += f"--- stdout ---\n{stdout}"
-            if stderr:
-                output += f"--- stderr ---\n{stderr}"
-
-            if len(output) > _MAX_EXEC_OUTPUT:
-                output = output[:_MAX_EXEC_OUTPUT] + "\n... (output truncated)"
-
-            return output
-
         except Exception as e:
             _logger.exception("tool.exec.error", command=command)
             return f"Failed to execute command: {e}"
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=actual_timeout
+            )
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+        except asyncio.TimeoutError:
+            _logger.warning(
+                "tool.exec.timeout_killed",
+                command=command,
+                timeout=actual_timeout,
+                pid=proc.pid,
+            )
+            return f"Command timed out after {actual_timeout}s.\nCommand: {command}"
+        except asyncio.CancelledError:
+            # Run replaced/stopped mid-tool: the exec coroutine is abandoned,
+            # so nothing else will ever reap the subprocess.
+            _logger.info("tool.exec.cancelled_killed", command=command, pid=proc.pid)
+            raise
+        except Exception as e:
+            _logger.exception("tool.exec.error", command=command)
+            return f"Failed to execute command: {e}"
+        finally:
+            # Issue #57: single hard-recycling point. On every abnormal exit
+            # (timeout, cancellation, error) SIGKILL the whole process group
+            # and reap it; after a normal communicate() the child has exited
+            # and this only closes the pipe transports.
+            await kill_process_tree(proc)
+
+        output = f"Exit code: {proc.returncode}\n"
+        if stdout:
+            output += f"--- stdout ---\n{stdout}"
+        if stderr:
+            output += f"--- stderr ---\n{stderr}"
+
+        if len(output) > _MAX_EXEC_OUTPUT:
+            output = output[:_MAX_EXEC_OUTPUT] + "\n... (output truncated)"
+
+        return output
 
     def _resolve_exec_cwd(self, working_dir: str) -> str | None:
         """Resolve the exec working directory against the current workspace.
