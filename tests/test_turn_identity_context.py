@@ -13,6 +13,36 @@ from nahida_bot.identity.models import IdentityResolution
 from nahida_bot.plugins.base import InboundMessage, SenderContext
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ("", "milky:user:123"),
+        ("desktop:user:owner", "desktop:user:owner"),
+        ("malformed", ""),
+    ],
+)
+async def test_authorization_actor_available_without_identity_resolver(
+    override, expected
+):
+    router = MessageRouter(MagicMock(), MagicMock(), MagicMock(), MagicMock())
+    inbound = InboundMessage(
+        message_id="m",
+        platform="milky",
+        chat_id="456",
+        user_id="123",
+        text="hello",
+        raw_event={},
+    )
+    address = ChatAddress(channel="milky", target_type="group", target_id="456")
+    ctx = await router._build_session_context(
+        inbound, address, address.chat_key, None, actor_account_key=override
+    )
+    assert ctx.actor_account_key == expected
+    assert ctx.person_id is None
+    assert ctx.sender_account_key == ""  # Memory identity remains disabled.
+
+
 def test_session_context_keeps_legacy_conversation_fallback() -> None:
     ctx = SessionContext(
         platform="desktop",

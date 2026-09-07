@@ -27,6 +27,7 @@ from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.storage.embedding import EmbeddingResult
 from nahida_bot.agent.providers._http_transport import HttpProviderTransportMixin
 from nahida_bot.agent.providers.base import (
+    current_provider_request_context,
     ChatProvider,
     ProviderResponse,
     TokenUsage,
@@ -346,7 +347,11 @@ class OpenAIResponsesProvider(HttpProviderTransportMixin, ChatProvider):
             )
 
         # Built-in tools from config
-        for builtin in self.built_in_tools or []:
+        for builtin in (
+            (self.built_in_tools or [])
+            if current_provider_request_context.get().allow_builtin_tools
+            else []
+        ):
             formatted = self._format_builtin_tool(builtin)
             if formatted is not None:
                 result.append(formatted)

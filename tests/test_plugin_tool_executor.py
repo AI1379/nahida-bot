@@ -197,6 +197,59 @@ async def test_agent_loop_enforces_registry_admin_requirement() -> None:
 # --- chat-domain scoped tool execution ----------------------------------------
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "verdict, expected_code",
+    [
+        ("allow", None),
+        ("deny", "dangerous_action"),
+        ("unavailable", "risk_review_unavailable"),
+    ],
+)
+async def test_relaxed_review_runs_before_tool_handler(verdict, expected_code):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from nahida_bot.core.authorization_config import AuthorizationConfig
+    from nahida_bot.identity.risk_review import RiskVerdict, RiskReviewUnavailable
+
+    handler = AsyncMock(return_value="ok")
+    review = AsyncMock(
+        return_value=RiskVerdict(
+            verdict="allow" if verdict == "unavailable" else verdict,
+            reason="reviewed",
+            evidence="destructive action",
+        )
+    )
+    if verdict == "unavailable":
+        review.side_effect = RiskReviewUnavailable("review offline")
+    registry = ToolRegistry()
+    registry.register(
+        ToolEntry(
+            name="exec",
+            description="shell",
+            parameters={"type": "object"},
+            handler=handler,
+            plugin_id="builtin",
+            requires_admin=True,
+        )
+    )
+    gate = AuthorizationGate(
+        policy=AuthorizationConfig(mode="relaxed"),
+        reviewer=SimpleNamespace(review=review),
+    )
+    loop = _loop_for(registry, gate)
+    result, _, _ = await loop._execute_tool_with_lifecycle(
+        ToolCall(
+            call_id="review", name="exec", arguments={"command": "grep test docs/*"}
+        ),
+        sender_account_key="milky:user:123",
+        user_request="search docs",
+    )
+    assert result.error_code == expected_code
+    assert handler.await_count == (1 if verdict == "allow" else 0)
+    assert review.call_args.args[0].user_request == "search docs"
+
+
 def _scoped_registry(capture: dict[str, Any]) -> ToolRegistry:
     async def scoped_lookup(**kwargs: Any) -> str:
         capture.update(kwargs)

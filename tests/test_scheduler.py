@@ -72,6 +72,41 @@ def _address() -> ChatAddress:
     return ChatAddress(channel="telegram", target_type="private", target_id="c1")
 
 
+@pytest.mark.asyncio
+async def test_script_job_rechecks_authorization_at_execution(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from nahida_bot.core.authorization_config import AuthorizationConfig
+    from nahida_bot.identity.authorization import AuthorizationGate, NotAuthorized
+    from nahida_bot.identity.risk_review import RiskVerdict
+    from nahida_bot.scheduler.script_executor import ScriptExecutionResult
+
+    actor = "telegram:user:123"
+    review = AsyncMock(
+        return_value=RiskVerdict(verdict="allow", reason="ordinary script", evidence="")
+    )
+    gate = AuthorizationGate(
+        policy=AuthorizationConfig(mode="relaxed"),
+        reviewer=SimpleNamespace(review=review),
+    )
+    execute = AsyncMock(return_value=ScriptExecutionResult("python check.py", "", 0))
+    monkeypatch.setattr("nahida_bot.scheduler.service.execute_script", execute)
+    service = SchedulerService(MagicMock(), authorization=gate)
+    job = replace(
+        _job(),
+        executor_type="script_then_agent",
+        script_command="python check.py",
+        sender_account_key=actor,
+    )
+    await service._execute_fire(job)
+    execute.assert_awaited_once()
+    assert review.call_args.args[0].chat_address == job.session_key
+    gate.policy = AuthorizationConfig(mode="standard")
+    with pytest.raises(NotAuthorized):
+        await service._execute_fire(job)
+    assert execute.await_count == 1
+
+
 class _Agent:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail

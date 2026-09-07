@@ -212,7 +212,7 @@ class AgentOrchestrator:
             # tools — but it stops privileged tools from being rejected as
             # "unknown sender" purely because the child session's
             # platform is synthetic.
-            sender_account_key=session_ctx.sender_account_key,
+            sender_account_key=session_ctx.actor_account_key,
             # Preserve the original channel address so completion delivery
             # targets the chat the user actually spoke to (issue #41).
             chat_address=session_ctx.chat_address,

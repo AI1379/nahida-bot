@@ -416,6 +416,7 @@ class AgentLoop:
                     recorder=runtime.recorder,
                     sender_account_key=request.sender_account_key,
                     chat_address=request.chat_address,
+                    user_request=request.user_message,
                 )
                 runtime.tool_messages.extend(executed_messages)
                 runtime.active_turn_messages.extend(executed_messages)
@@ -535,6 +536,11 @@ class AgentLoop:
             request.system_prompt,
             request.tools,
         )
+        if self.authorization is not None and self.authorization.enabled:
+            effective_system_prompt += "\n\n" + self.authorization.tool_guidance(
+                request.sender_account_key,
+                request.chat_address,
+            )
         run_context = AgentRunContext(
             run_id=trace.trace_id if trace else uuid4().hex,
             trace_id=trace.trace_id if trace else "",
@@ -1316,6 +1322,7 @@ class AgentLoop:
         recorder: RunRecorder | None = None,
         sender_account_key: str = "",
         chat_address: str = "",
+        user_request: str = "",
     ) -> list[ContextMessage]:
         messages: list[ContextMessage] = []
 
@@ -1374,6 +1381,8 @@ class AgentLoop:
                 trace=trace,
                 sender_account_key=sender_account_key,
                 chat_address=chat_address,
+                user_request=user_request,
+                tool_description=definitions[tool_call.name].description,
             )
             messages.append(
                 self._build_tool_message(
@@ -1425,6 +1434,8 @@ class AgentLoop:
         trace: Trace | None = None,
         sender_account_key: str = "",
         chat_address: str = "",
+        user_request: str = "",
+        tool_description: str = "",
     ) -> tuple[ToolExecutionResult, int, str]:
         if self.tool_executor is None:
             raise RuntimeError("Tool executor is not set")
@@ -1437,6 +1448,7 @@ class AgentLoop:
         if self.authorization is not None:
             # Lazy import avoids the loop → identity → plugins → loop cycle.
             from nahida_bot.identity.authorization import (
+                ActionDenied,
                 NotAuthorized,
                 NotInChatScope,
                 TOOL_SCOPE_CHAT_DOMAIN,
@@ -1444,7 +1456,7 @@ class AgentLoop:
 
             try:
                 scope_mode = self.tool_executor.tool_scope(tool_call.name)
-                self.authorization.authorize(
+                await self.authorization.authorize_call(
                     tool_call.name,
                     sender_account_key,
                     tool_call.arguments,
@@ -1453,6 +1465,8 @@ class AgentLoop:
                     ),
                     scope=scope_mode,
                     chat_address=chat_address,
+                    user_request=user_request,
+                    tool_description=tool_description,
                 )
                 if scope_mode == TOOL_SCOPE_CHAT_DOMAIN:
                     tool_call = self._attach_allowed_chats(
@@ -1460,7 +1474,10 @@ class AgentLoop:
                         sender_account_key=sender_account_key,
                         chat_address=chat_address,
                     )
-            except (NotAuthorized, NotInChatScope) as exc:
+            except (NotAuthorized, NotInChatScope, ActionDenied) as exc:
+                error_code = (
+                    exc.code if isinstance(exc, ActionDenied) else "not_authorized"
+                )
                 logger.warning(
                     "agent_loop.tool_not_authorized",
                     trace_id=trace.trace_id if trace else "",
@@ -1468,21 +1485,23 @@ class AgentLoop:
                     tool_name=tool_call.name,
                     sender_account_key=sender_account_key,
                     chat_address=chat_address,
-                    error=str(exc),
+                    error_code=error_code,
                 )
                 return (
                     ToolExecutionResult.error(
-                        code="not_authorized",
+                        code=error_code,
                         message=(
                             f"{exc} The action was not executed. Do not retry "
                             "this tool with the same or similar arguments; "
-                            "either continue without it or tell the user this "
-                            "action needs an admin."
+                            "explain the specific reason or use an allowed "
+                            "alternative such as search_files for reference "
+                            "search or web_fetch for public pages. Do not call "
+                            "network/configuration failures an admin requirement."
                         ),
                         retryable=False,
                     ),
                     0,
-                    "not_authorized",
+                    error_code,
                 )
         max_attempts = max(1, self.config.tool_retry_attempts + 1)
 

@@ -32,6 +32,8 @@ class SessionContext:
     # Identity (issue #7). Empty/None when identity is disabled or the sender's
     # account could not be derived. Populated by MessageRouter via IdentityResolver.
     sender_account_key: str = ""
+    # Authentication is independent of optional Person/identity resolution.
+    authenticated_account_key: str = ""
     person_id: str | None = None
     # Boundary fields introduced while finishing issue #7.  They deliberately
     # do not replace the legacy fields yet, so existing plugins and persisted
@@ -54,7 +56,7 @@ class SessionContext:
     def actor_account_key(self) -> str:
         """Stable actor-account alias used by new identity-aware code."""
 
-        return self.sender_account_key
+        return self.authenticated_account_key or self.sender_account_key
 
 
 @dataclass(slots=True, frozen=True)

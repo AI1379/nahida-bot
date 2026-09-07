@@ -26,6 +26,19 @@ def _tools(root) -> FileSearchTools:
 
 
 @pytest.mark.asyncio
+async def test_search_skips_file_symlink_outside_configured_roots(tmp_path):
+    root = tmp_path / "published"
+    root.mkdir()
+    secret = tmp_path / "private.txt"
+    secret.write_text("secret needle", encoding="utf-8")
+    try:
+        (root / "link.txt").symlink_to(secret)
+    except OSError:
+        pytest.skip("File symlinks require Windows developer mode or symlink privilege")
+    assert "No matches" in await _tools(root).search("needle")
+
+
+@pytest.mark.asyncio
 async def test_finds_case_insensitive_matches_with_line_numbers(root) -> None:
     out = await _tools(root).search("elsa")
     assert "doc.md" in out

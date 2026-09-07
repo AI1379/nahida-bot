@@ -15,6 +15,22 @@ from nahida_bot.core.runtime_settings import (
 )
 
 
+def test_risk_review_context_suppresses_configured_builtin_tools():
+    from dataclasses import replace
+    from nahida_bot.agent.providers.base import current_provider_request_context
+
+    provider = _provider(built_in_tools=["web_search", "code_interpreter"])
+    before = current_provider_request_context.get()
+    token = current_provider_request_context.set(
+        replace(before, allow_builtin_tools=False)
+    )
+    try:
+        assert provider.format_tools([]) == []
+    finally:
+        current_provider_request_context.reset(token)
+    assert provider.format_tools([]) != []
+
+
 class _FakeResponse:
     status_code: int = 200
 

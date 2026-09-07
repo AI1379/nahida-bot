@@ -294,8 +294,11 @@ class CronTools:
         validation_error, normalized_fire_at = self._validate_create(request)
         if validation_error:
             return validation_error
-        authorization_error = self._script_executor_authorization_error(
-            request.executor_type
+        authorization_error = await self._script_executor_authorization_error(
+            request.executor_type,
+            request.script_command,
+            request.script_working_dir,
+            request.prompt,
         )
         if authorization_error:
             return authorization_error
@@ -323,7 +326,7 @@ class CronTools:
                 created_from_chat_address=address.chat_key,
                 # The initiator may be a conversation-joiner anchor in groups;
                 # cron ownership for auto-join scenarios still needs policy work.
-                sender_account_key=context.sender_account_key,
+                sender_account_key=context.actor_account_key,
             )
         except Exception as exc:
             return f"Error creating scheduled task: {exc}"
@@ -372,8 +375,15 @@ class CronTools:
         effective_executor_type = request.executor_type or str(
             getattr(_job, "executor_type", "agent")
         )
-        authorization_error = self._script_executor_authorization_error(
-            effective_executor_type
+        authorization_error = await self._script_executor_authorization_error(
+            effective_executor_type,
+            request.script_command
+            if request.script_command is not None
+            else _job.script_command,
+            request.script_working_dir
+            if request.script_working_dir is not None
+            else _job.script_working_dir,
+            request.prompt if request.prompt is not None else _job.prompt,
         )
         if authorization_error:
             return authorization_error
@@ -566,8 +576,14 @@ class CronTools:
             return "Error: 'script_timeout_seconds' must be > 0."
         return None
 
-    def _script_executor_authorization_error(self, executor_type: str) -> str | None:
-        """Require an admin sender when a cron job will run a local shell."""
+    async def _script_executor_authorization_error(
+        self,
+        executor_type: str,
+        command: str,
+        working_dir: str,
+        prompt: str,
+    ) -> str | None:
+        """Apply the same mode/review to the exact script stored for later."""
         if executor_type != "script_then_agent":
             return None
         context = current_session.get()
@@ -580,9 +596,21 @@ class CronTools:
         gate = getattr(app, "_authorization_gate", None)
         if gate is None or not getattr(gate, "enabled", False):
             return None
-        if gate.is_admin(context.actor_account_key):
-            return None
-        return "Error: script_then_agent requires an admin sender."
+        from nahida_bot.identity.authorization import ActionDenied, NotAuthorized
+
+        address = typed_address_from_session_context(context)
+        try:
+            await gate.authorize_call(
+                "exec",
+                context.actor_account_key,
+                {"command": command, "working_dir": working_dir},
+                chat_address=address.chat_key if address is not None else "",
+                user_request=prompt,
+                tool_description="Persist a recurring host shell script; it will be reviewed again at execution.",
+            )
+        except (NotAuthorized, ActionDenied) as exc:
+            return f"Error: {exc}"
+        return None
 
     @staticmethod
     def _format_created(job: Any, request: _CreateRequest) -> str:

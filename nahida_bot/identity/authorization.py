@@ -1,8 +1,8 @@
-"""Action authorization gate (Phase A, issue #7).
+"""Action authorization with standard, reviewed-relaxed and unsafe modes.
 
-The bot's hard trust boundary. Privileged tool calls — shell ``exec``,
-cross-session ``message``, ``workspace_write``, management commands — are
-permitted only when the sender's account is in the config-declared admin set.
+Identity resolution is independent of this policy. Standard mode requires an
+admin for privileged tools. Relaxed mode reviews concrete non-admin execution;
+unsafe mode permits it without review. Neither mode supplies OS isolation.
 
 Chat-domain scoping adds a second, orthogonal axis: read-only history tools
 declare ``scope="chat_domain"`` and are additionally available to non-admin
@@ -10,7 +10,7 @@ senders when the target chat belongs to the same config-declared trust domain
 as the current chat (main group + satellite groups). Cross-domain and
 cross-private-chat access still requires an admin.
 
-This module is the **sole** place admin status is consulted. It is deliberately
+This module centralizes action policy. It is deliberately
 decoupled from memory: memory subsystem code
 (``nahida_bot.agent.memory.*``, ``nahida_bot.identity.policy``,
 ``nahida_bot.agent.retrieval.*``) must never import or branch on it — the agent
@@ -18,18 +18,21 @@ loop calls it at the tool-dispatch boundary. See
 ``docs/design/memory-soft-scope-and-authz.md`` §4.4 and
 ``docs/design/person-identity-system.md`` §2.5.
 
-Security posture:
-- ``enabled=False`` (identity subsystem off, the default) → the gate is a
-  no-op, preserving legacy behavior exactly.
-- ``enabled=True`` → enforce, **fail-closed**: an empty admin set denies every
-  privileged call. Turning identity on requires declaring admins; otherwise the
-  owner notices immediately and fixes config (safe + loud, never silently open).
+The enabled=False constructor remains for embedded/legacy callers and tests;
+the application always enables the gate, regardless of identity.enabled.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import structlog
+
+from nahida_bot.core.authorization_config import AuthorizationConfig, AuthorizationMode
+
+if TYPE_CHECKING:
+    from nahida_bot.identity.risk_review import RiskReviewer
 
 from nahida_bot_sdk.chat_address import chat_key_from_session_id
 
@@ -57,6 +60,54 @@ PRIVILEGED_TOOLS: frozenset[str] = frozenset(
 # domains instead of the binary admin gate: a non-admin sender may use them
 # only against chats in the same declared domain as the current chat.
 TOOL_SCOPE_CHAT_DOMAIN = "chat_domain"
+
+# These direct control-plane and cross-chat operations never inherit an
+# execution-mode override. Host shell access can still bypass OS-level
+# protections: relaxed/unsafe are explicitly not security sandboxes.
+ADMIN_ONLY_TOOLS = (PRIVILEGED_TOOLS - {"exec", "workspace_write"}) | {
+    "mcp_add_server",
+    "mcp_remove_server",
+    "mcp_reload_server",
+}
+_REVIEW_EXEMPT_TOOLS = frozenset(
+    {
+        "workspace_read",
+        "search_files",
+        "web_fetch",
+        "send_local_attachment",
+        "memory_read",
+        "memory_write",
+        "memory_update",
+        "memory_archive",
+        "read_chat_history",
+        "search_chat_history",
+        "find_chat",
+        "recall_cross_chat",
+        "plan",
+        "cron_list",
+        "cron_cancel",
+        "cron_delete",
+        "cron_create",
+        "cron_update",
+        "agent_spawn",
+        "agent_wait",
+        "agent_yield",
+        "agent_stop",
+    }
+)
+_logger = structlog.get_logger(__name__)
+
+
+class ActionDenied(Exception):
+    """A policy/reviewer denial distinct from missing administrator status."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+class _ReviewRequired(Exception):
+    pass
 
 
 class ChatDomainIndex:
@@ -153,14 +204,57 @@ class AuthorizationGate:
         *,
         enabled: bool = True,
         domains: ChatDomainIndex | None = None,
+        policy: AuthorizationConfig | None = None,
+        reviewer: RiskReviewer | None = None,
     ) -> None:
         self._admins = frozenset(admin_account_keys or ())
         self._enabled = enabled
         self._domains = domains if domains is not None else ChatDomainIndex()
+        self.policy = policy or AuthorizationConfig()
+        self.reviewer = reviewer
+
+    def mode_for(
+        self, sender_account_key: str, chat_address: str = ""
+    ) -> AuthorizationMode:
+        """Use trusted account/chat context only, never tool arguments."""
+        return self.policy.accounts.get(
+            sender_account_key, self.policy.chats.get(chat_address, self.policy.mode)
+        )
+
+    def tool_guidance(self, sender_account_key: str, chat_address: str = "") -> str:
+        """Describe the actual runtime policy so the model does not self-deny."""
+        if self.is_admin(sender_account_key):
+            return "Tool authorization: this authenticated account is a declared admin."
+        mode = self.mode_for(sender_account_key, chat_address)
+        common = (
+            " Prefer search_files for configured reference directories and web_fetch "
+            "for public web pages. These do not require administrator permission. "
+            "Public search/image lookup is not forbidden merely because it uses "
+            "the network. Use available tools; do not claim an admin requirement "
+            "unless the tool actually reports it. Respect tool failures and scopes."
+        )
+        if mode == "standard":
+            return (
+                "Tool authorization: standard. exec/workspace_write require an admin."
+                + common
+            )
+        return (
+            f"Tool authorization: {mode}. This account may use exec and "
+            "workspace_write without becoming an admin. Ordinary scripts, grep, "
+            "web/image lookup and file processing are permitted. "
+            + (
+                "Concrete calls undergo independent risk review. "
+                if mode == "relaxed"
+                else "Calls are logged without risk review. "
+            )
+            + "Identity/server management, desktop control and cross-chat delivery "
+            "still require admin authorization. Execution is on the host, not a sandbox."
+            + common
+        )
 
     @property
     def enabled(self) -> bool:
-        """False ⇒ gate is a no-op (identity subsystem off)."""
+        """False only for explicitly disabled embedded/legacy gate instances."""
         return self._enabled
 
     def is_admin(self, sender_account_key: str) -> bool:
@@ -187,21 +281,103 @@ class AuthorizationGate:
     ) -> None:
         """Raise if this tool call is not allowed for the sender.
 
-        Non-privileged tools always pass unless the tool registry marks them
-        admin-only. A disabled gate passes everything (legacy behavior when
-        identity is off). ``arguments`` is consulted only for chat-domain
-        scoped tools, to validate the call's target chat.
+        Apply synchronous boundaries. Relaxed calls needing review raise an
+        internal signal; production dispatch must use authorize_call instead.
+        A disabled embedded gate passes everything. Arguments cannot select
+        the account, mode or originating chat.
         """
         if not self._enabled:
             return
-        privileged = self.is_privileged(tool_name) or requires_admin
-        if privileged:
-            if self.is_admin(sender_account_key):
-                return
+        if self.is_admin(sender_account_key):
+            return
+        if tool_name in ADMIN_ONLY_TOOLS:
             raise NotAuthorized(tool_name, sender_account_key)
-        if scope == TOOL_SCOPE_CHAT_DOMAIN and not self.is_admin(sender_account_key):
+        privileged = self.is_privileged(tool_name) or requires_admin
+        mode = self.mode_for(sender_account_key, chat_address)
+        if privileged and (not sender_account_key or mode == "standard"):
+            raise NotAuthorized(tool_name, sender_account_key)
+        if scope == TOOL_SCOPE_CHAT_DOMAIN:
             self._authorize_chat_scope(
                 tool_name, sender_account_key, arguments or {}, chat_address
+            )
+        if (
+            mode != "standard"
+            and not sender_account_key
+            and tool_name not in _REVIEW_EXEMPT_TOOLS
+        ):
+            raise NotAuthorized(tool_name, sender_account_key)
+        if mode == "relaxed" and (privileged or tool_name not in _REVIEW_EXEMPT_TOOLS):
+            if not sender_account_key:
+                raise NotAuthorized(tool_name, sender_account_key)
+            # Synchronous callers cannot silently skip the asynchronous review.
+            raise _ReviewRequired()
+        if mode == "unsafe":
+            _logger.warning(
+                "authorization.unsafe_allowed",
+                tool_name=tool_name,
+                sender_account_key=sender_account_key,
+                chat_address=chat_address,
+            )
+
+    async def authorize_call(
+        self,
+        tool_name: str,
+        sender_account_key: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        requires_admin: bool = False,
+        scope: str = "",
+        chat_address: str = "",
+        user_request: str = "",
+        tool_description: str = "",
+    ) -> None:
+        """Authorize and, in relaxed mode, review the exact impending call."""
+        try:
+            self.authorize(
+                tool_name,
+                sender_account_key,
+                arguments,
+                requires_admin=requires_admin,
+                scope=scope,
+                chat_address=chat_address,
+            )
+            return
+        except _ReviewRequired:
+            pass
+        from nahida_bot.identity.risk_review import (
+            RiskReviewRequest,
+            RiskReviewUnavailable,
+        )
+
+        if self.reviewer is None:
+            raise ActionDenied(
+                "risk_review_unavailable",
+                "Risk-review model is not configured; no action was executed.",
+            )
+        try:
+            verdict = await self.reviewer.review(
+                RiskReviewRequest(
+                    tool_name=tool_name,
+                    arguments=arguments or {},
+                    user_request=user_request,
+                    tool_description=tool_description,
+                    chat_address=chat_address,
+                )
+            )
+        except RiskReviewUnavailable as exc:
+            _logger.warning("authorization.review_unavailable", tool_name=tool_name)
+            raise ActionDenied("risk_review_unavailable", str(exc)) from exc
+        _logger.info(
+            "authorization.reviewed",
+            tool_name=tool_name,
+            verdict=verdict.verdict,
+            sender_account_key=sender_account_key,
+            chat_address=chat_address,
+        )
+        if verdict.verdict == "deny":
+            raise ActionDenied(
+                "dangerous_action",
+                f"Risk review blocked this action: {verdict.reason} Evidence: {verdict.evidence}",
             )
 
     def _authorize_chat_scope(

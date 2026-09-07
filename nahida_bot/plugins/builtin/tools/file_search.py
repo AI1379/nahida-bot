@@ -174,12 +174,20 @@ class FileSearchTools:
         for target in targets:
             files = self._iter_files(target, glob_pattern)
             for file_path in files:
+                # os.walk(followlinks=False) does not reject file symlinks.
+                # Validate every yielded file, not only the input directory.
+                try:
+                    resolved = file_path.resolve(strict=True)
+                except (OSError, RuntimeError):
+                    continue
+                if not any(resolved.is_relative_to(root) for root in self._roots):
+                    continue
                 if match_count >= _MAX_MATCHES:
                     return blocks, match_count, file_count
                 try:
-                    if file_path.stat().st_size > _MAX_FILE_BYTES:
+                    if resolved.stat().st_size > _MAX_FILE_BYTES:
                         continue
-                    text = file_path.read_text(encoding="utf-8", errors="replace")
+                    text = resolved.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
                 if "\x00" in text[:4096]:

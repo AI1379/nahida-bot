@@ -114,7 +114,7 @@ class Application:
         self._identity_store: Any | None = None
         self._identity_resolver: Any | None = None
         # Phase A action-authorization gate (privileged tool calls). None until
-        # identity is initialized; the gate is a no-op when identity is off.
+        # identity storage is initialized; policy is independent of identity.enabled.
         self._authorization_gate: Any | None = None
         self._providers_to_close: list[object] = []  # ChatProvider instances
         self.session_runner: SessionRunner | None = None
@@ -399,18 +399,38 @@ class Application:
         self._identity_resolver = IdentityResolver(
             identity_store, enabled=identity_cfg.enabled
         )
-        # Phase A action-authorization gate: privileged tools require a sender
-        # whose account_key is in the config-declared admin set. Decoupled from
-        # people (declaring a Person is NOT admin). No-op when identity is off.
-        admin_keys = frozenset(
+        # Action policy is independent of identity.enabled. Keep the legacy
+        # admin list as a migration fallback, never as an enable switch.
+        authorization_cfg = self.settings.authorization
+        legacy_admin_keys = frozenset(
             str(AccountKey.from_parts(account.channel, account.platform_account_id))
             for account in identity_cfg.admins
         )
         self._authorization_gate = AuthorizationGate(
-            admin_keys,
-            enabled=identity_cfg.enabled,
+            frozenset(authorization_cfg.admins)
+            if authorization_cfg.admins is not None
+            else legacy_admin_keys,
             domains=ChatDomainIndex(identity_cfg.chat_domains),
+            policy=authorization_cfg,
         )
+        logger.info(
+            "authorization.configured",
+            mode=authorization_cfg.mode,
+            account_overrides=len(authorization_cfg.accounts),
+            chat_overrides=len(authorization_cfg.chats),
+        )
+        if any(
+            mode != "standard"
+            for mode in (
+                authorization_cfg.mode,
+                *authorization_cfg.accounts.values(),
+                *authorization_cfg.chats.values(),
+            )
+        ):
+            logger.warning(
+                "authorization.host_execution_enabled",
+                message="Relaxed/unsafe tools run with the bot OS account; no sandbox.",
+            )
 
         # Build providers from config
         slots: list[ProviderSlot] = []
@@ -512,6 +532,12 @@ class Application:
             from nahida_bot.agent.providers.router import ModelRouter
 
             self._model_router = ModelRouter(self._provider_manager)
+            from nahida_bot.identity.risk_review import ModelRiskReviewer
+
+            self._authorization_gate.reviewer = ModelRiskReviewer(
+                self._model_router,
+                authorization_cfg.review,
+            )
             await self._init_memory_embedding()
 
             # Create a single AgentLoop with the default provider as fallback
@@ -829,6 +855,7 @@ class Application:
         scheduler_cfg = self.settings.scheduler
         self.scheduler_service = SchedulerService(
             repo,
+            authorization=self._authorization_gate,
             runner=self.session_runner,
             channel_registry=self.channel_registry,
             message_delivery_store=self.message_delivery_store,

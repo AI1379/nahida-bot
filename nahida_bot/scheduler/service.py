@@ -28,6 +28,7 @@ from nahida_bot.scheduler.script_executor import (
 )
 
 if TYPE_CHECKING:
+    from nahida_bot.identity.authorization import AuthorizationGate
     from nahida_bot.core.channel_registry import ChannelRegistry
     from nahida_bot.core.events import EventBus
     from nahida_bot.core.router import MessageRouter
@@ -64,6 +65,7 @@ class SchedulerService:
         app_name: str = "the assistant",
         config: SchedulerConfig | None = None,
         enable_silent_reply: bool = True,
+        authorization: AuthorizationGate | None = None,
     ) -> None:
         self._repo = repo
         self._runner = runner
@@ -75,6 +77,7 @@ class SchedulerService:
         self._app_name = app_name
         self._config = config or SchedulerConfig()
         self._enable_silent_reply = enable_silent_reply
+        self._authorization = authorization
         # Optional callback: on_job_event("fired" | "failed", job_id, **kwargs)
         # Set by EventBroadcaster to push SSE events when jobs fire/fail.
         self.on_job_event: Any = None
@@ -965,6 +968,21 @@ class SchedulerService:
         """Execute a job through its configured executor."""
         script_result: ScriptExecutionResult | None = None
         if job.executor_type == "script_then_agent":
+            if self._authorization is not None:
+                # Re-evaluate current policy on every fire, including revocations.
+                # Denials propagate as job failures, never as an agent fallback
+                # that could attempt an unreviewed alternative execution route.
+                await self._authorization.authorize_call(
+                    "exec",
+                    job.sender_account_key,
+                    {
+                        "command": job.script_command,
+                        "working_dir": job.script_working_dir,
+                    },
+                    chat_address=job.session_key,
+                    user_request=job.prompt,
+                    tool_description="Execute this scheduled host shell command.",
+                )
             script_result = await execute_script(job)
             if script_result.succeeded:
                 logger.info(

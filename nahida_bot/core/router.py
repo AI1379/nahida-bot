@@ -188,10 +188,25 @@ class MessageRouter:
     ) -> SessionContext:
         """Construct the SessionContext for an inbound turn, with identity.
 
-        Identity fields stay empty when the resolver is absent/disabled or when
-        no account could be derived, so existing behavior is unchanged.
+        Person fields remain optional; action authorization always receives the
+        platform-authenticated account independently of identity resolution.
         """
         sender_account_key = ""
+        from nahida_bot.identity.models import AccountKey
+        from nahida_bot.identity.resolver import account_key_from_inbound
+
+        authenticated_account_key = ""
+        try:
+            account = (
+                AccountKey.parse(actor_account_key)
+                if actor_account_key
+                else account_key_from_inbound(inbound, address)
+            )
+            authenticated_account_key = str(account) if account is not None else ""
+        except ValueError:
+            # A malformed authenticated override must not fall back to an
+            # unrelated synthetic inbound sender.
+            logger.warning("router.invalid_actor_account_key")
         person_id: str | None = None
         if self._identity_resolver is not None:
             identity = await self._identity_resolver.resolve(
@@ -220,6 +235,7 @@ class MessageRouter:
                 else ""
             ),
             sender_account_key=sender_account_key,
+            authenticated_account_key=authenticated_account_key,
             person_id=person_id,
             # Compatibility projection for traditional channel turns.  These
             # fields are explicit so non-channel transports (Desktop Node,

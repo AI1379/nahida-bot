@@ -23,6 +23,8 @@ class ProviderRequestContext:
 
     session_id: str = ""
     request_id: str = ""
+    # Security review requests must not inherit provider-side built-in tools.
+    allow_builtin_tools: bool = True
 
 
 current_provider_request_context: ContextVar[ProviderRequestContext] = ContextVar(

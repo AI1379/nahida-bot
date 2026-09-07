@@ -487,8 +487,8 @@ agent_runtime:
 #   reasoning_policy: "budget"          # strip / append / budget
 #   max_reasoning_tokens: 2000          # reasoning chain token 预算
 
-# ── Identity / delegated authorization ────────────────
-# Identity must be enabled for the privileged-tool gate and tickets to apply.
+# ── Identity / action authorization ──────────────────
+# Identity controls Person linking and memory attribution, not tool policy.
 # Admins are authenticated account keys assembled from channel + account id;
 # being linked to a Person does not make an account an admin.
 #
@@ -506,6 +506,25 @@ agent_runtime:
 #     main_community:
 #       - "milky:group:833325688"
 #       - "milky:group:732870642"
+
+# Authorization is independent of identity.enabled; default is standard.
+# Existing identity.admins is inherited only when authorization.admins is absent.
+# Both relaxed and unsafe execute with the bot OS account — NOT in a sandbox.
+# relaxed: allow exec/scripts after independent risk review; unsafe: no review.
+# Identity/MCP management, desktop tools and cross-chat delivery remain admin-only.
+# Changes require restarting the bot (no policy hot reload in this version).
+# authorization:
+#   mode: standard
+#   # admins: ["milky:user:123456789"]  # [] explicitly removes inherited admins
+#   chats:
+#     "milky:group:833325688": relaxed
+#     "milky:group:732870642": relaxed
+#   # accounts:                       # exact account overrides chat/default mode
+#   #   "milky:user:987654321": unsafe
+#   review:
+#     model: cheap                     # model tag or provider/model; must resolve
+#     timeout_seconds: 20
+#     max_input_chars: 60000           # oversized calls fail; never silently truncated
 
 # ── Builtin plugin overrides（顶层插件 id 覆盖 manifest config）──
 # search_files 只读检索工具的根目录白名单：每个发送者可用（无 shell），

@@ -1741,16 +1741,15 @@ async def test_cron_create_passes_script_executor_settings() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cron_script_executor_requires_admin_when_identity_is_enabled() -> None:
+async def test_cron_script_executor_requires_admin_in_standard_mode() -> None:
+    from nahida_bot.identity.authorization import AuthorizationGate
+
     api = _FakeAPI()
     api.scheduler_service = _FakeScheduler()
     api._event_bus = SimpleNamespace(
         context=SimpleNamespace(
             app=SimpleNamespace(
-                _authorization_gate=SimpleNamespace(
-                    enabled=True,
-                    is_admin=lambda account_key: account_key == "admin",
-                )
+                _authorization_gate=AuthorizationGate(frozenset({"admin"}))
             )
         )
     )
@@ -1777,7 +1776,7 @@ async def test_cron_script_executor_requires_admin_when_identity_is_enabled() ->
     finally:
         current_session.reset(token)
 
-    assert result == "Error: script_then_agent requires an admin sender."
+    assert "requires admin authorization" in result
     assert api.scheduler_service.created == {}
 
 

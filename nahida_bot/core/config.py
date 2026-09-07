@@ -8,6 +8,8 @@ import yaml
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field
 
+from nahida_bot.core.authorization_config import AuthorizationConfig
+
 ImageFallbackMode = Literal["auto", "tool", "off"]
 MediaContextPolicy = Literal["cache_aware", "description_only", "native_recent"]
 
@@ -394,7 +396,8 @@ class IdentityConfig(BaseModel):
     # Phase A action-authorization (see docs/design/memory-soft-scope-and-authz.md).
     # Account keys authorized for privileged tools (exec/message/workspace_write/
     # management). Decoupled from ``people``: declaring someone a Person does NOT
-    # make them an admin. Only consulted when ``enabled`` is true.
+    # make them an admin. Migration fallback when authorization.admins is absent,
+    # independent of identity.enabled.
     admins: list[IdentityAccountSeed] = Field(default_factory=list)
     # Chat trust domains: named sets of chat addresses (e.g. a main QQ group
     # plus its satellite groups) that share read visibility for chat-history
@@ -601,6 +604,7 @@ class Settings(BaseModel):
     memory: MemoryConfig = MemoryConfig()
     kb_auto_recall: KBAutoRecallConfig = KBAutoRecallConfig()
     identity: IdentityConfig = IdentityConfig()
+    authorization: AuthorizationConfig = Field(default_factory=AuthorizationConfig)
     processes: ProcessSupervisorConfig = ProcessSupervisorConfig()
 
 

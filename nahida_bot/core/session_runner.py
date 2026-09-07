@@ -841,7 +841,7 @@ class SessionRunner:
             run_kwargs["model"] = runtime.selected_model
         session_context = current_session.get()
         run_kwargs["sender_account_key"] = (
-            session_context.sender_account_key if session_context is not None else ""
+            session_context.actor_account_key if session_context is not None else ""
         )
         run_kwargs["chat_address"] = (
             session_context.chat_address.chat_key

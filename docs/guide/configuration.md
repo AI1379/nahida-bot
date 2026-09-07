@@ -1072,19 +1072,68 @@ motion_planner:
   timeout_seconds: 15.0
 ```
 
-## 身份与管理员授权
+## 身份与动作授权
 
-开启 `identity` 后，`identity.admins` 中的平台账号可以直接调用特权工具
-（`exec` / `message` / `workspace_write` / `identity_manage` 等）。
-Person 链接只用于身份和记忆归属，不会自动赋予管理员权限。
+`identity.enabled` 只控制 Person 关联、身份观察与记忆归属。工具授权由独立的
+`authorization` 配置控制，关闭 identity 不再关闭权限检查。平台认证账号仍会
+传递给授权模块，但不会因此创建 Person 或启用身份记忆。
+
+| 模式 | 普通用户执行策略 | 风险审查 |
+|---|---|---|
+| `standard`（默认） | `exec`、`workspace_write` 等要求管理员 | 保留标准权限检查 |
+| `relaxed` | 允许脚本、文件写入和其他经审查的工具调用 | 独立模型检查具体调用，有明确危险证据才拒绝 |
+| `unsafe` | 放开普通执行工具的管理员门槛 | 不做风险模型审查，记录放行事件 |
+
+**当前 relaxed 和 unsafe 都使用 bot 的宿主机账号执行，不是沙箱。** 风险模型
+可能漏检；脚本能接触该 OS 账号可访问的文件、环境和网络。这里的管理员身份限制
+仅约束直接工具调用，不能阻止已获宿主机执行权限的脚本间接访问相同资源。
+隔离执行、网络出口控制和产物所有权管理尚未实现。
 
 ```yaml
 identity:
   enabled: true
+
+authorization:
+  mode: standard
   admins:
-    - channel: "milky"
-      platform_account_id: "123456789"
+    - "milky:user:123456789"
+  chats:
+    "milky:group:833325688": relaxed
+    "milky:group:732870642": relaxed
+  # 精确账号覆盖优先于所在群和默认模式；只给明确选择的账号开放。
+  # accounts:
+  #   "milky:user:987654321": unsafe
+  review:
+    model: cheap                 # 已配置的模型标签或 provider/model
+    timeout_seconds: 20
+    max_input_chars: 60000
 ```
 
-非管理员调用特权工具会被 `AuthorizationGate` 拒绝（fail-closed）：开启
-`identity` 但不声明 admins 时，所有特权调用都会被锁死，避免被静默放行。
+模式匹配顺序：`accounts` 精确账号 → `chats` 精确聊天地址 → `mode`。聊天键可以
+包含 SDK 支持的线程 ID；不要填写会话历史 ID。配置由部署者选择，模型参数和群消息
+不能修改模式。配置修改后需要重启 bot；本版本没有权限热更新或用户自助切换 UI。
+
+`authorization.admins` 未填写时兼容读取 `identity.admins`；显式 `admins: []`
+代表不继承任何管理员。Person 关联不会赋予管理员身份。即使启用了 relaxed/unsafe，
+无可识别账号的特权调用仍然拒绝，身份/MCP 管理、桌面控制和跨聊天 `message` 工具
+仍要求管理员，历史工具仍按 `identity.chat_domains` 限定聊天范围。
+
+`search_files`、`web_fetch`、当前聊天附件及既有范围受限工具不因使用网络或文件而
+要求管理员。relaxed 对 `exec`、`workspace_write`、未知插件/MCP 工具等执行独立
+风险审查；审查器仅获得原始任务、工具描述和参数，不附带完整历史、宿主文件或工具。
+审查服务不可用、超时、输出无效或输入过长时，不执行该调用并返回
+`risk_review_unavailable`；明确危险行为返回 `dangerous_action`。不会自动切换 unsafe。
+
+定时脚本创建/修改时审查实际命令，每次触发时重新按发起账号和目标聊天检查。
+撤回相应模式后，后续脚本触发会失败，不会改走 Agent 来绕过拒绝。旧的无账号脚本任务
+在新策略下不能执行，需要部署者补齐归属或以已认证账号重新创建。网关创建脚本任务也
+需要保存有效发起账号，否则触发时会失败。
+
+升级注意：未配置 `authorization` 时使用 standard。之前依靠 `identity.enabled: false`
+让任意用户执行 shell 的部署，升级后会收紧；如需保留宽松体验，应显式选择 relaxed
+或 unsafe。回滚策略使用 standard，不能再通过关闭 identity 回滚授权。
+
+日志：`authorization.configured`、`authorization.host_execution_enabled`、
+`authorization.reviewed`、`authorization.review_unavailable`、
+`authorization.unsafe_allowed`。授权审计不记录完整脚本、参数或模型证据原文；原有工具
+执行日志与运行记录仍按各自配置保留。

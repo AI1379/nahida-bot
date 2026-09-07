@@ -464,6 +464,7 @@ class MCPPlugin(Plugin):
                 "required": ["server_key", "transport"],
             },
             self._tool_add_server,
+            requires_admin=True,
         )
         self.api.register_tool(
             "mcp_remove_server",
@@ -479,6 +480,7 @@ class MCPPlugin(Plugin):
                 "required": ["server_key"],
             },
             self._tool_remove_server,
+            requires_admin=True,
         )
         self.api.register_tool(
             "mcp_list_servers",
@@ -500,6 +502,7 @@ class MCPPlugin(Plugin):
                 "required": ["server_key"],
             },
             self._tool_reload_server,
+            requires_admin=True,
         )
 
     # ── Tool Handlers ──────────────────────────────────
