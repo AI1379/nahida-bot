@@ -428,6 +428,37 @@ telegram:
 #   enable_media_download_tool: true
 #   cache_media_on_receive: true
 
+# GitHub Channel（可选）
+# 将 GitHub 仓库作为聊天平台：issue/PR 的评论与事件经 webhook 进入会话，
+# bot 的回复以 issue 评论形式发出；同时注册 github_* issue 管理工具。
+# 前置条件：
+#   1. 需要 webapi.enabled: true，且 /webhooks/<path> 对 GitHub 可达
+#      （服务器需公网暴露或反向代理；入口防线是 HMAC 签名校验）。
+#   2. 建一个 PAT（classic 需 repo scope；fine-granted 授予目标仓库的
+#      issues 读写作即可），写入 .env 的 GITHUB_TOKEN。
+#   3. 仓库 webhook 配置指向 http(s)://<host>:<port>/webhooks/github，
+#      Content type 选 application/json，Secret 与 GITHUB_WEBHOOK_SECRET 一致，
+#      订阅 Issues / Issue comments / Pull requests / Pull request reviews。
+# 注意：github-notifier 插件若启用并占用同一路径会在加载时冲突报错。
+#
+# github:
+#   enabled: true
+#   token: "${GITHUB_TOKEN:}"             # PAT；留空则 REST 匿名（60 req/h）
+#   webhook_secret: "${GITHUB_WEBHOOK_SECRET:}"  # 必填（fail-closed，缺失时拒绝非 ping 事件）
+#   # webhook_path: "github"              # 最终路径 /webhooks/github
+#   # api_base_url: "https://api.github.com"  # GitHub Enterprise Server 改这里
+#   # bot_login: ""                       # bot 用户名；留空则启动时 GET /user 自动发现
+#   allowed_repos: ["AI1379/nahida-bot"]  # 仓库白名单 owner/name；支持 org/* 通配整组织；空 = token 可见的全部
+#   # allowed_senders: []                 # 发送者 login 白名单；空 = 不按名单限制（bot 自身始终跳过）
+#   # allowed_orgs: []                    # 组织白名单：任一组织的成员自动放行（API 查询 + 30 分钟缓存）；
+#   #                                     # 留空则完全不发起组织判定。注意：查隐藏成员需要组织 owner 的 PAT
+#   # group_trigger_mode: "mention"       # 默认仅 @bot 时响应；none/mention/command/always
+#   # group_context_capture: false        # 未触发事件是否记录为旁听上下文
+#   # reply_to_inbound: null
+#   # include_reasoning: false            # 公开仓库默认不附带思考过程
+#   # lifecycle_as_context: true          # issue/PR 关闭、重开作为旁听上下文
+#   # enable_issue_tools: true            # 注册 github_* 工具（改状态的工具仅 admin 可用）
+
 # Discord Channel（可选）
 # 启用前需在 Discord Developer Portal 创建 Bot、开启 Message Content Intent
 # （Privileged Intent，必须在后台手动开启），并执行 `uv sync --group discord`。

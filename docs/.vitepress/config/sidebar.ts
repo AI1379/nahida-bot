@@ -95,6 +95,7 @@ export const sidebar: DefaultTheme.Sidebar = {
         { text: "WebUI 设计", link: "/design/webui-design" },
         { text: "Desktop 桌宠", link: "/design/desktop-app" },
         { text: "OneBot Channel", link: "/design/onebot-channel" },
+        { text: "GitHub Channel", link: "/design/github-channel" },
         { text: "Agent Core", link: "/design/agent-core" },
         { text: "AgentLoop 改造计划", link: "/design/agent-loop-repair-plan" },
         { text: "记忆系统", link: "/design/memory-system" },

@@ -1,0 +1,33 @@
+id: github
+name: "GitHub Channel"
+version: "0.1.0"
+description: "GitHub channel via repository webhooks (issue/PR/comment events) and the REST API"
+entrypoint: "nahida_bot.channels.github.plugin:GitHubChannelPlugin"
+enabled: false
+
+permissions:
+  network:
+    outbound:
+      - "api.github.com"
+    inbound: true
+
+config:
+  token: ""
+  webhook_secret: ""
+  webhook_path: "github"
+  api_base_url: "https://api.github.com"
+  bot_login: ""
+  allowed_repos: []
+  allowed_senders: []
+  allowed_orgs: []
+  command_prefix: "/"
+  group_trigger_mode: "mention"
+  group_context_capture: false
+  reply_to_inbound: null
+  include_reasoning: false
+  lifecycle_as_context: true
+  enable_issue_tools: true
+  max_comment_length: 65536
+  request_timeout: 20.0
+  send_retry_attempts: 3
+  send_retry_backoff: 1.5
