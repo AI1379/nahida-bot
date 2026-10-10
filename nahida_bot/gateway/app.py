@@ -190,6 +190,7 @@ class WebAPIApp:
 
         app.state.application = self._application
         app.state.auth_token = self._auth_token
+        app.state.voice_lab_connections = set()
         app.state.webui_auth = WebUIAuthService(self._application.settings.webui.auth)
         app.state.node_registry = self.node_registry
         app.state.node_auth = self.node_auth
@@ -238,6 +239,7 @@ class WebAPIApp:
         )
         from nahida_bot.gateway.routes.status import router as status_router
         from nahida_bot.gateway.routes.tokens import router as tokens_router
+        from nahida_bot.gateway.routes.voice import router as voice_router
         from nahida_bot.gateway.routes.webui import (
             bootstrap_router,
             system_router as webui_system_router,
@@ -304,6 +306,7 @@ class WebAPIApp:
         # Routes are always mounted so misconfigured clients see a clear 503
         # from _get_services instead of a generic 404/405.
         app.include_router(speech_router, dependencies=[Depends(require_token)])
+        app.include_router(voice_router)
         app.include_router(speech_media_router, dependencies=[Depends(require_token)])
         app.include_router(generate_router, dependencies=[Depends(require_token)])
 

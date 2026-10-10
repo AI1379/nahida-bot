@@ -1,5 +1,6 @@
 """Realtime voice data-plane contracts and turn coordination."""
 
+from nahida_bot.voice.asr import AsrProvider, AsrRequest, AsrResult
 from nahida_bot.voice.contracts import (
     AsrStreamRequest,
     AudioFrame,
@@ -26,6 +27,9 @@ from nahida_bot.voice.turns import (
 )
 
 __all__ = [
+    "AsrProvider",
+    "AsrRequest",
+    "AsrResult",
     "AsrStreamRequest",
     "AudioFrame",
     "ReflexCancelCommand",
