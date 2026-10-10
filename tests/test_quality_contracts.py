@@ -176,5 +176,6 @@ async def test_pending_expiry_keeps_fresh_request_fields():
         reply_to_override="reply",
         proactive_context="context",
         attention_episode_id="episode",
+        parse_commands=True,
     )
     assert "test:private:c1" not in router._pending

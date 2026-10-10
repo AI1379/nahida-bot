@@ -58,7 +58,10 @@ _SPAWN_PARAMETERS: dict[str, Any] = {
             "type": "string",
             "enum": ["done_only", "silent"],
             "description": (
-                "Whether to write a completion event to the parent session."
+                "Whether to write a completion event to the parent session and "
+                "notify the originating chat. Defaults to done_only; silent "
+                "disables both. Chat notifications also require "
+                "agent.subagent_notifications_enabled."
             ),
         },
         "tool_denylist": {

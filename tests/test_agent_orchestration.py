@@ -12,6 +12,7 @@ from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.orchestration import (
     AgentOrchestrator,
     LocalAgentRunExecutor,
+    OrchestrationConfig,
     SQLiteBackgroundTaskStore,
     SubagentSpec,
 )
@@ -1006,6 +1007,90 @@ async def test_delivery_failure_leaves_task_undelivered(tmp_path) -> None:
         assert completed is not None
         assert len(deliverer.calls) == 1  # the deliverer was tried
         assert completed.delivered_at is None  # but not marked delivered
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notifications_enabled", [True, False])
+@pytest.mark.parametrize(
+    ("outcome", "expected_status"),
+    [
+        (
+            AgentRunResult(final_response="child result", terminal_state="completed"),
+            AgentRunStatus.SUCCEEDED,
+        ),
+        (
+            AgentRunResult(
+                final_response="", terminal_state="failed", error="provider_error"
+            ),
+            AgentRunStatus.FAILED,
+        ),
+        (TimeoutError(), AgentRunStatus.TIMED_OUT),
+        (asyncio.CancelledError(), AgentRunStatus.CANCELLED),
+    ],
+    ids=["success", "failure", "timeout", "cancelled"],
+)
+async def test_global_notification_switch_preserves_completion(
+    tmp_path,
+    notifications_enabled: bool,
+    outcome: AgentRunResult | BaseException,
+    expected_status: AgentRunStatus,
+) -> None:
+    class TerminalRunner:
+        async def run(self, **kwargs: Any) -> AgentRunResult:
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+    engine = DatabaseEngine(tmp_path / "tasks.sqlite3")
+    await engine.initialize()
+    try:
+        memory = _FakeMemory()
+        deliverer = _RecordingDeliverer()
+        orchestrator = AgentOrchestrator(
+            executor=LocalAgentRunExecutor(TerminalRunner()),
+            task_store=SQLiteBackgroundTaskStore(engine),
+            memory_store=memory,
+            config=OrchestrationConfig(
+                subagent_notifications_enabled=notifications_enabled,
+            ),
+            completion_deliverer=deliverer,
+        )
+        session_token = current_session.set(
+            SessionContext(
+                platform="telegram",
+                chat_id="42",
+                session_id="telegram:private:42",
+            )
+        )
+        try:
+            task = await orchestrator.spawn_subagent(
+                SubagentSpec(task="work", notify_policy="done_only")
+            )
+            if expected_status == AgentRunStatus.CANCELLED:
+                with pytest.raises(asyncio.CancelledError):
+                    await orchestrator.wait_for_task(task.task_id, timeout_seconds=1)
+                completed = await orchestrator._task_store.get(task.task_id)
+            else:
+                completed = await orchestrator.wait_for_task(
+                    task.task_id, timeout_seconds=1
+                )
+        finally:
+            current_session.reset(session_token)
+
+        assert completed is not None
+        assert completed.status == expected_status
+        assert len(memory.turns) == 1
+        assert memory.turns[0][1].source == "subagent_completed"
+        assert memory.turns[0][1].metadata["status"] == expected_status.value
+        assert len(deliverer.calls) == int(notifications_enabled)
+        assert (completed.delivered_at is not None) == notifications_enabled
+        assert completed.delivery_claimed_at is None
+        if expected_status == AgentRunStatus.SUCCEEDED:
+            assert completed.summary == "child result"
+        else:
+            assert completed.error
     finally:
         await engine.close()
 

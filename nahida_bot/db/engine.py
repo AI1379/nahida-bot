@@ -526,6 +526,15 @@ _SCHEMA_MIGRATIONS = [
     """
     -- See DatabaseEngine._ensure_cron_executor_columns().
     """,
+    # Migration 029: chat-scoped mute state survives /new and restarts.
+    """
+    CREATE TABLE IF NOT EXISTS chat_mutes (
+        chat_address TEXT PRIMARY KEY,
+        muted_until REAL NOT NULL,
+        actor_account_key TEXT NOT NULL,
+        updated_at REAL NOT NULL
+    );
+    """,
 ]
 
 

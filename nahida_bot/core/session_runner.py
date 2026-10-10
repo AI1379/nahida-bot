@@ -36,6 +36,10 @@ from nahida_bot.core.attachments import resolve_attachment
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
 from nahida_bot.core.knowledge_context import load_knowledge_context
+from nahida_bot.core.message_batch import (
+    PENDING_BATCH_INSTRUCTION,
+    render_inbound_batch,
+)
 from nahida_bot.core.logging import log_trace
 from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
@@ -176,6 +180,7 @@ class _SessionRunRequest:
     ephemeral_context: str
     attention_episode_id: str
     stop_event: asyncio.Event | None
+    inbound_batch: tuple[InboundMessage, ...] = ()
 
 
 @dataclass(slots=True)
@@ -458,6 +463,7 @@ class SessionRunner:
         ephemeral_context: str = "",
         attention_episode_id: str = "",
         stop_event: asyncio.Event | None = None,
+        inbound_batch: tuple[InboundMessage, ...] = (),
     ) -> AgentRunResult:
         """Run the agent loop and return the final result (backward-compat)."""
         done: LoopEvent | None = None
@@ -479,6 +485,7 @@ class SessionRunner:
             ephemeral_context=ephemeral_context,
             attention_episode_id=attention_episode_id,
             stop_event=stop_event,
+            inbound_batch=inbound_batch,
         ):
             if event.type == "done":
                 done = event
@@ -507,6 +514,7 @@ class SessionRunner:
         ephemeral_context: str = "",
         attention_episode_id: str = "",
         stop_event: asyncio.Event | None = None,
+        inbound_batch: tuple[InboundMessage, ...] = (),
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -518,6 +526,22 @@ class SessionRunner:
             raise RuntimeError("SessionRunner has no agent loop configured")
 
         attachments_for_turn = tuple(attachments or [])
+        if inbound_batch:
+            anchor = inbound_batch[0]
+            if any(
+                not message.is_group
+                or not message.sender_account_key
+                or message.sender_account_key != anchor.sender_account_key
+                or message.chat_id != anchor.chat_id
+                for message in inbound_batch
+            ):
+                raise ValueError("An inbound batch must share one group and sender")
+            user_message = "\n\n".join(message.text for message in inbound_batch)
+            attachments_for_turn = tuple(
+                attachment
+                for message in inbound_batch
+                for attachment in message.attachments
+            )
         request = _SessionRunRequest(
             user_message=user_message,
             session_id=session_id,
@@ -537,6 +561,7 @@ class SessionRunner:
             ephemeral_context=ephemeral_context,
             attention_episode_id=attention_episode_id,
             stop_event=stop_event,
+            inbound_batch=inbound_batch,
         )
         runtime = _SessionRunRuntime(
             request=request,
@@ -777,16 +802,22 @@ class SessionRunner:
                 else None
             ),
         )
-        runtime.visible_user_message = render_message_with_context(
-            request.user_message,
-            request.message_context,
-            role="user",
-        )
-        runtime.user_parts = await self._build_user_parts(
-            runtime.visible_user_message,
-            list(request.attachments),
-            capabilities=runtime.capabilities,
-        )
+        if request.inbound_batch:
+            runtime.visible_user_message = render_inbound_batch(request.inbound_batch)
+            runtime.user_parts = await self._build_batch_user_parts(
+                request.inbound_batch, capabilities=runtime.capabilities
+            )
+        else:
+            runtime.visible_user_message = render_message_with_context(
+                request.user_message,
+                request.message_context,
+                role="user",
+            )
+            runtime.user_parts = await self._build_user_parts(
+                runtime.visible_user_message,
+                list(request.attachments),
+                capabilities=runtime.capabilities,
+            )
         if (
             not bool(runtime.capabilities and runtime.capabilities.image_input)
             and self._multimodal_config is not None
@@ -934,6 +965,7 @@ class SessionRunner:
             attention_episode_id=request.attention_episode_id,
             workspace_id=request.workspace_id,
             workspace_root=runtime.workspace_root,
+            inbound_batch=request.inbound_batch,
         )
 
     # ── Public helpers (used by image_understand tool) ─────────
@@ -1554,13 +1586,12 @@ class SessionRunner:
         current_message_context: MessageContext | None,
         current_message_content: str = "",
     ) -> ContextMessage | None:
-        """Load recent observed-only group messages for a triggered group turn."""
+        """Load nearby observations, including private messages received while muted."""
         if (
             self._memory is None
             or self._group_context_max_messages <= 0
             or self._group_context_max_chars <= 0
             or current_message_context is None
-            or current_message_context.chat_type != "group"
         ):
             return None
 
@@ -1604,9 +1635,12 @@ class SessionRunner:
         if not selected:
             return None
 
+        is_group = current_message_context.chat_type == "group"
         lines = [
-            "Recent group chat context observed before the current trigger.",
-            "These messages did not directly summon the bot; use them only as nearby context.",
+            "Recent group chat context observed before the current trigger."
+            if is_group
+            else "Recent chat messages observed while the bot was muted.",
+            "These messages were observed without replying; use them only as nearby context.",
         ]
         remaining = self._group_context_max_chars
         for record in reversed(selected):
@@ -1627,7 +1661,7 @@ class SessionRunner:
             return None
         return ContextMessage(
             role="system",
-            source="group_observed_context",
+            source="group_observed_context" if is_group else "chat_observed_context",
             content="\n".join(lines),
             metadata={
                 "observed_message_count": len(lines) - 2,
@@ -2147,6 +2181,50 @@ class SessionRunner:
             )
 
         return tools
+
+    async def _build_batch_user_parts(
+        self,
+        messages: tuple[InboundMessage, ...],
+        *,
+        capabilities: ModelCapabilities | None,
+    ) -> list[ContextPart]:
+        """Keep media next to its message while sharing the run's image budget."""
+        parts = [ContextPart(type="text", text=PENDING_BATCH_INSTRUCTION)]
+        remaining = (
+            capabilities.max_image_count
+            if capabilities and capabilities.image_input
+            else 0
+        )
+        limited = remaining > 0
+        for message in messages:
+            visible = render_message_with_context(
+                message.text, context_from_inbound(message), role="batch_message"
+            )
+            attachments = []
+            omitted = 0
+            for attachment in message.attachments:
+                if limited and attachment.kind == "image":
+                    if remaining <= 0:
+                        omitted += 1
+                        continue
+                    remaining -= 1
+                attachments.append(attachment)
+            message_parts = await self._build_user_parts(
+                visible, attachments, capabilities=capabilities
+            )
+            parts.extend(message_parts or [ContextPart(type="text", text=visible)])
+            if omitted:
+                parts.append(
+                    ContextPart(
+                        type="text",
+                        text=(
+                            f"[{omitted} image(s) from this message were omitted "
+                            "because the request's image limit was reached. "
+                            "You cannot see these images.]"
+                        ),
+                    )
+                )
+        return parts
 
     async def _build_user_parts(
         self,
@@ -2750,7 +2828,7 @@ class SessionRunner:
         session_id: str,
         workspace_id: str | None = None,
     ) -> None:
-        """Persist a group message as context without running the agent."""
+        """Persist an observed or muted message as context without running the agent."""
         if self._memory is None:
             logger.debug(
                 "session_runner.observed_persist_skipped",
@@ -2820,6 +2898,7 @@ class SessionRunner:
         attention_episode_id: str = "",
         workspace_id: str | None = None,
         workspace_root: Any = None,
+        inbound_batch: tuple[InboundMessage, ...] = (),
     ) -> None:
         if self._memory is None:
             logger.debug(
@@ -2848,10 +2927,18 @@ class SessionRunner:
             trigger_kind=trigger_kind,
             attention_episode_id=attention_episode_id,
         )
-        user_turn = ConversationTurn(
-            role="user", content=user_message, source=source_tag, metadata=metadata
-        )
-        await self._memory.append_turn(session_id, user_turn)
+        if inbound_batch:
+            await self._persist_batch_messages(
+                session_id,
+                inbound_batch,
+                image_descriptions=image_descriptions,
+                source_tag=source_tag,
+            )
+        else:
+            user_turn = ConversationTurn(
+                role="user", content=user_message, source=source_tag, metadata=metadata
+            )
+            await self._memory.append_turn(session_id, user_turn)
 
         assistant_turns = self._assistant_visible_turns(
             result,
@@ -2903,6 +2990,39 @@ class SessionRunner:
             workspace_id=workspace_id or "",
             persisted_assistant_turn_count=len(assistant_turns),
         )
+
+    async def _persist_batch_messages(
+        self,
+        session_id: str,
+        messages: tuple[InboundMessage, ...],
+        *,
+        image_descriptions: dict[str, str] | None,
+        source_tag: str,
+    ) -> None:
+        """Persist the original inputs separately, without a synthetic extra turn."""
+        if self._memory is None:
+            return
+        message_ids = [message.message_id for message in messages]
+        for index, message in enumerate(messages):
+            metadata = await self._build_user_turn_metadata(
+                attachments=message.attachments,
+                image_descriptions=image_descriptions,
+                message_context=context_from_inbound(message),
+                source_tag=source_tag,
+                trigger_kind="mention" if message.mentions_bot else source_tag,
+            )
+            metadata = metadata or {}
+            metadata["input_batch_message_ids"] = message_ids
+            metadata["input_batch_index"] = index
+            await self._memory.append_turn(
+                session_id,
+                ConversationTurn(
+                    role="user",
+                    content=message.text,
+                    source=source_tag,
+                    metadata=metadata,
+                ),
+            )
 
     async def _persist_transcript(
         self,

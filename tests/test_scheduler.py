@@ -507,6 +507,17 @@ async def test_fire_job_sends_typed_chat_address_and_records_delivery() -> None:
 
     engine, repo = await _repo()
     try:
+        # Muting inbound triggers must not prevent a scheduled notification.
+        from nahida_bot.db.repositories.sqlite_chat_mute_repo import (
+            SQLiteChatMuteRepository,
+        )
+
+        await SQLiteChatMuteRepository(engine).set_until(
+            "telegram:private:c1",
+            10_000_000_000,
+            "telegram:user:u1",
+            0,
+        )
         store = SQLiteMessageDeliveryStore(engine)
         agent = _Agent()
         channel = _Channel()

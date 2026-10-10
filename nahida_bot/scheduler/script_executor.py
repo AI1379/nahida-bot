@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from time import monotonic
 
+from nahida_bot.core.exec_env import build_exec_env
 from nahida_bot.core.process_tree import kill_process_tree
 from nahida_bot.scheduler.models import CronJob
 
@@ -40,6 +41,9 @@ async def execute_script(job: CronJob) -> ScriptExecutionResult:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=job.script_working_dir or None,
+            # Same dedicated exec venv as the exec tool: cron scripts must not
+            # share (or mutate) the bot's own Python environment.
+            env=build_exec_env(),
             # Issue #57: dedicated process group so cleanup reaches the whole
             # spawned tree (script interpreters, pipelines), not just the shell.
             start_new_session=True,

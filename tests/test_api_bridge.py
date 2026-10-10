@@ -573,6 +573,77 @@ async def test_workspace_tools_fallback_to_active_without_session(
     ).read_text(encoding="utf-8") == "legacy"
 
 
+def test_get_workspace_binding_survives_stale_active_pointer(
+    tmp_path: Path,
+) -> None:
+    """Issue #58: a stale active-workspace pointer must not push exec onto
+    the bot process directory — the binding falls back to the default."""
+    api, _, _, _ = _api(tmp_path)
+    (tmp_path / "workspace" / "active_workspace").write_text("ghost", encoding="utf-8")
+
+    binding = api.get_workspace_binding()
+    assert binding is not None
+    root, workspace_id = binding
+    assert workspace_id == "default"
+    assert root == str(
+        api._workspace.workspace_path("default")  # type: ignore[attr-defined]
+    )
+    # get_workspace_root keeps its contract: never raises for a stale pointer.
+    assert api.get_workspace_root() == root
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_binding_prefers_session_workspace(
+    tmp_path: Path,
+) -> None:
+    from nahida_bot.core.context import SessionContext, current_session
+
+    api, _, _, _ = _api(tmp_path)
+    api._workspace.create_workspace("project-c")  # type: ignore[attr-defined]
+
+    token = current_session.set(
+        SessionContext(
+            platform="agent",
+            chat_id="task1",
+            session_id="agent:subagent:task1",
+            workspace_id="project-c",
+        )
+    )
+    try:
+        assert api.get_workspace_binding() == (
+            str(api._workspace.workspace_path("project-c")),  # type: ignore[attr-defined]
+            "project-c",
+        )
+    finally:
+        current_session.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_binding_skips_missing_session_workspace_dir(
+    tmp_path: Path,
+) -> None:
+    """A session bound to a workspace whose directory is gone resolves to
+    the default instead of an exec-breaking nonexistent path."""
+    from nahida_bot.core.context import SessionContext, current_session
+
+    api, _, _, _ = _api(tmp_path)
+    token = current_session.set(
+        SessionContext(
+            platform="agent",
+            chat_id="task1",
+            session_id="agent:subagent:task1",
+            workspace_id="deleted-ws",
+        )
+    )
+    try:
+        binding = api.get_workspace_binding()
+        assert binding is not None
+        assert binding[1] == "default"
+        assert Path(binding[0]).is_dir()
+    finally:
+        current_session.reset(token)
+
+
 @pytest.mark.asyncio
 async def test_memory_store_defaults_to_soft_public(tmp_path: Path) -> None:
     """Plugin writes default to the soft public baseline (Piece A4)."""

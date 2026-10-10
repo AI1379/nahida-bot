@@ -94,6 +94,7 @@ class OrchestrationConfig:
     subagent_timeout_seconds: int = 900
     subagent_concurrency: int = 4
     delivery_claim_ttl_seconds: int = 300
+    subagent_notifications_enabled: bool = True
     system_prompt: str = "You are a focused subagent. Complete the delegated task and return a concise result summary."
 
 
@@ -614,7 +615,13 @@ class AgentOrchestrator:
         # acquired before the external side effect so concurrent callbacks do
         # not both send. Failed attempts release their exact claim; abandoned
         # claims become reclaimable after the configured lease timeout.
-        if self._deliverer is None or run.task_id is None:
+        # The operator's global switch controls channel sends only; the parent
+        # completion event above and the task ledger remain available.
+        if (
+            not self._config.subagent_notifications_enabled
+            or self._deliverer is None
+            or run.task_id is None
+        ):
             return
         task = await self._task_store.get(run.task_id)
         if task is None or task.delivered_at is not None:

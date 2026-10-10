@@ -1484,25 +1484,59 @@ class RealBotAPI:
         sandbox = self._workspace.get_sandbox(self._session_workspace_id())
         return str(sandbox.resolve_safe_path(path))
 
-    def get_workspace_root(self, workspace_id: str | None = None) -> str | None:
-        """Return the filesystem root path for a workspace.
+    def get_workspace_binding(
+        self, workspace_id: str | None = None
+    ) -> tuple[str, str] | None:
+        """Resolve ``(root_path, workspace_id)`` for exec/tool cwd anchoring.
 
-        Resolution order (issue #40):
-
-        1. The explicit ``workspace_id`` argument, when provided.
-        2. The workspace bound to the current session/run, when set.
-        3. The process-global active workspace (legacy fallback).
-
-        Returns ``None`` when the workspace manager is unavailable.
+        Resolution order (issue #40 / #58): explicit ``workspace_id`` →
+        the workspace bound to the current session/run → the process-global
+        active workspace → the default workspace. Tiers whose directory no
+        longer exists are skipped instead of raising, so exec never
+        silently inherits the bot process directory because of a stale
+        active-workspace file. Returns ``None`` only when the workspace
+        manager is unavailable.
         """
         if self._workspace is None:
             return None
-        if workspace_id is None:
-            workspace_id = self._session_workspace_id()
-        if workspace_id is None:
-            metadata = self._workspace.get_active_workspace()
-            workspace_id = metadata.workspace_id
-        return str(self._workspace.workspace_path(workspace_id))
+        candidates: list[str] = []
+        if workspace_id:
+            candidates.append(workspace_id)
+        session_workspace_id = self._session_workspace_id()
+        if session_workspace_id:
+            candidates.append(session_workspace_id)
+        try:
+            candidates.append(self._workspace.get_active_workspace().workspace_id)
+        except Exception:
+            # Corrupt/missing active pointer must not push exec back onto
+            # the bot process directory; the default tier below catches it.
+            pass
+        default_workspace_id = self._workspace.default_workspace_id
+        candidates.append(default_workspace_id)
+        for candidate_id in candidates:
+            try:
+                path = self._workspace.workspace_path(candidate_id)
+            except Exception:
+                continue
+            if path.is_dir():
+                return (str(path), candidate_id)
+        # Even the default directory vanished (deleted after boot): anchor
+        # to its path anyway rather than the bot process directory — the
+        # exec output reports the path verbatim so the failure is visible.
+        return (
+            str(self._workspace.workspace_path(default_workspace_id)),
+            default_workspace_id,
+        )
+
+    def get_workspace_root(self, workspace_id: str | None = None) -> str | None:
+        """Return the filesystem root path for a workspace.
+
+        Thin wrapper over :meth:`get_workspace_binding`; never raises for a
+        stale active-workspace pointer (falls back to the default
+        workspace) and returns ``None`` only without a workspace manager.
+        """
+        binding = self.get_workspace_binding(workspace_id)
+        return binding[0] if binding is not None else None
 
     # ── Logging ────────────────────────────────────────
 

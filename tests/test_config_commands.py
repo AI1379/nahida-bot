@@ -78,6 +78,15 @@ def test_schema_reads_pydantic_v2_constraints() -> None:
     assert entry.constraints == ">=1"
 
 
+def test_schema_exposes_subagent_notification_switch() -> None:
+    entry = build_config_schema(
+        "agent.subagent_notifications_enabled", show_plugins=False
+    )[0]
+
+    assert entry.type_ == "bool"
+    assert entry.default_ == "True"
+
+
 def test_schema_includes_builtin_plugin_config_defaults() -> None:
     entries = {
         entry.path: entry

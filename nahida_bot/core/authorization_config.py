@@ -24,24 +24,27 @@ class AuthorizationConfig(BaseModel):
     """Select policy globally or by authenticated account / typed chat.
 
     Explicit account policy wins over chat policy, then the default. An omitted
-    admin list inherits identity.admins for migration; an empty list does not.
+    admin list is empty; standard and admin-only calls fail closed until admins
+    are explicitly declared here.
+    Chat domains are named sets of chat addresses used to scope history tools;
+    they do not select an authorization mode.
     Both relaxed and unsafe currently execute with the bot's OS permissions.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mode: AuthorizationMode = "standard"
-    admins: list[str] | None = None
+    admins: list[str] = Field(default_factory=list)
+    chat_domains: dict[str, list[str]] = Field(default_factory=dict)
     accounts: dict[str, AuthorizationMode] = Field(default_factory=dict)
     chats: dict[str, AuthorizationMode] = Field(default_factory=dict)
     review: RiskReviewConfig = Field(default_factory=RiskReviewConfig)
 
     @field_validator("admins")
     @classmethod
-    def validate_admins(cls, value: list[str] | None) -> list[str] | None:
-        if value is not None:
-            for account in value:
-                cls._validate_account(account)
+    def validate_admins(cls, value: list[str]) -> list[str]:
+        for account in value:
+            cls._validate_account(account)
         return value
 
     @field_validator("accounts")

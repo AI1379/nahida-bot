@@ -43,6 +43,7 @@ interface FieldDef {
   kind: FieldKind;
   options?: string[];
   wide?: boolean;
+  default?: boolean;
 }
 
 interface FieldGroup {
@@ -334,6 +335,12 @@ const agentFields: FieldDef[] = [
   { path: "agent.tool_retry_attempts", label: "Tool retries", kind: "number" },
   { path: "agent.tool_retry_backoff_seconds", label: "Tool retry backoff", kind: "number" },
   { path: "agent.max_tool_log_chars", label: "Max tool log chars", kind: "number" },
+  {
+    path: "agent.subagent_notifications_enabled",
+    label: "Subagent completion notifications",
+    kind: "boolean",
+    default: true,
+  },
   { path: "agent.tool_use_system_prompt", label: "Tool use system prompt", kind: "textarea" },
   { path: "agent.provider_error_template", label: "Provider error template", kind: "textarea" },
 ];
@@ -445,7 +452,7 @@ const sectionCopy: Record<string, { title: string; description: string }> = {
   },
   agent: {
     title: "Agent",
-    description: "Agent loop limits, retry policy, and tool prompt.",
+    description: "Agent loop limits, retry policy, tool prompt, and subagent chat notifications.",
   },
   router: {
     title: "Router",
@@ -630,8 +637,8 @@ function fieldText(path: string) {
   return String(value);
 }
 
-function fieldBool(path: string) {
-  return Boolean(getValue(path));
+function fieldBool(path: string, defaultValue = false) {
+  return Boolean(getValue(path) ?? defaultValue);
 }
 
 function pluginFieldPath(field: SchemaField) {
@@ -1221,7 +1228,7 @@ function confirmSave() {
                   v-else-if="field.kind === 'boolean'"
                   :id="renderFieldKey(field)"
                   type="checkbox"
-                  :checked="fieldBool(field.path)"
+                  :checked="fieldBool(field.path, field.default)"
                   @change="updateBool(field.path, ($event.target as HTMLInputElement).checked)"
                 />
                 <input

@@ -284,6 +284,8 @@ async def test_on_load_registers_commands_and_workspace_tools() -> None:
         "help",
         "memory",
         "identity",
+        "mute",
+        "unmute",
     } <= set(api.commands)
     assert {
         "message",

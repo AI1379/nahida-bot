@@ -13,9 +13,15 @@ from uuid import uuid4
 import structlog
 
 from nahida_bot.core.channel_registry import ChannelRegistry
+from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.core.chat_address import ChatAddress, SessionKey, classify_session_key
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.config import PendingMessagesConfig
+from nahida_bot.core.message_batch import (
+    batch_anchor,
+    restore_pending_batch,
+    take_pending_batch,
+)
 from nahida_bot.core.events import (
     AgentResponseRequested,
     AgentRunCancelled,
@@ -102,6 +108,7 @@ class _AgentDispatchRequest:
     reply_to_override: str | None = None
     proactive_context: str = ""
     attention_episode_id: str = ""
+    inbound_batch: tuple[InboundMessage, ...] = ()
 
 
 @dataclass(slots=True)
@@ -125,6 +132,9 @@ class PendingMessage:
     reply_to_override: str | None = None
     proactive_context: str = ""
     attention_episode_id: str = ""
+    session_context: SessionContext | None = None
+    parse_commands: bool = True
+    batchable: bool = True
     queued_at: float = field(default_factory=time.monotonic)
 
 
@@ -149,6 +159,7 @@ class MessageRouter:
         chat_metadata_store: Any | None = None,
         temp_file_service: ManagedTempFileService | None = None,
         motion_planner: Any | None = None,
+        mute_service: ChatMuteService | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._commands = command_registry
@@ -161,6 +172,7 @@ class MessageRouter:
         self._chat_metadata_store = chat_metadata_store
         self._temp_file_service = temp_file_service
         self._motion_planner = motion_planner
+        self._mute_service = mute_service
         self._subscription: Subscription | None = None
         self._observed_subscription: Subscription | None = None
         self._agent_response_subscription: Subscription | None = None
@@ -694,7 +706,11 @@ class MessageRouter:
     ) -> None:
         """Persist an observed-only inbound message without running the agent."""
         runner = self._runner
-        if runner is None or not self._config.group_context_enabled:
+        inbound: InboundMessage = event.payload.message
+        address = _address_from_inbound(inbound)
+        session_id = self.get_active_session_id(address)
+        muted = await self._check_chat_mute(inbound, session_id)
+        if runner is None or (not self._config.group_context_enabled and not muted):
             logger.debug(
                 "router.observed_skipped",
                 reason=("no_runner" if runner is None else "group_context_disabled"),
@@ -703,8 +719,7 @@ class MessageRouter:
             )
             return
 
-        inbound: InboundMessage = event.payload.message
-        if not inbound.is_group:
+        if not inbound.is_group and not muted:
             logger.debug(
                 "router.observed_skipped",
                 reason="not_group",
@@ -714,8 +729,6 @@ class MessageRouter:
             )
             return
 
-        address = _address_from_inbound(inbound)
-        session_id = self.get_active_session_id(address)
         workspace_id = self._resolve_workspace_id()
         logger.debug(
             "router.observed_received",
@@ -763,6 +776,10 @@ class MessageRouter:
 
         runner = self._runner
         session_id = self.get_active_session_id(address)
+        if await self._check_chat_mute(inbound, session_id):
+            # The channel has already persisted the observed anchor message.
+            # Report rejection so the joiner does not count this as a reply.
+            raise RuntimeError(f"muted:{session_id}")
         if runner is not None and runner.run_tracker.is_active(session_id):
             logger.debug(
                 "router.agent_response_request_skipped",
@@ -840,6 +857,76 @@ class MessageRouter:
             return
         runner.run_tracker.request_stop(event.payload.session_id)
 
+    async def execute_mute_command(
+        self,
+        action: Literal["mute", "unmute"],
+        args: str,
+        inbound: InboundMessage,
+        session_id: str,
+    ) -> str:
+        """Apply a command to the current chat and stop its in-flight run."""
+        if self._mute_service is None:
+            return "会话禁言服务不可用。"
+        context = current_session.get()
+        result = await self._mute_service.command(
+            action,
+            args,
+            _address_from_inbound(inbound),
+            context.actor_account_key if context is not None else "",
+        )
+        if result.stop_agent and self._runner is not None:
+            self._runner.run_tracker.request_stop(session_id)
+        return result.text
+
+    async def _check_chat_mute(self, inbound: InboundMessage, session_id: str) -> bool:
+        if self._mute_service is None:
+            return False
+        status = await self._mute_service.status(_address_from_inbound(inbound))
+        if status.expired:
+            await self._send_outbound(
+                inbound,
+                session_id,
+                OutboundMessage(text=self._mute_service.config.notice.online),
+            )
+        return status.muted
+
+    async def steer_message(
+        self, prompt: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        """Queue a prompt first, then gracefully stop this session's active run."""
+        prompt = prompt.strip()
+        if not prompt:
+            return "Usage: /steer <prompt>"
+        runner = self._runner
+        if runner is None or not runner.has_agent or not self._config.agent_enabled:
+            return "Agent is not available."
+        if await self._check_chat_mute(inbound, session_id):
+            return "Chat is muted. Use /unmute before steering the agent."
+        if self._stopping:
+            return "Agent is shutting down. Please try again later."
+
+        self._expire_pending(session_id)
+        queue = self._pending.setdefault(session_id, deque())
+        if len(queue) >= self._config.pending_messages.max_messages:
+            return "The pending message queue is full. Please try again later."
+        queue.appendleft(
+            PendingMessage(
+                inbound=replace(inbound, text=prompt),
+                workspace_id=self._resolve_workspace_id(),
+                session_context=current_session.get(),
+                parse_commands=False,
+                batchable=False,
+            )
+        )
+        # Admission and the stop signal must not yield: stopping before queuing
+        # could let the old run finish and dispatch an ordinary pending input.
+        stopping = runner.run_tracker.request_stop(session_id)
+        logger.info("router.message_steered", session_id=session_id, stopping=stopping)
+        if stopping:
+            return "Steering prompt queued. Stopping the current agent run."
+        await self._drain_pending(session_id)
+        return "Prompt submitted."
+
     async def _dispatch_message(
         self,
         inbound: InboundMessage,
@@ -851,6 +938,8 @@ class MessageRouter:
         reply_to_override: str | None = None,
         proactive_context: str = "",
         attention_episode_id: str = "",
+        parse_commands: bool = True,
+        pending_batch: tuple[PendingMessage, ...] = (),
     ) -> None:
         """Command matching + agent execution (called within session context)."""
         logger.debug(
@@ -859,9 +948,10 @@ class MessageRouter:
             workspace_id=workspace_id or "",
             **_inbound_log_fields(inbound),
         )
+        muted = await self._check_chat_mute(inbound, session_id)
         # Step 1: Command matching. Proactive joins are not user command invocations.
         match = self._matcher.match(inbound.text, prefix=inbound.command_prefix)
-        if source_tag == "user_input" and match.matched:
+        if parse_commands and source_tag == "user_input" and match.matched:
             entry = self._commands.get(match.name)
             if entry is not None:
                 logger.debug(
@@ -904,7 +994,9 @@ class MessageRouter:
                 args_chars=len(match.args),
             )
             # Try matching a workspace skill for unrecognized /commands
-            skill_content = self._try_match_skill(match.name, workspace_id)
+            skill_content = (
+                None if muted else self._try_match_skill(match.name, workspace_id)
+            )
             if skill_content is not None:
                 enriched_text = (
                     f"[Skill: {match.name}]\n{skill_content}\n\n"
@@ -916,6 +1008,16 @@ class MessageRouter:
                     skill_name=match.name,
                     session_id=session_id,
                 )
+        if muted:
+            if self._runner is not None and source_tag != "proactive_join":
+                for message in tuple(p.inbound for p in pending_batch) or (inbound,):
+                    await self._runner.persist_observed_message(
+                        inbound=message,
+                        session_id=session_id,
+                        workspace_id=workspace_id,
+                    )
+            logger.debug("router.chat_muted", session_id=session_id)
+            return
         if self._stopping:
             logger.debug(
                 "router.dispatch_skipped",
@@ -947,6 +1049,11 @@ class MessageRouter:
         if tracker.is_active(session_id):
             self._expire_pending(session_id)
             queue = self._pending.setdefault(session_id, deque())
+            if pending_batch:
+                # Another run won the slot during routing/mute checks. These
+                # inputs were accepted earlier; retain their age and FIFO order.
+                restore_pending_batch(queue, pending_batch)
+                return
             if len(queue) >= self._config.pending_messages.max_messages:
                 logger.warning("router.message_queue_full", session_id=session_id)
                 if source_tag == "user_input":
@@ -968,6 +1075,9 @@ class MessageRouter:
                     reply_to_override=reply_to_override,
                     proactive_context=proactive_context,
                     attention_episode_id=attention_episode_id,
+                    session_context=current_session.get(),
+                    parse_commands=parse_commands,
+                    batchable=parse_commands and not match.matched,
                 )
             )
             logger.debug(
@@ -992,10 +1102,22 @@ class MessageRouter:
                     reply_to_override=reply_to_override,
                     proactive_context=proactive_context,
                     attention_episode_id=attention_episode_id,
+                    inbound_batch=(
+                        tuple(p.inbound for p in pending_batch)
+                        if len(pending_batch) > 1
+                        else ()
+                    ),
                 )
             )
         )
         tracker.start(session_id, task, stop_event)
+        if len(pending_batch) > 1:
+            logger.debug(
+                "router.pending_batch_dispatched",
+                session_id=session_id,
+                batch_size=len(pending_batch),
+                message_ids=[p.inbound.message_id for p in pending_batch],
+            )
         logger.debug(
             "router.agent_dispatched",
             session_id=session_id,
@@ -1022,6 +1144,16 @@ class MessageRouter:
         )
         self._publish_agent_run_started(request)
         try:
+            if await self._check_chat_mute(request.inbound, request.session_id):
+                if request.source_tag != "proactive_join":
+                    for message in request.inbound_batch or (request.inbound,):
+                        await request.runner.persist_observed_message(
+                            inbound=message,
+                            session_id=request.session_id,
+                            workspace_id=request.workspace_id,
+                        )
+                state.cancelled = True
+                return
             async for event in request.runner.run_stream(
                 user_message=request.inbound.text,
                 session_id=request.session_id,
@@ -1038,6 +1170,7 @@ class MessageRouter:
                 ephemeral_context=request.proactive_context,
                 attention_episode_id=request.attention_episode_id,
                 stop_event=request.stop_event,
+                inbound_batch=request.inbound_batch,
             ):
                 self._log_agent_event(request.session_id, event)
                 await self._handle_agent_event(
@@ -1230,11 +1363,14 @@ class MessageRouter:
         """Discard stale queued inputs before admission or dispatch."""
         queue = self._pending.get(session_id)
         cutoff = time.monotonic() - self._config.pending_messages.ttl_seconds
-        expired = 0
-        while queue and queue[0].queued_at <= cutoff:
-            queue.popleft()
-            expired += 1
-        if queue is not None and not queue:
+        if queue is None:
+            return
+        # Steering inserts at the front, so queue order is not timestamp order.
+        remaining = deque(item for item in queue if item.queued_at > cutoff)
+        expired = len(queue) - len(remaining)
+        if remaining:
+            self._pending[session_id] = remaining
+        else:
             self._pending.pop(session_id, None)
         if expired:
             logger.warning(
@@ -1242,24 +1378,35 @@ class MessageRouter:
             )
 
     async def _drain_pending(self, session_id: str) -> None:
-        """Process the next queued message for a session, if any."""
+        """Dispatch a bounded compatible batch under its original actor context."""
         self._expire_pending(session_id)
-        queue = self._pending.get(session_id)
-        if not queue:
-            return
-        pending = queue.popleft()
-        if not queue:
-            del self._pending[session_id]
-        await self._dispatch_message(
-            pending.inbound,
-            session_id,
-            pending.workspace_id,
-            source_tag=pending.source_tag,
-            agent_instruction=pending.agent_instruction,
-            reply_to_override=pending.reply_to_override,
-            proactive_context=pending.proactive_context,
-            attention_episode_id=pending.attention_episode_id,
-        )
+        while queue := self._pending.get(session_id):
+            batch = take_pending_batch(
+                queue, self._config.pending_messages, self._matcher
+            )
+            pending = batch_anchor(batch)
+            if not queue:
+                del self._pending[session_id]
+            token = current_session.set(pending.session_context)
+            try:
+                await self._dispatch_message(
+                    pending.inbound,
+                    session_id,
+                    pending.workspace_id,
+                    source_tag=pending.source_tag,
+                    agent_instruction=pending.agent_instruction,
+                    reply_to_override=pending.reply_to_override,
+                    proactive_context=pending.proactive_context,
+                    attention_episode_id=pending.attention_episode_id,
+                    parse_commands=pending.parse_commands,
+                    **({"pending_batch": batch} if len(batch) > 1 else {}),
+                )
+            finally:
+                current_session.reset(token)
+            if self._runner is not None and self._runner.run_tracker.is_active(
+                session_id
+            ):
+                return
 
     async def _load_reasoning_display_config(
         self, session_id: str
@@ -1307,6 +1454,8 @@ class MessageRouter:
         reply_to_override: str | None = None,
     ) -> None:
         """Send response through the originating channel."""
+        if await self._check_chat_mute(inbound, session_id):
+            return
         if not text and not reasoning:
             logger.debug(
                 "router.response_skipped",

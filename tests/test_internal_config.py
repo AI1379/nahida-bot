@@ -25,6 +25,10 @@ def test_removed_internal_config_fields_are_rejected() -> None:
         MemoryEmbeddingConfig.model_validate({"provider_id": "embedder"})
     with pytest.raises(ValidationError, match="authorization_tickets"):
         IdentityConfig.model_validate({"authorization_tickets": {"enabled": True}})
+    with pytest.raises(ValidationError, match="admins"):
+        IdentityConfig.model_validate({"admins": []})
+    with pytest.raises(ValidationError, match="chat_domains"):
+        IdentityConfig.model_validate({"chat_domains": {}})
 
 
 def test_webui_auth_requires_current_pbkdf2_hash_config() -> None:
@@ -45,6 +49,7 @@ class TestAgentConfig:
         assert cfg.tool_retry_attempts == 1
         assert cfg.tool_retry_backoff_seconds == 0.1
         assert cfg.max_tool_log_chars == 400
+        assert cfg.subagent_notifications_enabled is True
         assert "Tool use policy" in cfg.tool_use_system_prompt
         assert "{code}" in cfg.provider_error_template
 
@@ -58,10 +63,12 @@ class TestAgentConfig:
             tool_retry_attempts=2,
             tool_retry_backoff_seconds=0.2,
             max_tool_log_chars=800,
+            subagent_notifications_enabled=False,
             tool_use_system_prompt="Custom prompt",
             provider_error_template="Error: {code}",
         )
         assert cfg.max_steps == 16
+        assert cfg.subagent_notifications_enabled is False
         assert cfg.provider_timeout_seconds == 60.0
         assert cfg.tool_use_system_prompt == "Custom prompt"
 

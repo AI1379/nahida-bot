@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -33,10 +35,12 @@ from nahida_bot.core.events import (
     MessageSent,
 )
 from nahida_bot.core.router import MessageRouter, RouterConfig
+from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.core.temp_files import ManagedTempFileService
 from nahida_bot.plugins.base import (
     AttentionFrame,
+    ChatContext,
     InboundMessage,
     MessageContext,
     OutboundMessage,
@@ -207,6 +211,7 @@ def _make_router(
     workspace_manager: WorkspaceManager | None = None,
     config: RouterConfig | None = None,
     temp_file_service: ManagedTempFileService | None = None,
+    mute_service: ChatMuteService | None = None,
 ) -> tuple[MessageRouter, EventBus, ChannelRegistry, CommandRegistry]:
     event_bus = EventBus(EventContext(app=None, settings=None, logger=MagicMock()))  # type: ignore[arg-type]
     command_registry = CommandRegistry()
@@ -234,11 +239,211 @@ def _make_router(
         workspace_manager=workspace_manager,
         config=config,
         temp_file_service=temp_file_service,
+        mute_service=mute_service,
     )
     return router, event_bus, channel_registry, command_registry
 
 
 # ── Tests ────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def chat_mute_router(tmp_path):
+    from nahida_bot.core.config import MuteConfig
+    from nahida_bot.db.engine import DatabaseEngine
+    from nahida_bot.db.repositories.sqlite_chat_mute_repo import (
+        SQLiteChatMuteRepository,
+    )
+    from nahida_bot.identity.authorization import AuthorizationGate
+    from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
+
+    engine = DatabaseEngine(tmp_path / "mute.db")
+    await engine.initialize()
+    clock = [1000.0]
+    service = ChatMuteService(
+        SQLiteChatMuteRepository(engine),
+        MuteConfig(enabled=True),
+        AuthorizationGate(frozenset({"test:user:u1"})),
+        clock=lambda: clock[0],
+    )
+    memory, agent = _MockMemoryStore(), _MockAgentLoop()
+    router, bus, channels, commands = _make_router(
+        agent=agent,
+        memory=memory,
+        mute_service=service,
+    )
+    api = MagicMock()
+    api.message_router = router
+
+    def register(name, handler, **kwargs):
+        commands.register(
+            CommandEntry(
+                name=name,
+                handler=handler,
+                description=kwargs.get("description", ""),
+                aliases=tuple(kwargs.get("aliases", ())),
+                plugin_id="builtin-commands",
+            )
+        )
+
+    api.register_command = register
+    plugin = BuiltinCommandsPlugin(
+        api=api,
+        manifest=PluginManifest(
+            id="builtin-commands", name="Builtin", version="1", entrypoint="x:X"
+        ),
+    )
+    plugin._register_commands()
+    await router.start()
+    try:
+        yield router, bus, channels.get("test"), memory, agent, service, clock
+    finally:
+        await router.stop(mode="abort")
+        await engine.close()
+
+
+async def _publish_mute_input(bus, text, *, group=False, user="u1"):
+    inbound = replace(
+        _inbound(text),
+        user_id=user,
+        message_id=text,
+        chat_context=ChatContext(
+            platform="test", chat_type="group" if group else "private"
+        ),
+        mentions_bot=not text.startswith("/"),
+        is_group=group,
+    )
+    await bus.publish(
+        MessageReceived(
+            payload=MessagePayload(message=inbound, session_id=""), source="test"
+        )
+    )
+    return inbound
+
+
+async def _wait_mute_router_idle(router):
+    async with asyncio.timeout(2):
+        while router.active_agent_run_count:
+            await asyncio.sleep(0)
+
+
+class TestChatMuteRouter:
+    @pytest.mark.parametrize("group", [False, True])
+    async def test_mentions_are_observed_commands_remain_available(
+        self, chat_mute_router, group
+    ):
+        router, bus, channel, memory, agent, _, _ = chat_mute_router
+        await _publish_mute_input(bus, "/虚空下线控制 30m", group=group)
+        await _publish_mute_input(bus, "@bot please reply", group=group)
+        await _publish_mute_input(bus, "/mute status", group=group, user="other")
+        assert not agent.calls
+        session_id = f"test:{'group' if group else 'private'}:c1"
+        turns = memory.sessions[session_id]
+        assert len(turns) == 1 and turns[0].metadata["observed_only"]
+        assert len(channel.sent) == 2
+        assert "下线" in channel.sent[0][1].text
+        assert "30m" in channel.sent[1][1].text
+        await _publish_mute_input(bus, "/unmute", group=group)
+        await _publish_mute_input(bus, "reply now", group=group)
+        await _wait_mute_router_idle(router)
+        assert len(agent.calls) == 1
+        assert "上线" in channel.sent[2][1].text
+        # The muted input remains nearby context on private and group chats.
+        history = agent.calls[0]["history_messages"]
+        assert any("please reply" in message.content for message in history)
+
+    async def test_new_session_does_not_bypass_mute(self, chat_mute_router):
+        router, bus, _, memory, agent, _, _ = chat_mute_router
+        await _publish_mute_input(bus, "/mute")
+        address = ChatAddress(channel="test", target_type="private", target_id="c1")
+        router.set_active_session(address, "test:private:c1:fresh")
+        await _publish_mute_input(bus, "still muted")
+        assert not agent.calls
+        assert memory.sessions["test:private:c1:fresh"][0].metadata["observed_only"]
+
+    async def test_expiry_notice_once_and_reply_restored(self, chat_mute_router):
+        router, bus, channel, _, agent, _, clock = chat_mute_router
+        await _publish_mute_input(bus, "/mute 1s")
+        clock[0] += 1
+        await _publish_mute_input(bus, "expired")
+        await _wait_mute_router_idle(router)
+        await _publish_mute_input(bus, "next")
+        await _wait_mute_router_idle(router)
+        assert len(agent.calls) == 2
+        assert sum("恢复上线" in outbound.text for _, outbound in channel.sent) == 1
+
+    async def test_non_admin_cannot_change_state(self, chat_mute_router):
+        _, bus, channel, _, _, service, _ = chat_mute_router
+        await _publish_mute_input(bus, "/mute", user="other")
+        address = ChatAddress(channel="test", target_type="private", target_id="c1")
+        assert not (await service.status(address)).muted
+        assert "管理员" in channel.sent[0][1].text
+
+    async def test_untriggered_expiry_and_proactive_join(self, chat_mute_router):
+        router, bus, channel, memory, agent, _, clock = chat_mute_router
+        await _publish_mute_input(bus, "/mute 1s", group=True)
+        inbound = replace(
+            _inbound("ambient"),
+            chat_context=ChatContext(platform="test", chat_type="group"),
+            is_group=True,
+        )
+        router._config.group_context_enabled = False
+        await bus.publish(
+            MessageObserved(
+                payload=MessagePayload(message=inbound, session_id=""), source="test"
+            )
+        )
+        assert len(memory.sessions["test:group:c1"]) == 1
+        address = ChatAddress(channel="test", target_type="group", target_id="c1")
+        request = AgentResponseRequested(
+            payload=AgentResponseRequestPayload(
+                message=inbound,
+                session_id="test:group:c1",
+                chat_address=address,
+                requester_plugin_id="joiner",
+                reason="join the conversation",
+            ),
+            source="joiner",
+        )
+        result = await bus.publish(request)
+        assert result.failures and "muted:" in result.failures[0].error
+        assert not agent.calls and len(memory.sessions["test:group:c1"]) == 1
+        clock[0] += 1
+        await bus.publish(
+            MessageObserved(
+                payload=MessagePayload(message=inbound, session_id=""), source="test"
+            )
+        )
+        assert "恢复上线" in channel.sent[-1][1].text
+
+    async def test_inflight_reply_and_all_pending_inputs_are_suppressed(
+        self, chat_mute_router
+    ):
+        from nahida_bot.core.router import PendingMessage
+        from collections import deque
+
+        router, bus, channel, memory, agent, _, _ = chat_mute_router
+        stop_event = asyncio.Event()
+        waiting = asyncio.create_task(stop_event.wait())
+        router._runner.run_tracker.start("test:private:c1", waiting, stop_event)
+        router._pending["test:private:c1"] = deque(
+            [
+                PendingMessage(inbound=_inbound("queued one"), workspace_id=None),
+                PendingMessage(inbound=_inbound("queued two"), workspace_id=None),
+            ]
+        )
+        try:
+            await _publish_mute_input(bus, "/mute")
+            assert stop_event.is_set()
+            await router._send_response(_inbound(), "test:private:c1", "late reply")
+            assert len(channel.sent) == 1
+            router._runner.run_tracker.finish("test:private:c1")
+            await router._drain_pending("test:private:c1")
+            assert not router._pending and not agent.calls
+            assert len(memory.sessions["test:private:c1"]) == 2
+        finally:
+            stop_event.set()
+            await waiting
 
 
 class TestMessageRouterSessionId:

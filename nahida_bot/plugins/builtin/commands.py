@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ from nahida_bot.core.chat_address import (
 )
 from nahida_bot.core.context import current_session
 from nahida_bot.core.events import AgentStopPayload, AgentStopRequested
+from nahida_bot.core.exec_env import build_exec_env, exec_venv_path
 from nahida_bot.core.process_tree import kill_process_tree
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
@@ -106,6 +108,20 @@ class BuiltinCommandsPlugin(Plugin):
             self._cmd_status,
             description="Show session and model info",
             aliases=["info"],
+        )
+        self.api.register_command(
+            "mute",
+            self._cmd_mute,
+            description="Mute this chat (/mute [30m|2h|1d] or /mute status)",
+            aliases=["虚空下线控制"],
+            arguments=[
+                CommandArgument(name="duration", description="Duration or status")
+            ],
+        )
+        self.api.register_command(
+            "unmute",
+            self._cmd_unmute,
+            description="Restore this chat's agent responses",
         )
         self.api.register_command(
             "quota",
@@ -193,6 +209,16 @@ class BuiltinCommandsPlugin(Plugin):
             aliases=["s"],
         )
         self.api.register_command(
+            "steer",
+            self._cmd_steer,
+            description="Interrupt the current run with a new prompt (/steer <prompt>)",
+            arguments=[
+                CommandArgument(
+                    name="prompt", description="Prompt to process next", required=True
+                )
+            ],
+        )
+        self.api.register_command(
             "identity",
             self._cmd_identity,
             description="Show your resolved identity (/identity whoami)",
@@ -230,11 +256,21 @@ class BuiltinCommandsPlugin(Plugin):
     # ── exec Tool ──────────────────────────────────────────
 
     def _register_exec_tool(self) -> None:
+        venv_note = (
+            "Python commands run in a dedicated persistent virtual environment, "
+            "separate from the bot's own: install what you need with "
+            "`python -m pip install <package>` — installs persist across calls "
+            "and never affect the bot. "
+            if exec_venv_path() is not None
+            else ""
+        )
         self.api.register_tool(
             "exec",
             "Execute a shell command and return its stdout, stderr, and exit code. "
             "The command runs with its working directory set to the current workspace "
-            "root unless working_dir is given (also relative to the workspace root). "
+            "root unless working_dir is given (also relative to the workspace root); "
+            "the resolved working directory is reported in the output header. "
+            f"{venv_note}"
             "Do not pass absolute paths from exec into workspace_read/workspace_write: "
             "those tools only accept workspace-relative paths.",
             {
@@ -252,7 +288,9 @@ class BuiltinCommandsPlugin(Plugin):
                         "type": "string",
                         "description": (
                             "Working directory relative to the workspace root. "
-                            "Defaults to the workspace root itself."
+                            "Defaults to the workspace root itself. A path that "
+                            "resolves outside the workspace falls back to the "
+                            "workspace root, reported in the output header."
                         ),
                     },
                 },
@@ -274,12 +312,10 @@ class BuiltinCommandsPlugin(Plugin):
         actual_timeout = min(max(timeout, 1), _MAX_EXEC_TIMEOUT)
 
         # Issue #40: resolve cwd against the current session's workspace so
-        # exec and workspace_read/write share the same root. An empty
-        # working_dir previously inherited the Bot process directory (often
-        # the source repo), which then produced absolute paths the workspace
-        # sandbox rejects. Fall back to the legacy behaviour only when there
-        # is no resolvable workspace root.
-        cwd = self._resolve_exec_cwd(working_dir)
+        # exec and workspace_read/write share the same root. Issue #58: the
+        # resolution is reported in the output header so the model never has
+        # to guess where the command ran.
+        cwd, cwd_notes = self._resolve_exec_cwd(working_dir)
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -287,6 +323,9 @@ class BuiltinCommandsPlugin(Plugin):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                # Dedicated Python venv (when configured): pip installs from
+                # spawned code must never mutate the bot's own environment.
+                env=build_exec_env(),
                 # Issue #57: dedicated session/process group so cleanup can
                 # kill the whole spawned tree (shell pipelines, interpreters)
                 # instead of orphaning everything but the shell.
@@ -294,7 +333,10 @@ class BuiltinCommandsPlugin(Plugin):
             )
         except Exception as e:
             _logger.exception("tool.exec.error", command=command)
-            return f"Failed to execute command: {e}"
+            return (
+                f"Failed to execute command: {e}\n"
+                f"Working directory: {self._format_working_directory(cwd, cwd_notes)}"
+            )
 
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -326,6 +368,9 @@ class BuiltinCommandsPlugin(Plugin):
             await kill_process_tree(proc)
 
         output = f"Exit code: {proc.returncode}\n"
+        output += (
+            f"Working directory: {self._format_working_directory(cwd, cwd_notes)}\n"
+        )
         if stdout:
             output += f"--- stdout ---\n{stdout}"
         if stderr:
@@ -336,31 +381,69 @@ class BuiltinCommandsPlugin(Plugin):
 
         return output
 
-    def _resolve_exec_cwd(self, working_dir: str) -> str | None:
+    @staticmethod
+    def _format_working_directory(cwd: str | None, notes: list[str]) -> str:
+        """Render the exec cwd header line payload (issue #58).
+
+        ``None`` means the subprocess inherited the bot process directory.
+        """
+        display = cwd if cwd else os.getcwd()
+        suffix = f" ({'; '.join(notes)})" if notes else ""
+        return f"{display}{suffix}"
+
+    def _resolve_exec_cwd(self, working_dir: str) -> tuple[str | None, list[str]]:
         """Resolve the exec working directory against the current workspace.
 
         Issue #40: ``exec`` and ``workspace_read``/``workspace_write`` must
-        share the same root. ``working_dir`` (when given) is interpreted as
-        relative to the workspace root; an empty ``working_dir`` defaults to
-        the workspace root itself rather than the Bot process directory.
-        Returns ``None`` only when no workspace can be resolved, preserving
-        the legacy "inherit process cwd" behaviour for workspace-less setups.
-        """
-        from pathlib import Path
+        share the same root; ``working_dir`` (when given) is interpreted as
+        relative to the workspace root. Issue #58: the resolution returns
+        human/model-visible notes so the output header can state where the
+        command really ran (and flag any fallback), instead of letting the
+        model infer it from error paths.
 
-        get_workspace_root = getattr(self.api, "get_workspace_root", None)
-        if not callable(get_workspace_root):
-            return working_dir or None
-        try:
-            root_str = get_workspace_root()
-        except Exception:
-            _logger.debug("tool.exec.workspace_root_unavailable")
-            return working_dir or None
+        Returns ``(cwd, notes)``: ``cwd`` anchors the subprocess (``None``
+        preserves the legacy "inherit bot process directory" behaviour when
+        no workspace can be resolved at all); ``notes`` explain the
+        resolution for the output header.
+        """
+        root_str: str | None = None
+        notes: list[str] = []
+
+        get_binding = getattr(self.api, "get_workspace_binding", None)
+        if callable(get_binding):
+            try:
+                binding = get_binding()
+            except Exception:
+                binding = None
+            if (
+                isinstance(binding, tuple)
+                and len(binding) == 2
+                and isinstance(binding[0], str)
+                and isinstance(binding[1], str)
+            ):
+                root_str, workspace_id = binding
+                notes.append(f"workspace: {workspace_id}")
+        if root_str is None:
+            # Legacy API surface (path only, no workspace id).
+            get_root = getattr(self.api, "get_workspace_root", None)
+            if callable(get_root):
+                try:
+                    candidate_root = get_root()
+                    if isinstance(candidate_root, str):
+                        root_str = candidate_root
+                except Exception:
+                    _logger.debug("tool.exec.workspace_root_unavailable")
+                    root_str = None
         if not isinstance(root_str, str) or not root_str:
-            return working_dir or None
+            # No resolvable workspace (manager unavailable). Keep the legacy
+            # behaviour but announce it loudly in the output instead of
+            # letting the model assume a workspace root.
+            return working_dir or None, [
+                "warning: no workspace configured — inherited the bot process directory"
+            ]
         root = Path(root_str)
         if not working_dir:
-            return str(root)
+            return str(root), notes
         # working_dir is workspace-relative; keep it inside the workspace so
         # exec cannot accidentally escape to an unrelated directory.
         candidate = (root / working_dir).resolve(strict=False)
@@ -372,8 +455,12 @@ class BuiltinCommandsPlugin(Plugin):
                 working_dir=working_dir,
                 workspace_root=str(root),
             )
-            return str(root)
-        return str(candidate)
+            notes.append(
+                f"working_dir {working_dir!r} is outside the workspace — used "
+                "the workspace root"
+            )
+            return str(root), notes
+        return str(candidate), notes
 
     # ── web_fetch Tool ─────────────────────────────────────
 
@@ -490,6 +577,22 @@ class BuiltinCommandsPlugin(Plugin):
 
     async def _cron_delete(self, job_id: str, inbound: InboundMessage) -> str:
         return await self._cron_tools.delete_for_inbound(job_id, inbound)
+
+    async def _cmd_mute(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        router = self._get_router()
+        if router is None:
+            return "会话禁言服务不可用。"
+        return await router.execute_mute_command("mute", args, inbound, session_id)
+
+    async def _cmd_unmute(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        router = self._get_router()
+        if router is None:
+            return "会话禁言服务不可用。"
+        return await router.execute_mute_command("unmute", args, inbound, session_id)
 
     async def _cmd_reset(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -1141,6 +1244,16 @@ class BuiltinCommandsPlugin(Plugin):
             chat_id=inbound.chat_id,
         )
         return "Agent stopped."
+
+    async def _cmd_steer(
+        self, *, args: str, inbound: InboundMessage, session_id: str
+    ) -> str:
+        if not args.strip():
+            return "Usage: /steer <prompt>"
+        router = self._get_router()
+        if router is None:
+            return "Router not available."
+        return await router.steer_message(args, inbound, session_id)
 
     def _get_router(self) -> Any:
         return getattr(self.api, "message_router", None)

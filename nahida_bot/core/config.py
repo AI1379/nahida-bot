@@ -85,6 +85,10 @@ class AgentConfig(BaseModel):
     tool_retry_attempts: int = Field(default=1, ge=0)
     tool_retry_backoff_seconds: float = Field(default=0.1, ge=0)
     max_tool_log_chars: int = Field(default=400, ge=0)
+    subagent_notifications_enabled: bool = Field(
+        default=True,
+        description="Send subagent completion notifications to the originating chat.",
+    )
     tool_use_system_prompt: str = (
         "Tool use policy: When a tool is needed, call it through the structured "
         "tool/function calling interface. Do not merely say that you will call a "
@@ -393,18 +397,23 @@ class IdentityConfig(BaseModel):
 
     enabled: bool = False
     people: list[IdentityPersonSeed] = Field(default_factory=list)
-    # Phase A action-authorization (see docs/design/memory-soft-scope-and-authz.md).
-    # Account keys authorized for privileged tools (exec/message/workspace_write/
-    # management). Decoupled from ``people``: declaring someone a Person does NOT
-    # make them an admin. Migration fallback when authorization.admins is absent,
-    # independent of identity.enabled.
-    admins: list[IdentityAccountSeed] = Field(default_factory=list)
-    # Chat trust domains: named sets of chat addresses (e.g. a main QQ group
-    # plus its satellite groups) that share read visibility for chat-history
-    # tools. Non-admin senders may read/search only within the domain of the
-    # chat they are talking in; chats not listed anywhere are singletons
-    # (current chat only). Runtime editing is tracked in issue #54.
-    chat_domains: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class MuteNoticeConfig(BaseModel):
+    """Messages broadcast when a chat enters or leaves mute mode."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    offline: str = Field(default="虚空系统已下线", min_length=1, max_length=500)
+    online: str = Field(default="虚空系统已恢复上线", min_length=1, max_length=500)
+
+
+class MuteConfig(BaseModel):
+    """Persistent, chat-scoped suppression of inbound agent triggers."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    enabled: bool = False
+    default_duration_seconds: int = Field(default=3600, ge=1, le=31_536_000)
+    notice: MuteNoticeConfig = Field(default_factory=MuteNoticeConfig)
 
 
 class PendingMessagesConfig(BaseModel):
@@ -413,6 +422,9 @@ class PendingMessagesConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
     max_messages: int = Field(default=20, ge=1)
     ttl_seconds: float = Field(default=900.0, gt=0)
+    mode: Literal["batch", "sequential"] = "batch"
+    batch_max_messages: int = Field(default=6, ge=1)
+    batch_max_chars: int = Field(default=4000, ge=1)
 
 
 class RouterConfigModel(BaseModel):
@@ -577,6 +589,11 @@ class Settings(BaseModel):
     # Workspace
     workspace_base_dir: str = "./data/workspace"
 
+    # Dedicated virtualenv for exec'd / cron-spawned commands so model-authored
+    # scripts never share (or mutate) the bot's own Python environment.
+    # Empty string disables separation and inherits the bot environment.
+    exec_venv_path: str = "./data/exec-venv"
+
     # Plugins
     plugin_paths: list[str] = ["./plugins"]
     discover_builtin_channels: bool = True
@@ -598,6 +615,7 @@ class Settings(BaseModel):
     context: ContextConfig = ContextConfig()
     scheduler: SchedulerConfigModel = SchedulerConfigModel()
     router: RouterConfigModel = RouterConfigModel()
+    mute: MuteConfig = Field(default_factory=MuteConfig)
     webapi: WebAPIConfigModel = WebAPIConfigModel()
     webui: WebUIConfigModel = WebUIConfigModel()
     motion_planner: MotionPlannerConfigModel = MotionPlannerConfigModel()

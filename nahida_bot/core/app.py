@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import structlog
 
 from nahida_bot.agent.media.cache import MediaCache
+from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.agent.media.store import MediaStore
 from nahida_bot.agent.metrics import MetricsCollector
 from nahida_bot.core.channel_registry import ChannelRegistry
@@ -216,6 +217,10 @@ class Application:
                     self.settings.memory.retrieval.cross_chat_weights
                 ),
             )
+            # Dedicated exec venv must exist before plugins register tools (the
+            # exec tool description depends on whether separation is enabled).
+            self._init_exec_environment()
+
             await self._discover_plugins()
             self._inject_plugin_configs()
 
@@ -399,18 +404,12 @@ class Application:
         self._identity_resolver = IdentityResolver(
             identity_store, enabled=identity_cfg.enabled
         )
-        # Action policy is independent of identity.enabled. Keep the legacy
-        # admin list as a migration fallback, never as an enable switch.
+        # Action policy is independent of identity.enabled. Admins and chat
+        # domains are owned by the authorization configuration.
         authorization_cfg = self.settings.authorization
-        legacy_admin_keys = frozenset(
-            str(AccountKey.from_parts(account.channel, account.platform_account_id))
-            for account in identity_cfg.admins
-        )
         self._authorization_gate = AuthorizationGate(
-            frozenset(authorization_cfg.admins)
-            if authorization_cfg.admins is not None
-            else legacy_admin_keys,
-            domains=ChatDomainIndex(identity_cfg.chat_domains),
+            frozenset(authorization_cfg.admins),
+            domains=ChatDomainIndex(authorization_cfg.chat_domains),
             policy=authorization_cfg,
         )
         logger.info(
@@ -702,6 +701,24 @@ class Application:
             path=str(manager.workspace_path(metadata.workspace_id)),
         )
 
+    def _init_exec_environment(self) -> None:
+        """Bootstrap the dedicated Python venv for exec'd commands.
+
+        Environment separation only (same OS user, same filesystem): the
+        goal is that pip installs from model-authored scripts can never
+        mutate the bot's own runtime. Failure is fatal on purpose — a
+        configured-but-broken venv must not silently degrade exec back to
+        the shared bot environment.
+        """
+        from nahida_bot.core.exec_env import configure_exec_venv, ensure_exec_venv
+
+        venv = configure_exec_venv(self.settings.exec_venv_path)
+        if venv is None:
+            logger.info("application.exec_venv_disabled")
+            return
+        ensure_exec_venv()
+        logger.info("application.exec_venv_ready", path=str(venv))
+
     def _init_scheduler(self) -> None:
         """Create the SessionRunner and SchedulerService."""
         from nahida_bot.agent.media.resolver import MediaPolicy, MediaResolver
@@ -801,7 +818,12 @@ class Application:
             executor=LocalAgentRunExecutor(self.session_runner),
             task_store=task_store,
             memory_store=self.memory_store,
-            config=OrchestrationConfig(system_prompt=self.settings.system_prompt),
+            config=OrchestrationConfig(
+                system_prompt=self.settings.system_prompt,
+                subagent_notifications_enabled=(
+                    self.settings.agent.subagent_notifications_enabled
+                ),
+            ),
             # Issue #41: route subagent completion notifications back to the
             # channel the user spoke to, so background task results are
             # actually visible instead of only landing in parent-session
@@ -1075,6 +1097,7 @@ class Application:
                 chat_metadata_store=self.chat_metadata_store,
                 temp_file_service=self.temp_file_service,
                 motion_planner=motion_planner,
+                mute_service=self._build_chat_mute_service(),
             )
             await self.message_router.start()
 
@@ -1143,6 +1166,18 @@ class Application:
                 app_name=self.settings.app_name,
             )
             raise StartupError(f"Failed to start application: {e}") from e
+
+    def _build_chat_mute_service(self) -> ChatMuteService:
+        from nahida_bot.db.repositories.sqlite_chat_mute_repo import (
+            SQLiteChatMuteRepository,
+        )
+
+        assert self._db_engine is not None
+        return ChatMuteService(
+            SQLiteChatMuteRepository(self._db_engine),
+            self.settings.mute,
+            self._authorization_gate,
+        )
 
     async def _media_cache_cleanup_once(self) -> None:
         """Purge expired entries from the media cache (single pass)."""

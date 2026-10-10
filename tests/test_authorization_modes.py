@@ -56,11 +56,39 @@ def test_identity_does_not_select_authorization_mode(identity_enabled):
     assert gate.mode_for(ACCOUNT) == "relaxed"
 
 
+def test_authorization_owns_admins_and_chat_domains():
+    settings = Settings.model_validate(
+        {
+            "identity": {"enabled": True},
+            "authorization": {
+                "admins": [ACCOUNT],
+                "chat_domains": {"community": [CHAT]},
+            },
+        }
+    )
+    assert settings.authorization.admins == [ACCOUNT]
+    assert settings.authorization.chat_domains == {"community": [CHAT]}
+
+    with pytest.raises(ValidationError, match="admins"):
+        Settings.model_validate({"identity": {"admins": []}})
+    with pytest.raises(ValidationError, match="chat_domains"):
+        Settings.model_validate({"identity": {"chat_domains": {}}})
+
+
+def test_authorization_admins_default_empty_without_legacy_fallback():
+    settings = Settings.model_validate({"identity": {"enabled": False}})
+    assert settings.authorization.admins == []
+    assert settings.authorization.chat_domains == {}
+    gate = AuthorizationGate(policy=settings.authorization)
+    assert not gate.is_admin(ACCOUNT)
+
+
 @pytest.mark.parametrize(
     "config",
     [
         {"mode": "typo"},
         {"enabled": False},
+        {"admins": None},
         {"accounts": {"milky:123": "unsafe"}},
         {"chats": {"milky:456": "unsafe"}},
         {"chats": {"milky:group:456:thread:session": "unsafe"}},

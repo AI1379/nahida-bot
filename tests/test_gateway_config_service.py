@@ -57,6 +57,7 @@ providers:
             changes=[
                 {"path": "debug", "value": True},
                 {"path": "providers.default.base_url", "value": "https://new.example"},
+                {"path": "agent.subagent_notifications_enabled", "value": False},
             ],
             expected_checksum=checksum,
             config_path=str(config_path),
@@ -72,6 +73,8 @@ providers:
         assert "https://new.example" in text
         assert "secret-key" in text
         assert "***" not in text
+        assert "subagent_notifications_enabled: false" in text
+        assert result.restart_required is True
 
 
 class TestBackupRestore:

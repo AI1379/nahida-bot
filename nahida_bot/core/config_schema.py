@@ -20,6 +20,7 @@ from nahida_bot.core.config import (
     ContextConfig,
     KBAutoRecallConfig,
     MultimodalConfig,
+    MuteConfig,
     ProviderEntryConfig,
     RouterConfigModel,
     SchedulerConfigModel,
@@ -162,6 +163,7 @@ _NESTED_MODELS: dict[str, type] = {
     "context": ContextConfig,
     "scheduler": SchedulerConfigModel,
     "router": RouterConfigModel,
+    "mute": MuteConfig,
     "kb_auto_recall": KBAutoRecallConfig,
 }
 

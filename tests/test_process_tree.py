@@ -187,6 +187,63 @@ async def test_tool_exec_success_captures_output(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_exec_reports_working_directory(tmp_path: Path) -> None:
+    """Issue #58: the exec output must state where the command ran."""
+    plugin = _plugin(tmp_path)
+    result = await plugin._tool_exec(
+        f'"{sys.executable}" -c "import os; print(os.getcwd())"', timeout=10
+    )
+
+    lines = result.splitlines()
+    assert lines[0] == "Exit code: 0"
+    assert lines[1].startswith("Working directory: ")
+    # The header points at the workspace root and the process really ran
+    # there (legacy FakeAPI surface: path only, no workspace id note).
+    assert str(tmp_path) in lines[1]
+    stdout = result.split("--- stdout ---")[1]
+    assert Path(stdout.strip()).resolve() == tmp_path.resolve()
+
+
+@pytest.mark.asyncio
+async def test_tool_exec_working_dir_outside_workspace_is_reported(
+    tmp_path: Path,
+) -> None:
+    """Issue #58: coercion back to the workspace root must be visible."""
+    plugin = _plugin(tmp_path)
+    result = await plugin._tool_exec(
+        f'"{sys.executable}" -c "import os; print(os.getcwd())"',
+        timeout=10,
+        working_dir="../outside",
+    )
+
+    header = result.splitlines()[1]
+    assert str(tmp_path) in header
+    assert "outside the workspace" in header
+    # The command actually ran at the workspace root, not beside it.
+    stdout = result.split("--- stdout ---")[1]
+    assert Path(stdout.strip()).resolve() == tmp_path.resolve()
+
+
+@pytest.mark.asyncio
+async def test_tool_exec_warns_when_no_workspace_resolvable(tmp_path: Path) -> None:
+    """Issue #58: falling back to the bot process directory must be loud."""
+    api = _FakeAPI()
+    api.workspace_root = tmp_path
+    api.get_workspace_root = None  # type: ignore[assignment]
+    api.get_workspace_binding = None  # type: ignore[assignment]
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+
+    result = await plugin._tool_exec(
+        f'"{sys.executable}" -c "print(\'ok\')"', timeout=10
+    )
+
+    assert result.startswith("Exit code: 0")
+    header = result.splitlines()[1]
+    assert "warning: no workspace configured" in header
+    assert os.getcwd() in header
+
+
+@pytest.mark.asyncio
 async def test_tool_exec_timeout_returns_message(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
     result = await plugin._tool_exec(

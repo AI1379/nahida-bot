@@ -61,6 +61,10 @@ db_path: "./data/nahida.db"
 # ── Workspace ─────────────────────────────────────────
 workspace_base_dir: "./data/workspace"
 
+# exec / cron 外部命令的专用 Python 虚拟环境（与 bot 自身环境隔离，
+# 模型脚本里的 pip install 只影响这里；留空禁用并回退为继承 bot 环境）
+exec_venv_path: "./data/exec-venv"
+
 # ── 插件 ──────────────────────────────────────────────
 plugin_paths:
   - "./plugins"
@@ -490,6 +494,7 @@ telegram:
 #   tool_retry_attempts: 1              # 工具执行重试次数
 #   tool_retry_backoff_seconds: 0.1     # 工具重试退避间隔（秒）
 #   max_tool_log_chars: 400             # 工具日志截断长度
+#   subagent_notifications_enabled: true  # 子任务结束后向来源聊天发通知；false 全局关闭
 #   # tool_use_system_prompt: "..."     # 注入的工具使用提示
 #   # provider_error_template: "..."    # Provider 错误消息模板
 
@@ -525,28 +530,23 @@ agent_runtime:
 #
 # identity:
 #   enabled: false
-#   admins:
-#     - channel: "milky"
-#       platform_account_id: "123456789"
-#   # Chat trust domains: chats that share read visibility for the history
-#   # tools (read/search_chat_history, find_chat, recall_cross_chat). Non-admin
-#   # senders may read the current chat plus its declared siblings; everything
-#   # else still requires an admin. Chats not listed anywhere are singletons
-#   # (current chat only). Runtime editing is tracked in issue #54.
-#   chat_domains:
-#     main_community:
-#       - "milky:group:833325688"
-#       - "milky:group:732870642"
 
 # Authorization is independent of identity.enabled; default is standard.
-# Existing identity.admins is inherited only when authorization.admins is absent.
+# In standard mode, privileged calls fail closed until authorization.admins is explicitly set.
+# Admin-only actions always require an account declared in authorization.admins.
 # Both relaxed and unsafe execute with the bot OS account — NOT in a sandbox.
 # relaxed: allow exec/scripts after independent risk review; unsafe: no review.
 # Identity/MCP management, desktop tools and cross-chat delivery remain admin-only.
 # Changes require restarting the bot (no policy hot reload in this version).
 # authorization:
 #   mode: standard
-#   # admins: ["milky:user:123456789"]  # [] explicitly removes inherited admins
+#   admins: ["milky:user:123456789"]
+#   # Chat trust domains: chats that share read visibility for history tools.
+#   # Unlisted chats remain singletons (current chat only).
+#   chat_domains:
+#     main_community:
+#       - "milky:group:833325688"
+#       - "milky:group:732870642"
 #   chats:
 #     "milky:group:833325688": relaxed
 #     "milky:group:732870642": relaxed
@@ -629,6 +629,14 @@ agent_runtime:
 #   memory_dreaming_model: ""           # model spec；空则默认找 memory tag，失败后走会话模型
 
 # ── Router ─────────────────────────────────────────────
+# 按聊天入口禁言，默认关闭；管理员可用 /mute 30m、/unmute，/mute status 查看状态。
+# mute:
+#   enabled: false
+#   default_duration_seconds: 3600
+#   notice:
+#     offline: "虚空系统已下线"
+#     online: "虚空系统已恢复上线"
+#
 # 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。
 # 以下均为默认值，不写则使用默认值。
 #
@@ -639,6 +647,12 @@ agent_runtime:
 #   command_timeout_seconds: 30.0       # 命令执行超时（秒）
 #   command_timeout_message: "Command timed out. Please try again later."
 #   reply_to_inbound: true              # 默认是否引用回复触发消息；平台插件可覆盖
+#   pending_messages:
+#     mode: batch                       # batch / sequential；群聊积压默认合并同发送者连续消息
+#     max_messages: 20                  # 每个会话排队的原始消息上限
+#     ttl_seconds: 900                  # 排队消息过期时间（秒）
+#     batch_max_messages: 6             # 每批最多合并多少条；私聊/命令/steer 独立执行
+#     batch_max_chars: 4000             # 每批正文总字符上限；超长单条仍完整执行
 #   group_context:
 #     enabled: true                     # 是否在触发时注入 observed-only 群上下文
 #     max_messages: 20                  # 最多注入最近多少条未触发群消息
