@@ -227,6 +227,7 @@ class TestRestartPolicy:
 
     async def test_policy_on_failure_restarts_on_nonzero(self) -> None:
         bus = _make_event_bus()
+        rec = _EventRecorder(bus)
         cfg = _config(
             {"p": _spec(_FAIL_CMD, restart_policy="on-failure")},
             backoff_initial_seconds=0.1,
@@ -235,8 +236,10 @@ class TestRestartPolicy:
         sup = ProcessSupervisor(cfg, bus)
         await sup.start()
         try:
-            await _until(lambda: sup.get_process("p").restart_count >= 2)
-            assert sup.get_process("p").status == "starting"
+            # A short-lived worker can already be running again when start()
+            # returns. Verify respawns instead of sampling a transient status.
+            await _until(lambda: rec.events.count(("ProcessStarted", "p")) >= 3)
+            assert sup.get_process("p").restart_count >= 2
         finally:
             await sup.shutdown()
             await bus.shutdown()
