@@ -22,6 +22,7 @@ export interface SpeechPlaybackCallbacks {
     segment: DisplaySegment,
     mode: SegmentPlaybackMode,
     durationMs: number,
+    signal: AbortSignal,
   ) => void | Promise<void>;
   onSegmentFallback?: (
     presentation: PresentationPlan,
@@ -220,19 +221,25 @@ export class SpeechPlaybackCoordinator {
         preparation.error,
       );
     }
-    await this.callbacks.onSegmentStart?.(
-      presentation,
-      index,
-      segment,
-      handle ? "audio" : "timed",
-      durationMs,
-    );
-    if (handle) {
-      await this.playAudioHandle(presentation, index, segment, handle, signal);
-    } else {
-      await abortableDelay(durationMs, signal);
+    try {
+      await this.callbacks.onSegmentStart?.(
+        presentation,
+        index,
+        segment,
+        handle ? "audio" : "timed",
+        durationMs,
+        signal,
+      );
+      if (signal.aborted) throw new AudioPlaybackAbortedError();
+      if (handle) {
+        await this.playAudioHandle(presentation, index, segment, handle, signal);
+      } else {
+        await abortableDelay(durationMs, signal);
+      }
+      await abortableDelay(segment.pauseAfterMs ?? 0, signal);
+    } finally {
+      handle?.dispose();
     }
-    await abortableDelay(segment.pauseAfterMs ?? 0, signal);
   }
 
   private async playAudioHandle(
@@ -253,8 +260,6 @@ export class SpeechPlaybackCoordinator {
         error,
       );
       await abortableDelay(estimatedSegmentDuration(segment), signal);
-    } finally {
-      handle.dispose();
     }
   }
 

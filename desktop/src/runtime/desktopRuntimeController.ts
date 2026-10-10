@@ -7,8 +7,9 @@ import {
 } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isTauri } from "@tauri-apps/api/core";
 
-import { desktopWindowDefaults } from "@/config/desktopRuntimeDefaults";
+import { desktopWindowDefaults, motionPlaybackTimingDefaults } from "@/config/desktopRuntimeDefaults";
 import type {
   DesktopRuntimeSnapshot,
   PetWindowCommand,
@@ -23,6 +24,8 @@ import type {
   AudioPlaybackRequest,
 } from "@/services/audioPlaybackAdapter";
 import { isAudioPlaybackAborted } from "@/services/audioPlaybackAdapter";
+import { AudioPlaybackAbortedError } from "@/services/audioPlaybackAdapter";
+import { segmentMotionSync, waitForSegmentStart } from "@/services/segmentMotionSync";
 import {
   listenForPetCommands,
   publishLipSyncEnergy,
@@ -151,16 +154,27 @@ export function useDesktopRuntimeController(
       onPresentationStart(presentation) {
         store.startPresentation(presentation);
       },
-      async onSegmentStart(presentation, index, _segment, mode, durationMs) {
+      async onSegmentStart(presentation, index, _segment, mode, durationMs, signal) {
+        if (signal.aborted) throw new AudioPlaybackAbortedError();
         if (store.activePresentation?.id !== presentation.id) return;
         store.setSegment(index, mode === "audio", durationMs);
         store.markPresentationTurn(presentation.id, "playing");
-        // Commit the segment and its real audio duration to the pet window
-        // before the audio element begins consuming the segment.
+        const requestId = crypto.randomUUID();
+        store.syncPetRuntime({ segmentPlayback: { requestId, phase: "preparing" } });
+        const ready = isTauri() || segmentMotionSync.hasSurface
+          ? segmentMotionSync.wait(requestId, signal).catch(() => false)
+          : Promise.resolve(false);
         await publishRuntimeSnapshot(runtimeSnapshot.value).catch(
           () => undefined,
         );
         await nextTick();
+        await ready;
+        if (signal.aborted) throw new AudioPlaybackAbortedError();
+        const startedAtMs = Date.now() + motionPlaybackTimingDefaults.startLeadMs;
+        store.syncPetRuntime({ segmentPlayback: { requestId, phase: "playing", startedAtMs } });
+        await publishRuntimeSnapshot(runtimeSnapshot.value).catch(() => undefined);
+        await nextTick();
+        await waitForSegmentStart(startedAtMs, signal);
       },
       onSegmentFallback(presentation, index) {
         if (store.activePresentation?.id !== presentation.id) return;
@@ -530,6 +544,9 @@ export function useDesktopRuntimeController(
 
   function handlePetCommand(command: PetWindowCommand) {
     switch (command.type) {
+      case "motion_ready":
+        segmentMotionSync.acknowledge(command.requestId);
+        break;
       case "request_state":
         void publishRuntimeSnapshot(runtimeSnapshot.value);
         break;

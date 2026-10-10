@@ -33,6 +33,7 @@ import {
 import { clamp } from "./live2dMath";
 import {
   createRuntimeParameterOverride,
+  releaseRuntimeParameterOverride,
   runtimeParameterValueAt,
   type RuntimeParameterOverride,
 } from "./live2dProceduralMotion";
@@ -53,6 +54,7 @@ export interface Live2DRenderer {
   updateModelConfig(manifest: Live2DModelManifest): void;
   applyExpression(expressionName: string): Promise<boolean>;
   playModelMotion(group: string, index: number): Promise<boolean>;
+  prepareModelMotion?(group: string, index: number): Promise<boolean>;
   playNormalizedMotion(clip: NormalizedMotionClip): boolean;
   getNormalizedPose(): NormalizedPoseValues;
   clearRuntimeMotion(): void;
@@ -137,8 +139,11 @@ export class WebLive2DRenderer implements Live2DRenderer {
     model.interactive = false;
     app.stage.addChild(model);
     this.model = model;
-    app.ticker.add(this.applyRuntimeParameterMotion);
-    app.ticker.add(this.applyDebugOverrides);
+    // Feed physics the procedural pose, then enforce channel ownership after
+    // expressions, natural movement and physics have updated the model.
+    model.internalModel.on("afterMotionUpdate", this.applyRuntimeParameterMotion);
+    model.internalModel.on("beforeModelUpdate", this.applyRuntimeParameterMotion);
+    model.internalModel.on("beforeModelUpdate", this.applyDebugOverrides);
 
     this.resizeObserver = new ResizeObserver(() => this.fitModel());
     this.resizeObserver.observe(this.host);
@@ -166,8 +171,7 @@ export class WebLive2DRenderer implements Live2DRenderer {
   async playModelMotion(group: string, index: number): Promise<boolean> {
     if (!this.model || !group) return false;
     try {
-      await this.model.motion(group, index);
-      return true;
+      return await this.model.motion(group, index);
     } catch {
       // User models often expose semantic motions in UI but omit .motion3.json.
       return false;
@@ -175,24 +179,31 @@ export class WebLive2DRenderer implements Live2DRenderer {
   }
 
   clearRuntimeMotion(): void {
-    this.cancelRuntimeMotion(true);
+    this.releaseRuntimeChannels(new Set());
+    this.activeMotionClipId = null;
     this.applyLipSyncValue(0);
   }
 
-  private cancelRuntimeMotion(restoreOriginal: boolean): void {
-    const coreModel = this.getCoreModel();
-    if (restoreOriginal && coreModel?.setParameterValueByIndex) {
-      for (const [index, override] of this.runtimeParameterOverrides) {
-        const debugOverride = this.parameterOverrides.get(index);
-        coreModel.setParameterValueByIndex(
-          index,
-          debugOverride?.value ?? override.original,
-          1,
-        );
-      }
+  async prepareModelMotion(group: string, index: number): Promise<boolean> {
+    if (!this.model || !group) return false;
+    try {
+      return Boolean(await this.model.internalModel.motionManager.loadMotion(group, index));
+    } catch {
+      return false;
     }
-    this.runtimeParameterOverrides.clear();
-    this.activeMotionClipId = null;
+  }
+
+  private releaseRuntimeChannels(retained: Set<number>): void {
+    const coreModel = this.getCoreModel();
+    const now = performance.now();
+    for (const [index, override] of this.runtimeParameterOverrides) {
+      if (retained.has(index)) continue;
+      this.runtimeParameterOverrides.set(index, releaseRuntimeParameterOverride(
+        override,
+        coreModel?.getParameterValueByIndex?.(index) ?? override.finalValue,
+        now,
+      ));
+    }
   }
 
   setLipSync(value: number): void {
@@ -354,13 +365,10 @@ export class WebLive2DRenderer implements Live2DRenderer {
     this.partOpacityOverrides.clear();
     this.runtimeParameterOverrides.clear();
 
-    // Remove ticker callbacks before destroying to prevent post-dispose ticks
-    if (this.app) {
-      this.app.ticker.remove(this.applyRuntimeParameterMotion);
-      this.app.ticker.remove(this.applyDebugOverrides);
-    }
-
     if (this.model) {
+      this.model.internalModel.off("afterMotionUpdate", this.applyRuntimeParameterMotion);
+      this.model.internalModel.off("beforeModelUpdate", this.applyRuntimeParameterMotion);
+      this.model.internalModel.off("beforeModelUpdate", this.applyDebugOverrides);
       this.model.destroy({ children: true, texture: true, baseTexture: true });
       this.model = null;
     }
@@ -471,7 +479,8 @@ export class WebLive2DRenderer implements Live2DRenderer {
         override.original,
       ]),
     );
-    this.cancelRuntimeMotion(false);
+    const retained = new Set(clip.channels.flatMap((channel) => this.parameterIndicesForChannel(channel)));
+    this.releaseRuntimeChannels(retained);
     this.activeMotionClipId = clip.id;
     const now = performance.now();
     this.motionBoostUntil = Math.max(

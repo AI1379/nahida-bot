@@ -27,6 +27,7 @@ export interface MotionCacheKeyInput {
   modelProfileVersion: string;
   plannerVersion: string;
   primitiveVersion: string;
+  motionHint?: string;
 }
 
 function stableHash(source: string): string {
@@ -48,6 +49,7 @@ export function createMotionCacheKey(input: MotionCacheKeyInput): string {
     modelProfileVersion: input.modelProfileVersion,
     plannerVersion: input.plannerVersion,
     primitiveVersion: input.primitiveVersion,
+    motionHint: input.motionHint ?? "",
   });
   return `motion-v1:${stableHash(canonical)}`;
 }

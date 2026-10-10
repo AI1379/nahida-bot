@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 
 import type { TtsSettings } from "@/domain/config";
 
@@ -14,7 +14,7 @@ const emit = defineEmits<{
 
 const voices = ref<SpeechSynthesisVoice[]>([]);
 const previewText = ref("你好，我是纳西妲。很高兴见到你。");
-let synthesis: SpeechSynthesis | null = null;
+const synthesis = shallowRef<SpeechSynthesis | null>(null);
 
 const languages = computed(() => {
   const available = new Set(voices.value.map((voice) => voice.lang));
@@ -32,13 +32,13 @@ const matchingVoices = computed(() => {
 });
 
 const status = computed(() => {
-  if (!synthesis) return "系统语音不可用";
+  if (!synthesis.value) return "系统语音不可用";
   if (!voices.value.length) return "正在读取系统语音";
   return `${voices.value.length} 个系统语音`;
 });
 
 function refreshVoices() {
-  voices.value = synthesis?.getVoices() ?? [];
+  voices.value = synthesis.value?.getVoices() ?? [];
 }
 
 function update(patch: Partial<TtsSettings>) {
@@ -65,16 +65,16 @@ function changeNumber(
 }
 
 onMounted(() => {
-  synthesis =
+  synthesis.value =
     typeof globalThis.speechSynthesis === "undefined"
       ? null
       : globalThis.speechSynthesis;
   refreshVoices();
-  synthesis?.addEventListener("voiceschanged", refreshVoices);
+  synthesis.value?.addEventListener("voiceschanged", refreshVoices);
 });
 
 onBeforeUnmount(() => {
-  synthesis?.removeEventListener("voiceschanged", refreshVoices);
+  synthesis.value?.removeEventListener("voiceschanged", refreshVoices);
 });
 </script>
 

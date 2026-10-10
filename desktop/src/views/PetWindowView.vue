@@ -170,6 +170,7 @@ onBeforeUnmount(() => {
       :model="store.model"
       :speaking="store.speaking"
       :motion-duration-ms="store.petRuntime.segmentDurationMs"
+      :segment-playback="store.petRuntime.segmentPlayback"
       :lip-sync-energy="lipSyncEnergy"
       :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
       playback-surface="pet"
@@ -179,6 +180,7 @@ onBeforeUnmount(() => {
       :debug-enabled="false"
       :dev-chrome="false"
       @motion-executed="handleMotionExecuted"
+      @motion-ready="sendPetWindowCommand({ type: 'motion_ready', requestId: $event })"
     />
 
     <PluginSurfaceHost

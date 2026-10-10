@@ -52,6 +52,9 @@ describe("PersistentMotionCache", () => {
     expect(createMotionCacheKey(base)).not.toBe(
       createMotionCacheKey({ ...base, plannerVersion: "rule-v2" }),
     );
+    expect(createMotionCacheKey({ ...base, motionHint: "nod" })).not.toBe(
+      createMotionCacheKey({ ...base, motionHint: "wave" }),
+    );
   });
 
   it("persists and clears browser-local cache entries", async () => {

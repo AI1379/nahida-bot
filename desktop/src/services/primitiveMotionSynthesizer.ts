@@ -33,13 +33,13 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 export class PrimitiveMotionSynthesizer implements MotionSynthesizer {
   readonly id = "primitive-motion-synthesizer";
-  readonly version = "1.0.0";
+  readonly version = "1.1.0";
 
   async synthesize(
     intent: Parameters<MotionSynthesizer["synthesize"]>[0],
     context: MotionSynthesisContext,
   ): Promise<MotionPlan> {
-    return createPrimitiveMotionPlan(intent, context);
+    return createPrimitiveMotionPlan(intent, context, context.primitiveHint);
   }
 }
 
@@ -48,6 +48,10 @@ export function createPrimitiveMotionPlan(
   context: MotionSynthesisContext,
   primitive: MotionPrimitiveName = intentPrimitiveMap[intent.intent],
 ): MotionPlan {
+  // A discrete gesture keeps its own tempo instead of stretching across speech.
+  const gestureDurationMs = intent.loopable
+    ? intent.durationMs
+    : Math.min(intent.durationMs, motionPrimitiveDefaultDurationMs(primitive));
   const repeat = intent.loopable
     ? clamp(
         Math.round(
@@ -68,9 +72,9 @@ export function createPrimitiveMotionPlan(
         type: "primitive",
         name: primitive,
         atMs: 0,
-        durationMs: intent.durationMs,
+        durationMs: gestureDurationMs,
         params: {
-          intensity: clamp(intent.intensity, 0, 1),
+          intensity: clamp(intent.intensity + (primitive === "speaking" ? context.audioEnergy * 0.25 : 0), 0, 1),
           repeat,
           loopable: intent.loopable,
           audioEnergy: clamp(context.audioEnergy, 0, 1),

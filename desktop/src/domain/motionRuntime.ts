@@ -1,5 +1,6 @@
 import type { ModelPerformanceProfile } from "./modelPerformanceProfile";
 import type { MotionIntent } from "./motionIntent";
+import type { MotionPrimitiveName } from "./motionPrimitives";
 import type { MotionPlan, MotionValidationWarning } from "./motionPlan";
 import type {
   MotionDecisionRecord,
@@ -36,6 +37,7 @@ export interface MotionSynthesisContext {
   previousPose: Readonly<NormalizedPoseValues>;
   audioEnergy: number;
   modelProfile: ModelPerformanceProfile;
+  primitiveHint?: MotionPrimitiveName;
 }
 
 export interface MotionSynthesizer {
@@ -84,6 +86,8 @@ export interface MotionLayer {
   source: MotionLayerSource;
   sequence: number;
   clip: NormalizedMotionClip;
+  /** Playback position at the moment the mixer rebuilds the timeline. */
+  elapsedMs?: number;
 }
 
 export interface MotionMixer {

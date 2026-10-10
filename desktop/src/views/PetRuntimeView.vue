@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
 import { useMediaQuery } from "@vueuse/core";
 
@@ -10,6 +10,7 @@ import RuntimeConversationPanel from "@/components/RuntimeConversationPanel.vue"
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
 import { useDesktopStore } from "@/stores/desktop";
+import { segmentMotionSync } from "@/services/segmentMotionSync";
 
 const props = defineProps<{
   runtime: DesktopRuntimeActions;
@@ -22,6 +23,9 @@ const replayedPlanId = ref("");
 const wideLayout = useMediaQuery("(min-width: 921px)");
 const conversationOpen = ref(wideLayout.value);
 const recordsLocalStage = !isTauri();
+let unregisterSurface: (() => void) | undefined;
+onMounted(() => { if (recordsLocalStage) unregisterSurface = segmentMotionSync.registerSurface(); });
+onBeforeUnmount(() => unregisterSurface?.());
 const live2dStage = ref<{
   replayNormalizedClip: (
     clip: MotionPlaybackSummary["normalizedClip"],
@@ -76,6 +80,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       :model="store.model"
       :speaking="store.speaking"
       :motion-duration-ms="store.petRuntime.segmentDurationMs"
+      :segment-playback="store.petRuntime.segmentPlayback"
       :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
       :motion-telemetry-enabled="recordsLocalStage"
       playback-surface="runtime"
@@ -87,6 +92,7 @@ function replayMotion(playback: MotionPlaybackSummary): void {
       @expressions-loaded="store.setModelExpressions"
       @motions-loaded="store.setModelMotions"
       @motion-executed="handleMotionExecuted"
+      @motion-ready="recordsLocalStage && segmentMotionSync.acknowledge($event)"
     />
 
     <PluginSurfaceHost

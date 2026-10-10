@@ -566,7 +566,7 @@ export const useDesktopStore = defineStore("desktop", {
       if (snapshot.pluginSurfaceRevision !== undefined) {
         this.pluginSurfaceRevision = snapshot.pluginSurfaceRevision;
       }
-      this.syncPetRuntime(snapshot.petRuntime);
+      this.syncPetRuntime({ ...snapshot.petRuntime, segmentPlayback: snapshot.petRuntime.segmentPlayback ?? null });
     },
     updateTtsSettings(settings: LocalDesktopConfig["ttsSettings"]) {
       const ttsSettings = sanitizeTtsSettings(settings);
@@ -795,7 +795,8 @@ export const useDesktopStore = defineStore("desktop", {
       this.syncPetRuntime({
         emotion,
         expressionKey,
-        motion: segment.motion ?? (speaking ? "speaking" : "idle"),
+        // Text-only presentations still perform; `speaking` controls audio/lips.
+        motion: segment.motion ?? "speaking",
         speaking,
         currentSegmentIndex: index,
         segmentDurationMs:
@@ -815,6 +816,7 @@ export const useDesktopStore = defineStore("desktop", {
         motion: "idle",
         speaking: false,
         segmentDurationMs: null,
+        segmentPlayback: null,
         activePresentationId: null,
         bubbleText: "",
         lastEventAt: new Date().toISOString(),

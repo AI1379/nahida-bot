@@ -69,6 +69,12 @@ export const presentationTimingDefaults = {
   millisecondsPerCharacter: 85,
 } as const;
 
+export const motionPlaybackTimingDefaults = {
+  readinessTimeoutMs: 2000,
+  startLeadMs: 50,
+  releaseBlendMs: 180,
+} as const;
+
 export const desktopWindowDefaults = {
   width: 420,
   height: 620,

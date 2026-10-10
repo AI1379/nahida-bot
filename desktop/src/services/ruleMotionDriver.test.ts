@@ -20,6 +20,14 @@ function intent(overrides: Partial<MotionIntent> = {}): MotionIntent {
 }
 
 describe("RuleMotionDriver", () => {
+  it("keeps a discrete gesture at its normal tempo during a long reply", async () => {
+    const result = await new RuleMotionDriver().drive(createMotionDriverInput({
+      intent: intent({ intent: "agree", durationMs: 10000 }),
+      context: { runtimeStatus: "speaking" },
+    }));
+    expect(result.clip?.durationMs).toBe(1180);
+    expect(result.clip?.frames[1]?.atMs).toBe(236);
+  });
   it("selects a primitive from semantic intent", async () => {
     const driver = new RuleMotionDriver();
     const result = await driver.drive(

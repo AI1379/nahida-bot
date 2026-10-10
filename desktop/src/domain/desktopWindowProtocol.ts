@@ -21,6 +21,7 @@ export interface DesktopRuntimeSnapshot {
 }
 
 export type PetWindowCommand =
+  | { type: "motion_ready"; requestId: string }
   | { type: "request_state" }
   | { type: "peek" }
   | { type: "emerge" }

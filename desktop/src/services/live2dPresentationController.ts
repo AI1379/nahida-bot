@@ -127,8 +127,12 @@ export class Live2DPresentationController {
   private motionIntentCounter = 0;
   private readonly motionSessionId = createMotionSessionId();
   private motionRequestGeneration = 0;
+  private presentationRequestGeneration = 0;
   private audioEnergy = 0;
   private activeMotionPlanId: string | null = null;
+  private preparationGeneration: number | null = null;
+  private preparedPlayback: ((elapsedMs: number) => boolean | Promise<boolean>) | null = null;
+  private readonly expressionTimers = new Set<ReturnType<typeof setTimeout>>();
   private recentIntents: MotionIntent[] = [];
   private readonly motionCache: MotionCache;
   private readonly motionDriver: MotionDriver;
@@ -179,17 +183,27 @@ export class Live2DPresentationController {
 
   async applyPresentation(
     state: Live2DPresentationState,
+    prepareOnly = false,
   ): Promise<Live2DPresentationResolution> {
+    const presentationGeneration = ++this.presentationRequestGeneration;
     this.setRenderMode(state.renderMode);
     const expression = await this.applyExpression(
       state.expressionKey,
       state.emotion,
     );
+    if (presentationGeneration !== this.presentationRequestGeneration) {
+      return {
+        expression,
+        motion: { requestedMotion: state.motion, mappedTarget: null, attempts: [], appliedSource: "none" },
+        renderMode: this.renderMode,
+      };
+    }
     const motion = await this.playMotion(
       state.motion,
       state.emotion,
       state.assistantText,
       state.motionDurationMs,
+      prepareOnly,
     );
     return {
       expression,
@@ -229,8 +243,13 @@ export class Live2DPresentationController {
     emotion: DisplayEmotion = "neutral",
     assistantText = "",
     durationMs?: number,
+    prepareOnly = false,
   ): Promise<Live2DMotionResolution> {
+    this.presentationRequestGeneration += 1;
     const requestGeneration = ++this.motionRequestGeneration;
+    this.clearExpressionTimers();
+    this.preparedPlayback = null;
+    this.preparationGeneration = prepareOnly ? requestGeneration : null;
     this.activeMotionPlanId = null;
     const attempts: Live2DMotionAttempt[] = [];
     const mappedTarget = this.manifest?.motionMap[motion] ?? null;
@@ -257,9 +276,22 @@ export class Live2DPresentationController {
     }
 
     if (mappedTarget?.source === "model") {
-      this.motionLayerScheduler.clear();
-      this.renderer.clearRuntimeMotion();
-      const applied = await this.renderer.playModelMotion(
+      if (prepareOnly) {
+        const ready = await this.renderer.prepareModelMotion?.(mappedTarget.group, mappedTarget.index);
+        if (!this.isMotionRequestCurrent(requestGeneration)) {
+          return { requestedMotion: motion, mappedTarget, attempts, appliedSource: "none" };
+        }
+        if (ready) {
+          this.preparedPlayback = () => this.playMotion(motion, emotion, assistantText, durationMs)
+            .then((result) => result.appliedSource !== "none");
+          return { requestedMotion: motion, mappedTarget, attempts, appliedSource: "model" };
+        }
+      }
+      if (!prepareOnly) {
+        this.motionLayerScheduler.clear();
+        this.renderer.clearRuntimeMotion();
+      }
+      const applied = !prepareOnly && await this.renderer.playModelMotion(
         mappedTarget.group,
         mappedTarget.index,
       );
@@ -350,6 +382,10 @@ export class Live2DPresentationController {
   }
 
   dispose(): void {
+    this.presentationRequestGeneration += 1;
+    this.motionRequestGeneration += 1;
+    this.preparedPlayback = null;
+    this.clearExpressionTimers();
     this.motionLayerScheduler.clear();
     this.renderer.dispose();
     this.manifest = null;
@@ -359,8 +395,20 @@ export class Live2DPresentationController {
     return this.activeMotionPlanId;
   }
 
+  /** Start an already validated plan on the same wall clock as speech. */
+  async startPreparedMotion(startedAtMs: number): Promise<boolean> {
+    const playback = this.preparedPlayback;
+    this.preparedPlayback = null;
+    this.preparationGeneration = null;
+    return playback ? playback(Math.max(0, Date.now() - startedAtMs)) : false;
+  }
+
   async playPrimitive(primitive: MotionPrimitiveName): Promise<boolean> {
+    this.presentationRequestGeneration += 1;
     const requestGeneration = ++this.motionRequestGeneration;
+    this.preparationGeneration = null;
+    this.preparedPlayback = null;
+    this.clearExpressionTimers();
     this.activeMotionPlanId = null;
     const intent: MotionIntent = {
       id: this.nextMotionIntentId("debug"),
@@ -498,6 +546,7 @@ export class Live2DPresentationController {
         previousPose,
         audioEnergy: this.audioEnergy,
         modelProfile: activeProfile,
+        primitiveHint,
       });
       if (!this.isMotionRequestCurrent(requestGeneration)) return false;
       const primitiveSegment = motionPlan.segments.find(
@@ -520,13 +569,6 @@ export class Live2DPresentationController {
     if (!this.isMotionRequestCurrent(requestGeneration)) return false;
     const selectedPrimitive =
       primitiveHint ?? plannedPrimitive ?? fallbackPrimitive;
-    if (plannedPrimitive !== selectedPrimitive) {
-      motionPlan = createPrimitiveMotionPlan(
-        intent,
-        { previousPose, audioEnergy: this.audioEnergy, modelProfile: activeProfile },
-        selectedPrimitive,
-      );
-    }
     this.recordDecision(
       intent,
       selectedPrimitive,
@@ -540,6 +582,7 @@ export class Live2DPresentationController {
       const result = await this.motionDriver.drive(
         createMotionDriverInput({
           intent,
+          plan: motionPlan,
           previousPose,
           audioEnergy: this.audioEnergy,
           context: {
@@ -560,24 +603,27 @@ export class Live2DPresentationController {
           })
         : null;
       if (validation?.clip) {
+        const acceptedValidation = validation;
+        const acceptedClip = validation.clip;
         const applied = this.playMixedClip(
           intent,
-          validation.clip,
+          acceptedClip,
           source,
           requestGeneration,
+          (elapsedMs) => {
+            this.activeMotionPlanId = motionPlan.id;
+            this.scheduleExpressions(motionPlan, elapsedMs);
+            this.recordExecution({
+              intent,
+              primitive: drivenPrimitive,
+              validation: acceptedValidation,
+              clip: acceptedClip,
+              fallbackUsed: false,
+              motionPlan,
+              assistantText,
+            });
+          },
         );
-        if (applied) this.activeMotionPlanId = motionPlan.id;
-        if (applied) {
-          this.recordExecution({
-            intent,
-            primitive: drivenPrimitive,
-            validation,
-            clip: validation.clip,
-            fallbackUsed: false,
-            motionPlan,
-            assistantText,
-          });
-        }
         return applied;
       }
       invalidReason = validation ? "validator_rejected" : invalidReason;
@@ -612,19 +658,13 @@ export class Live2DPresentationController {
       clip: safeClip,
       warnings: validation?.warnings ?? [],
     };
-    const applied = this.playMixedClip(
-      intent,
-      safeClip,
-      "safety",
-      requestGeneration,
-    );
     const safePlan = createPrimitiveMotionPlan(
       { ...intent, durationMs: safeClip.durationMs, loopable: true },
       { previousPose, audioEnergy: this.audioEnergy, modelProfile: activeProfile },
       "idle-breathe",
     );
-    if (applied) this.activeMotionPlanId = safePlan.id;
-    if (applied) {
+    return this.playMixedClip(intent, safeClip, "safety", requestGeneration, () => {
+      this.activeMotionPlanId = safePlan.id;
       this.recordExecution({
         intent,
         primitive: "idle-breathe",
@@ -634,8 +674,7 @@ export class Live2DPresentationController {
         motionPlan: safePlan,
         assistantText,
       });
-    }
-    return applied;
+    });
   }
 
   private safeFallbackClip(
@@ -662,9 +701,44 @@ export class Live2DPresentationController {
     clip: Parameters<Live2DRenderer["playNormalizedMotion"]>[0],
     source: MotionLayerSource,
     requestGeneration: number,
+    onPlayed: (elapsedMs: number) => void = () => {},
   ): boolean {
     if (!this.isMotionRequestCurrent(requestGeneration)) return false;
-    return this.motionLayerScheduler.play(intent.id, source, clip);
+    const play = (elapsedMs: number) => {
+      if (!this.isMotionRequestCurrent(requestGeneration)) return false;
+      const applied = this.motionLayerScheduler.play(intent.id, source, clip, elapsedMs);
+      if (applied) onPlayed(elapsedMs);
+      return applied;
+    };
+    if (this.preparationGeneration === requestGeneration) {
+      this.preparedPlayback = play;
+      return true;
+    }
+    return play(0);
+  }
+
+  private clearExpressionTimers(): void {
+    for (const timer of this.expressionTimers) clearTimeout(timer);
+    this.expressionTimers.clear();
+  }
+
+  private scheduleExpressions(plan: MotionPlan, elapsedMs: number): void {
+    for (const segment of plan.segments) {
+      if (segment.type !== "expression") continue;
+      const apply = () => void this.applyExpression(
+        segment.expressionKey,
+        isDisplayEmotion(plan.intent.emotion) ? plan.intent.emotion : "neutral",
+      ).catch(() => undefined);
+      const delayMs = Math.max(0, segment.atMs - elapsedMs);
+      if (!delayMs) apply();
+      else {
+        const timer = setTimeout(() => {
+          this.expressionTimers.delete(timer);
+          apply();
+        }, delayMs);
+        this.expressionTimers.add(timer);
+      }
+    }
   }
 
   private layerSourceForIntent(intent: MotionIntent): MotionLayerSource {
@@ -797,6 +871,7 @@ export class Live2DPresentationController {
         ? this.motionPlanner.version
         : "display-plan-adapter-v1",
       primitiveVersion: this.motionDriver.version,
+      motionHint: allowSemanticPlanning ? undefined : primitive,
     });
     try {
       const cached = await this.motionCache.get(key);
@@ -804,7 +879,12 @@ export class Live2DPresentationController {
         return { intent, cacheHit: false };
       }
       if (cached) {
-        const resolved = { ...cached.intent, id: intent.id, source: "cache" as const };
+        const resolved = {
+          ...cached.intent,
+          id: intent.id,
+          durationMs: intent.durationMs,
+          source: "cache" as const,
+        };
         this.rememberIntent(resolved);
         return { intent: resolved, cacheHit: true };
       }
@@ -824,7 +904,7 @@ export class Live2DPresentationController {
         return { intent, cacheHit: false };
       }
       const resolved = { ...planned, id: intent.id };
-      await this.motionCache.set({
+      void this.motionCache.set({
         key,
         plannerVersion: allowSemanticPlanning
           ? this.motionPlanner.version
@@ -833,7 +913,7 @@ export class Live2DPresentationController {
         primitiveVersion: this.motionDriver.version,
         intent: resolved,
         createdAt: new Date().toISOString(),
-      });
+      }).catch(() => undefined);
       if (!this.isMotionRequestCurrent(requestGeneration)) {
         return { intent, cacheHit: false };
       }

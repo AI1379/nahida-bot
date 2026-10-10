@@ -236,7 +236,7 @@ describe("SpeechPlaybackCoordinator", () => {
     coordinator.play(
       presentation("first", [{ text: "first", voice: { speed: 1 } }]),
     );
-    await Promise.resolve();
+    await vi.waitFor(() => expect(adapter.requests).toHaveLength(1));
     coordinator.play(
       presentation("second", [{ text: "second", voice: { speed: 1 } }]),
     );
@@ -280,5 +280,45 @@ describe("SpeechPlaybackCoordinator", () => {
       "second",
     ]);
     expect(completed).toEqual(["first", "second"]);
+  });
+
+  it("waits for motion readiness before starting audio", async () => {
+    const adapter = new FakeAudioPlaybackAdapter();
+    let release: (() => void) | undefined;
+    const coordinator = new SpeechPlaybackCoordinator(adapter, {
+      onSegmentStart: () => new Promise<void>((resolve) => { release = resolve; }),
+    });
+    coordinator.play(presentation("prepared", [{ text: "first", voice: {} }]));
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(adapter.requests).toEqual([]);
+    release!();
+    await coordinator.whenIdle();
+    expect(adapter.requests.map((request) => request.text)).toEqual(["first"]);
+  });
+
+  it("releases prepared audio when interrupted while waiting for motion", async () => {
+    const dispose = vi.fn();
+    const play = vi.fn();
+    const adapter: AudioPlaybackAdapter = {
+      isAvailable: () => true,
+      play: async () => {},
+      fetch: async () => ({ play, dispose }),
+      stop: () => {},
+    };
+    let waiting = false;
+    const coordinator = new SpeechPlaybackCoordinator(adapter, {
+      onSegmentStart(_presentation, _index, _segment, _mode, _duration, signal) {
+        waiting = true;
+        return new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new AudioPlaybackAbortedError()), { once: true });
+        });
+      },
+    });
+    coordinator.play(presentation("prepared", [{ text: "first", voice: {} }]));
+    await vi.waitFor(() => expect(waiting).toBe(true));
+    coordinator.stop();
+    await coordinator.whenIdle();
+    expect(play).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });

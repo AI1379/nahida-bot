@@ -52,4 +52,13 @@ describe("compileMotionPlan", () => {
       { type: "expression", atMs: 0, expressionKey: "happy" },
     ]))).toBeNull();
   });
+
+  it("preserves interpolation when another segment adds timeline events", () => {
+    const clip = compileMotionPlan(plan([
+      { type: "primitive", name: "nod", atMs: 0, durationMs: 1000, params: { intensity: 0.45 } },
+      { type: "primitive", name: "shake", atMs: 100, durationMs: 600, params: { intensity: 0.45 } },
+    ]));
+    expect(clip?.channels).toContain("headYaw");
+    expect(clip?.frames.find((frame) => frame.atMs === 100)?.headPitch).toBeCloseTo(0.2);
+  });
 });

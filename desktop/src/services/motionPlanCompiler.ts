@@ -22,6 +22,40 @@ interface TimelineEvent {
   values: NormalizedPoseValues;
 }
 
+function valueAt(
+  track: TimelineEvent[],
+  channel: NormalizedPoseChannel,
+  atMs: number,
+  fallback: number,
+): number {
+  let left = 0;
+  let right = track.length;
+  while (left < right) {
+    const middle = Math.floor((left + right) / 2);
+    if (track[middle]!.atMs <= atMs) left = middle + 1;
+    else right = middle;
+  }
+  const previous = track[left - 1];
+  const next = track[left];
+  const previousValue = previous?.values[channel] ?? fallback;
+  if (!next) return previousValue;
+  const previousTime = previous?.atMs ?? 0;
+  const progress = Math.max(0, (atMs - previousTime) / (next.atMs - previousTime));
+  return previousValue + (next.values[channel] - previousValue) * progress;
+}
+
+function channelTracks(events: TimelineEvent[]): Map<NormalizedPoseChannel, TimelineEvent[]> {
+  const tracks = new Map<NormalizedPoseChannel, TimelineEvent[]>();
+  for (const event of events) {
+    for (const channel of event.channels) {
+      if (!tracks.has(channel)) tracks.set(channel, []);
+      tracks.get(channel)!.push(event);
+    }
+  }
+  for (const track of tracks.values()) track.sort((left, right) => left.atMs - right.atMs);
+  return tracks;
+}
+
 function numberParam(
   segment: Extract<MotionPlanSegment, { type: "primitive" }>,
   name: string,
@@ -63,11 +97,14 @@ function segmentEvents(
       values: frame,
     }));
   }
-  return segment.keyframes.map((frame) => ({
-    atMs: segment.atMs + Math.max(0, Math.min(segment.durationMs, frame.atMs)),
-    channels: [...normalizedPoseChannels],
-    values: frame,
-  }));
+  return [
+    { atMs: segment.atMs, channels: [...normalizedPoseChannels], values: startPose },
+    ...segment.keyframes.map((frame) => ({
+      atMs: segment.atMs + Math.max(0, Math.min(segment.durationMs, frame.atMs)),
+      channels: [...normalizedPoseChannels],
+      values: frame,
+    })),
+  ];
 }
 
 /** Compiles supported MotionPlan segments into the normalized renderer boundary. */
@@ -80,18 +117,17 @@ export function compileMotionPlan(
     ...options.previousPose,
   };
   const events: TimelineEvent[] = [];
-  let segmentStartPose = { ...initialPose };
   for (const segment of [...plan.segments].sort(
     (left, right) => left.atMs - right.atMs,
   )) {
+    if (segment.type === "expression") continue;
+    const tracks = channelTracks(events);
+    const segmentStartPose = { ...initialPose };
+    for (const channel of normalizedPoseChannels) {
+      segmentStartPose[channel] = valueAt(tracks.get(channel) ?? [], channel, segment.atMs, initialPose[channel]);
+    }
     const generated = segmentEvents(plan, segment, segmentStartPose);
     events.push(...generated);
-    const finalEvent = generated.at(-1);
-    if (finalEvent) {
-      for (const channel of finalEvent.channels) {
-        segmentStartPose[channel] = finalEvent.values[channel];
-      }
-    }
   }
   if (!events.length) return null;
 
@@ -100,28 +136,18 @@ export function compileMotionPlan(
     plan.durationMs,
     ...events.map((event) => event.atMs),
   );
+  const tracks = channelTracks(events);
   const channels = normalizedPoseChannels.filter((channel) =>
     events.some((event) => event.channels.includes(channel)),
   );
-  const eventsByTime = new Map<number, TimelineEvent[]>();
-  for (const event of events) {
-    const atMs = Math.max(0, Math.min(durationMs, event.atMs));
-    eventsByTime.set(atMs, [...(eventsByTime.get(atMs) ?? []), event]);
-  }
-  eventsByTime.set(0, eventsByTime.get(0) ?? []);
-  eventsByTime.set(durationMs, eventsByTime.get(durationMs) ?? []);
-
-  const pose = { ...initialPose };
-  const frames = [...eventsByTime.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([atMs, atMsEvents]) => {
-      for (const event of atMsEvents) {
-        for (const channel of event.channels) {
-          pose[channel] = event.values[channel];
-        }
-      }
-      return createNormalizedPoseFrame(atMs, pose);
-    });
+  const times = new Set([0, durationMs, ...events.map((event) => event.atMs)]);
+  const frames = [...times].sort((left, right) => left - right).map((atMs) => {
+    const pose = { ...initialPose };
+    for (const channel of channels) {
+      pose[channel] = valueAt(tracks.get(channel) ?? [], channel, atMs, initialPose[channel]);
+    }
+    return createNormalizedPoseFrame(atMs, pose);
+  });
 
   return {
     id: `${plan.id}:compiled`,

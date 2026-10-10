@@ -4,6 +4,7 @@ import type {
 } from "@/domain/normalizedPose";
 
 import { lerp, smoothstep } from "./live2dMath";
+import { motionPlaybackTimingDefaults } from "@/config/desktopRuntimeDefaults";
 import {
   normalizedPoseValueToLive2D,
   type Live2DParameterRange,
@@ -21,6 +22,26 @@ export interface RuntimeParameterOverride {
   startedAt: number;
   durationMs: number;
   loopable: boolean;
+  releasing?: boolean;
+}
+
+/** Smoothly return a channel omitted by the next clip to its original pose. */
+export function releaseRuntimeParameterOverride(
+  override: RuntimeParameterOverride,
+  current: number,
+  startedAt: number,
+  durationMs: number = motionPlaybackTimingDefaults.releaseBlendMs,
+): RuntimeParameterOverride {
+  if (override.releasing) return override;
+  return {
+    original: override.original,
+    finalValue: override.original,
+    keyframes: [{ atMs: 0, value: current }, { atMs: durationMs, value: override.original }],
+    startedAt,
+    durationMs,
+    loopable: false,
+    releasing: true,
+  };
 }
 
 export function groupNormalizedClipFrames(

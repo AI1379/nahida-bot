@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { gatewayNodeEventAdapter } from "./gatewayEventAdapter";
+import { presentationPlanFromDesktopEvent } from "./presentationPlanner";
+import { useDesktopStore } from "@/stores/desktop";
+import { createPrimitiveMotionPlan } from "./primitiveMotionSynthesizer";
 
 import type { Live2DModelManifest } from "@/domain/live2d";
 import type { MotionDriver } from "@/domain/motionDriver";
@@ -80,6 +85,115 @@ const manifest: Live2DModelManifest = {
 };
 
 describe("Live2DPresentationController", () => {
+  it("performs a plain gateway reply without requiring voice metadata", async () => {
+    setActivePinia(createPinia());
+    const store = useDesktopStore();
+    store.requestPetEmerge();
+    store.completePetEmerge();
+    const event = gatewayNodeEventAdapter.toDesktopEvent({
+      type: "gateway_event", at: "2026-10-10T00:00:00Z",
+      envelope: { version: "1.0", kind: "event", event: "agent.message.completed",
+        payload: { session_id: "desktop:private:test", text: "不对，这个结论需要修正。" } },
+    })!;
+    const presentation = presentationPlanFromDesktopEvent(event)!;
+    expect(presentation.ttsEnabled).toBe(false);
+    store.startPresentation(presentation);
+    store.setSegment(0, false, 2000);
+    const renderer = new FakeRenderer();
+    const controller = new Live2DPresentationController(renderer);
+    await controller.applyPresentation({
+      motion: store.currentMotion, emotion: store.currentEmotion,
+      expressionKey: store.currentExpressionKey, renderMode: store.petRuntime.renderMode,
+      assistantText: store.petRuntime.bubbleText, motionDurationMs: 2000,
+    });
+    expect(renderer.normalizedMotions.at(-1)?.channels).toContain("headYaw");
+    expect(controller.getActiveMotionPlanId()).toContain("shake");
+    controller.dispose();
+  });
+
+  it("executes all synthesized segments and preserves their timing and parameters", async () => {
+    const renderer = new FakeRenderer();
+    const controller = new Live2DPresentationController(renderer, {
+      motionSynthesizer: {
+        id: "two-step", version: "1",
+        async synthesize(intent) {
+          return { schemaVersion: 1, id: "two-step-plan", intent, createdAt: "now", durationMs: 1200,
+            segments: [
+              { type: "primitive", name: "nod", atMs: 0, durationMs: 400, params: { intensity: 0.1 } },
+              { type: "primitive", name: "shake", atMs: 500, durationMs: 700, params: { intensity: 0.7 } },
+            ], validationWarnings: [] };
+        },
+      },
+    });
+    await controller.playMotion("speaking", "neutral", "好的。", 1200);
+    const clip = renderer.normalizedMotions.at(-1)!;
+    expect(clip.channels).toEqual(expect.arrayContaining(["headYaw", "headPitch"]));
+    expect(clip.frames.some((frame) => frame.atMs === 500)).toBe(true);
+    expect(clip.frames.find((frame) => frame.atMs === 80)?.headPitch).toBeCloseTo(0.4 * 0.1 / 0.45);
+    expect(controller.getActiveMotionPlanId()).toBe("two-step-plan");
+    controller.dispose();
+  });
+
+  it("reuses semantics from cache with the current speech duration", async () => {
+    const renderer = new FakeRenderer();
+    const controller = new Live2DPresentationController(renderer, {
+      motionCache: {
+        async get(key) {
+          return { key, plannerVersion: "1", modelProfileVersion: "1", primitiveVersion: "1", createdAt: "now",
+            intent: { id: "old", source: "rule", intent: "agree", emotion: "neutral", durationMs: 900,
+              intensity: 0.42, loopable: false, interruptible: true, priority: "speech" } };
+        },
+        async set() {}, async clear() {},
+      },
+    });
+    await controller.playMotion("speaking", "neutral", "好的。", 4800);
+    const clip = renderer.normalizedMotions.at(-1)!;
+    expect(clip.durationMs).toBe(4800);
+    expect(clip.frames[1]?.atMs).toBe(236);
+    controller.dispose();
+  });
+
+  it("does not wait for disk writes before preparing playback", async () => {
+    const renderer = new FakeRenderer();
+    const controller = new Live2DPresentationController(renderer, {
+      motionCache: { async get() { return null; }, set: () => new Promise(() => {}), async clear() {} },
+    });
+    await controller.playMotion("speaking", "neutral", "好的。");
+    expect(renderer.normalizedMotions).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("prepares without playback or execution telemetry, then starts at the shared time", async () => {
+    const renderer = new FakeRenderer();
+    const executions: MotionExecutionRecord[] = [];
+    const controller = new Live2DPresentationController(renderer, {
+      motionTelemetry: { async recordDecision() {}, async recordExecution(record) { executions.push(record); }, async recordInvalid() {} },
+    });
+    await controller.applyPresentation({ expressionKey: "neutral", emotion: "neutral", motion: "speaking",
+      renderMode: "speaking", assistantText: "好的。", motionDurationMs: 1200 }, true);
+    expect(renderer.normalizedMotions).toEqual([]);
+    expect(executions).toEqual([]);
+    expect(await controller.startPreparedMotion(Date.now() - 200)).toBe(true);
+    expect(renderer.normalizedMotions.at(-1)?.durationMs).toBeLessThanOrEqual(1000);
+    expect(executions).toHaveLength(1);
+    expect(await controller.startPreparedMotion(Date.now())).toBe(false);
+    controller.dispose();
+  });
+
+  it("drops prepared playback after interruption", async () => {
+    vi.useFakeTimers();
+    try {
+      const renderer = new FakeRenderer();
+      const controller = new Live2DPresentationController(renderer);
+      await controller.applyPresentation({ expressionKey: "neutral", emotion: "neutral", motion: "speaking",
+        renderMode: "speaking", assistantText: "好的。" }, true);
+      await controller.playMotion("idle");
+      const count = renderer.normalizedMotions.length;
+      expect(await controller.startPreparedMotion(Date.now())).toBe(false);
+      expect(renderer.normalizedMotions).toHaveLength(count);
+      controller.dispose();
+    } finally { vi.useRealTimers(); }
+  });
   it("tries keyword, emotion, then neutral expression mappings", async () => {
     const renderer = new FakeRenderer();
     renderer.successfulExpression = "neutral-expression";
@@ -94,6 +208,88 @@ describe("Live2DPresentationController", () => {
       "neutral-expression",
     ]);
     expect(result.source).toBe("neutral");
+  });
+
+  it("does not let an older expression load start a stale presentation", async () => {
+    const renderer = new FakeRenderer();
+    let release: (() => void) | undefined;
+    renderer.applyExpression = async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return true;
+    };
+    const controller = new Live2DPresentationController(renderer);
+    controller.setManifest(manifest);
+    const old = controller.applyPresentation({ expressionKey: "neutral", emotion: "neutral",
+      motion: "speaking", renderMode: "speaking", assistantText: "旧回复" });
+    await controller.playMotion("idle");
+    const count = renderer.normalizedMotions.length;
+    release!();
+    expect((await old).motion.appliedSource).toBe("none");
+    expect(renderer.normalizedMotions).toHaveLength(count);
+    controller.dispose();
+  });
+
+  it("prepares a procedural fallback before audio when an authored motion is missing", async () => {
+    const renderer: FakeRenderer & Pick<Live2DRenderer, "prepareModelMotion"> = new FakeRenderer();
+    renderer.prepareModelMotion = async () => false;
+    const controller = new Live2DPresentationController(renderer);
+    controller.setManifest(manifest);
+    const result = await controller.applyPresentation({ expressionKey: "neutral", emotion: "neutral", motion: "nod",
+      renderMode: "speaking", assistantText: "好的。", motionDurationMs: 1200 }, true);
+    expect(result.motion.appliedSource).toBe("procedural");
+    expect(renderer.modelMotions).toEqual([]);
+    expect(renderer.normalizedMotions).toEqual([]);
+    expect(await controller.startPreparedMotion(Date.now())).toBe(true);
+    expect(renderer.normalizedMotions.at(-1)?.channels).toContain("headPitch");
+    controller.dispose();
+  });
+
+  it("preserves pose-keyframe plans even when they contain no primitive", async () => {
+    const renderer = new FakeRenderer();
+    const controller = new Live2DPresentationController(renderer, {
+      motionSynthesizer: { id: "poses", version: "1", async synthesize(intent) {
+        return { schemaVersion: 1, id: "pose-plan", intent, createdAt: "now", durationMs: 1200,
+          segments: [{ type: "pose-keyframes", atMs: 300, durationMs: 900, keyframes: [
+            { ...neutralNormalizedPose, atMs: 400, headYaw: 0.1 },
+            { ...neutralNormalizedPose, atMs: 900 },
+          ] }], validationWarnings: [] };
+      } },
+    });
+    await controller.playMotion("speaking", "neutral", "说明一下。", 1200);
+    expect(controller.getActiveMotionPlanId()).toBe("pose-plan");
+    const clip = renderer.normalizedMotions.at(-1)!;
+    expect(clip.frames.find((frame) => frame.atMs === 300)?.headYaw).toBe(0);
+    expect(clip.frames.find((frame) => frame.atMs === 700)?.headYaw).toBeCloseTo(0.1);
+    controller.dispose();
+  });
+
+  it("schedules plan expressions on the shared start and cancels them on interruption", async () => {
+    vi.useFakeTimers();
+    const renderer = new FakeRenderer();
+    renderer.successfulExpression = "wink";
+    const controller = new Live2DPresentationController(renderer, {
+      motionSynthesizer: { id: "expressions", version: "1", async synthesize(intent, context) {
+        if (intent.intent === "idle") return createPrimitiveMotionPlan(intent, context);
+        return { schemaVersion: 1, id: "expression-plan", intent, createdAt: "now", durationMs: 1200,
+          segments: [
+            { type: "primitive", name: "nod", atMs: 0, durationMs: 1200, params: {} },
+            { type: "expression", atMs: 300, expressionKey: "wink" },
+            { type: "expression", atMs: 700, expressionKey: "wave" },
+          ], validationWarnings: [] };
+      } },
+    });
+    try {
+      await controller.applyPresentation({ expressionKey: "neutral", emotion: "neutral", motion: "speaking",
+        renderMode: "speaking", assistantText: "说明一下。", motionDurationMs: 1200 }, true);
+      await controller.startPreparedMotion(Date.now() - 100);
+      await vi.advanceTimersByTimeAsync(199);
+      expect(renderer.expressions).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(renderer.expressions).toEqual(["wink"]);
+      await controller.playMotion("idle");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(renderer.expressions).toEqual(["wink"]);
+    } finally { controller.dispose(); vi.useRealTimers(); }
   });
 
   it("falls back from a failed model motion to the base profile", async () => {

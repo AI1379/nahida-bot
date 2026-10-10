@@ -1,4 +1,5 @@
 import type { MotionIntent } from "./motionIntent";
+import type { MotionPlan } from "./motionPlan";
 import {
   neutralNormalizedPose,
   type NormalizedMotionClip,
@@ -18,6 +19,8 @@ export interface MotionDriverContext {
 
 export interface MotionDriverInput {
   intent: MotionIntent;
+  /** Complete synthesized timeline; drivers must preserve its segments. */
+  plan?: MotionPlan;
   phase: MotionDriverPhase;
   previousPose: Readonly<NormalizedPoseValues>;
   /** Normalized speech energy in the inclusive range 0..1. */
@@ -55,6 +58,7 @@ export const motionDriverDefaults = {
 
 export interface CreateMotionDriverInputOptions {
   intent: MotionIntent;
+  plan?: MotionPlan;
   phase?: MotionDriverPhase;
   previousPose?: Partial<NormalizedPoseValues>;
   audioEnergy?: number;
@@ -82,6 +86,7 @@ export function createMotionDriverInput(
 
   return {
     intent: options.intent,
+    plan: options.plan,
     phase: options.phase ?? motionDriverDefaults.phase,
     previousPose: {
       ...neutralNormalizedPose,

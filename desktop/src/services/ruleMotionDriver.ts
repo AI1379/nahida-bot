@@ -6,6 +6,7 @@ import {
   type MotionPrimitiveName,
 } from "@/domain/motionPrimitives";
 import { intentPrimitiveMap } from "./primitiveMotionSynthesizer";
+import { compileMotionPlan } from "./motionPlanCompiler";
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
@@ -42,16 +43,25 @@ function intensityForInput(
 
 export class RuleMotionDriver implements MotionDriver {
   readonly id = "rule-motion-driver";
-  readonly version = "1.0.0";
+  readonly version = "1.1.0";
 
   async drive(input: MotionDriverInput): Promise<MotionDriverResult> {
     const primitive = primitiveForInput(input);
+    if (input.plan) {
+      return {
+        primitive,
+        clip: compileMotionPlan(input.plan, { previousPose: input.previousPose }),
+        warnings: [],
+      };
+    }
     return {
       primitive,
       clip: generateMotionPrimitive(primitive, {
         clipId: `${input.intent.id}:${primitive}`,
         intentId: input.intent.id,
-        durationMs: input.intent.durationMs,
+        durationMs: input.intent.loopable
+          ? input.intent.durationMs
+          : Math.min(input.intent.durationMs, motionPrimitiveDefaultDurationMs(primitive)),
         intensity: intensityForInput(input, primitive),
         repeat: repeatForInput(input, primitive),
         startPose: input.previousPose,

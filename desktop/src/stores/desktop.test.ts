@@ -10,6 +10,16 @@ vi.mock("@/services/desktopNotification", () => ({ showDesktopNotification }));
 import { useDesktopStore } from "./desktop";
 
 describe("desktop store pet transitions", () => {
+  it("clears stale segment preparation when a snapshot no longer has playback", () => {
+    setActivePinia(createPinia());
+    const store = useDesktopStore();
+    store.syncPetRuntime({ segmentPlayback: { requestId: "old", phase: "preparing" } });
+    const { segmentPlayback: _old, ...petRuntime } = store.petRuntime;
+    store.applyRuntimeSnapshot({ connected: true, sessionId: "test", activePlan: null,
+      activePresentation: null, petRuntime, localConfig: store.localConfig, localConfigVersion: 0,
+      expressionMapVersion: 0, motionMapVersion: 0 });
+    expect(store.petRuntime.segmentPlayback).toBeNull();
+  });
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
@@ -127,6 +137,7 @@ describe("desktop store pet transitions", () => {
     expect(store.petRuntime.speaking).toBe(false);
     expect(store.petRuntime.bubbleText).toBe("Subtitle only");
     expect(store.petRuntime.emotion).toBe("thinking");
+    expect(store.petRuntime.motion).toBe("speaking");
   });
 
   it("applies local config snapshots only when their revision changes", () => {

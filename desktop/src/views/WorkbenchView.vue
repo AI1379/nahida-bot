@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, onMounted, onBeforeUnmount } from "vue";
+import { isTauri } from "@tauri-apps/api/core";
 
 import ControlPanel from "@/components/ControlPanel.vue";
 import DisplayPlanPanel from "@/components/DisplayPlanPanel.vue";
@@ -10,6 +11,7 @@ import MotionPerformancePanel from "@/components/MotionPerformancePanel.vue";
 import MotionHistoryPanel from "@/components/MotionHistoryPanel.vue";
 import PortableMotionPanel from "@/components/PortableMotionPanel.vue";
 import TtsSettingsPanel from "@/components/TtsSettingsPanel.vue";
+import VoiceLabPanel from "@/components/VoiceLabPanel.vue";
 import DesktopPluginSettingsHost from "@/components/DesktopPluginSettingsHost.vue";
 import TranscriptPanel from "@/components/TranscriptPanel.vue";
 import type { DesktopRuntimeActions } from "@/runtime/desktopRuntimeController";
@@ -17,12 +19,17 @@ import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
 import type { NormalizedMotionClip } from "@/domain/normalizedPose";
 import type { PortableMotionTargetModel } from "@/domain/portableMotion";
 import { useDesktopStore } from "@/stores/desktop";
+import { segmentMotionSync } from "@/services/segmentMotionSync";
 
 const props = defineProps<{
   runtime: DesktopRuntimeActions;
 }>();
 
 const store = useDesktopStore();
+const coordinatesLocalPlayback = !isTauri();
+let unregisterSurface: (() => void) | undefined;
+onMounted(() => { if (coordinatesLocalPlayback) unregisterSurface = segmentMotionSync.registerSurface(); });
+onBeforeUnmount(() => unregisterSurface?.());
 const live2dStage = ref<{
   replayNormalizedClip: (clip: NormalizedMotionClip) => boolean;
 } | null>(null);
@@ -69,6 +76,8 @@ function previewPortableMotion(clip: NormalizedMotionClip): void {
       renderer-profile="preview"
       :model="store.model"
       :speaking="store.speaking"
+      :motion-duration-ms="store.petRuntime.segmentDurationMs"
+      :segment-playback="store.petRuntime.segmentPlayback"
       :motion-data-collection-enabled="store.localConfig.motionDataCollectionEnabled"
       :motion-telemetry-enabled="false"
       playback-surface="workbench"
@@ -77,10 +86,12 @@ function previewPortableMotion(clip: NormalizedMotionClip): void {
       :motion-map-version="store.motionMapVersion"
       @expressions-loaded="store.setModelExpressions"
       @motions-loaded="store.setModelMotions"
+      @motion-ready="coordinatesLocalPlayback && segmentMotionSync.acknowledge($event)"
       @portable-motion-target-loaded="portableMotionTarget = $event"
     />
 
     <aside class="side-rail">
+      <VoiceLabPanel />
       <ControlPanel
         :connected="store.connected"
         :gateway-url="store.gatewayUrl"

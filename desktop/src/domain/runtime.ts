@@ -104,11 +104,19 @@ export interface PetRuntimeState {
   currentSegmentIndex: number;
   /** Actual synthesized audio duration for the current segment when known. */
   segmentDurationMs: number | null;
+  segmentPlayback?: SegmentMotionPlayback | null;
   activePresentationId: string | null;
   bubbleText: string;
   clickThrough: boolean;
   interactionMode: "click_through" | "interactive";
   lastEventAt: string | null;
+}
+
+export interface SegmentMotionPlayback {
+  requestId: string;
+  phase: "preparing" | "playing";
+  /** Shared wall-clock start across the audio and pet windows. */
+  startedAtMs?: number;
 }
 
 export function createInitialPetRuntimeState(): PetRuntimeState {

@@ -9,7 +9,7 @@ import type {
 } from "@/domain/motionTelemetry";
 import type { NormalizedMotionClip } from "@/domain/normalizedPose";
 import type { PortableMotionTargetModel } from "@/domain/portableMotion";
-import type { RenderMode } from "@/domain/runtime";
+import type { RenderMode, SegmentMotionPlayback } from "@/domain/runtime";
 import type { Live2DRendererProfile } from "@/config/desktopRuntimeDefaults";
 import type {
   Live2DExpressionOption,
@@ -34,6 +34,7 @@ const props = withDefaults(defineProps<{
   model: Live2DModelManifest;
   speaking: boolean;
   motionDurationMs?: number | null;
+  segmentPlayback?: SegmentMotionPlayback | null;
   lipSyncEnergy?: number | null;
   motionDataCollectionEnabled?: boolean;
   motionTelemetryEnabled?: boolean;
@@ -58,6 +59,7 @@ const emit = defineEmits<{
   expressionsLoaded: [expressions: Live2DExpressionOption[]];
   motionsLoaded: [motions: Live2DMotionOption[]];
   motionExecuted: [playback: MotionPlaybackSummary];
+  motionReady: [requestId: string];
   portableMotionTargetLoaded: [target: PortableMotionTargetModel | null];
 }>();
 
@@ -74,6 +76,61 @@ const debugSnapshot = ref<Live2DDebugSnapshot | null>(null);
 let loadGeneration = 0;
 let motionGeneration = 0;
 let loadQueue = Promise.resolve();
+let preparedPresentation: { key: string; signature: string; task: Promise<void> } | null = null;
+let startTimer: ReturnType<typeof setTimeout> | null = null;
+let startedRequestId: string | null = null;
+
+function startPreparedPresentation(playback: SegmentMotionPlayback) {
+  const activeController = controller.value;
+  if (!activeController || startedRequestId === playback.requestId) return;
+  startedRequestId = playback.requestId;
+  if (startTimer) clearTimeout(startTimer);
+  const startedAtMs = playback.startedAtMs ?? Date.now();
+  startTimer = setTimeout(() => {
+    startTimer = null;
+    if (controller.value !== activeController || props.segmentPlayback?.requestId !== playback.requestId) return;
+    void activeController.startPreparedMotion(startedAtMs).then(refreshDebugSnapshot).catch(() => {});
+  }, Math.max(0, startedAtMs - Date.now()));
+}
+
+async function updatePresentation(): Promise<void> {
+  const activeController = controller.value;
+  const playback = props.segmentPlayback;
+  if (!activeController) {
+    if (loadState.value === "fallback" && playback) emit("motionReady", playback.requestId);
+    return;
+  }
+  const state = {
+    expressionKey: props.expressionKey,
+    emotion: props.emotion,
+    motion: props.motion,
+    renderMode: document.hidden ? "suspended" : props.renderMode,
+    assistantText: props.captionText,
+    motionDurationMs: props.motionDurationMs ?? undefined,
+  };
+  const signature = JSON.stringify([state, props.motionMapVersion, props.expressionMapVersion]);
+  if (playback && preparedPresentation?.key === playback.requestId && preparedPresentation.signature === signature) {
+    await preparedPresentation.task;
+    if (props.segmentPlayback?.requestId === playback.requestId && props.segmentPlayback.phase === "playing") {
+      startPreparedPresentation(props.segmentPlayback);
+    }
+    return;
+  }
+  const generation = ++motionGeneration;
+  if (startTimer) clearTimeout(startTimer);
+  startTimer = null;
+  startedRequestId = null;
+  // A failed animation still acknowledges readiness so speech can degrade.
+  const task = activeController.applyPresentation(state, Boolean(playback)).then(() => {}).catch(() => {});
+  preparedPresentation = playback ? { key: playback.requestId, signature, task } : null;
+  await task;
+  if (generation !== motionGeneration || controller.value !== activeController) return;
+  refreshDebugSnapshot();
+  if (playback && props.segmentPlayback?.requestId === playback.requestId) {
+    emit("motionReady", playback.requestId);
+    if (props.segmentPlayback.phase === "playing") startPreparedPresentation(props.segmentPlayback);
+  }
+}
 
 const expressionLabel = computed(() => {
   const mapped =
@@ -104,6 +161,7 @@ function loadLive2D(): Promise<void> {
   emit("expressionsLoaded", []);
   emit("motionsLoaded", []);
   controller.value?.dispose();
+  preparedPresentation = null;
   controller.value = null;
   renderer.value = null;
   const load = loadQueue.then(() => performLive2DLoad(generation));
@@ -130,23 +188,6 @@ async function performLive2DLoad(generation: number): Promise<void> {
   );
   try {
     await presentationController.loadModel(props.model);
-    if (generation !== loadGeneration) {
-      presentationController.dispose();
-      return;
-    }
-    await presentationController.applyPresentation({
-      expressionKey: props.expressionKey,
-      emotion: props.emotion,
-      motion: props.motion,
-      renderMode: props.renderMode,
-      assistantText:
-        props.motion === "idle" ||
-        props.motion === "emerge" ||
-        props.motion === "retreat"
-          ? ""
-          : props.captionText,
-      motionDurationMs: props.motionDurationMs ?? undefined,
-    });
     if (generation !== loadGeneration) {
       presentationController.dispose();
       return;
@@ -266,43 +307,21 @@ watch(
 );
 
 watch(
-  () => [props.expressionKey, props.emotion, props.expressionMapVersion] as const,
-  () => {
-    void controller.value
-      ?.applyExpression(props.expressionKey, props.emotion)
-      .then(refreshDebugSnapshot)
-      .catch(() => {});
-  },
-);
-
-watch(
   () => [
+    controller.value,
+    loadState.value,
     props.motion,
+    props.emotion,
+    props.expressionKey,
+    props.expressionMapVersion,
     props.motionMapVersion,
     props.captionText,
     props.motionDurationMs,
+    props.segmentPlayback?.requestId,
+    props.segmentPlayback?.phase,
+    props.segmentPlayback?.startedAtMs,
   ] as const,
-  () => {
-    const generation = ++motionGeneration;
-    const assistantText =
-      props.motion === "idle" ||
-      props.motion === "emerge" ||
-      props.motion === "retreat"
-        ? ""
-        : props.captionText;
-    void controller.value
-      ?.playMotion(
-        props.motion,
-        props.emotion,
-        assistantText,
-        props.motionDurationMs ?? undefined,
-      )
-      .then(() => {
-        if (generation !== motionGeneration) return;
-        refreshDebugSnapshot();
-      })
-      .catch(() => {});
-  },
+  () => void updatePresentation().catch(() => {}),
 );
 
 watch(
@@ -344,6 +363,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   loadGeneration += 1;
   motionGeneration += 1;
+  if (startTimer) clearTimeout(startTimer);
   controller.value?.dispose();
   controller.value = null;
   renderer.value = null;

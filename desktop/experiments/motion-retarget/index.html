@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>香澄 → 纳西妲 · 动作迁移对照</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header><span>LOCAL MOTION STUDY</span><h1>香澄 → 纳西妲</h1><p>迁移问题诊断：同名参数的数值相同，不代表两个模型做出同样的动作。</p></header>
+  <p class="notice">新实验：同一份模型参照，联合求解六个头身参数。保持源时序与末尾姿态；几何误差降低不等于已经通过视觉验收。</p>
+  <div class="toolbar">
+    <label>源动作 <select id="motion-name"><option>nod01</option><option>eeto01</option><option>idle01</option><option>surprised01</option><option>smile01</option><option>bye01</option></select></label>
+    <button id="fit-current" disabled>拟合当前动作</button><button id="fit-batch" disabled>验证六个动作</button><button id="cancel-fit" disabled>取消拟合</button>
+    <label><input id="references" type="checkbox" /> 显示参照点</label>
+  </div>
+  <div class="toolbar">
+    <button id="play" disabled>播放 / 暂停</button><button id="restart" disabled>从头播放</button>
+    <label>速度 <select id="speed"><option value="1">1×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option></select></label>
+    <label>视图 <select id="view"><option value="detail">半身细节</option><option value="full">全身</option></select></label>
+    <label><input id="loop" type="checkbox" checked /> 循环</label>
+    <label><input id="physics" type="checkbox" /> 模型物理</label>
+    <button id="download" disabled>下载当前候选 motion3</button>
+  </div>
+  <div class="toolbar">
+    <label>隔离通道 <select id="isolation"><option value="all">全部曲线</option><option value="body-z">仅身体 Z</option><option value="head">仅头部 XYZ</option></select></label>
+    <label>右栏 <select id="comparison"><option value="fitted">模型级联合拟合</option><option value="ablation">去掉身体 Z（诊断）</option><option value="manual">上轮手动候选</option></select></label>
+  </div>
+  <div class="timeline"><input id="seek" aria-label="播放时间" type="range" min="0" max="4.2" step="0.01" value="0" /><output id="time">0.00 s</output></div>
+  <div class="checkpoints"><button data-time="0">起始</button><button data-time="0.50">0.50 s</button><button data-time="0.90">0.90 s</button><button data-time="1.40">1.40 s</button><button data-time="2.20">2.20 s</button><button data-time="end">结束</button></div>
+  <main>
+    <section><h2>香澄 · 原动作</h2><p id="source-description">加载源动作…</p><div id="source" class="stage"></div><output id="source-values"></output></section>
+    <section><h2>纳西妲 · 数值直转</h2><p>按名称和实际范围映射，作为统一基线</p><div id="old" class="stage"></div><output id="old-values"></output></section>
+    <section><h2 id="candidate-title">诊断 · 去掉身体 Z</h2><p id="candidate-description">与旧转换完全相同，只停用 ParamBodyAngleZ</p><div id="candidate" class="stage"></div><output id="candidate-values"></output></section>
+  </main>
+  <div class="controls">
+    <label>点头幅度 <input id="pitch" type="range" min="0.1" max="1" step="0.05" value="0.55" /><output>0.55</output></label>
+    <label>侧倾幅度 <input id="roll" type="range" min="0" max="1" step="0.05" value="0.25" /><output>0.25</output></label>
+    <label>身体幅度 <input id="body" type="range" min="0" max="1" step="0.05" value="0.4" /><output>0.40</output></label>
+    <label>回正开始 <input id="recover" type="range" min="1" max="2.8" step="0.1" value="1.5" /><output>1.50</output></label>
+  </div>
+  <p id="status" role="status">正在加载三个模型…</p>
+  <p>绿点 1–6 参与拟合；橙点 7–8 只作检查。两点检查不是完整的语义或审美验收。nod02 与 nod01 头身曲线完全相同，未计入六动作验证。</p>
+  <div class="results"><table><thead><tr><th>动作</th><th>拟合误差降低</th><th>检查点误差降低</th><th>身体侧倾误差 °</th><th>参数触界帧</th><th>耗时</th><th>复核状态</th></tr></thead><tbody id="fit-results"></tbody></table></div>
+  <details><summary>实验条件和参数诊断</summary><p>默认关闭物理、自动眨眼、视线与背景呼吸；按同一时钟直接采样曲线，不加 SDK 淡入淡出。仅拟合头身六个控制；面部其它通道在两个目标模型上使用相同直转基线。标定点仅在中性姿态选择一次，未给各动作设置增益或回正。</p><pre id="diagnostics"></pre></details>
+  <script src="/live2d_model/_motion-lab/live2d.min.js"></script>
+  <script src="/live2d-core/live2dcubismcore.min.js"></script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

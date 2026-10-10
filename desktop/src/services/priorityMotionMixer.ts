@@ -73,8 +73,14 @@ function mixerTimeline(
 ): number[] {
   const times = new Set<number>([0, durationMs]);
   for (const layer of new Set(selected.values())) {
-    for (const frame of layer.clip.frames) {
-      if (frame.atMs >= 0 && frame.atMs <= durationMs) times.add(frame.atMs);
+    const elapsedMs = layer.elapsedMs ?? 0;
+    const phaseMs = layer.clip.loopable ? elapsedMs % layer.clip.durationMs : elapsedMs;
+    const cycles = layer.clip.loopable ? Math.ceil((durationMs + phaseMs) / layer.clip.durationMs) : 1;
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      for (const frame of layer.clip.frames) {
+        const atMs = frame.atMs + cycle * layer.clip.durationMs - phaseMs;
+        if (atMs >= 0 && atMs <= durationMs) times.add(atMs);
+      }
     }
   }
   return [...times].sort((left, right) => left - right);
@@ -96,13 +102,15 @@ export class PriorityMotionMixer implements MotionMixer {
     );
     const selectedLayers = [...new Set(selected.values())];
     const durationMs = Math.max(
-      ...selectedLayers.map((layer) => layer.clip.durationMs),
+      ...selectedLayers.map((layer) => layer.clip.loopable
+        ? layer.clip.durationMs
+        : Math.max(1, layer.clip.durationMs - (layer.elapsedMs ?? 0))),
     );
     const frames = mixerTimeline(selected, durationMs).map((atMs) => {
       const values: NormalizedPoseValues = { ...neutralNormalizedPose };
       for (const channel of channels) {
         const layer = selected.get(channel);
-        if (layer) values[channel] = sampleChannel(layer.clip, channel, atMs);
+        if (layer) values[channel] = sampleChannel(layer.clip, channel, atMs + (layer.elapsedMs ?? 0));
       }
       return createNormalizedPoseFrame(atMs, values);
     });
