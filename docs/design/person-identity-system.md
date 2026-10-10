@@ -587,7 +587,7 @@ person/account > chat > global
 
 ### Phase A：动作授权闸（已完成）
 
-> 2026-06-29 已落地 `identity.admins` + `AuthorizationGate`，危险动作按 `sender_account_key` fail-closed；memory 模块不得依赖 admin 状态。详见 `memory-soft-scope-and-authz.md`。
+> 2026-06-29 已落地 `authorization.admins` + `AuthorizationGate`，危险动作按 `sender_account_key` fail-closed；memory 模块不得依赖 admin 状态。详见 `memory-soft-scope-and-authz.md`。
 
 - [x] 新增 `nahida_bot/identity/authorization.py`：`is_admin(sender_account_key)` 查声明的管理员账号集。
 - [x] 把特权工具 / 管理命令 / 跨会话消息统一收口到授权闸。

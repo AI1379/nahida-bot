@@ -272,10 +272,11 @@ InboundMessage
 
 ### 6.3 子 Agent 完成回传
 
-完成回传分两层：
+完成回传分三层：
 
 1. **任务账本**：`BackgroundTask.summary/error/status` 是权威结果，供工具、CLI、WebUI 查询。
-2. **父会话事件**：完成后向 requester session 写入 `system_event` / `tool_event`，让主 Agent 下次运行时能看到。
+2. **父会话事件**：任务的 `notify_policy` 为 `done_only` 时，完成后向 requester session 写入 `subagent_completed` 系统事件，让主 Agent 下次运行时能看到。
+3. **聊天通知**：通过 `ChannelCompletionDeliverer` 向来源聊天发送完成通知。需要任务的 `notify_policy` 为 `done_only` 且全局配置 `agent.subagent_notifications_enabled` 为 `true`（默认）。全局关闭只禁止聊天通知，仍保留父会话事件和任务结果；`silent` 则同时禁止父会话事件和聊天通知。修改全局配置需重启生效。
 
 事件建议：
 

@@ -232,8 +232,8 @@ Programmatic event subscription. Returns an unsubscribe handle.
 
 Register a tool that the LLM can call during conversations. When
 `requires_admin=True`, the tool is treated as privileged: non-admin callers
-are rejected by `AuthorizationGate` (admin list comes from `identity.admins`;
-when `identity` is disabled the gate passes everything). The
+are rejected by `AuthorizationGate` (admin list comes from
+`authorization.admins`, independent of `identity.enabled`). The
 `@register_tool` decorator supports the same keyword argument.
 
 #### `unregister_tool(name: str)`

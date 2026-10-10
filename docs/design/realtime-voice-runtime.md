@@ -1,6 +1,6 @@
 # 实时语音运行时设计（Desktop-first 级联方案）
 
-> 状态：**基础契约落地中**。本设计固定平台无关的服务端 VoiceSessionCore、Desktop-first
+> 状态：**基础契约已落地，Desktop Voice Lab 已实现，待真实设备验收**。本设计固定平台无关的服务端 VoiceSessionCore、Desktop-first
 > 验证、单参与者优先、实时媒体与消息事件分离等边界。首个产品实现采用深度流式级联；
 > 原生全双工模型保留为对照实验和长期演进方向。
 
@@ -318,7 +318,7 @@ GPT-SoVITS/IndexTTS 保留为离线 A/B 质量基线。PersonaPlex 的“text ro
 
 ## 11. 分阶段实施
 
-### Phase 0：基础契约（当前）
+### Phase 0：基础契约（已完成）
 
 - [x] 固化本设计与架构边界。
 - [x] 定义流式 ASR frame/event/session/provider 契约。
@@ -331,19 +331,108 @@ GPT-SoVITS/IndexTTS 保留为离线 A/B 质量基线。PersonaPlex 的“text ro
 
 ### Phase 1：Desktop Voice Lab
 
-- [ ] 麦克风权限、WebAudio capture、AEC/NS/AGC。
-- [ ] AudioWorklet 输入重采样和输出 ring buffer。
-- [ ] 专用 voice session WebSocket。
-- [ ] mock ASR/TTS 回环与延迟面板。
+- [x] 麦克风权限、WebAudio capture，向浏览器请求 AEC/NS/AGC（效果待实机验证）。
+- [x] AudioWorklet 输入重采样和输出 ring buffer。
+- [x] 专用、连接拥有生命周期的实验 WebSocket `/api/voice/lab`。
+- [x] 模拟识别/分块测试音、延迟面板与迟到音频注入。
+- [x] 服务端反射命令接线，预生成短提示音作为实验 cue。
 - [ ] 本地反射音频资产、预加载、服务端命令接线和设置项。
+- [ ] 真实设备连续五分钟运行、外放回声与声学打断延迟验收。
+
+#### Voice Lab 使用与边界（2026-09-08）
+
+启动包含本次代码的 Gateway，在 Desktop 连接设置中保存对应的 Gateway 地址和管理员
+Token（服务端 `webapi.auth_token`）。实验端点始终要求管理员 Token；未配置时拒绝访问，
+不接受 Node Token。凭据只在 WebSocket 首帧发送，不进入 URL。
+
+运行 `pnpm --dir desktop dev:web`（浏览器）或 `pnpm --dir desktop dev`（Tauri），进入
+**开发工具 → Voice Lab**。工作台入口仅在开发模式可见。点击“开始实验”后持续采集并上传
+麦克风音频；说完后会看到明确标注的模拟识别文本，并听到三秒脉冲测试音。点击“模拟发言 /
+插话”可立即触发一轮，无需说话；播放期间开口或再次点击，可以测试急停。
+
+勾选“注入上一轮迟到音频”后先触发一轮，再插话，应看到“丢弃旧音频”计数增加且旧音频不
+恢复播放。延迟滑块作用于下一轮模拟响应，可以观察等待期间的服务端反射提示音。测试结束
+点击“结束”，或离开工作台，会断开连接并释放麦克风。建议先使用耳机，再评估外放回声。
+
+当前协议与执行约束：
+
+- 上行每帧为 640 字节，即 16kHz、mono、PCM16、20ms；只计数，不留存音频。
+- 下行每帧包含 little-endian uint32 JSON header 长度、UTF-8 header、960 字节 PCM。
+  header 自带 `epoch`、`turn_id`、`sequence`、`sample_rate_hz`，不依赖相邻 JSON 帧配对。
+- 客户端 speech-start 立即增加 epoch 并清队列；主线程和音频线程均拒绝旧代次音频。
+- 播放使用 60ms 起始缓冲，队列上限 500ms；溢出或上传积压超过约一秒时结束实验并报错。
+- 每连接一个服务端 runtime；最多四个已认证实验连接，60 秒无输入或 30 分钟总时长后关闭。
+- 服务端生成结束不等于播放完成；收到客户端播放完成确认后才结束轮次。
+- 麦克风采用实验用能量 VAD（60ms 起音、450ms 静音端点），不是语义端点器。
+- p95 为最近至多 100 次正式输出打断的本地清队列确认延迟，从 VAD 判定开口后计时；
+  首次渲染也来自软件事件，两者均不等于扬声器的声学延迟。
+- 模拟 ASR 是固定文本，模拟 TTS 是生成的脉冲音；尚未接入真实 provider、Agent 或 memory。
+  反射 cue 也仅为预生成测试音，正式人设音频资产仍待补齐。
+
+自动测试覆盖 socket 鉴权、PCM 校验、取消与迟到包、播放确认、资源清理、客户端代次过滤，
+以及 44.1kHz/48kHz 各五分钟**模拟时间**的输入帧数。它们不替代真实设备试听与五分钟网络运行。
 
 ### Phase 2：首个真实级联
 
+- [x] 独立的 utterance ASR 抽象、HTTP WAV 适配器与可选 faster-whisper CPU 服务。
+- [x] 外部 ASR 转写 → Gateway 模型/人设 → 已配置 TTS 的真实语音实验模式。
+- [x] 完整音频解码、定速喂入播放队列与打断；通话内上下文仅追加确认播完的回复。
 - [ ] FunASR/sherpa-onnx 流式 ASR Provider。
 - [ ] 语义端点器。
 - [ ] Agent provider delta 和 SemanticCommitter。
 - [ ] CosyVoice 或等价 StreamingTtsProvider。
 - [ ] 播放账本与 spoken-memory 截断。
+
+#### 真实 ASR 与 Gateway TTS 实验模式（2026-09-08）
+
+ASR 与部署位置解耦：Python `AsrProvider` 接收规范化 PCM、返回转写；既有
+`StreamingAsrProvider` 继续表达真正的流式识别。Desktop 的 `VoiceAsrProvider` /
+`VoiceAsrSession` 只负责开轮次、输入 PCM、结束、取消和可选 partial 回调。首个
+`HttpWavAsrProvider` 明确声明 `streaming=false`，接受配置的本机或远端 HTTP(S) 地址。
+以后可替换传输和模型，也可让 Discord 直接使用 Python provider 或同一 HTTP 服务；
+Gateway 的 turn/reflex 核心不依赖 Desktop 或某个 ASR 引擎。
+
+启动本机 ASR：
+
+```powershell
+uv run scripts/voice_asr_server.py --model small
+```
+
+脚本通过 uv 独立环境安装可选依赖，不修改 Bot 主环境。首次按模型名称启动会下载模型；
+也可用 `--model <已有模型目录>`。默认绑定 `127.0.0.1:8765`，使用 CPU int8，终端会输出
+本次运行的独立 ASR Token。实现依据 [faster-whisper 官方接口](https://github.com/SYSTRAN/faster-whisper#usage)。
+
+在开发模式 **开发工具 → Voice Lab** 选择“真实 ASR / Gateway 语音回复”，填写：
+
+- ASR 地址：`http://127.0.0.1:8765/v1/asr/transcriptions`。
+- ASR Token：启动脚本本次输出的值，不是 Gateway 管理员 Token；仅保存在当前面板内存中。
+- 识别语言：中文、英语、日语或自动。
+- Gateway 音色名：`webapi.speech.voices` 的键；留空沿用 `default_voice`。
+
+Gateway 仍使用 Desktop 连接设置中的地址和管理员 Token，需要运行新版代码并启用
+`webapi.speech`。后端和音色参数均复用已有配置，不在 Desktop 保存 TTS 密钥。
+回复模型按 `webapi.generate.model` → `primary` → 默认模型解析；工作区人设与既有文本生成
+入口一致。这个实验路径尚未调用完整 AgentLoop、工具、KB 检索或持久记忆。
+
+真实模式不会把麦克风 PCM 上传 Gateway：客户端在本地 VAD 确认端点后，将这一段 WAV
+发送至配置的 ASR 服务，再把 partial/final 转写、speech-start/stop 及 epoch 发给 Gateway。
+端点前保留 200ms 预录缓冲，单段最多 30 秒。远端部署 ASR 时应提供 HTTPS；服务地址是部署
+参数，不能由对话模型修改。HTTP 合约为 POST WAV，查询参数 `language`，独立 Bearer 鉴权，
+返回 `{"text":"...","language":"zh"}`；当前 host 固定只接受 16kHz mono PCM16 WAV。
+
+当前 TTS 是完整合成：Gateway 返回带 `kind=artifact`、epoch/turn/sequence 的完整容器音频，
+客户端解码后每 20ms 向原有 500ms 上限队列喂入 PCM，不宣称这是流式合成。UI 分别显示
+ASR 耗时和发言结束到首次渲染耗时。音频上限 8MiB、解码后最多 60 秒。
+
+插话先清本地队列，再取消 ASR/模型/TTS 工作。取消 HTTP 请求不能强行终止已开始的本机原生
+ASR 推理，因此 host 以线程锁保持单次推理，后续请求在 60 秒总超时内重试明确的 429 busy。
+旧 epoch 的转写、合成和解码结果均丢弃。Gateway 只保留本次会话最近 12 条上下文消息，
+被打断的 assistant 回复不作为完整已说内容追加；结束连接后上下文释放。
+
+验证：定向测试覆盖独立 ASR 合约、鉴权、音频边界、单推理、取消/迟到转写、真实模式
+Gateway 模型/TTS 接线、解码后的过期音频和确认播放后的上下文。另以 `tiny` CPU 模型通过
+真实 HTTP 接口识别系统合成的英文测试句，文本完全匹配，单次请求约 1.5 秒；该烟测不代表
+中文识别质量、真人麦克风效果或生产 Gateway 的 TTS 延迟。
 
 ### Phase 3：平台与研究线
 

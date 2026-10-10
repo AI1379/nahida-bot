@@ -390,9 +390,9 @@ async def _add_numbers(self, a: int, b: int) -> str:
 `@register_tool` 装饰器同样支持 `requires_admin` 关键字参数。
 
 `requires_admin=True` 把工具标记为特权工具：非管理员调用会被
-`AuthorizationGate` 拒绝（fail-closed）。管理员判定来自 `identity.admins`
-中的平台账号（见 [配置参考](../guide/configuration.md#身份与管理员授权)）；
-`identity` 未启用时放行。内置的 `exec`、`message`、`workspace_write`、
+`AuthorizationGate` 拒绝（fail-closed）。管理员判定来自 `authorization.admins`
+中的平台账号（见 [配置参考](../guide/configuration.md#身份与动作授权)）。
+授权配置独立于 `identity.enabled`；未声明管理员时特权调用仍拒绝。内置的 `exec`、`message`、`workspace_write`、
 `identity_manage` 和桌面远控工具（`desktop_exec`、`desktop_file_read`）
 都是如此标记的。
 

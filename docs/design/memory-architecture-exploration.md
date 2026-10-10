@@ -186,11 +186,11 @@ scope 全部做成**软的**：没有硬边界，记忆是一个全局池（图�
 - **部署信任边界**：nahida 只给owner一个人用？几个密友？会进半公开/公开群？
   （决定全软方案的安全性是否能接受。）
 - **需求 3 的 admin 定义**：config 需要独立于 `identity.people` 的 admin 指定
-  （`identity.admins` 或 person seed 上加 `is_admin`），否则 Phase A 会把"declared person = admin"写死。
+  （`authorization.admins` 或 person seed 上加 `is_admin`），否则 Phase A 会把"declared person = admin"写死。
 
 ## 10. 决策状态
 
 **部分解除推迟（2026-06-29）。** §9 的两个前置问题已拍板（部署信任边界 → 几乎全软 scope + 薄敏感
-tag 兜底；admin → 独立 `identity.admins`），据此 §8.3 薄敏感 tag 与 Phase A 授权闸已实施，落地设计
+tag 兜底；admin → 独立 `authorization.admins`），据此 §8.3 薄敏感 tag 与 Phase A 授权闸已实施，落地设计
 见 [memory-soft-scope-and-authz.md](memory-soft-scope-and-authz.md)。**仍推迟**：图引擎、独立库拆分、
 意图触发 scope 扩张（§8 Step 2/3）。重开这些大方向时从 §8 Step 2 切入评估。

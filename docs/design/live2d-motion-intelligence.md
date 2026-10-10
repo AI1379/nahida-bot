@@ -1,12 +1,15 @@
 # Live2D 动作智能层设计
 
 > 记录时间：2026-07-09
-> 状态：训练前基础设施已落地，进入本地数据积累阶段
+> 最近复核：2026-09-06
+> 状态：基础设施已落地；跨模型迁移尚未通过保真验证，优先研究模型级标定
 > 相关议题：GitHub Issue #9 Live2D 桌宠与桌面端软件
 > 相关文档：
 >
 > - [desktop-app.md](desktop-app.md) — Desktop App 与 Live2D 桌宠产品形态
 > - [gpt-sovits-voice.md](gpt-sovits-voice.md) — 语音输出与 TTS 管线
+> - [2026-09-06 动作迁移实验与候选方案](live2d-retargeting-experiment-2026-09-06.md) — 香澄点头实测、失真定位与后续方案
+> - [模型级联合拟合小范围验证](live2d-inverse-fitting-pilot-2026-09-06.md) — 固定参照处理六条曲线，含退化和触界样例
 
 ## 1. 背景
 
@@ -24,6 +27,11 @@
 这份文档把近期关于 HY-Motion、LPM、强化学习小模型、缓存、奖励信号和数据采集的讨论收敛成一套可落地设计。
 
 ## 2. 核心结论
+
+2026-09-06 的香澄 → 纳西妲点头实验确认：同名、同范围参数会产生不同强度的可视运动。
+曲线数值往返通过不等于动作迁移正确；手动缩幅、回正和停用身体 Z 都未构成通用迁移方案。
+近期优先评估模型级语义标定与离线参数拟合，详见[实验报告](live2d-retargeting-experiment-2026-09-06.md)。
+下文的小模型路线保留为候选方向，不代表现有数据量、奖励或示范质量已满足训练条件。
 
 近期不建议追求 HY-Motion / LPM 级别的大模型复现，也不建议一开始用强化学习直接训练端到端动画生成器。
 
@@ -271,6 +279,12 @@ export interface ModelPerformanceProfile {
 ```
 
 ### 5.5 PortableMotionAsset 与跨模型动作重定向
+
+**验证边界（2026-09-06）：** 当前 normalized pose 统一的是数据结构与数值范围，尚未通过
+视觉标定证明其跨模型语义等价。香澄 `BODY_ANGLE_Z = 5` 在纳西妲上产生了明显更大的侧倾。
+兼容性报告的 `full`/通道覆盖率只说明绑定存在，不能解释为保真通过；私有通道的跳过也可能
+损失必要动作内容。正式迁移需补充模型级语义参照、多参数响应检查与留出动作验证，
+见[实验结果与方案比较](live2d-retargeting-experiment-2026-09-06.md)。
 
 用户自定义模型不能依赖每个模型都自带完整动作集。外部 `.motion3.json`
 和 Cubism 2 `.mtn` 因此只作为导入源，不直接成为运行时协议：
@@ -979,7 +993,8 @@ reward =
 
 ### Phase 4：Ranker / 小 LLM planner
 
-- 用 500-2000 条决策样本训练 intent planner 或 ranker。
+- 以经过质量核查的独立样本评估 intent planner 或 ranker；早期提出的 500–2000 条
+  决策样本只是探索规模，不是样本充分性保证，也不适用于曲线生成或 RLHF。
 - 小 LLM 只输出 `MotionIntent` JSON。
 - 增加 validator 对 LLM 输出的 schema 检查。
 
@@ -991,6 +1006,10 @@ reward =
 启动条件：设置页数据审计达到 ready，并冻结当前 50 场景 rule baseline。达到此前不开始神经网络训练，避免用少量、未关联或单一 intent 数据得到虚假提升。
 
 训练前最后一步：导出 Desktop JSONL 后运行数据准备器；只有生成的 `manifest.json` 中 `readyForPlannerTraining` 为 true 才启动 planner SFT。偏好 ranker 另要求 `readyForPreferenceTraining` 为 true。
+
+2026-09-06 补充：上述 ready 标志是必要的工程数据审计条件，不是训练可行性的充分条件。
+还需检查语义标签、示范质量、独立动作覆盖与测试集泄漏。规则生成数据不能自动提供超越规则的
+质量依据；未经迁移保真验收的外部动作转换不能充当正样本。曲线本身也不提供完整的文本—表演对应。
 
 ### Phase 5：Residual refiner
 
@@ -1040,6 +1059,11 @@ reward =
 7. 已落地一条服务端 cheap-LLM 路径：`motion_planner`（见 6.1.1）负责在
    Desktop 回复路径上生成 DisplayPlan，桌面本地 planner 继续负责表现层精修；
    训练数据准备脚本见 `scripts/prepare_motion_training_data.py`。
+8. 跨模型迁移先验证实际视觉响应；“模型级语义参照 + 离线参数拟合”已推进为六动作实验原型，
+   参照仍需人工为每模型选择一次。五条曲线的检查点误差下降，idle01 退化，surprised01 触界；
+   尚未通过完整保真验收，任意模型的自动语义标定尚未实现。
+9. 保留源动作的原始曲线、模型状态和私有控制。先验证迁移保真，再单独应用缩幅、截短或回正。
+   现阶段不安排 RLHF；如后续形成合格配对数据，优先评估无需奖励模型的监督学习或求解器蒸馏。
 
 ## 14. 参考
 

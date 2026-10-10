@@ -1286,7 +1286,7 @@ Desktop 设置页提供「远程控制」模式下拉，本地 Rust 侧按策略
 服务端路由：`DesktopControlService` 通过 NodeRegistry 找到当前在线且绑定到
 该 actor 的唯一 Desktop node，多个匹配时拒绝调用。Agent 侧对应工具
 `desktop_exec`、`desktop_file_read` 标记为 `requires_admin`（仅在
-`identity.admins` 中的账号可调用），对 subagent 不可用。
+`authorization.admins` 中的账号可调用），对 subagent 不可用。
 
 CRON 专用提醒工具：`desktop_announce`（仅 `origin == "cron_trigger"` 时可用，
 消息最长 300 字符），由 `DesktopAnnouncementService.announce` 投递到绑定

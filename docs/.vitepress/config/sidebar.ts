@@ -101,6 +101,11 @@ export const sidebar: DefaultTheme.Sidebar = {
         { text: "记忆系统", link: "/design/memory-system" },
         { text: "记忆作用域", link: "/design/memory-scoping" },
         { text: "人物身份系统", link: "/design/person-identity-system" },
+        {
+          text: "动作授权与权限模式",
+          link: "/design/action-authorization-capabilities",
+        },
+        { text: "Linux 执行隔离", link: "/design/linux-execution-isolation" },
         { text: "知识库", link: "/design/knowledge-base" },
         { text: "附属进程监管", link: "/design/process-supervisor" },
         { text: "MCP 动态服务器", link: "/design/mcp-dynamic-servers" },
@@ -132,6 +137,14 @@ export const sidebar: DefaultTheme.Sidebar = {
         {
           text: "Live2D 动作智能层",
           link: "/design/live2d-motion-intelligence",
+        },
+        {
+          text: "Live2D 迁移实验与方案",
+          link: "/design/live2d-retargeting-experiment-2026-09-06",
+        },
+        {
+          text: "Live2D 联合拟合验证",
+          link: "/design/live2d-inverse-fitting-pilot-2026-09-06",
         },
         {
           text: "仓库减法清单",

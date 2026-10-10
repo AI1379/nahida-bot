@@ -9,6 +9,10 @@
 >
 > **已落地（v2）**：Phase A 授权闸 `e54f9a1`；A0 `sensitivity_source` 列 `a1aea06`；A1 回填脚本 + A3 dreaming 自动打标 `cdd5a64`；A2 软 scope 召回过滤 + A4 显式打标 `2fcea96`；评审修复 `96860d7`、`6909773`。启用 A2 前必须先跑 `scripts/migrate_memory_sensitivity.py`（A1 回填），否则存量 legacy `private` 不会软化。A2.1（当事人到场放松 `private`）仍 deferred。
 > 关联 issue：#22（tracking）、#7（身份系统 Phase A）。注：#24（记忆失真）是独立轨道，不属本设计。
+>
+> **配置归属更新（2026-09-07）**：授权字段已从 `identity` 完整迁移到顶层
+> `authorization`。当前配置使用 `authorization.admins` 和
+> `authorization.chat_domains`；`identity` 仅保留 `enabled` 与 `people`，旧字段会被拒绝。
 
 ## 1. 背景与决策记录（2026-06-29）
 
@@ -16,7 +20,7 @@ exploration §9 的两个前置问题已由用户拍板：
 
 1. **部署信任边界**：nahida 所在群里**会有不那么熟的人**（半公开）。但在"更像人"与"默认隔离"
    之间，用户**选择几乎全软 scope**，靠**薄敏感 tag**兜底——接受"保护强度 = 打标可靠性"的取舍。
-2. **admin 定义**：新增独立的 `identity.admins`（account_key 列表），**与 `identity.people` 解耦**。
+2. **admin 定义**：新增独立的 `authorization.admins`（account_key 列表），**与 `identity.people` 解耦**。
 
 由此解除推迟的两块：
 
@@ -29,7 +33,7 @@ memory 子系统不得 import 或分支依赖 admin 状态。详见 §4.4。
 ## 2. 范围
 
 **做**：Piece A 的 sensitivity 默认翻转 + 召回过滤 + dreaming 自动打标 + 显式打标；Piece B 的
-`identity.admins` + `AuthorizationGate` + 工具执行边界接入 + 解耦测试。
+`authorization.admins` + `AuthorizationGate` + 工具执行边界接入 + 解耦测试。
 
 **不做（继续推迟）**：property-graph 引擎、memory 独立库拆分、意图触发 scope 扩张（§8 step1 余项）、
 极简关系边。`memory_write` **不**纳入 admin 闸（§4.3）。
@@ -112,14 +116,15 @@ turn 上的轻量 NLU/关键词触发（"别告诉"/"私下"）。显式标记�
 
 ### 4.1 config
 
-`IdentityConfig` 新增（与 `people` 解耦）：
+`AuthorizationConfig` 提供（与 `identity.people` 解耦）：
 
 ```python
-admins: list[IdentityAccountSeed] = Field(default_factory=list)
+admins: list[str] = Field(default_factory=list)
+chat_domains: dict[str, list[str]] = Field(default_factory=dict)
 ```
 
-复用 `IdentityAccountSeed`（`channel` + `platform_account_id`）形态，与 `AccountKey.from_parts`
-的派生方式一致。启动时解析成 admin account_key 集合。
+管理员字段直接使用规范化的 `channel:user:account_id` account key。启动时解析成 admin
+account_key 集合；空列表时 standard 和 admin-only 动作保持 fail-closed。
 
 ### 4.2 模块
 
@@ -134,7 +139,7 @@ class AuthorizationGate:
 ```
 
 - 查 `sender_account_key ∈ admin_account_keys`，**只认账号**（平台已认证），不认 person、不查记忆。
-- `identity.enabled=False` 时 gate 退化为"全通过"或"按 config admins"——默认行为零变化（见 §6 回滚）。
+- `identity.enabled` 不影响 gate；授权策略始终按 `authorization` 配置执行。
 
 ### 4.3 闸门工具清单
 
@@ -165,7 +170,7 @@ class AuthorizationGate:
 
 ### 4.6 代码触点
 
-- `core/config.py`：`IdentityConfig.admins`。
+- `core/config.py`：`AuthorizationConfig.admins`、`AuthorizationConfig.chat_domains`。
 - `identity/authorization.py`（新）。
 - `plugins/api_bridge.py` / `tool_executor.py` / `commands.py`：闸门接入 + sender_account_key plumbing。
 - `app.py` / 装配处：构造 `AuthorizationGate` 并注入。
@@ -176,7 +181,7 @@ class AuthorizationGate:
 > 一刀切"历史工具仅 admin"或"仅当前群"都无法表达这种拓扑。
 > 关联 issue：#54（配置热更新——域成员的运行时编辑）。
 
-- **模型**：`IdentityConfig.chat_domains: dict[str, list[str]]`（域名 → chat 地址集合）。
+- **模型**：`AuthorizationConfig.chat_domains: dict[str, list[str]]`（域名 → chat 地址集合）。
   `ChatDomainIndex` 装配期折叠成 chat→domain 映射；未列入任何域的 chat 自成
   singleton 域（只能读自己）——fail-closed，不配置等价于"仅当前聊天"。
 - **工具侧**：`ToolEntry.scope="chat_domain"`（与 `requires_admin` 并列的注册元数据）。
@@ -216,15 +221,20 @@ identity:
       display_name: "浅色"
       accounts:
         - { channel: milky, platform_account_id: "10001", label: "owner" }
+
+authorization:
   admins:
-    - { channel: milky, platform_account_id: "10001" }
+    - "milky:user:10001"
+  chat_domains:
+    main_community:
+      - "milky:group:100"
 ```
 
 ## 7. 风险与回滚
 
-- **Piece B**：`identity.enabled=false`（默认，identity 子系统关）时 gate 为 no-op，行为零变化；
-  `enabled=true` 时**强制 fail-closed**——`admins` 为空则**所有**特权工具被拒（开启 identity 必须声明
-  admin，否则 owner 立刻发现并修 config，安全且响亮，绝不静默放行）。回滚 = 关 `identity.enabled`。
+- **Piece B**：授权配置始终生效；`authorization.admins` 为空时 standard 和 admin-only
+  动作仍 fail-closed，无法通过关闭 `identity.enabled` 绕过授权。回滚需显式调整
+  `authorization.mode` 和 `authorization.admins`。
 - **Piece A**：sensitivity 默认翻转 + 回填**有数据影响**——回填脚本必须 dry-run + 备份
   （复用 `migrate_memory_scope.py` 的 inspect→backup→apply 模式）。回滚 = 恢复备份 + 还原默认值。
 - **打标可靠性**：Piece A 上线后观察"群内是否出现本不该浮现的私聊内容"，作为打标质量的真实信号。

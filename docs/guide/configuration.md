@@ -26,6 +26,7 @@ Nahida Bot 从 YAML 文件、`.env` 文件和环境变量读取配置。值的�
 | `port` | `int` | `6185` | 服务器绑定端口（保留） |
 | `db_path` | `str` | `"./data/nahida.db"` | SQLite 数据库文件路径 |
 | `workspace_base_dir` | `str` | `"./data/workspace"` | 工作区存储目录 |
+| `exec_venv_path` | `str` | `"./data/exec-venv"` | exec 工具与 cron 外部命令的专用 Python 虚拟环境。模型脚本中的 `python`/`pip` 解析到这里，`pip install` 只影响该环境、不碰 bot 自身依赖；启动时自动创建，留空则禁用并回退为继承 bot 环境 |
 | `plugin_paths` | `list[str]` | `["./plugins"]` | 额外的插件扫描目录 |
 | `discover_builtin_channels` | `bool` | `true` | 自动发现内置频道插件 |
 | `system_prompt` | `str` | `"You are a helpful assistant."` | Agent 对话的默认系统提示词 |
@@ -36,6 +37,7 @@ Nahida Bot 从 YAML 文件、`.env` 文件和环境变量读取配置。值的�
 | `context` | `object` | （见下文） | 上下文窗口预算配置 |
 | `scheduler` | `object` | （见下文） | 定时任务调度配置 |
 | `router` | `object` | （见下文） | 消息路由配置 |
+| `mute` | `object` | （见下文） | 按聊天入口持久化禁言，默认关闭 |
 | `webapi` | `object` | （见下文） | WebAPI 服务配置 |
 | `webui` | `object` | （见下文） | WebUI 控制台配置 |
 | `memory` | `object` | （见下文） | 长期记忆与 embedding 配置 |
@@ -327,8 +329,22 @@ multimodal:
 | `tool_retry_attempts` | `int` | `1` | 工具执行失败重试次数 |
 | `tool_retry_backoff_seconds` | `float` | `0.1` | 工具重试退避间隔（秒） |
 | `max_tool_log_chars` | `int` | `400` | 工具结果日志截断长度 |
+| `subagent_notifications_enabled` | `bool` | `true` | 子 Agent 结束后向来源聊天发送通知的全局开关；关闭时任务的 `notify="done_only"` 也不会发通知 |
 | `tool_use_system_prompt` | `str` | （内置） | 注入的工具使用行为引导提示 |
 | `provider_error_template` | `str` | （内置） | Provider 错误时的用户提示模板（支持 `{code}` 占位符） |
+
+可在 WebUI 的 Config → Agent → Subagent completion notifications 中管理此开关，
+或在 YAML 中统一关闭后台子任务的聊天通知：
+
+```yaml
+agent:
+  subagent_notifications_enabled: false
+```
+
+此开关控制成功、失败、超时和取消时的聊天通知，修改后需重启生效。关闭后任务仍正常
+执行、保存结果，`agent_wait` / `agent_list` 仍可查询；默认的完成事件仍写入父会话，供主
+Agent 后续读取。任务显式指定 `notify="silent"` 时，聊天通知和父会话完成事件都不产生。
+插件 API 的 `run_subagent()` 固定使用 `silent`，行为不受此开关影响。
 
 ---
 
@@ -528,6 +544,36 @@ processes:
 | `reasoning_max_chars` | `int` | `2000` | 推理过程显示的最大字符数 |
 | `enable_silent_reply` | `bool` | `true` | 是否允许 Agent 使用 `NO_REPLY` 静默回复（运行时可通过 `/reasoning` 调整） |
 | `group_context` | `object` | （见下文） | 群聊观察上下文注入配置 |
+| `pending_messages` | `object` | （见下文） | Agent 忙碌期间的排队及群聊批处理配置 |
+
+### 排队消息与群聊批处理
+
+在 `router.pending_messages` 下配置。当前 run 结束后，默认将积压队列中连续、
+同发送者且执行身份、来源及工作区一致的普通群消息合并成一个请求。
+取出的是已有消息的有限批次，不额外等待；后续入站消息留给下一轮。
+每条原始消息的 ID、引用、提及和附件分别保留并入库，回复默认引用批次中
+最新的直接提及消息，没有直接提及时引用最新消息。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `mode` | `str` | `batch` | `batch` 合并兼容的群聊积压；`sequential` 恢复逐条处理 |
+| `max_messages` | `int` | `20` | 每个会话排队的原始消息上限，满时拒绝新消息 |
+| `ttl_seconds` | `float` | `900` | 排队消息过期时间（秒），过期后不执行 |
+| `batch_max_messages` | `int` | `6` | 每批最多合并的消息数；设为 1 等效于逐条处理 |
+| `batch_max_chars` | `int` | `4000` | 每批正文字符总预算，超长单条独立完整执行，不截断 |
+
+私聊、命令、工作区技能调用、主动插话和 `/steer` 请求保持独立执行。
+批处理只改变积压消息的消费方式，空闲时的第一条消息仍立即启动 Agent。
+
+```yaml
+router:
+  pending_messages:
+    mode: batch              # 改为 sequential 可恢复逐条处理
+    max_messages: 20
+    ttl_seconds: 900
+    batch_max_messages: 6
+    batch_max_chars: 4000
+```
 
 ### 群聊观察上下文
 
@@ -543,6 +589,40 @@ processes:
 | `continuity_gap_seconds` | `int` | `1800` | 对话连续性判定（秒）：当前触发与上一次对话 turn 的时间间隔超过此值时，视为新对话并丢弃旧 history，仅保留 observed 窗口。0 关闭（保留旧的纯按条数截断行为）。仅群聊生效 |
 
 ---
+
+## 会话禁言
+
+在顶层 `mute` 下配置。开启后，`authorization.admins` 中的管理员可以使用：
+
+- `/mute [duration]`：让当前聊天静默，省略时长时默认 1 小时。支持 `30m`、`2h`、`1d`，也支持秒 `s`，范围为 1 秒到 365 天；别名为 `/虚空下线控制`。
+- `/unmute`：提前恢复回复。
+- `/mute status`：查看当前聊天的状态及剩余时间，所有当前聊天用户均可查询。
+
+```yaml
+mute:
+  enabled: true
+  default_duration_seconds: 3600
+  notice:
+    offline: "虚空系统已下线"
+    online: "虚空系统已恢复上线"
+```
+
+状态按包含频道、聊天类型和目标 ID 的聊天入口持久化，私聊与同 ID 的群聊互不影响，
+`/new`、清空历史和重启不会解除禁言。开始、手动解除和到期恢复时会发送配置中的提示。
+到期采用懒检查：下一条消息（包括群聊观察消息）到达时恢复，并只广播一次恢复提示。
+
+静默期间，提及、关键词和主动插话均不启动 Agent；收到的消息仍作为观察上下文入库，
+管理命令照常执行。禁言会请求停止当前入口正在运行的 Agent，并抑制它的迟到回复，
+排队消息转为观察记录。恢复后，近期观察消息仍可作为上下文，使用
+`router.group_context` 的条数、字符和 TTL 预算。定时任务与其他主动推送不受影响。
+群管理员角色本身不授予此命令权限，`relaxed`/`unsafe` 也不会放开管理员门槛。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `enabled` | `bool` | `false` | 启用按聊天入口的禁言命令及拦截 |
+| `default_duration_seconds` | `int` | `3600` | 省略时长时的静默秒数，1 到 31536000 |
+| `notice.offline` | `str` | `"虚空系统已下线"` | 开始静默的提示，附加时长 |
+| `notice.online` | `str` | `"虚空系统已恢复上线"` | 解除或到期恢复的提示 |
 
 ## WebAPI
 
@@ -1097,6 +1177,10 @@ authorization:
   mode: standard
   admins:
     - "milky:user:123456789"
+  chat_domains:
+    main_community:
+      - "milky:group:833325688"
+      - "milky:group:732870642"
   chats:
     "milky:group:833325688": relaxed
     "milky:group:732870642": relaxed
@@ -1113,10 +1197,13 @@ authorization:
 包含 SDK 支持的线程 ID；不要填写会话历史 ID。配置由部署者选择，模型参数和群消息
 不能修改模式。配置修改后需要重启 bot；本版本没有权限热更新或用户自助切换 UI。
 
-`authorization.admins` 未填写时兼容读取 `identity.admins`；显式 `admins: []`
-代表不继承任何管理员。Person 关联不会赋予管理员身份。即使启用了 relaxed/unsafe，
-无可识别账号的特权调用仍然拒绝，身份/MCP 管理、桌面控制和跨聊天 `message` 工具
-仍要求管理员，历史工具仍按 `identity.chat_domains` 限定聊天范围。
+`authorization.admins` 默认是空列表，standard 模式下的特权调用会 fail-closed；必须在此字段
+显式声明管理员。Person 关联不会赋予管理员身份。relaxed/unsafe 可按各自模式处理普通执行
+工具，但身份/MCP 管理、桌面控制和跨聊天 `message` 等 admin-only 动作仍要求管理员，
+历史工具仍按 `authorization.chat_domains` 限定聊天范围。
+
+`identity` 下的旧 `admins` 和 `chat_domains` 字段已移除，配置会直接被拒绝；请将它们
+迁移到 `authorization` 下对应字段。
 
 `search_files`、`web_fetch`、当前聊天附件及既有范围受限工具不因使用网络或文件而
 要求管理员。relaxed 对 `exec`、`workspace_write`、未知插件/MCP 工具等执行独立
