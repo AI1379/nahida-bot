@@ -84,6 +84,15 @@ class MilkyPluginConfig(BaseModel):
 
     media_download_dir: str = Field(default="./data/temp/media")
     enable_media_download_tool: bool = Field(default=True)
+    enable_poke_tool: bool = Field(
+        default=False,
+        description="Let the agent poke a member of the current chat once per call.",
+    )
+    poke_cooldown_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description="Minimum interval between outgoing pokes in each chat.",
+    )
     resource_url_ttl_hint: int = Field(default=300, ge=0)
     cache_media_on_receive: bool = Field(
         default=True,

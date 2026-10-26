@@ -28,6 +28,7 @@ from nahida_bot.channels.milky.file_upload import (
     render_file_upload_text as _render_file_upload_text,
 )
 from nahida_bot.channels.milky.message_converter import MilkyMessageConverter
+from nahida_bot.channels.milky.poke import MilkyPokeTool
 from nahida_bot.channels.milky.segment_converter import (
     MilkyOutboundConverter,
     MilkyTargetError,
@@ -120,6 +121,14 @@ class MilkyPlugin(Plugin):
         # config.pending_file_ttl_seconds.
         self._pending_files: OrderedDict[str, list[_PendingFileEntry]] = OrderedDict()
         self._login_info_task: asyncio.Task[None] | None = None
+        self._poke_tool = MilkyPokeTool(
+            api=self.api,
+            channel_id=self.channel_id,
+            config=self.config,
+            get_client=self._ensure_client,
+            get_self_id=lambda: self.self_id,
+            is_group_member=self._is_group_member,
+        )
 
     @property
     def channel_id(self) -> str:
@@ -188,6 +197,8 @@ class MilkyPlugin(Plugin):
         if self.config.enable_media_download_tool:
             self._register_resource_tool()
             self._register_file_download_tool()
+        if self.config.enable_poke_tool:
+            self._poke_tool.register()
         logger.info("milky.event_stream_started", channel=self.channel_id)
 
     async def on_disable(self) -> None:

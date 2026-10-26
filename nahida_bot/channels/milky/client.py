@@ -178,6 +178,16 @@ class MilkyClient:
             "get_group_member_info", {"group_id": group_id, "user_id": user_id}
         )
 
+    async def send_group_nudge(self, *, group_id: int, user_id: int) -> None:
+        """Poke one group member once, without retrying an ambiguous send."""
+        await self.post_api(
+            "send_group_nudge", {"group_id": group_id, "user_id": user_id}
+        )
+
+    async def send_friend_nudge(self, *, user_id: int) -> None:
+        """Poke the current friend once."""
+        await self.post_api("send_friend_nudge", {"user_id": user_id, "is_self": False})
+
     async def get_resource_temp_url(self, resource_id: str) -> str:
         """Return a temporary URL for a Milky resource ID."""
         data = await self.post_api(

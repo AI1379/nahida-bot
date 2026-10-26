@@ -148,6 +148,23 @@ async def test_on_load_registers_channel_with_injected_client() -> None:
     assert plugin.self_id == 999
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_poke_tool_registration_is_opt_in(enabled: bool) -> None:
+    api = RecordingMockBotAPI()
+    plugin = MilkyPlugin(
+        api=api,
+        manifest=_manifest(enable_poke_tool=enabled, enable_media_download_tool=False),
+    )
+    plugin._client = _FakeClient()  # type: ignore[assignment]
+    await plugin.on_load()
+    with patch(
+        "nahida_bot.channels.milky.plugin.MilkyEventStream", return_value=AsyncMock()
+    ):
+        await plugin.on_enable()
+        assert ("milky_poke_user" in api.registered_tools) is enabled
+        await plugin.on_disable()
+
+
 async def test_on_load_registers_channel_when_login_info_unavailable() -> None:
     api = RecordingMockBotAPI()
     plugin = MilkyPlugin(api=api, manifest=_manifest())

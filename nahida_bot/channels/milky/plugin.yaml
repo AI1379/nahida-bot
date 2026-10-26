@@ -32,6 +32,8 @@ config:
   max_text_length: 4000
   media_download_dir: "./data/temp/media"
   enable_media_download_tool: true
+  enable_poke_tool: false
+  poke_cooldown_seconds: 30.0
   resource_url_ttl_hint: 300
   cache_media_on_receive: true
   max_forward_depth: 3
