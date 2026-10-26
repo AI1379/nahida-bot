@@ -15,7 +15,9 @@ from nahida_bot.core.exceptions import PermissionDenied
 from nahida_bot.plugins.base import (
     AttentionFrame,
     ChannelService,
+    InboundAttachment,
     InboundMessage,
+    MediaDownloadResult,
     MemoryRef,
     OutboundMessage,
     PluginLogger,
@@ -242,6 +244,9 @@ class RealBotAPI:
         self._desktop_surface_registry = desktop_surface_registry
         self._registered_desktop_surface_providers: dict[str, Any] = {}
         self._active_desktop_surface_providers: set[str] = set()
+        self._page_handlers: dict[
+            str, Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+        ] = {}
 
     # ── Messaging ──────────────────────────────────────
 
@@ -598,6 +603,32 @@ class RealBotAPI:
             self._active_tools.discard(name)
         self._logger.debug("tool_unregistered", tool_name=name)
         return True
+
+    def register_page_handler(
+        self,
+        page_id: str,
+        handler: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Bind a declared admin page to a plugin-owned action handler."""
+        if not any(
+            page.id == page_id and page.target == "webui.admin"
+            for page in self._manifest.contributes.pages
+        ):
+            raise ValueError(f"Undeclared WebUI admin page: {page_id}")
+        if page_id in self._page_handlers:
+            raise ValueError(f"Page handler already registered: {page_id}")
+        self._page_handlers[page_id] = handler
+
+    async def dispatch_page_action(
+        self, page_id: str, action: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Called by the authenticated Gateway, never exposed as an agent tool."""
+        if not self._registrations_active:
+            raise RuntimeError("Plugin registrations are inactive")
+        handler = self._page_handlers.get(page_id)
+        if handler is None:
+            raise LookupError("Plugin page has no action handler")
+        return await handler(action, payload)
 
     # ── Service Registration ──────────────────────────
 
@@ -1895,6 +1926,43 @@ class RealBotAPI:
         """Access the ProviderManager (if configured)."""
         return self._provider_manager
 
+    def get_current_attachments(self) -> tuple[InboundAttachment, ...]:
+        """Expose only the attachments bound to the in-flight agent turn."""
+        from nahida_bot.core.context import current_attachments, current_session
+
+        return current_attachments.get() if current_session.get() is not None else ()
+
+    async def resolve_current_attachment(self, index: int) -> MediaDownloadResult:
+        """Resolve a trusted inbound reference through its originating channel."""
+        from pathlib import Path
+
+        from nahida_bot.core.context import current_session
+
+        self._permissions.check_filesystem_read("temp")
+        context = current_session.get()
+        attachments = self.get_current_attachments()
+        if context is None or not 0 <= index < len(attachments):
+            raise ValueError("Attachment index is outside the current turn")
+        attachment = attachments[index]
+        if attachment.path and Path(attachment.path).is_file():
+            return MediaDownloadResult(
+                path=attachment.path,
+                file_name=Path(attachment.path).name,
+                mime_type=attachment.mime_type,
+                file_size=attachment.file_size,
+            )
+        channel = (
+            self._channel_registry.get(context.platform)
+            if self._channel_registry is not None
+            else None
+        )
+        if channel is None or not attachment.platform_id:
+            raise ValueError("This attachment has no downloadable media reference")
+        result = await channel.download_media(attachment.platform_id)
+        if result is None or not Path(result.path).is_file():
+            raise ValueError("The channel could not download this attachment")
+        return result
+
     def get_media_store(self) -> MediaStore | None:
         """Access the shared MediaStore (if configured).
 
@@ -2047,6 +2115,7 @@ class RealBotAPI:
         self._registered_supplements.clear()
         self._registered_status_providers.clear()
         self._registered_desktop_surface_providers.clear()
+        self._page_handlers.clear()
         self._decorated_registrations_added = False
 
     def _activate_command(self, name: str) -> None:

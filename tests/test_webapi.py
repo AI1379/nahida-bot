@@ -507,6 +507,8 @@ async def test_plugins_list_returns_sanitized_manifest(
     assert plugin["has_config"] is True
     assert plugin["config_keys"] == ["api_key", "mode"]
     assert plugin["runtimes"]["gateway"]["mode"] == "python"
+    assert "node" not in plugin["runtimes"]
+    assert "desktop" not in plugin["runtimes"]
     assert "secret-value" not in resp.text
 
 
@@ -577,6 +579,51 @@ async def test_plugin_page_rejects_disabled_and_escaping_entries(
     record.state = PluginState.ENABLED
     escaping = await client_no_auth.get("/api/plugins/demo.plugin/pages/settings")
     assert escaping.status_code == 400
+
+
+async def test_plugin_page_actions_require_authentication(
+    client_with_auth: AsyncClient,
+) -> None:
+    response = await client_with_auth.post(
+        "/api/plugins/demo.plugin/pages/settings/actions", json={"action": "list"}
+    )
+    assert response.status_code == 401
+
+
+async def test_plugin_page_actions_are_bound_to_enabled_declared_admin_page(
+    client_no_auth, tmp_path
+):
+    from nahida_bot.plugins.manifest import PluginContributions
+    from nahida_bot.plugins.manager import PluginState
+
+    app = client_no_auth._transport.app.state.application
+    record = _make_plugin_record(tmp_path)
+    record.manifest.contributes = PluginContributions.model_validate(
+        {"pages": [{"id": "settings", "target": "webui.admin", "entry": "page.html"}]}
+    )
+    record.api_bridge = SimpleNamespace(
+        dispatch_page_action=AsyncMock(return_value={"total": 2})
+    )
+    app.plugin_manager = MagicMock()
+    app.plugin_manager.get_record.return_value = record
+    response = await client_no_auth.post(
+        "/api/plugins/demo.plugin/pages/settings/actions",
+        json={"action": "list", "payload": {"query": "开心"}},
+    )
+    assert response.status_code == 200 and response.json() == {"total": 2}
+    record.api_bridge.dispatch_page_action.assert_awaited_once_with(
+        "settings", "list", {"query": "开心"}
+    )
+    missing = await client_no_auth.post(
+        "/api/plugins/demo.plugin/pages/other/actions", json={"action": "list"}
+    )
+    assert missing.status_code == 404
+    record.state = PluginState.DISABLED
+    disabled = await client_no_auth.post(
+        "/api/plugins/demo.plugin/pages/settings/actions", json={"action": "list"}
+    )
+    assert disabled.status_code == 409
+    assert record.api_bridge.dispatch_page_action.await_count == 1
 
 
 async def test_plugins_returns_503_without_manager(client_no_auth: AsyncClient) -> None:

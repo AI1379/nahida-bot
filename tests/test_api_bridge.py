@@ -58,6 +58,91 @@ from nahida_bot_sdk import WebhookResponse
 from .helpers import StubChannelService
 
 
+@pytest.mark.asyncio
+async def test_plugin_page_handler_declaration_and_lifecycle(tmp_path):
+    from nahida_bot_sdk.manifest import PluginPageDeclaration
+
+    manifest = _manifest()
+    manifest.contributes = PluginContributions(
+        pages=[
+            PluginPageDeclaration(
+                id="gallery", target="webui.admin", entry="pages/gallery.html"
+            )
+        ]
+    )
+    api, _channels, _tools, _commands = _api(tmp_path, manifest=manifest)
+
+    async def handler(action, payload):
+        return {"action": action, **payload}
+
+    with pytest.raises(ValueError, match="Undeclared"):
+        api.register_page_handler("another", handler)
+    api.register_page_handler("gallery", handler)
+    with pytest.raises(RuntimeError, match="inactive"):
+        await api.dispatch_page_action("gallery", "list", {})
+    api.activate_registrations()
+    assert await api.dispatch_page_action("gallery", "list", {"total": 1}) == {
+        "action": "list",
+        "total": 1,
+    }
+    api.deactivate_registrations()
+    with pytest.raises(RuntimeError, match="inactive"):
+        await api.dispatch_page_action("gallery", "list", {})
+    api.activate_registrations()
+    assert await api.dispatch_page_action("gallery", "list", {}) == {"action": "list"}
+    api.clear_registrations()
+    api.activate_registrations()
+    with pytest.raises(LookupError):
+        await api.dispatch_page_action("gallery", "list", {})
+
+
+@pytest.mark.asyncio
+async def test_current_attachment_resolution_uses_only_inbound_refs_and_originating_channel(
+    tmp_path,
+):
+    from unittest.mock import AsyncMock
+
+    from nahida_bot.core.context import (
+        SessionContext,
+        current_session,
+        current_attachments,
+    )
+    from nahida_bot.plugins.base import InboundAttachment, MediaDownloadResult
+
+    manifest = _manifest()
+    manifest.permissions.filesystem.read.append("temp")
+    api, channels, _tools, _commands = _api(tmp_path, manifest=manifest)
+    image = tmp_path / "cached.gif"
+    image.write_bytes(b"GIF89a")
+    session = current_session.set(SessionContext("milky", "20001", "milky:group:20001"))
+    attachments = current_attachments.set(
+        (
+            InboundAttachment(kind="image", platform_id="cached", path=str(image)),
+            InboundAttachment(kind="image", platform_id="download-me"),
+        )
+    )
+    channel = SimpleNamespace(
+        download_media=AsyncMock(return_value=MediaDownloadResult(path=str(image)))
+    )
+    channels.channels["milky"] = channel
+    try:
+        assert (await api.resolve_current_attachment(0)).path == str(image)
+        channel.download_media.assert_not_awaited()
+        assert (await api.resolve_current_attachment(1)).path == str(image)
+        channel.download_media.assert_awaited_once_with("download-me")
+        with pytest.raises(ValueError, match="outside"):
+            await api.resolve_current_attachment(-1)
+        with pytest.raises(ValueError, match="outside"):
+            await api.resolve_current_attachment(2)
+        current_session.set(None)
+        assert api.get_current_attachments() == ()
+        with pytest.raises(ValueError):
+            await api.resolve_current_attachment(0)
+    finally:
+        current_attachments.reset(attachments)
+        current_session.reset(session)
+
+
 class _Logger:
     def exception(self, event: str, **kwargs: object) -> None:
         pass

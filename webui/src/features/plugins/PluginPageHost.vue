@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 
 import { api, toApiError } from "@/api/client";
-import type {
-  PluginPageContribution,
-  PluginPageDocument,
-} from "@/api/schemas";
+import type { PluginPageContribution, PluginPageDocument } from "@/api/schemas";
+import { pageBridgeBootstrap, parsePageRequest } from "./pageBridge";
 
 const props = defineProps<{
   pluginId: string;
@@ -16,11 +14,14 @@ const props = defineProps<{
 const loading = ref(false);
 const error = ref("");
 const document = ref<PluginPageDocument | null>(null);
+const frame = ref<HTMLIFrameElement | null>(null);
+const bridgeSession = ref("");
+let pendingRequests = 0;
 const frameTitle = computed(
   () => props.page.title || `${props.pluginName} · ${props.page.id}`,
 );
 const srcdoc = computed(() =>
-  document.value ? sandboxDocument(document.value) : "",
+  document.value ? sandboxDocument(document.value, bridgeSession.value) : "",
 );
 
 watch(
@@ -33,6 +34,10 @@ watch(
     loading.value = true;
     error.value = "";
     document.value = null;
+    bridgeSession.value = Array.from(
+      crypto.getRandomValues(new Uint8Array(16)),
+      (value) => value.toString(16).padStart(2, "0"),
+    ).join("");
     try {
       const response = await api.get<PluginPageDocument>(
         `/plugins/${encodeURIComponent(props.pluginId)}/pages/${encodeURIComponent(props.page.id)}`,
@@ -51,7 +56,44 @@ watch(
   { immediate: true },
 );
 
-function sandboxDocument(page: PluginPageDocument): string {
+onMounted(() => window.addEventListener("message", handlePageRequest));
+onUnmounted(() => window.removeEventListener("message", handlePageRequest));
+
+async function handlePageRequest(event: MessageEvent): Promise<void> {
+  const source = frame.value?.contentWindow;
+  if (!source || event.source !== source) return;
+  const request = parsePageRequest(event.data, bridgeSession.value);
+  if (!request) return;
+  const respond = (result?: unknown, error?: string) =>
+    source.postMessage(
+      {
+        type: "nahida.plugin.page.response",
+        session: request.session,
+        id: request.id,
+        result,
+        error,
+      },
+      "*",
+    );
+  if (pendingRequests >= 8) {
+    respond(undefined, "Too many pending page requests");
+    return;
+  }
+  pendingRequests += 1;
+  try {
+    const result = await api.post(
+      `/plugins/${encodeURIComponent(props.pluginId)}/pages/${encodeURIComponent(props.page.id)}/actions`,
+      { action: request.action, payload: request.payload },
+    );
+    respond(result);
+  } catch (reason) {
+    respond(undefined, toApiError(reason).detail);
+  } finally {
+    pendingRequests -= 1;
+  }
+}
+
+function sandboxDocument(page: PluginPageDocument, session: string): string {
   const context = JSON.stringify({
     version: 1,
     plugin: { id: page.plugin_id, name: page.plugin_name },
@@ -61,9 +103,13 @@ function sandboxDocument(page: PluginPageDocument): string {
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; font-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'">
     <meta name="referrer" content="no-referrer">
     <script>(()=>{const value=${context};Object.freeze(value.plugin);Object.freeze(value.page);window.__NAHIDA_PLUGIN_CONTEXT__=Object.freeze(value)})()<\/script>
+    <script>${pageBridgeBootstrap(session)}<\/script>
   `;
   if (/<head(?:\s[^>]*)?>/i.test(page.html)) {
-    return page.html.replace(/<head(?:\s[^>]*)?>/i, (match) => `${match}${head}`);
+    return page.html.replace(
+      /<head(?:\s[^>]*)?>/i,
+      (match) => `${match}${head}`,
+    );
   }
   return `<!doctype html><html><head>${head}</head><body>${page.html}</body></html>`;
 }
@@ -75,6 +121,8 @@ function sandboxDocument(page: PluginPageDocument): string {
     <p v-else-if="error" class="plugin-page-error" role="alert">{{ error }}</p>
     <iframe
       v-else-if="srcdoc"
+      ref="frame"
+      :key="bridgeSession"
       class="plugin-page-frame"
       :title="frameTitle"
       :srcdoc="srcdoc"
@@ -92,7 +140,7 @@ function sandboxDocument(page: PluginPageDocument): string {
 .plugin-page-frame {
   display: block;
   width: 100%;
-  min-height: 420px;
+  min-height: 640px;
   border: 1px solid var(--color-border);
   border-radius: 12px;
   background: white;

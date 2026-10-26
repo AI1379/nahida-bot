@@ -50,6 +50,20 @@ class MockBotAPI:
     def unregister_tool(self, name: str) -> bool:
         return False
 
+    def register_page_handler(self, page_id: str, handler: Any) -> None:
+        pass
+
+    def get_current_attachments(self) -> tuple:
+        from nahida_bot.core.context import current_attachments
+
+        return current_attachments.get()
+
+    async def resolve_current_attachment(self, index: int) -> Any:
+        from nahida_bot.plugins.base import MediaDownloadResult
+
+        attachment = self.get_current_attachments()[index]
+        return MediaDownloadResult(path=attachment.path)
+
     def register_channel(self, channel: Any) -> None:
         pass
 
@@ -201,6 +215,10 @@ class RecordingMockBotAPI(MockBotAPI):
         self.command_infos: list[Any] = []
         self.completion_results: list[Any] = []
         self._plugin_data: dict[str, Any] = {}
+        self.page_handlers: dict[str, Any] = {}
+
+    def register_page_handler(self, page_id: str, handler: Any) -> None:
+        self.page_handlers[page_id] = handler
 
     def list_commands(self) -> list[Any]:
         return list(self.command_infos)

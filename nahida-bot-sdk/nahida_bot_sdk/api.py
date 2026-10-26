@@ -19,7 +19,9 @@ from nahida_bot_sdk.chat_address import ChatAddress
 from nahida_bot_sdk.messaging import (
     Attachment,
     AttentionFrame,
+    InboundAttachment,
     InboundMessage,
+    MediaDownloadResult,
     MessageContext,
     OutboundMessage,
 )
@@ -322,6 +324,19 @@ class BotAPI(Protocol):
         """Remove a previously registered tool by name. Returns ``True`` if found."""
         ...
 
+    def register_page_handler(
+        self,
+        page_id: str,
+        handler: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Handle actions from this plugin's declared WebUI admin page.
+
+        The host authenticates requests and confines the sandbox bridge to
+        the owning plugin/page. Handlers are inactive while the plugin is
+        disabled and are discarded on unload.
+        """
+        ...
+
     # ── Service Registration ──────────────────────────
 
     def register_channel(self, channel: ChannelService) -> None:
@@ -494,6 +509,19 @@ class BotAPI(Protocol):
 
         Channel plugins use this so eager media downloads flow through the
         same key locks, TTL, and cleanup as the agent resolver.
+        """
+        ...
+
+    def get_current_attachments(self) -> tuple[InboundAttachment, ...]:
+        """Return the normalized attachments on the active agent turn only."""
+        ...
+
+    async def resolve_current_attachment(self, index: int) -> MediaDownloadResult:
+        """Resolve one current-turn attachment by its zero-based index.
+
+        Uses its cached file or the originating channel's download capability;
+        it does not accept arbitrary paths, URLs or historical media IDs.
+        Requires filesystem read permission for temp media.
         """
         ...
 

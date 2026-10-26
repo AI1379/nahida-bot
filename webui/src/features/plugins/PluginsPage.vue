@@ -197,11 +197,9 @@ function schemaKeys(plugin: PluginSummary): string[] {
 }
 
 function runtimeEntries(plugin: PluginSummary) {
-  return Object.entries(plugin.runtimes ?? {}).map(([name, runtime]) => ({
-    name,
-    entrypoint: runtime.entrypoint,
-    mode: runtime.mode,
-  }));
+  return Object.entries(plugin.runtimes ?? {}).flatMap(([name, runtime]) =>
+    runtime ? [{ name, entrypoint: runtime.entrypoint, mode: runtime.mode }] : [],
+  );
 }
 </script>
 

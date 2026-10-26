@@ -14,6 +14,7 @@ from nahida_bot.gateway.schemas import (
     PluginActionResponse,
     PluginListResponse,
     PluginPageResponse,
+    PluginPageActionRequest,
     PluginSummaryResponse,
 )
 from nahida_bot.plugins.manager import PluginRecord, PluginState
@@ -114,6 +115,35 @@ async def get_plugin_page(
         title=page.title or page.id,
         html=html,
     )
+
+
+@router.post("/api/plugins/{plugin_id}/pages/{page_id}/actions")
+async def plugin_page_action(
+    plugin_id: str,
+    page_id: str,
+    body: PluginPageActionRequest,
+    app=Depends(get_application),
+) -> dict[str, Any]:
+    """Authenticated page RPC, confined to a declared page of an enabled plugin."""
+    manager = _require_plugin_manager(app)
+    record = manager.get_record(plugin_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+    if record.state != PluginState.ENABLED:
+        raise HTTPException(status_code=409, detail="Plugin is not enabled")
+    if not any(
+        page.id == page_id and page.target == "webui.admin"
+        for page in record.manifest.contributes.pages
+    ):
+        raise HTTPException(status_code=404, detail="Plugin admin page not found")
+    if record.api_bridge is None:
+        raise HTTPException(status_code=409, detail="Plugin backend is unavailable")
+    try:
+        return await record.api_bridge.dispatch_page_action(
+            page_id, body.action, body.payload
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/api/plugins/{plugin_id}/load", response_model=PluginActionResponse)
@@ -246,7 +276,7 @@ def _record_to_response(record: PluginRecord) -> PluginSummaryResponse:
         permissions=_dump_model(manifest.permissions),
         capabilities=_dump_model(manifest.capabilities),
         contributes=_dump_model(manifest.contributes),
-        runtimes=_dump_model(manifest.runtimes),
+        runtimes=manifest.runtimes.model_dump(exclude_none=True),
         depends_on=[_dump_model(item) for item in manifest.depends_on],
         config_keys=sorted(str(key) for key in config.keys()),
         config_schema=dict(manifest.config_schema or {}),

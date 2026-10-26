@@ -121,6 +121,11 @@ class PluginPageResponse(BaseModel):
     html: str
 
 
+class PluginPageActionRequest(BaseModel):
+    action: str = Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 # -- Config ---------------------------------------------------------------
 
 

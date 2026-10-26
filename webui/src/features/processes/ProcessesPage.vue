@@ -106,7 +106,7 @@ function startedAt(p: ProcessInfo): string {
       Failed to load processes: {{ error.message }}
     </Alert>
 
-    <Alert v-if="!isLoading && !error && !processes.length" variant="outline">
+    <Alert v-if="!isLoading && !error && !processes.length" variant="default">
       No processes declared. Add a <code>processes:</code> section in
       config.yaml to supervise sidecars (SSH tunnels, frpc, cloudflared).
     </Alert>
