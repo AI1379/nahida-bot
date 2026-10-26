@@ -1,0 +1,73 @@
+id: meme_library
+name: "Meme Library"
+version: "0.1.0"
+description: "Reaction images with selective collection, tag search, delivery and gallery UI"
+entrypoint: "nahida_bot.plugins.meme_library.plugin:MemeLibraryPlugin"
+load_phase: "post-agent"
+enabled: false
+permissions:
+  filesystem:
+    read: [workspace, temp]
+    write: [data]
+contributes:
+  pages:
+    - id: gallery
+      target: webui.admin
+      entry: pages/gallery.html
+      title: 表情包库
+capabilities:
+  tools:
+    - name: meme_search
+      description: Find curated reaction images by keywords, tags and category
+    - name: meme_send
+      description: Send a library image to the current chat
+    - name: meme_import
+      description: Import a workspace image into the shared library (admin only)
+    - name: meme_collect
+      description: Select and save an image received on the current turn
+config:
+  directory: "./data/memes"
+  max_image_bytes: 10485760
+  max_items: 2000
+  refresh_seconds: 30
+  send_cooldown_seconds: 10
+  allowed_chats: []
+  collect_enabled: false
+  collect_cooldown_seconds: 30
+config_schema:
+  type: object
+  properties:
+    directory:
+      type: string
+      default: "./data/memes"
+      description: Curated shared library directory; relative to the process working directory.
+    max_image_bytes:
+      type: integer
+      minimum: 1
+      default: 10485760
+    max_items:
+      type: integer
+      minimum: 1
+      default: 2000
+    refresh_seconds:
+      type: number
+      minimum: 0
+      default: 30
+    send_cooldown_seconds:
+      type: number
+      minimum: 0
+      default: 10
+    allowed_chats:
+      type: array
+      items: {type: string}
+      default: []
+      description: Optional typed chat addresses; empty makes the curated library available in all chats.
+    collect_enabled:
+      type: boolean
+      default: false
+      description: Let the agent choose received reaction images to save through meme_collect.
+    collect_cooldown_seconds:
+      type: number
+      minimum: 0
+      default: 30
+      description: Minimum interval between collection attempts in each chat.

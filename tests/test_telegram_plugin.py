@@ -361,6 +361,38 @@ class TestTelegramInboundMedia:
 
 
 class TestTelegramOutboundAttachments:
+    @pytest.mark.parametrize("suffix,mime_type", [(".gif", ""), (".bin", "image/gif")])
+    async def test_gif_photo_is_sent_as_animation(self, tmp_path, suffix, mime_type):
+        from nahida_bot.plugins.base import Attachment, OutboundMessage
+
+        plugin = TelegramPlugin(api=RecordingMockBotAPI(), manifest=_make_manifest())
+        mock_bot = AsyncMock()
+        mock_bot.send_animation.return_value = MagicMock(message_id=57)
+        plugin._bot = mock_bot
+        image = tmp_path / f"reaction{suffix}"
+        image.write_bytes(b"GIF89a")
+
+        result = await plugin.send_message(
+            "123",
+            OutboundMessage(
+                text="",
+                attachments=[
+                    Attachment(
+                        type="photo",
+                        path=str(image),
+                        mime_type=mime_type,
+                        caption="好耶",
+                    )
+                ],
+            ),
+        )
+
+        assert result == "57"
+        mock_bot.send_animation.assert_awaited_once()
+        assert mock_bot.send_animation.call_args.kwargs["caption"] == "好耶"
+        assert mock_bot.send_animation.call_args.kwargs["chat_id"] == 123
+        mock_bot.send_photo.assert_not_awaited()
+
     async def test_send_photo_attachment(self) -> None:
         api = RecordingMockBotAPI()
         manifest = _make_manifest()

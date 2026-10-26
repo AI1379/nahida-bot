@@ -345,6 +345,7 @@ def _discover_plugin_manifests(settings: Settings) -> list[Any]:
         "nahida_bot.plugins.mcp",
         "nahida_bot.plugins.conversation_joiner",
         "nahida_bot.plugins.image_generation",
+        "nahida_bot.plugins.meme_library",
         "nahida_bot.plugins.knowledge_base",
         "nahida_bot.plugins.pomodoro",
         "nahida_bot.plugins.tts",

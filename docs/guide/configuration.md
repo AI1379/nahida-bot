@@ -854,6 +854,8 @@ discord:
 | `max_text_length` | `int` | `4000` | 出站文本最大长度 |
 | `media_download_dir` | `str` | `"./data/temp/media"` | 媒体文件下载目录 |
 | `enable_media_download_tool` | `bool` | `true` | 是否注册媒体下载工具 |
+| `enable_poke_tool` | `bool` | `false` | 注册当前会话主动戳一戳工具，群成员须经校验 |
+| `poke_cooldown_seconds` | `float` | `30.0` | 每个会话的出站戳一戳冷却（秒），失败或结果不确定时也保留 |
 | `resource_url_ttl_hint` | `int` | `300` | 临时 URL 的 TTL 提示（秒） |
 | `cache_media_on_receive` | `bool` | `true` | 收到消息时立即缓存媒体 |
 | `pending_file_ttl_seconds` | `float` | `600.0` | 待投递文件队列的 TTL（秒）；纯文件消息不会单独触发 Agent，文件会排队等下一个触发消息一并注入 |
@@ -922,6 +924,26 @@ onebot:
 ## 插件配置
 
 以下为常见内置插件的顶层配置块（同样通过 `extra="allow"` 机制注入）。
+
+### meme_library（表情包库）
+
+默认关闭。启用后提供 `meme_search`、`meme_send` 和管理员专用的 `meme_import`
+工具，以及 `/meme`（别名 `/表情`）命令。模型可以在当前会话中自主选图发送；
+目录组织、元数据格式和戳一戳联动见[社交互动指南](social-interactions.md)。
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `directory` | `str` | `"./data/memes"` | 人工维护的共享图库目录，相对进程工作目录 |
+| `max_image_bytes` | `int` | `10485760` | 单图大小上限，字节 |
+| `max_items` | `int` | `2000` | 最多索引的去重图片数，超限记录告警，不删除图片 |
+| `refresh_seconds` | `float` | `30` | 检索或发送时重扫目录的最小间隔，`0` 每次重扫 |
+| `send_cooldown_seconds` | `float` | `10` | 每个 typed chat 的发送冷却，重启后重置 |
+| `allowed_chats` | `list[str]` | `[]` | 可访问图库的完整地址，如 `milky:group:833325688`；空列表对所有聊天开放 |
+| `collect_enabled` | `bool` | `false` | 注册 `meme_collect`，允许 Agent 自行选择本轮收到的图片收藏 |
+| `collect_cooldown_seconds` | `float` | `30` | 每个会话收藏尝试的最小间隔，重启后重置 |
+
+启用后可从 WebUI → Plugins → Meme Library →「表情包库」页面预览图片、
+编辑标题/标签/描述、查看收藏来源和删除图片。页面与这些操作均由插件提供。
 
 ### image_generation（图片生成）
 

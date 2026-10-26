@@ -508,7 +508,20 @@ class TelegramPlugin(Plugin):
         )
 
         try:
-            if attachment.type == "photo":
+            is_gif = (
+                attachment.mime_type == "image/gif"
+                or file_path.suffix.lower() == ".gif"
+            )
+            if attachment.type == "photo" and is_gif:
+                sent = await self._send_with_retry(
+                    self._bot.send_animation,
+                    {
+                        "chat_id": int(target),
+                        "animation": input_file,
+                        "caption": attachment.caption or None,
+                    },
+                )
+            elif attachment.type == "photo":
                 sent = await self._send_with_retry(
                     self._bot.send_photo,
                     {

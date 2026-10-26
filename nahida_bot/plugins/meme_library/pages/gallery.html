@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>表情包库</title>
+    <style>
+      :root {
+        font:
+          14px/1.5 system-ui,
+          "Microsoft YaHei",
+          sans-serif;
+        color: #24382f;
+        background: #f7faf8;
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      body {
+        margin: 0;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: wait;
+      }
+      main {
+        max-width: 1200px;
+        margin: auto;
+        padding: 24px;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: start;
+        gap: 20px;
+        margin-bottom: 22px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        color: #54866b;
+      }
+      h1 {
+        font-size: 26px;
+        letter-spacing: -0.04em;
+        margin: 4px 0 6px;
+      }
+      p {
+        margin: 0;
+        color: #6a7b71;
+      }
+      .count {
+        border: 1px solid #d3e5d8;
+        background: #edf6ef;
+        color: #326547;
+        border-radius: 12px;
+        padding: 9px 15px;
+        white-space: nowrap;
+      }
+      .count strong {
+        font-size: 22px;
+        margin-right: 6px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .toolbar input {
+        flex: 1;
+        min-width: 180px;
+      }
+      input,
+      select,
+      textarea {
+        border: 1px solid #d5e0d9;
+        border-radius: 9px;
+        background: #fff;
+        padding: 9px 11px;
+        color: inherit;
+        min-width: 0;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: 2px solid #8cbc9c;
+        outline-offset: 1px;
+      }
+      .button {
+        border: 1px solid #d5e0d9;
+        border-radius: 9px;
+        background: white;
+        padding: 9px 14px;
+        color: #375c45;
+      }
+      .primary {
+        background: #3e7252;
+        color: #fff;
+        border-color: #3e7252;
+      }
+      .info {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 14px 0 19px;
+        font-size: 12px;
+        color: #78877e;
+      }
+      .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #79a88a;
+      }
+      .info .spacer {
+        flex: 1;
+      }
+      #status {
+        min-height: 22px;
+        color: #597262;
+        font-size: 13px;
+        margin-bottom: 10px;
+      }
+      #status.error,
+      .form-error {
+        color: #a7423e;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+        gap: 14px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #dde6df;
+        border-radius: 13px;
+        overflow: hidden;
+        min-width: 0;
+        transition: box-shadow 0.15s;
+      }
+      .card:hover {
+        box-shadow: 0 5px 18px #234d3510;
+      }
+      .cover {
+        width: 100%;
+        height: 150px;
+        border: 0;
+        border-bottom: 1px solid #e9eee9;
+        background: repeating-conic-gradient(#f1f5f1 0% 25%, #f8faf8 0% 50%) 0
+          0/18px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 9px;
+        color: #7a8e7d;
+        position: relative;
+      }
+      .cover img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+      }
+      .cover span {
+        font-size: 12px;
+      }
+      .body {
+        padding: 12px;
+      }
+      .category {
+        color: #6b9275;
+        font-size: 11px;
+        margin-bottom: 4px;
+      }
+      .title {
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tags {
+        display: flex;
+        gap: 5px;
+        overflow: hidden;
+        margin: 8px 0;
+        min-height: 20px;
+      }
+      .tag {
+        background: #f0f5f1;
+        color: #69816d;
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 5px;
+        white-space: nowrap;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        border-top: 1px solid #edf1ed;
+        padding-top: 9px;
+        margin-top: 8px;
+      }
+      .text-button {
+        border: 0;
+        padding: 0;
+        background: none;
+        font-size: 12px;
+        color: #4d7359;
+      }
+      .danger {
+        color: #a65a53;
+      }
+      .source {
+        font-size: 11px;
+        color: #8b988d;
+        margin-top: 8px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .empty {
+        text-align: center;
+        border: 1px dashed #cfded2;
+        border-radius: 14px;
+        padding: 55px 20px;
+        background: #fff;
+      }
+      .empty strong {
+        display: block;
+        font-size: 17px;
+        margin-bottom: 7px;
+      }
+      .empty .leaf {
+        font-size: 28px;
+        margin-bottom: 10px;
+      }
+      footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 22px;
+        color: #7b8a7e;
+        font-size: 12px;
+      }
+      .pager {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      dialog {
+        border: 1px solid #d3e1d6;
+        border-radius: 16px;
+        max-width: 620px;
+        width: calc(100% - 32px);
+        padding: 24px;
+        color: inherit;
+        box-shadow: 0 20px 70px #183a2b30;
+      }
+      dialog::backdrop {
+        background: #102b1b50;
+      }
+      dialog h2 {
+        margin: 0 0 16px;
+        font-size: 20px;
+      }
+      dialog img {
+        max-width: 100%;
+        max-height: 230px;
+        display: block;
+        margin: 0 auto 16px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 13px;
+        font-size: 12px;
+        color: #6a7f70;
+      }
+      textarea {
+        resize: vertical;
+        min-height: 75px;
+      }
+      .dialog-actions {
+        display: flex;
+        justify-content: end;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      .form-error {
+        font-size: 13px;
+      }
+      .provenance {
+        font-size: 11px;
+        overflow-wrap: anywhere;
+        padding: 10px;
+        background: #f4f7f4;
+        border-radius: 8px;
+        margin-bottom: 12px;
+      }
+      @media (max-width: 500px) {
+        main {
+          padding: 16px;
+        }
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 9px;
+        }
+        .cover {
+          height: 125px;
+        }
+        header {
+          gap: 8px;
+        }
+        .count {
+          padding: 8px;
+        }
+        h1 {
+          font-size: 23px;
+        }
+        .toolbar select {
+          flex: 1;
+        }
+        footer {
+          align-items: start;
+          gap: 10px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">NAHIDA · REACTIONS</div>
+          <h1>表情包库</h1>
+          <p>把喜欢的表情留下来，让每次回应多一点神情。</p>
+        </div>
+        <div class="count"><strong id="total">0</strong>张收藏</div>
+      </header>
+      <div class="toolbar">
+        <input
+          id="query"
+          placeholder="搜索表情、角色、情绪或标签…"
+          aria-label="搜索表情包"
+          maxlength="200"
+        /><select id="category" aria-label="分类">
+          <option value="">全部分类</option></select
+        ><button class="button primary" id="search" type="button">搜索</button
+        ><button class="button" id="refresh" type="button">刷新</button>
+      </div>
+      <div class="info">
+        <span class="dot"></span><span id="collection-state">正在连接图库…</span
+        ><span class="spacer"></span><span>收藏来源仅对管理员显示</span>
+      </div>
+      <div id="status" role="status" aria-live="polite"></div>
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden>
+        <div class="leaf">♧</div>
+        <strong id="empty-title">还没有收藏的表情</strong>
+        <p id="empty-description">
+          可以在插件设置中开启选择性收藏，或由管理员导入图片。
+        </p>
+      </div>
+      <footer>
+        <span id="result-count"></span>
+        <div class="pager">
+          <button class="button" id="previous">上一页</button
+          ><span id="page">1</span
+          ><button class="button" id="next">下一页</button>
+        </div>
+      </footer>
+    </main>
+    <dialog id="editor">
+      <div>
+        <h2>编辑表情</h2>
+        <img id="edit-preview" alt="表情预览" /><label
+          >标题<input id="edit-title" maxlength="120" required /></label
+        ><label
+          >标签 · 用逗号分隔<input
+            id="edit-tags"
+            placeholder="纳西妲，开心，庆祝" /></label
+        ><label
+          >描述<textarea id="edit-description" maxlength="500"></textarea>
+        </label>
+        <div class="provenance" id="edit-source"></div>
+        <div class="form-error" id="edit-error" role="alert"></div>
+        <div class="dialog-actions">
+          <button class="button" type="button" id="edit-cancel">取消</button
+          ><button class="button primary" type="button" id="save">
+            保存修改
+          </button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="delete-dialog">
+      <h2>删除这张表情？</h2>
+      <p id="delete-title"></p>
+      <p style="margin-top: 10px">
+        将移除库内的图片及重复副本，不影响聊天中的原始消息。
+      </p>
+      <div class="form-error" id="delete-error" role="alert"></div>
+      <div class="dialog-actions">
+        <button class="button" id="delete-cancel">取消</button
+        ><button class="button danger" id="delete-confirm">删除表情</button>
+      </div>
+    </dialog>
+    <script>
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const request = (action, payload = {}) =>
+          window.nahidaPlugin.request(action, payload);
+        let offset = 0,
+          matched = 0,
+          generation = 0,
+          selected = null,
+          deleting = null;
+        const previews = new Map();
+        const pageSize = 12;
+        function status(message, error = false) {
+          $("status").textContent = message;
+          $("status").classList.toggle("error", error);
+        }
+        function element(tag, className, text) {
+          const el = document.createElement(tag);
+          if (className) el.className = className;
+          if (text) el.textContent = text;
+          return el;
+        }
+        function showEditor(meme) {
+          selected = meme;
+          $("edit-title").value = meme.title;
+          $("edit-tags").value = meme.tags.join("，");
+          $("edit-description").value = meme.description;
+          $("edit-preview").src = previews.get(meme.id) || "";
+          $("edit-preview").hidden = !previews.has(meme.id);
+          const date = meme.collected_at
+            ? new Date(meme.collected_at * 1000).toLocaleString("zh-CN")
+            : "";
+          $("edit-source").textContent = meme.source_chat
+            ? `收藏自 ${meme.source_chat} · 用户 ${meme.source_user_id} · ${date}`
+            : "管理员导入 / 本地图库";
+          $("edit-error").textContent = "";
+          $("editor").showModal();
+        }
+        function card(meme) {
+          const root = element("article", "card");
+          const cover = element("button", "cover");
+          cover.type = "button";
+          cover.setAttribute("aria-label", `预览 ${meme.title}`);
+          const image = element("img");
+          image.alt = meme.title;
+          image.hidden = true;
+          const placeholder = element("span", "", "加载预览…");
+          cover.append(image, placeholder);
+          cover.addEventListener("click", () => showEditor(meme));
+          const body = element("div", "body");
+          body.append(
+            element("div", "category", meme.category),
+            element("div", "title", meme.title),
+          );
+          const tags = element("div", "tags");
+          meme.tags
+            .slice(0, 3)
+            .forEach((tag) => tags.append(element("span", "tag", tag)));
+          body.append(tags);
+          const source = element(
+            "div",
+            "source",
+            meme.source_chat ? "她收藏的表情" : "人工导入",
+          );
+          body.append(source);
+          const actions = element("div", "actions");
+          const edit = element("button", "text-button", "编辑标签");
+          const remove = element("button", "text-button danger", "删除");
+          edit.addEventListener("click", () => showEditor(meme));
+          remove.addEventListener("click", () => {
+            deleting = meme;
+            $("delete-title").textContent = meme.title;
+            $("delete-error").textContent = "";
+            $("delete-dialog").showModal();
+          });
+          actions.append(edit, remove);
+          body.append(actions);
+          root.append(cover, body);
+          return { root, image, placeholder, meme };
+        }
+        async function loadPreviews(cards, token) {
+          for (
+            let index = 0;
+            index < cards.length && token === generation;
+            index += 2
+          ) {
+            await Promise.all(
+              cards.slice(index, index + 2).map(async (card) => {
+                try {
+                  const url =
+                    previews.get(card.meme.id) ||
+                    (await request("preview", { meme_id: card.meme.id }))
+                      .data_url;
+                  if (token !== generation) return;
+                  previews.set(card.meme.id, url);
+                  card.image.src = url;
+                  card.image.hidden = false;
+                  card.placeholder.hidden = true;
+                } catch {
+                  if (token === generation)
+                    card.placeholder.textContent = "预览暂不可用";
+                }
+              }),
+            );
+          }
+        }
+        async function load() {
+          const token = ++generation;
+          status("正在读取表情包…");
+          $("previous").disabled = $("next").disabled = true;
+          try {
+            const result = await request("list", {
+              query: $("query").value.trim(),
+              category: $("category").value,
+              offset,
+              limit: pageSize,
+            });
+            if (token !== generation) return;
+            if (offset && !result.memes.length && result.matched) {
+              offset = 0;
+              return load();
+            }
+            matched = result.matched;
+            $("total").textContent = result.total;
+            $("result-count").textContent = `找到 ${matched} 张表情`;
+            $("page").textContent = Math.floor(offset / pageSize) + 1;
+            $("collection-state").textContent = result.collect_enabled
+              ? "已开启选择性收藏 · 她会自己判断哪些图片值得留下"
+              : "选择性收藏未开启 · 可在插件设置中开启";
+            const category = $("category").value;
+            $("category").replaceChildren(new Option("全部分类", ""));
+            Object.entries(result.categories).forEach(([name, count]) =>
+              $("category").add(new Option(`${name} · ${count}`, name)),
+            );
+            $("category").value = category;
+            const cards = result.memes.map(card);
+            $("grid").replaceChildren(...cards.map((card) => card.root));
+            $("empty").hidden = !!cards.length;
+            $("empty-title").textContent = result.total
+              ? "没有找到匹配的表情"
+              : "还没有收藏的表情";
+            $("empty-description").textContent = result.total
+              ? "试试更短的关键词，或切换分类。"
+              : "可以在插件设置中开启选择性收藏，或由管理员导入图片。";
+            status(
+              result.skipped || result.truncated
+                ? `已跳过 ${result.skipped} 个无效文件${result.truncated ? "，图库已达到索引容量上限" : ""}。`
+                : "",
+            );
+            $("previous").disabled = offset === 0;
+            $("next").disabled = offset + pageSize >= matched;
+            const visible = new Set(result.memes.map((meme) => meme.id));
+            for (const id of previews.keys())
+              if (!visible.has(id)) previews.delete(id);
+            void loadPreviews(cards, token);
+          } catch (error) {
+            if (token === generation)
+              status(error.message || "图库读取失败，请稍后刷新。", true);
+          }
+        }
+        const search = () => {
+          offset = 0;
+          void load();
+        };
+        $("search").addEventListener("click", search);
+        $("query").addEventListener("keydown", (event) => {
+          if (event.key === "Enter") search();
+        });
+        $("category").addEventListener("change", () => {
+          offset = 0;
+          void load();
+        });
+        $("refresh").addEventListener("click", () => {
+          previews.clear();
+          void load();
+        });
+        $("previous").addEventListener("click", () => {
+          offset = Math.max(0, offset - pageSize);
+          void load();
+        });
+        $("next").addEventListener("click", () => {
+          offset += pageSize;
+          void load();
+        });
+        $("edit-cancel").addEventListener("click", () => $("editor").close());
+        $("delete-cancel").addEventListener("click", () =>
+          $("delete-dialog").close(),
+        );
+        $("save").addEventListener("click", async () => {
+          if (!selected) return;
+          if (!$("edit-title").value.trim()) {
+            $("edit-error").textContent = "请输入标题。";
+            return;
+          }
+          $("save").disabled = true;
+          $("edit-error").textContent = "";
+          try {
+            await request("update", {
+              meme_id: selected.id,
+              title: $("edit-title").value.trim(),
+              tags: $("edit-tags")
+                .value.split(/[,，\n]/)
+                .map((tag) => tag.trim())
+                .filter(Boolean),
+              description: $("edit-description").value.trim(),
+            });
+            $("editor").close();
+            await load();
+          } catch (error) {
+            $("edit-error").textContent = error.message;
+          } finally {
+            $("save").disabled = false;
+          }
+        });
+        $("delete-confirm").addEventListener("click", async () => {
+          if (!deleting) return;
+          $("delete-confirm").disabled = true;
+          try {
+            await request("delete", { meme_id: deleting.id });
+            previews.delete(deleting.id);
+            $("delete-dialog").close();
+            await load();
+          } catch (error) {
+            $("delete-error").textContent = error.message;
+          } finally {
+            $("delete-confirm").disabled = false;
+          }
+        });
+        if (window.nahidaPlugin) void load();
+        else status("请从 WebUI 的插件管理页面打开此图库。", true);
+      })();
+    </script>
+  </body>
+</html>
