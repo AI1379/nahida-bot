@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.chat_address import ChatAddress, address_from_inbound
 from nahida_bot.core.events import (
     MessageObserved,
     MessagePayload,
@@ -21,6 +21,11 @@ from nahida_bot.core.events import (
     MessageSent,
     PokeEvent,
     PokePayload,
+)
+from nahida_bot.core.message_context import (
+    MESSAGE_CONTEXT_INSTRUCTION,
+    context_from_inbound,
+    render_message_with_context,
 )
 from nahida_bot.plugins.base import (
     AttentionFrame,
@@ -40,15 +45,6 @@ from nahida_bot.plugins.conversation_joiner.state import (
     EngagementStateMachine,
     PresenceSnapshot,
 )
-
-
-@dataclass(slots=True, frozen=True)
-class _ContextEntry:
-    sender: str
-    text: str
-    timestamp: float
-    message_id: str
-    message: InboundMessage
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,7 +122,7 @@ class ConversationJoinerPlugin(Plugin):
     def __init__(self, api: Any, manifest: Any) -> None:
         super().__init__(api, manifest)
         self._config = parse_conversation_joiner_config(self.manifest.config)
-        self._contexts: dict[str, deque[_ContextEntry]] = {}
+        self._contexts: dict[str, deque[InboundMessage]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._last_decision_at: dict[str, float] = {}
@@ -1155,17 +1151,11 @@ class ConversationJoinerPlugin(Plugin):
         context = _format_context(self._contexts.get(chat_key, ()), cfg)
         lines: list[str] = []
         for msg in batch.messages:
-            sender = msg.user_id
-            if msg.sender_context is not None:
-                sender = (
-                    msg.sender_context.display_name
-                    or msg.sender_context.platform_user_id
-                    or msg.user_id
+            lines.append(
+                render_message_with_context(
+                    msg.text, context_from_inbound(msg), role="batch_message"
                 )
-            text = msg.text.strip() if msg.text else ""
-            msg_id = msg.message_id or "(no-message-id)"
-            tags = _format_extra_tags(msg)
-            lines.append(f"- [{msg_id}] {sender}:{tags} {text}")
+            )
         batch_text = "\n".join(lines)
         return (
             f"Chat: {chat_key}\n"
@@ -1313,6 +1303,8 @@ class ConversationJoinerPlugin(Plugin):
 
     async def _on_message_sent(self, event: MessageSent) -> None:
         """Detect agent replies and update engagement state accordingly."""
+        if event.payload.delivery_kind != "reply":
+            return
         sm = self._sm
         if sm is None:
             return
@@ -1627,13 +1619,6 @@ class ConversationJoinerPlugin(Plugin):
         text = message.text.strip()
         if not text:
             return
-        sender = message.user_id
-        if message.sender_context is not None:
-            sender = (
-                message.sender_context.display_name
-                or message.sender_context.platform_user_id
-                or message.user_id
-            )
         entries = self._contexts.setdefault(chat_key, deque())
         if (
             entries
@@ -1641,15 +1626,7 @@ class ConversationJoinerPlugin(Plugin):
             and entries[-1].message_id == message.message_id
         ):
             return
-        entries.append(
-            _ContextEntry(
-                sender=sender,
-                text=text,
-                timestamp=message.timestamp,
-                message_id=message.message_id,
-                message=message,
-            )
-        )
+        entries.append(message)
         while len(entries) > cfg.max_context_messages:
             entries.popleft()
 
@@ -1673,7 +1650,7 @@ class ConversationJoinerPlugin(Plugin):
             trigger_kind="proactive_join",
             episode_id=episode_id,
             anchor_message_id=anchor.message_id,
-            messages=tuple(entry.message for entry in selected),
+            messages=tuple(selected),
             reason=decision.reason,
             focus=decision.focus,
             reply_to_message_id=(decision.reply_anchor_message_id or None),
@@ -1770,13 +1747,9 @@ class ConversationJoinerPlugin(Plugin):
         persona_context: str = "",
     ) -> str:
         context = _format_context(self._contexts.get(chat_key, ()), cfg)
-        current_sender = message.user_id
-        if message.sender_context is not None:
-            current_sender = (
-                message.sender_context.display_name
-                or message.sender_context.platform_user_id
-                or message.user_id
-            )
+        current_message = render_message_with_context(
+            message.text, context_from_inbound(message), role="user"
+        )
         return (
             f"Chat: {chat_key}\n"
             f"Threshold: {cfg.threshold}\n"
@@ -1784,8 +1757,7 @@ class ConversationJoinerPlugin(Plugin):
             "Bot persona context for judging whether joining fits the main "
             f"agent, not for drafting the reply:\n{persona_context or '(none)'}\n\n"
             f"Recent context:\n{context or '(none)'}\n\n"
-            f"Current message from {current_sender}:{_format_extra_tags(message)}\n"
-            f"{message.text.strip()}\n\n"
+            f"Current message:\n{current_message}\n\n"
             "Decide whether the main bot should naturally join now."
         )
 
@@ -1937,7 +1909,8 @@ _SECRETARY_SYSTEM_PROMPT = (
     "the main agent should naturally join the current topic. You do not write "
     "the final message. Return only valid JSON with keys: should_join boolean, "
     "confidence number from 0 to 1, reason string, entry_style string, focus "
-    "string. Prefer false unless joining is timely and useful."
+    "string. Prefer false unless joining is timely and useful.\n\n"
+    + MESSAGE_CONTEXT_INSTRUCTION
 )
 
 _CONTINUE_GATE_SYSTEM_PROMPT = (
@@ -1951,24 +1924,15 @@ _CONTINUE_GATE_SYSTEM_PROMPT = (
     "should answer one specific batch message and set reply_anchor_message_id to "
     "that message id. Use group_comment for an ambient contribution to the whole "
     "batch and leave reply_anchor_message_id empty. Prefer false unless the batch "
-    "contains something the bot should directly address."
+    "contains something the bot should directly address.\n\n"
+    + MESSAGE_CONTEXT_INSTRUCTION
 )
 
 
 def _address_from_message(message: InboundMessage) -> ChatAddress | None:
     if not message.is_group:
         return None
-    chat_type = ""
-    if message.chat_context and message.chat_context.chat_type:
-        chat_type = message.chat_context.chat_type
-    elif message.message_context and message.message_context.chat_type:
-        chat_type = message.message_context.chat_type
-    address = ChatAddress.from_inbound(
-        message.platform,
-        message.chat_id,
-        is_group=message.is_group,
-        chat_type=chat_type,
-    )
+    address = address_from_inbound(message)
     if not address.is_typed or address.target_type != "group":
         return None
     return address
@@ -2040,17 +2004,6 @@ def _is_poke_message(message: InboundMessage) -> bool:
     return ctx is not None and "poke" in ctx.extra_tags
 
 
-def _format_extra_tags(message: InboundMessage) -> str:
-    """Render a message's ``extra_tags`` as a trailing marker, e.g. ``<poke>``.
-
-    Empty for ordinary messages so prompts are unchanged when no tags are set.
-    """
-    ctx = message.message_context
-    if ctx is None or not ctx.extra_tags:
-        return ""
-    return " " + " ".join(f"<{tag}>" for tag in ctx.extra_tags)
-
-
 def _select_sample_rate(
     cfg: EffectiveJoinerConfig,
     *,
@@ -2083,33 +2036,44 @@ def _sample_gate_passes(
 
 
 def _format_context(
-    entries: Iterable[_ContextEntry],
+    entries: Iterable[InboundMessage],
     cfg: EffectiveJoinerConfig,
 ) -> str:
     selected = _select_context_entries(entries, cfg)
     lines: list[str] = []
     remaining = cfg.max_context_chars
     for entry in selected:
-        line = f"- {entry.sender}: {entry.text}"
-        if len(line) > remaining:
-            lines.append(line[:remaining])
-            break
+        line = render_message_with_context(
+            entry.text,
+            context_from_inbound(entry),
+            role="batch_message",
+            max_chars=remaining,
+        )
         lines.append(line)
-        remaining -= len(line)
+        remaining -= len(line) + 1
         if remaining <= 0:
             break
     return "\n".join(lines)
 
 
 def _select_context_entries(
-    entries: Iterable[_ContextEntry],
+    entries: Iterable[InboundMessage],
     cfg: EffectiveJoinerConfig,
-) -> list[_ContextEntry]:
+) -> list[InboundMessage]:
     candidates = list(entries)[-cfg.max_context_messages :]
-    selected_reversed: list[_ContextEntry] = []
+    selected_reversed: list[InboundMessage] = []
     remaining = cfg.max_context_chars
     for entry in reversed(candidates):
-        line_size = len(f"- {entry.sender}: {entry.text}")
+        line_size = (
+            len(
+                render_message_with_context(
+                    entry.text,
+                    context_from_inbound(entry),
+                    role="batch_message",
+                )
+            )
+            + 1
+        )
         if line_size > remaining and selected_reversed:
             break
         selected_reversed.append(entry)

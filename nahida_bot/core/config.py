@@ -561,6 +561,18 @@ class ProcessSupervisorConfig(BaseModel):
     specs: dict[str, ProcessSpec] = Field(default_factory=dict)
 
 
+class ExecutionConfig(BaseModel):
+    """Local command protection shared by exec and cron scripts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    memory_limit_mb: int = Field(default=512, ge=1, strict=True)
+    max_concurrency: int = Field(default=1, ge=1, strict=True)
+    min_available_memory_mb: int = Field(default=512, ge=0, strict=True)
+    check_interval_seconds: float = Field(default=0.1, ge=0.01, le=1)
+    max_output_bytes: int = Field(default=50_000, ge=1, strict=True)
+    max_processes: int = Field(default=64, ge=1, strict=True)
+
+
 class Settings(BaseModel):
     """Main application settings."""
 
@@ -593,6 +605,7 @@ class Settings(BaseModel):
     # scripts never share (or mutate) the bot's own Python environment.
     # Empty string disables separation and inherits the bot environment.
     exec_venv_path: str = "./data/exec-venv"
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
     # Plugins
     plugin_paths: list[str] = ["./plugins"]

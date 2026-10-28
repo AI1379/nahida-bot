@@ -34,7 +34,11 @@ from nahida_bot.core.events import (
     MessagePayload,
     MessageSent,
 )
-from nahida_bot.core.router import MessageRouter, RouterConfig
+from nahida_bot.core.router import (
+    MessageRouter,
+    RouterConfig,
+    _render_observed_batch_context,
+)
 from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.core.temp_files import ManagedTempFileService
@@ -72,6 +76,41 @@ def _inbound(text: str = "hello", platform: str = "test") -> InboundMessage:
         raw_event={},
         chat_context=ChatContext(platform=platform, chat_type="private"),
     )
+
+
+def test_observed_batch_budget_keeps_complete_identity_envelope() -> None:
+    observed = replace(
+        _inbound("很长的旁听消息\n" * 1000),
+        message_id="other-message",
+        message_context=MessageContext(
+            channel="test",
+            chat_type="group",
+            sender_id="other-bot",
+            sender_display_name="纳西妲",
+            message_id="other-message",
+            mentioned_user_ids=("another-user",),
+        ),
+    )
+    anchor = replace(_inbound("回复这位群友"), message_id="anchor")
+    rendered = _render_observed_batch_context(
+        (observed,),
+        anchor_message=anchor,
+        reply_to_message_id=None,
+        attention_frame=AttentionFrame(
+            trigger_kind="proactive_join",
+            anchor_message_id="anchor",
+            messages=(observed,),
+            max_chars=400,
+        ),
+    )
+
+    assert "sender: 纳西妲(other-bot)" in rendered
+    assert "mentions_bot: no" in rendered
+    assert "mentioned_user_ids: another-user" in rendered
+    assert "[message text truncated]" in rendered
+    assert rendered.endswith("</message_context>")
+    block = rendered.split("Batch message_id: ", 1)[1]
+    assert len("Batch message_id: " + block) <= 400
 
 
 class _StubChannel(Plugin):

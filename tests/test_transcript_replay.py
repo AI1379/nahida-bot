@@ -7,7 +7,7 @@ repair, the projector) and the migration 020 ``transcript_json`` column.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -342,7 +342,7 @@ def test_repair_pairs_keeps_real_result_does_not_synthesize() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_tool_calling_collapses_to_text_summary(store) -> None:
+async def test_no_tool_calling_only_summarizes_tool_exchange(store) -> None:
     transcript = [
         _user("run it"),
         _assistant("ok", ("exec", "call_1", {"command": "x"})),
@@ -354,14 +354,132 @@ async def test_no_tool_calling_collapses_to_text_summary(store) -> None:
     out = await TranscriptProjector(store).project(
         "sess_1", capabilities=ModelCapabilities(tool_calling=False)
     )
-    # A model that can't call tools gets one factual assistant summary per run.
-    assert len(out) == 1
-    assert out[0].role == "assistant"
-    assert "Verified execution receipts this turn:" in out[0].content
-    assert "call_1" in out[0].content
-    assert "exec" in out[0].content
-    # The run's natural-language answer is preserved as the prose prefix.
-    assert "the result was hi" in out[0].content
+    assert [m.role for m in out] == ["user", "assistant", "assistant"]
+    assert out[0].content == "run it"
+    assert "Verified execution receipts this turn:" in out[1].content
+    assert "call_1" in out[1].content
+    assert "exec" in out[1].content
+    assert not (out[1].metadata or {}).get("tool_calls")
+    assert out[2].content == "the result was hi"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_calling", [False, True])
+async def test_runner_merges_external_events_without_duplicating_dialogue(
+    store, tool_calling
+):
+    from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+    from nahida_bot.core.session_runner import SessionRunner
+
+    await _seed(
+        store,
+        "first",
+        started_at="2026-06-25T00:00:00Z",
+        messages=[_user("用中文"), _assistant("好的")],
+    )
+    await _seed(
+        store,
+        "second",
+        started_at="2026-06-25T00:02:00Z",
+        messages=[_user("继续"), _assistant("完成")],
+    )
+
+    def record(i, role, text, source, minute, metadata=None):
+        return MemoryRecord(
+            i,
+            "sess_1",
+            ConversationTurn(
+                role,
+                text,
+                source=source,
+                metadata=metadata,
+                created_at=datetime(2026, 6, 25, 0, minute, tzinfo=UTC),
+            ),
+        )
+
+    records = [
+        record(1, "user", "用中文", "user_input", 0),
+        record(2, "assistant", "好的", "agent_response", 0),
+        record(3, "system", "后台任务结果", "subagent_completed", 1),
+        record(4, "user", "旁听", "group_observation", 1, {"observed_only": True}),
+        record(5, "system", "跨会话通知", "cross_session_message", 3),
+    ]
+    runner = SessionRunner(transcript_projector=TranscriptProjector(store))
+    history = await runner._build_history_context(
+        "sess_1",
+        records,
+        capabilities=ModelCapabilities(tool_calling=tool_calling),
+    )
+    assert [m.content for m in history] == [
+        "用中文",
+        "好的",
+        "后台任务结果",
+        "继续",
+        "完成",
+        "跨会话通知",
+    ]
+    assert [m.source for m in history if m.role == "system"] == [
+        "subagent_completed",
+        "cross_session_message",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_external_event_cutoff_keeps_tool_groups_atomic(store):
+    await _seed(
+        store,
+        "r",
+        started_at="2026-06-25T00:02:00Z",
+        messages=[
+            _user("查一下"),
+            _assistant("查询", ("exec", "c1", {})),
+            _tool("exec", "c1"),
+        ],
+    )
+    events = [
+        (
+            datetime(2026, 6, 25, 0, 0, tzinfo=UTC),
+            ContextMessage("system", "old", "external"),
+        ),
+        (
+            datetime(2026, 6, 25, 0, 3, tzinfo=UTC),
+            ContextMessage("system", "new", "external"),
+        ),
+    ]
+    history = await TranscriptProjector(store).project(
+        "sess_1",
+        capabilities=ModelCapabilities(tool_calling=True),
+        events=events,
+        since=datetime(2026, 6, 25, 0, 1, tzinfo=UTC),
+    )
+    assert [m.role for m in history] == ["user", "assistant", "tool", "system"]
+    assert history[-1].content == "new"
+
+
+@pytest.mark.asyncio
+async def test_runner_window_preserves_newest_oversized_tool_group(store):
+    from nahida_bot.core.session_runner import SessionRunner
+
+    await _seed(
+        store,
+        "r",
+        started_at="2026-06-25T00:00:00Z",
+        messages=[
+            _user("run"),
+            _assistant("calling", ("exec", "c1", {}), ("exec", "c2", {})),
+            _tool("exec", "c1"),
+            _tool("exec", "c2"),
+        ],
+    )
+    runner = SessionRunner(
+        transcript_projector=TranscriptProjector(store), max_history_turns=2
+    )
+    history = await runner._build_history_context(
+        "sess_1", [], capabilities=ModelCapabilities(tool_calling=True)
+    )
+    assert [m.role for m in history] == ["assistant", "tool", "tool"]
+    assert history[1].metadata["tool_call_id"] == "c1"
+    assert history[2].metadata["tool_call_id"] == "c2"
 
 
 # ── legacy fallback ────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -17,6 +18,11 @@ from nahida_bot.core.events import (
     PokePayload,
 )
 from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.message_context import (
+    context_from_inbound,
+    render_message_with_context,
+)
+from nahida_bot.core.router import _render_observed_batch_context
 from nahida_bot.plugins.base import ChatContext, InboundMessage, SenderContext
 from nahida_bot.plugins.conversation_joiner.config import (
     EngagementConfig,
@@ -26,6 +32,7 @@ from nahida_bot.plugins.conversation_joiner.config import (
 from nahida_bot.plugins.conversation_joiner.plugin import (
     ConversationJoinerPlugin,
     _effective_continue_threshold,
+    _format_context,
 )
 from nahida_bot.plugins.conversation_joiner.state import (
     EngagementStateMachine,
@@ -196,6 +203,92 @@ async def test_should_join_false_does_not_request_agent() -> None:
 
     assert len(api.llm_calls) == 1
     assert api.agent_response_requests == []
+
+
+@pytest.mark.asyncio
+async def test_secretary_and_agent_share_same_name_speaker_envelopes() -> None:
+    api = _JoinerAPI(
+        [
+            '{"should_join": false, "confidence": 0.9, "reason": "observing"}',
+            '{"should_join": true, "confidence": 0.9, "reason": "group comment"}',
+        ]
+    )
+    plugin = await _load_plugin(api)
+    handler = api.registered_event_handlers[MessageObserved][0]
+    other_message = replace(
+        _event("刚才被夸了，耳朵有点热。").payload.message,
+        message_id="other-bot-message",
+        user_id="other-bot",
+        sender_context=SenderContext(
+            display_name="纳西妲", platform_user_id="other-bot"
+        ),
+    )
+    reply_message = replace(
+        _event(
+            "[Reply: message_seq=other-bot-message] @纳西妲 不是在夸你"
+        ).payload.message,
+        message_id="human-reply",
+        reply_to="other-bot-message",
+        mentioned_user_ids=("other-bot",),
+    )
+
+    for message in (other_message, reply_message):
+        await handler(
+            MessageObserved(
+                payload=MessagePayload(message=message, session_id="test:group:g1"),
+                source="test",
+            )
+        )
+        await _drain_plugin_tasks(plugin)
+
+    secretary_prompt = api.llm_calls[-1]["messages"][1]["content"]
+    request = api.agent_response_requests[0]
+    frame = request["attention_frame"]
+    agent_context = _render_observed_batch_context(
+        frame.messages,
+        anchor_message=reply_message,
+        reply_to_message_id=None,
+        attention_frame=frame,
+    )
+    quoted = render_message_with_context(
+        other_message.text, context_from_inbound(other_message), role="batch_message"
+    )
+    assert quoted in secretary_prompt
+    assert quoted in agent_context
+    assert "sender: 纳西妲(other-bot)" in secretary_prompt
+    current = secretary_prompt.split("Current message:\n", 1)[1]
+    assert (
+        render_message_with_context(
+            reply_message.text, context_from_inbound(reply_message), role="user"
+        )
+        in current
+    )
+    assert "reply_to_message_id: other-bot-message" in current
+    assert "mentions_bot: no" in current
+    assert "mentioned_user_ids: other-bot" in current
+
+
+def test_secretary_context_budget_keeps_latest_message_attribution() -> None:
+    cfg = effective_group_config(
+        parse_conversation_joiner_config({"max_context_chars": 400}), "test:group:g1"
+    )
+    older = replace(_event("过时的消息").payload.message, message_id="older")
+    latest = replace(
+        _event("很长的消息\n" * 1000).payload.message,
+        message_id="latest",
+        mentioned_user_ids=("other-bot",),
+    )
+
+    rendered = _format_context([older, latest], cfg)
+
+    assert "message_id: older" not in rendered
+    assert "message_id: latest" in rendered
+    assert "sender: Alice(u1)" in rendered
+    assert "mentions_bot: no" in rendered
+    assert "mentioned_user_ids: other-bot" in rendered
+    assert "[message text truncated]" in rendered
+    assert rendered.endswith("</message_context>")
+    assert len(rendered) <= cfg.max_context_chars
 
 
 @pytest.mark.asyncio
@@ -1576,7 +1669,20 @@ async def test_batch_full_triggers_continue_gate_and_agent_request() -> None:
     assert sm.get_state("test:group:g1").state == "engaged"
 
     # Step 2: Fill batch to max_messages=2.
-    await handler(_event_for_group("follow up one", message_id="m2"))
+    follow_up = _event_for_group("follow up one", message_id="m2")
+    await handler(
+        replace(
+            follow_up,
+            payload=replace(
+                follow_up.payload,
+                message=replace(
+                    follow_up.payload.message,
+                    reply_to="m1",
+                    mentioned_user_ids=("other-bot",),
+                ),
+            ),
+        )
+    )
     await handler(_event_for_group("follow up two", message_id="m3"))
     await _drain_plugin_tasks(plugin)
 
@@ -1592,8 +1698,17 @@ async def test_batch_full_triggers_continue_gate_and_agent_request() -> None:
     assert first_frame.episode_id
     assert second_frame.episode_id == first_frame.episode_id
     continue_prompt = api.llm_calls[1]["messages"][1]["content"]
-    assert "[m2] Alice: follow up one" in continue_prompt
-    assert "[m3] Alice: follow up two" in continue_prompt
+    for message in second_req["observed_messages"]:
+        assert (
+            render_message_with_context(
+                message.text, context_from_inbound(message), role="batch_message"
+            )
+            in continue_prompt
+        )
+    assert "sender: Alice(u1)" in continue_prompt
+    assert "reply_to_message_id: m1" in continue_prompt
+    assert "mentions_bot: no" in continue_prompt
+    assert "mentioned_user_ids: other-bot" in continue_prompt
     assert "Recent participation window" in continue_prompt
     assert "Avoid speaking again merely to remain visible" in continue_prompt
     state = sm.get_state("test:group:g1")
@@ -2291,7 +2406,8 @@ async def test_poke_passes_tag_to_secretary_and_requests_agent() -> None:
 
     assert len(api.llm_calls) == 1
     prompt = api.llm_calls[0]["messages"][1]["content"]
-    assert "<poke>" in prompt
+    assert "sender: u-poker poke" in prompt
+    assert "mentions_bot: no" in prompt
     assert len(api.agent_response_requests) == 1
 
 

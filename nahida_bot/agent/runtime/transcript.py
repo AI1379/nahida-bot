@@ -33,7 +33,12 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from nahida_bot.agent.context import ContextMessage, ContextPart
+from nahida_bot.agent.context import (
+    ContextMessage,
+    ContextPart,
+    has_assistant_tool_calls,
+    tool_transcript_groups,
+)
 from nahida_bot.agent.runtime.store import AgentRunStore
 
 if TYPE_CHECKING:
@@ -291,8 +296,10 @@ def _result_status(content: str) -> str:
     return "ok"
 
 
-def _summarize_run(messages: list[ContextMessage], run_id: str) -> ContextMessage:
-    """Collapse a run's transcript to a single text assistant summary.
+def _summarize_tool_group(
+    messages: list[ContextMessage], run_id: str
+) -> ContextMessage:
+    """Convert one atomic tool exchange to text, preserving surrounding dialogue.
 
     Used when the active model lacks ``tool_calling``: providers that cannot
     consume tool_use/tool_result blocks get a factual execution summary instead.
@@ -358,6 +365,7 @@ class TranscriptProjector:
         capabilities: "ModelCapabilities | None",
         limit: int = 20,
         since: datetime | None = None,
+        events: list[tuple[datetime, ContextMessage]] | None = None,
     ) -> list[ContextMessage]:
         """Return replayed history for ``session_id``, oldest-first.
 
@@ -372,7 +380,7 @@ class TranscriptProjector:
         if not runs:
             return []
         tool_capable = bool(capabilities is not None and capabilities.tool_calling)
-        out: list[ContextMessage] = []
+        blocks: list[tuple[datetime, list[ContextMessage]]] = []
         for run in runs:
             if since is not None and _run_started_before(run, since):
                 continue
@@ -382,10 +390,28 @@ class TranscriptProjector:
                 continue
             repaired = repair_pairs(messages, tool_output_cap=self._tool_output_cap)
             if tool_capable:
-                out.extend(_tag_source(message, run_id) for message in repaired)
+                projected = [_tag_source(message, run_id) for message in repaired]
             else:
-                out.append(_summarize_run(repaired, run_id))
-        return out
+                projected = []
+                for group in tool_transcript_groups(repaired):
+                    if has_assistant_tool_calls(group[0]):
+                        projected.append(_summarize_tool_group(group, run_id))
+                    else:
+                        projected.extend(
+                            _tag_source(message, run_id) for message in group
+                        )
+            started = _parse_run_iso(str(run.get("started_at") or ""))
+            blocks.append((started or datetime.min.replace(tzinfo=UTC), projected))
+        if not blocks:
+            return []
+        # Merge external events between complete runs, never inside tool pairs.
+        blocks.extend(
+            (created_at, [message])
+            for created_at, message in (events or [])
+            if since is None or created_at >= since
+        )
+        blocks.sort(key=lambda item: item[0])
+        return [message for _, block in blocks for message in block]
 
     @staticmethod
     def _parse_run(run: dict[str, Any]) -> list[ContextMessage]:

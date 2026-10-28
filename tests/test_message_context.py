@@ -1,5 +1,7 @@
 """Unit tests for nahida_bot.core.message_context — envelope prefix stripping."""
 
+import pytest
+
 from nahida_bot.core.message_context import (
     render_envelope,
     render_message_with_context,
@@ -150,6 +152,57 @@ class TestRenderMessageWithContext:
         assert rendered.startswith('<message_context trust="untrusted" role="user">\n')
         assert "channel: test/private:c1" in rendered
         assert "text:" not in rendered
+
+    @pytest.mark.parametrize("mentions_bot", [False, True])
+    def test_platform_mentions_are_explicit_even_with_same_name(self, mentions_bot):
+        ctx = MessageContext(
+            channel="milky",
+            chat_type="group",
+            sender_id="human",
+            sender_display_name="Alice",
+            message_id="reply",
+            reply_to_message_id="other-bot-message",
+            mentions_bot=mentions_bot,
+            mentioned_user_ids=("other-bot", "another-user"),
+        )
+
+        rendered = render_message_with_context("@纳西妲 不是在夸你", ctx, role="user")
+
+        assert "sender: Alice(human)" in rendered
+        assert "reply_to_message_id: other-bot-message" in rendered
+        assert f"mentions_bot: {'yes' if mentions_bot else 'no'}" in rendered
+        assert "mentioned_user_ids: other-bot, another-user" in rendered
+
+    @pytest.mark.parametrize("max_chars", [100, 400])
+    def test_budget_truncates_text_without_losing_attribution(self, max_chars):
+        ctx = MessageContext(
+            channel="test",
+            chat_type="group",
+            sender_id="other-bot",
+            sender_display_name="纳西妲",
+            message_id="quoted",
+            reply_to_message_id="earlier",
+            mentioned_user_ids=("someone-else",),
+        )
+
+        rendered = render_message_with_context(
+            "很长的消息\n" * 1000, ctx, role="batch_message", max_chars=max_chars
+        )
+
+        assert "sender: 纳西妲(other-bot)" in rendered
+        assert "message_id: quoted" in rendered
+        assert "reply_to_message_id: earlier" in rendered
+        assert "mentions_bot: no" in rendered
+        assert "mentioned_user_ids: someone-else" in rendered
+        assert "[message text truncated]" in rendered
+        assert rendered.endswith("</message_context>")
+        if max_chars == 400:
+            assert len(rendered) <= max_chars
+
+    def test_legacy_message_without_metadata_also_obeys_budget(self):
+        rendered = render_message_with_context("x" * 1000, None, max_chars=100)
+        assert len(rendered) <= 100
+        assert "[message text truncated]" in rendered
 
 
 class TestStripEnvelopePrefixEdgeCases:

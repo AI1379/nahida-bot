@@ -59,6 +59,30 @@ def test_visible_text_passes_through_plain_text() -> None:
     assert _visible_text("hello") == "hello"
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "body", ['{"action":"NO_REPLY"}', "NO_REPLY", "正文\nNO_REPLY"]
+)
+def test_delivery_and_memory_share_envelope_and_silence_policy(enabled, body):
+    from nahida_bot.core.router import MessageRouter, RouterConfig
+    from nahida_bot.core.sentinel import normalize_reply_text
+
+    raw = "2026-10-27 00:00 +08\n" + body
+    router = object.__new__(MessageRouter)
+    router._config = RouterConfig(enable_silent_reply=enabled)
+    expected = normalize_reply_text(raw, enable_silent_reply=enabled).text
+    assert (router._normalize_agent_text(raw) or "") == expected
+    runner = SessionRunner(enable_silent_reply=enabled)
+    turns = runner._assistant_visible_turns(
+        AgentRunResult(final_response=raw), include_message_context=False
+    )
+    assert [t.content for t in turns] == ([expected] if expected else [])
+    if enabled:
+        assert expected == ("正文" if body.startswith("正文") else "")
+    else:
+        assert expected == body
+
+
 # ── _extract_delivered_text: nested JSON parsing ────────────────────────
 
 

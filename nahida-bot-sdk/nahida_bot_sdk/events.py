@@ -123,6 +123,8 @@ class MessagePayload:
     reply_route: str = ""
     credential_id: str = ""
     actor_account_key: str = ""
+    # Notifications must not confirm an unrelated in-flight conversational reply.
+    delivery_kind: str = "reply"
 
 
 @dataclass(slots=True, frozen=True)

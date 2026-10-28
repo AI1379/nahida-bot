@@ -27,6 +27,7 @@ Nahida Bot 从 YAML 文件、`.env` 文件和环境变量读取配置。值的�
 | `db_path` | `str` | `"./data/nahida.db"` | SQLite 数据库文件路径 |
 | `workspace_base_dir` | `str` | `"./data/workspace"` | 工作区存储目录 |
 | `exec_venv_path` | `str` | `"./data/exec-venv"` | exec 工具与 cron 外部命令的专用 Python 虚拟环境。模型脚本中的 `python`/`pip` 解析到这里，`pip install` 只影响该环境、不碰 bot 自身依赖；启动时自动创建，留空则禁用并回退为继承 bot 环境 |
+| `execution` | `object` | 默认 RSS 阈值 512 MiB、并发 1 | exec 与 cron 共用的跨平台本地监督执行器；配置及能力边界见[本地命令执行与资源保护](exec-resource-limits.md) |
 | `plugin_paths` | `list[str]` | `["./plugins"]` | 额外的插件扫描目录 |
 | `discover_builtin_channels` | `bool` | `true` | 自动发现内置频道插件 |
 | `system_prompt` | `str` | `"You are a helpful assistant."` | Agent 对话的默认系统提示词 |
@@ -390,10 +391,20 @@ motion_planner:
 | `reasoning_policy` | `str` | `"budget"` | reasoning chain 处理方式：`strip`（丢弃）、`append`（始终包含）、`budget`（预算内包含） |
 | `max_reasoning_tokens` | `int` | `2000` | reasoning chain 内容的 token 预算 |
 
+上下文目前分两层收缩：历史加载先受消息条数、最近 run 数量和群聊话题时间窗口限制；
+随后 `ContextBuilder` 在模型的 token 软阈值内滑动保留较新的消息。
+工具调用及其结果按完整组处理，当前用户输入和正在执行的工具链会优先保留；
+单条超大工具结果可进一步截断。
+
+滑窗淘汰的内容会尝试补入 `history_summary`。这里的“摘要”是确定性摘录：
+逐条折叠空白并取前 120 个字符，再受 `summary_max_chars` 限制，**不会调用 LLM 做语义总结**。
+摘要还须放进剩余 token 预算，空间不足时可能缩短或不注入。
+它只属于当次 prompt，不会写回数据库或成为持久的滚动 compact；
+历史加载阶段已排除的内容也不会进入此摘要。长期记忆提取／召回是另一条独立链路。
+
 ---
 
 ## Scheduler
-
 在 `scheduler` 键下配置。控制基于 cron 的定时任务调度服务。
 
 | 键 | 类型 | 默认值 | 说明 |

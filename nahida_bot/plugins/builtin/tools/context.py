@@ -5,39 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot_sdk.messaging import InboundMessage
-
-
-def address_from_inbound(inbound: InboundMessage) -> ChatAddress:
-    """Resolve a typed address from normalized inbound metadata when possible."""
-    chat_type = ""
-    if inbound.chat_context and inbound.chat_context.chat_type:
-        chat_type = inbound.chat_context.chat_type
-    elif inbound.message_context and inbound.message_context.chat_type:
-        chat_type = inbound.message_context.chat_type
-    return ChatAddress.from_inbound(
-        inbound.platform,
-        inbound.chat_id,
-        is_group=inbound.is_group,
-        chat_type=chat_type,
-    )
-
-
-def address_from_session_context(context: Any) -> ChatAddress:
-    """Resolve a chat address from a session context with legacy fallback."""
-    address = getattr(context, "chat_address", None)
-    if isinstance(address, ChatAddress):
-        return address
-    return ChatAddress.from_inbound(
-        str(getattr(context, "platform", "")),
-        str(getattr(context, "chat_id", "")),
-    )
-
-
-def typed_address_from_session_context(context: Any) -> ChatAddress | None:
-    """Return the session address only when its chat type is explicit."""
-    address = address_from_session_context(context)
-    return address if address.is_typed else None
+from nahida_bot.core.chat_address import (
+    address_from_inbound as address_from_inbound,
+)
+from nahida_bot.core.chat_address import (
+    address_from_session_context as address_from_session_context,
+)
+from nahida_bot.core.chat_address import (
+    typed_address_from_session_context as typed_address_from_session_context,
+)
 
 
 def job_matches_address(job: Any, address: ChatAddress) -> bool:

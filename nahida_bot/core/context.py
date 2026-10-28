@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.plugins.base import InboundAttachment
+from nahida_bot_sdk.messaging import InboundAttachment, InboundMessage
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,6 +45,10 @@ class SessionContext:
     # Trusted runtime origin such as ``cron_trigger``. Tool arguments cannot
     # override this field.
     origin: str = ""
+    # Routing provenance is not part of identity equality used by pending batches.
+    inbound_message: InboundMessage | None = field(
+        default=None, compare=False, repr=False
+    )
 
     @property
     def effective_conversation_id(self) -> str:

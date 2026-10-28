@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from nahida_bot.agent.orchestration.models import AgentRunStatus, BackgroundTask
+from nahida_bot.core.outbound import outbound_payload, send_channel_message
 
 if TYPE_CHECKING:
     from nahida_bot.core.channel_registry import ChannelRegistry
+    from nahida_bot.core.events import EventBus
     from nahida_bot_sdk import OutboundMessage
 
 logger = structlog.get_logger(__name__)
@@ -62,8 +64,10 @@ class ChannelCompletionDeliverer:
         channel_registry: ChannelRegistry,
         *,
         message_factory: Any | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._channel_registry = channel_registry
+        self._event_bus = event_bus
         # ``message_factory`` lets tests inject an OutboundMessage builder
         # without depending on the SDK's constructor signature.
         self._message_factory = message_factory
@@ -84,35 +88,28 @@ class ChannelCompletionDeliverer:
         if not channel_name or not recipient:
             return False
 
-        channel = self._channel_registry.get(channel_name)
-        if channel is None:
-            logger.info(
-                "subagent.delivery_channel_unavailable",
-                task_id=task.task_id,
-                channel=channel_name,
-            )
-            return False
-
         text = _format_notification(task, status, summary, error)
         message = self._build_message(
             text,
             chat_address=target.get("chat_address", ""),
         )
         try:
-            message_id = await channel.send_message(recipient, message)
+            await send_channel_message(
+                self._channel_registry,
+                channel_name,
+                recipient,
+                message,
+                event_bus=self._event_bus,
+                source="subagent_completion",
+                payload=outbound_payload(
+                    recipient, channel_name, message, notification=True
+                ),
+            )
         except Exception:
             logger.exception(
                 "subagent.delivery_send_failed",
                 task_id=task.task_id,
                 channel=channel_name,
-            )
-            return False
-        if not message_id:
-            logger.warning(
-                "subagent.delivery_not_accepted",
-                task_id=task.task_id,
-                channel=channel_name,
-                target=recipient,
             )
             return False
         return True

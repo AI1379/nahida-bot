@@ -6,18 +6,18 @@ import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
-
-from croniter import croniter
 from uuid import uuid4
 
 import structlog
+from croniter import croniter
 
-from nahida_bot.core.chat_address import ChatAddress
-from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.agent.memory.scope import resolve_scope_from_session
-from nahida_bot.core.message_context import strip_envelope_prefix
-from nahida_bot.core.sentinel import detect_sentinel
+from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.context import SessionContext, current_session
+from nahida_bot.core.exec_runner import ExecRunner
+from nahida_bot.core.outbound import outbound_payload, send_channel_message
+from nahida_bot.core.sentinel import normalize_reply_text
 from nahida_bot.plugins.base import MessageContext, OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
@@ -28,7 +28,6 @@ from nahida_bot.scheduler.script_executor import (
 )
 
 if TYPE_CHECKING:
-    from nahida_bot.identity.authorization import AuthorizationGate
     from nahida_bot.core.channel_registry import ChannelRegistry
     from nahida_bot.core.events import EventBus
     from nahida_bot.core.router import MessageRouter
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
         SQLiteMessageDeliveryStore,
     )
+    from nahida_bot.identity.authorization import AuthorizationGate
 
 logger = structlog.get_logger(__name__)
 
@@ -66,6 +66,7 @@ class SchedulerService:
         config: SchedulerConfig | None = None,
         enable_silent_reply: bool = True,
         authorization: AuthorizationGate | None = None,
+        exec_runner: ExecRunner | None = None,
     ) -> None:
         self._repo = repo
         self._runner = runner
@@ -78,6 +79,7 @@ class SchedulerService:
         self._config = config or SchedulerConfig()
         self._enable_silent_reply = enable_silent_reply
         self._authorization = authorization
+        self._exec_runner = exec_runner or ExecRunner()
         # Optional callback: on_job_event("fired" | "failed", job_id, **kwargs)
         # Set by EventBroadcaster to push SSE events when jobs fire/fail.
         self.on_job_event: Any = None
@@ -983,7 +985,7 @@ class SchedulerService:
                     user_request=job.prompt,
                     tool_description="Execute this scheduled host shell command.",
                 )
-            script_result = await execute_script(job)
+            script_result = await execute_script(job, exec_runner=self._exec_runner)
             if script_result.succeeded:
                 logger.info(
                     "scheduler.script_succeeded",
@@ -995,6 +997,7 @@ class SchedulerService:
             logger.warning(
                 "scheduler.script_fallback",
                 job_id=job.job_id,
+                termination_reason=script_result.termination_reason,
                 return_code=script_result.return_code,
                 timed_out=script_result.timed_out,
                 spawn_failed=bool(script_result.spawn_error),
@@ -1104,63 +1107,55 @@ class SchedulerService:
         )
 
         # Send response via channel
-        response_text = result.final_response
-        sentinel_action: str | None = None
-        sentinel_suppressed = False
-        if self._enable_silent_reply and response_text:
-            sr = detect_sentinel(response_text)
-            if sr.action is not None:
-                sentinel_action = sr.action
-                response_text = sr.text
-                sentinel_suppressed = not bool(response_text)
-                logger.debug(
-                    "scheduler.sentinel_detected",
-                    job_id=job.job_id,
-                    action=sr.action,
-                    suppressed=not response_text,
-                )
+        normalized = normalize_reply_text(
+            result.final_response, enable_silent_reply=self._enable_silent_reply
+        )
+        response_text = normalized.text
+        sentinel_action = normalized.action
+        sentinel_suppressed = bool(sentinel_action and not response_text)
+        if sentinel_action:
+            logger.debug(
+                "scheduler.sentinel_detected",
+                job_id=job.job_id,
+                action=sentinel_action,
+                suppressed=sentinel_suppressed,
+            )
 
         if response_text:
-            response_text = strip_envelope_prefix(response_text)
-
-        if response_text and self._channels is not None:
-            channel = self._channels.get(job.platform)
-            if channel is not None:
-                message_id = await channel.send_message(
-                    address.target_id,
-                    OutboundMessage(
-                        text=response_text,
-                        extra={"chat_address": address.chat_key},
+            outbound = OutboundMessage(
+                text=response_text, extra={"chat_address": address.chat_key}
+            )
+            message_id = await send_channel_message(
+                self._channels,
+                job.platform,
+                address.target_id,
+                outbound,
+                event_bus=self._event_bus,
+                source="scheduler",
+                payload=outbound_payload(
+                    address.target_id, job.platform, outbound, notification=True
+                ),
+            )
+            await self._record_delivery(
+                job=job,
+                address=address,
+                session_id=session_id,
+                text=response_text,
+                source="scheduler_cron",
+                delivery_mode="cron_final",
+                message_id=message_id,
+                metadata={
+                    "job_id": job.job_id,
+                    "session_id": session_id,
+                    "session_mode": job.session_mode,
+                    "sentinel_action": sentinel_action,
+                    "sentinel_suppressed": sentinel_suppressed,
+                    "script_fallback_used": script_result is not None,
+                    "script_return_code": (
+                        script_result.return_code if script_result is not None else None
                     ),
-                )
-                await self._record_delivery(
-                    job=job,
-                    address=address,
-                    session_id=session_id,
-                    text=response_text,
-                    source="scheduler_cron",
-                    delivery_mode="cron_final",
-                    message_id=message_id,
-                    metadata={
-                        "job_id": job.job_id,
-                        "session_id": session_id,
-                        "session_mode": job.session_mode,
-                        "sentinel_action": sentinel_action,
-                        "sentinel_suppressed": sentinel_suppressed,
-                        "script_fallback_used": script_result is not None,
-                        "script_return_code": (
-                            script_result.return_code
-                            if script_result is not None
-                            else None
-                        ),
-                    },
-                )
-            else:
-                logger.warning(
-                    "scheduler.no_channel",
-                    job_id=job.job_id,
-                    platform=job.platform,
-                )
+                },
+            )
 
         logger.info(
             "scheduler.fired",
@@ -1189,11 +1184,18 @@ class SchedulerService:
         channel = self._channels.get(job.platform)
         if channel is not None:
             try:
-                message_id = await channel.send_message(
+                outbound = OutboundMessage(
+                    text=text, extra={"chat_address": address.chat_key}
+                )
+                message_id = await send_channel_message(
+                    self._channels,
+                    job.platform,
                     address.target_id,
-                    OutboundMessage(
-                        text=text,
-                        extra={"chat_address": address.chat_key},
+                    outbound,
+                    event_bus=self._event_bus,
+                    source="scheduler",
+                    payload=outbound_payload(
+                        address.target_id, job.platform, outbound, notification=True
                     ),
                 )
                 await self._record_delivery(

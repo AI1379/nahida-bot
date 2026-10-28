@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
 
 import structlog
+from nahida_bot_sdk.commands import CommandArgument, CompletionChoice, CompletionQuery
+from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 from nahida_bot.agent.context import MessageRole
 from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.chat_address import (
+    address_from_inbound as _address_from_inbound_message,
+)
 from nahida_bot.core.exceptions import PermissionDenied
+from nahida_bot.core.outbound import send_channel_message
+from nahida_bot.core.runtime_settings import (
+    RUNTIME_META_KEY,
+    merge_runtime_meta,
+    runtime_meta_from_session_meta,
+)
 from nahida_bot.plugins.base import (
     AttentionFrame,
     ChannelService,
@@ -26,33 +37,26 @@ from nahida_bot.plugins.base import (
     WebhookRequest,
     WebhookResponse,
 )
-from nahida_bot.core.runtime_settings import (
-    RUNTIME_META_KEY,
-    merge_runtime_meta,
-    runtime_meta_from_session_meta,
-)
 from nahida_bot.plugins.commands import (
     CommandEntry,
     CommandHandlerResult,
     CommandInfo,
     run_argument_completion,
 )
-from nahida_bot_sdk.commands import CommandArgument, CompletionChoice, CompletionQuery
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, PromptSupplementEntry, ToolEntry
 from nahida_bot.plugins.runtime_services import (
     RUNTIME_SERVICE_UNSET,
     RuntimeServiceUnset,
 )
-from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 if TYPE_CHECKING:
     from nahida_bot.agent.context import ContextMessage
     from nahida_bot.agent.media.store import MediaStore
-    from nahida_bot.agent.providers.base import ChatProvider, ProviderResponse
     from nahida_bot.agent.memory.sqlite import SQLiteMemoryStore
-    from nahida_bot.core.temp_files import ManagedTempFileService
+    from nahida_bot.agent.providers.base import ChatProvider, ProviderResponse
     from nahida_bot.core.events import EventBus
+    from nahida_bot.core.temp_files import ManagedTempFileService
     from nahida_bot.db.repositories.sqlite_message_delivery_repo import (
         SQLiteMessageDeliveryStore,
     )
@@ -177,6 +181,7 @@ class RealBotAPI:
         memory_cross_chat_weights: dict[str, float] | None = None,
         speech_service: Any | None = None,  # SpeechService (shared)
         desktop_surface_registry: Any | None = None,
+        exec_runner: Any | None = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._manifest = manifest
@@ -209,6 +214,7 @@ class RealBotAPI:
         self._provider_manager = provider_manager
         self._model_router = model_router
         self._scheduler_service = scheduler_service
+        self.exec_runner = exec_runner
         self._orchestration_service = orchestration_service
         self._chat_metadata_store: Any | None = None
         self._logger = _PluginLogger(plugin_id)
@@ -326,20 +332,15 @@ class RealBotAPI:
         self, target: str, message: OutboundMessage, *, channel: str = ""
     ) -> str:
         self._permissions.check_network_outbound(target)
-        if self._channel_registry is not None and channel:
-            channel_plugin = self._channel_registry.get(channel)
-            if channel_plugin is not None:
-                message_id = await channel_plugin.send_message(target, message)
-                await self._cleanup_message_temp_files(message)
-                return message_id
-        self._logger.info(
-            "send_message_fallback",
-            target=target,
-            channel=channel,
-            text_length=len(message.text),
+        return await send_channel_message(
+            self._channel_registry,
+            channel,
+            target,
+            message,
+            event_bus=self._event_bus,
+            source=f"plugin:{self._plugin_id}",
+            cleanup=self._cleanup_message_temp_files,
         )
-        await self._cleanup_message_temp_files(message)
-        return f"msg_{self._plugin_id}_0"
 
     async def create_temp_file(
         self,
@@ -1748,9 +1749,10 @@ class RealBotAPI:
         """Send a single-turn chat request through the bot's provider system."""
         self._permissions.check_llm_access()
 
+        from nahida_bot_sdk.api import LLMResponse, LLMUsage
+
         from nahida_bot.agent.context import ContextMessage
         from nahida_bot.agent.providers.base import ToolDefinition
-        from nahida_bot_sdk.api import LLMResponse, LLMUsage
 
         # Resolve model spec through the router
         slot = None
@@ -1852,9 +1854,10 @@ class RealBotAPI:
         """Run a multi-turn subagent with optional tool access."""
         self._permissions.check_llm_access()
 
+        from nahida_bot_sdk.api import SubagentResult
+
         from nahida_bot.agent.orchestration.models import SubagentSpec
         from nahida_bot.core.context import current_session
-        from nahida_bot_sdk.api import SubagentResult
 
         if self._orchestration_service is None:
             raise RuntimeError(
@@ -2370,18 +2373,3 @@ class RealBotAPI:
             interval_seconds=interval_seconds,
             initial_delay=initial_delay,
         )
-
-
-def _address_from_inbound_message(message: InboundMessage) -> ChatAddress:
-    """Build a typed chat address from a normalized inbound message."""
-    chat_type = ""
-    if message.chat_context and message.chat_context.chat_type:
-        chat_type = message.chat_context.chat_type
-    elif message.message_context and message.message_context.chat_type:
-        chat_type = message.message_context.chat_type
-    return ChatAddress.from_inbound(
-        message.platform,
-        message.chat_id,
-        is_group=message.is_group,
-        chat_type=chat_type,
-    )

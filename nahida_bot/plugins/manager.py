@@ -105,6 +105,7 @@ class PluginManager:
         memory_cross_chat_enabled: bool = True,
         memory_cross_chat_weights: dict[str, float] | None = None,
         speech_service: Any | None = None,
+        exec_runner: Any | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._workspace = workspace_manager
@@ -124,6 +125,7 @@ class PluginManager:
         self._task_manager = task_manager
         self._temp_file_service = temp_file_service
         self._speech_service = speech_service
+        self._exec_runner = exec_runner
         self._document_store_manager: Any | None = None
         self._chat_metadata_store: Any | None = None
         self._loader = PluginLoader()
@@ -364,6 +366,7 @@ class PluginManager:
         # object or direct references to the manager's registries and services?
         api_bridge = RealBotAPI(
             plugin_id=plugin_id,
+            exec_runner=self._exec_runner,
             manifest=record.manifest,
             event_bus=self._event_bus,
             workspace_manager=self._workspace,

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from time import monotonic
 
 from nahida_bot.core.exec_env import build_exec_env
-from nahida_bot.core.process_tree import kill_process_tree
+from nahida_bot.core.exec_runner import ExecRunner
 from nahida_bot.scheduler.models import CronJob
 
 _OUTPUT_LIMIT_CHARS = 12000
@@ -26,28 +26,38 @@ class ScriptExecutionResult:
     duration_seconds: float = 0.0
     timed_out: bool = False
     spawn_error: str = ""
+    termination_reason: str = "completed"
+    peak_rss_bytes: int = 0
+    error: str = ""
+    truncated: bool = False
 
     @property
     def succeeded(self) -> bool:
-        return self.return_code == 0 and not self.timed_out and not self.spawn_error
-
-
-async def execute_script(job: CronJob) -> ScriptExecutionResult:
-    """Run one external script attempt and capture bounded diagnostics."""
-    started_at = monotonic()
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            job.script_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=job.script_working_dir or None,
-            # Same dedicated exec venv as the exec tool: cron scripts must not
-            # share (or mutate) the bot's own Python environment.
-            env=build_exec_env(),
-            # Issue #57: dedicated process group so cleanup reaches the whole
-            # spawned tree (script interpreters, pipelines), not just the shell.
-            start_new_session=True,
+        return (
+            self.return_code == 0
+            and not self.timed_out
+            and not self.spawn_error
+            and self.termination_reason == "completed"
         )
+
+
+async def execute_script(
+    job: CronJob,
+    *,
+    exec_runner: ExecRunner | None = None,
+) -> ScriptExecutionResult:
+    """Use the same application-owned runner and budget as the exec tool."""
+    started_at = monotonic()
+    runner = exec_runner if exec_runner is not None else ExecRunner()
+    try:
+        result = await runner.run(
+            job.script_command,
+            timeout=job.script_timeout_seconds,
+            cwd=job.script_working_dir or None,
+            env=build_exec_env(),
+        )
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         return ScriptExecutionResult(
             command=job.script_command,
@@ -55,43 +65,22 @@ async def execute_script(job: CronJob) -> ScriptExecutionResult:
             return_code=None,
             duration_seconds=monotonic() - started_at,
             spawn_error=f"{type(exc).__name__}: {exc}",
+            termination_reason="spawn_error",
         )
-
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=job.script_timeout_seconds,
-        )
-    except asyncio.CancelledError:
-        await kill_process_tree(proc)
-        raise
-    except TimeoutError:
-        await kill_process_tree(proc)
-        return ScriptExecutionResult(
-            command=job.script_command,
-            working_dir=job.script_working_dir,
-            return_code=proc.returncode,
-            duration_seconds=monotonic() - started_at,
-            timed_out=True,
-        )
-    except Exception as exc:
-        if proc.returncode is None:
-            await kill_process_tree(proc)
-        return ScriptExecutionResult(
-            command=job.script_command,
-            working_dir=job.script_working_dir,
-            return_code=proc.returncode,
-            duration_seconds=monotonic() - started_at,
-            spawn_error=f"{type(exc).__name__}: {exc}",
-        )
-
     return ScriptExecutionResult(
         command=job.script_command,
         working_dir=job.script_working_dir,
-        return_code=proc.returncode,
-        stdout=_decode_output(stdout_bytes),
-        stderr=_decode_output(stderr_bytes),
+        return_code=result.returncode,
+        stdout=_truncate_output(result.stdout),
+        stderr=_truncate_output(result.stderr),
         duration_seconds=monotonic() - started_at,
+        timed_out=result.termination_reason == "timeout",
+        spawn_error=result.error if result.termination_reason == "spawn_error" else "",
+        termination_reason=result.termination_reason,
+        peak_rss_bytes=result.peak_rss_bytes,
+        error=result.error,
+        truncated=result.truncated
+        or max(len(result.stdout), len(result.stderr)) > _OUTPUT_LIMIT_CHARS,
     )
 
 
@@ -105,6 +94,10 @@ def render_fallback_context(job: CronJob, result: ScriptExecutionResult) -> str:
         "timed_out": result.timed_out,
         "duration_seconds": round(result.duration_seconds, 3),
         "spawn_error": result.spawn_error,
+        "termination_reason": result.termination_reason,
+        "peak_rss_bytes": result.peak_rss_bytes,
+        "error": result.error,
+        "truncated": result.truncated,
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
@@ -112,7 +105,9 @@ def render_fallback_context(job: CronJob, result: ScriptExecutionResult) -> str:
         "The scheduled task first attempted an external script, but the "
         "script did not complete successfully. Use the original task request "
         "and the execution context below to understand what happened and "
-        "complete the task if possible. The script may have already produced "
+        "complete the task if possible. Resource-limit failures require reducing the "
+        "workload; do not retry the same oversized command unchanged. "
+        "The script may have already produced "
         "partial external side effects, including sending a message.\n\n"
         '<script_execution_context trust="untrusted">\n'
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
@@ -120,8 +115,7 @@ def render_fallback_context(job: CronJob, result: ScriptExecutionResult) -> str:
     )
 
 
-def _decode_output(value: bytes) -> str:
-    text = value.decode("utf-8", errors="replace")
+def _truncate_output(text: str) -> str:
     if len(text) <= _OUTPUT_LIMIT_CHARS:
         return text
     return text[:_OUTPUT_LIMIT_CHARS] + "\n... (output truncated)"

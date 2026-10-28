@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeGuard
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard
+
+if TYPE_CHECKING:
+    from .messaging import InboundMessage
 
 TargetType = Literal["private", "group", "channel", "thread", "unknown"]
 SessionKeyKind = Literal[
@@ -34,6 +37,38 @@ def normalize_target_type(value: str) -> TargetType:
     raise ValueError(
         f"Invalid target_type {value!r}; expected one of {sorted(VALID_TARGET_TYPES)}"
     )
+
+
+def address_from_inbound(inbound: InboundMessage) -> ChatAddress:
+    """Resolve an inbound address using the shared metadata precedence."""
+    chat_type = ""
+    if inbound.chat_context and inbound.chat_context.chat_type:
+        chat_type = inbound.chat_context.chat_type
+    elif inbound.message_context and inbound.message_context.chat_type:
+        chat_type = inbound.message_context.chat_type
+    return ChatAddress.from_inbound(
+        inbound.platform,
+        inbound.chat_id,
+        is_group=inbound.is_group,
+        chat_type=chat_type,
+    )
+
+
+def address_from_session_context(context: Any) -> ChatAddress:
+    """Prefer an explicit address, preserving the legacy unknown-type fallback."""
+    address = getattr(context, "chat_address", None)
+    if isinstance(address, ChatAddress):
+        return address
+    return ChatAddress.from_inbound(
+        str(getattr(context, "platform", "")),
+        str(getattr(context, "chat_id", "")),
+    )
+
+
+def typed_address_from_session_context(context: Any) -> ChatAddress | None:
+    """Return an address only when the context identifies its chat type."""
+    address = address_from_session_context(context)
+    return address if address.is_typed else None
 
 
 def classify_session_key(value: str) -> SessionKeyKind:

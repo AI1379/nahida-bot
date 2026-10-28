@@ -10,6 +10,8 @@ import json
 import re
 from dataclasses import dataclass
 
+from nahida_bot.core.message_context import strip_envelope_prefix
+
 SENTINEL_NO_REPLY = "NO_REPLY"
 SENTINEL_HEARTBEAT_OK = "HEARTBEAT_OK"
 _VALID_SENTINELS = frozenset({SENTINEL_NO_REPLY, SENTINEL_HEARTBEAT_OK})
@@ -27,6 +29,18 @@ class SentinelResult:
 
     action: str | None  # "NO_REPLY" | "HEARTBEAT_OK" | None
     text: str  # remaining text after stripping sentinel
+
+
+def normalize_reply_text(
+    text: str | None, *, enable_silent_reply: bool = True
+) -> SentinelResult:
+    """Apply the same envelope/sentinel policy to delivery and visible memory."""
+    visible = strip_envelope_prefix(text or "")
+    if not enable_silent_reply:
+        return SentinelResult(action=None, text=visible)
+    result = detect_sentinel(visible)
+    # A trailing sentinel can leave another envelope-only prefix behind.
+    return SentinelResult(action=result.action, text=strip_envelope_prefix(result.text))
 
 
 def detect_sentinel(text: str) -> SentinelResult:

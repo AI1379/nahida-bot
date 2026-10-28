@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -196,45 +195,6 @@ class _Channels:
         return None
 
 
-class _ScriptProcess:
-    def __init__(
-        self,
-        *,
-        returncode: int,
-        stdout: bytes = b"",
-        stderr: bytes = b"",
-        delay_seconds: float = 0.0,
-    ) -> None:
-        self.pid: int | None = None  # test double: no real process group
-        self._exit_code = returncode
-        # A delayed process is still "running": no exit code until it
-        # finishes, so kill_process_tree() does not skip the kill.
-        self.returncode: int | None = None if delay_seconds else returncode
-        self.stdout = stdout
-        self.stderr = stderr
-        self.delay_seconds = delay_seconds
-        self.killed = False
-
-    async def communicate(self) -> tuple[bytes, bytes]:
-        if self.delay_seconds:
-            await asyncio.sleep(self.delay_seconds)
-        self.returncode = self._exit_code
-        return self.stdout, self.stderr
-
-    def send_signal(self, sig: Any) -> None:
-        if getattr(sig, "name", "") == "SIGKILL" or sig == 9:
-            self.kill()
-
-    def kill(self) -> None:
-        self.killed = True
-        self.returncode = -9
-
-    async def wait(self) -> int | None:
-        if not self.killed and self.returncode is None:
-            self.returncode = self._exit_code
-        return self.returncode
-
-
 def _make_service(
     engine: DatabaseEngine,
     repo: CronRepository,
@@ -273,6 +233,7 @@ async def test_fire_job_does_not_automatically_notify_desktop() -> None:
         engine,
         repo,
         agent=_Agent(),
+        channel=_Channel(),
         event_bus=event_bus,
     )
     job = replace(
@@ -340,12 +301,11 @@ async def test_script_executor_success_skips_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine, repo = await _repo()
-    process = _ScriptProcess(returncode=0, stdout=b"handled")
+    from unittest.mock import AsyncMock
+    from nahida_bot.core.exec_runner import ExecResult, ExecRunner
 
-    async def create_process(*args: Any, **kwargs: Any) -> _ScriptProcess:
-        return process
-
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", create_process)
+    run = AsyncMock(return_value=ExecResult(0, stdout="handled"))
+    monkeypatch.setattr(ExecRunner, "run", run)
     agent = _Agent()
     job = replace(
         _job(),
@@ -372,16 +332,18 @@ async def test_script_executor_failure_passes_context_to_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine, repo = await _repo()
-    process = _ScriptProcess(
-        returncode=2,
-        stdout=b'{"ok": false}',
-        stderr=b"HTTP 503 from local send API",
+    from unittest.mock import AsyncMock
+    from nahida_bot.core.exec_runner import ExecResult, ExecRunner
+
+    run = AsyncMock(
+        return_value=ExecResult(
+            2,
+            stdout='{"ok": false}',
+            stderr="HTTP 503 from local send API",
+            termination_reason="exit_error",
+        )
     )
-
-    async def create_process(*args: Any, **kwargs: Any) -> _ScriptProcess:
-        return process
-
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", create_process)
+    monkeypatch.setattr(ExecRunner, "run", run)
     agent = _Agent()
     channel = _Channel()
     job = replace(
@@ -414,12 +376,11 @@ async def test_script_executor_timeout_falls_back_to_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine, repo = await _repo()
-    process = _ScriptProcess(returncode=0, delay_seconds=1.0)
+    from unittest.mock import AsyncMock
+    from nahida_bot.core.exec_runner import ExecResult, ExecRunner
 
-    async def create_process(*args: Any, **kwargs: Any) -> _ScriptProcess:
-        return process
-
-    monkeypatch.setattr(asyncio, "create_subprocess_shell", create_process)
+    run = AsyncMock(return_value=ExecResult(1, termination_reason="timeout"))
+    monkeypatch.setattr(ExecRunner, "run", run)
     agent = _Agent()
     job = replace(
         _job(),
@@ -432,7 +393,7 @@ async def test_script_executor_timeout_falls_back_to_agent(
         service = _make_service(engine, repo, agent=agent)
         await service._fire_job(job)
 
-        assert process.killed is True
+        run.assert_awaited_once()
         assert agent.calls == 1
         history = cast(list[ContextMessage], agent.last_kwargs["history_messages"])
         fallback = next(
@@ -1273,6 +1234,45 @@ class _SilentAgent:
 
     async def run_stream(self, **kwargs: object) -> Any:
         yield LoopEvent(type="done", final_response=self.response)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_cron_prefixed_json_sentinel_uses_shared_normalization(enabled):
+    engine, repo = await _repo()
+    try:
+        channel = _Channel()
+        service = _make_service(
+            engine,
+            repo,
+            channel=channel,
+            agent=_SilentAgent('2026-10-27 00:00 +08\n{"action":"NO_REPLY"}'),
+        )
+        service._enable_silent_reply = enabled
+        job = _job()
+        await repo.insert_job(job)
+        await service._fire_job(job)
+        assert [message.text for _, message in channel.sent] == (
+            [] if enabled else ['{"action":"NO_REPLY"}']
+        )
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_cron_channel_is_recorded_as_failure():
+    engine, repo = await _repo()
+    try:
+        service = _make_service(engine, repo, agent=_Agent())
+        job = _job()
+        await repo.insert_job(job)
+        await service._fire_job(job)
+        stored = await repo.get_job(job.job_id)
+        assert stored.failure_count == 1
+        assert stored.run_count == 0
+        assert "unavailable" in stored.last_error
+    finally:
+        await engine.close()
 
 
 @pytest.mark.asyncio

@@ -4,24 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import time
-from contextlib import suppress
 from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import structlog
 
 from nahida_bot.core.channel_registry import ChannelRegistry
-from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.core.chat_address import ChatAddress, SessionKey, classify_session_key
-from nahida_bot.core.context import SessionContext, current_session
+from nahida_bot.core.chat_address import address_from_inbound as _address_from_inbound
+from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.core.config import PendingMessagesConfig
-from nahida_bot.core.message_batch import (
-    batch_anchor,
-    restore_pending_batch,
-    take_pending_batch,
-)
+from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
     AgentResponseRequested,
     AgentRunCancelled,
@@ -30,19 +27,24 @@ from nahida_bot.core.events import (
     AgentRunStarted,
     AgentStopRequested,
     EventBus,
-    MessagePayload,
     MessageObserved,
+    MessagePayload,
     MessageReceived,
     MessageSending,
     MessageSent,
 )
+from nahida_bot.core.message_batch import (
+    batch_anchor,
+    restore_pending_batch,
+    take_pending_batch,
+)
 from nahida_bot.core.message_context import (
     context_from_inbound,
     render_message_with_context,
-    strip_envelope_prefix,
 )
-from nahida_bot.core.sentinel import detect_sentinel
+from nahida_bot.core.outbound import send_channel_message
 from nahida_bot.core.runtime_settings import runtime_settings_from_meta
+from nahida_bot.core.sentinel import normalize_reply_text
 from nahida_bot.identity.resolver import IdentityResolver
 from nahida_bot.plugins.base import AttentionFrame, InboundMessage, OutboundMessage
 from nahida_bot.plugins.commands import (
@@ -235,6 +237,7 @@ class MessageRouter:
         # regardless of identity being enabled — chat names are not identity.
         await self._observe_chat_name(inbound, address)
         return SessionContext(
+            inbound_message=inbound,
             platform=inbound.platform,
             chat_id=inbound.chat_id,
             session_id=session_id,
@@ -1294,7 +1297,11 @@ class MessageRouter:
             await self._send_response(
                 request.inbound,
                 request.session_id,
-                "[Agent stopped.]",
+                (
+                    "[Service is shutting down; the current response was interrupted.]"
+                    if self._stopping
+                    else "[Agent stopped.]"
+                ),
                 reply_to_override=request.reply_to_override,
             )
             return
@@ -1314,14 +1321,10 @@ class MessageRouter:
 
     def _normalize_agent_text(self, text: str | None) -> str | None:
         """Apply silent-reply suppression and remove the context envelope."""
-        text = text or ""
-        if self._config.enable_silent_reply and text:
-            sentinel = detect_sentinel(text)
-            if sentinel.action is not None:
-                if not sentinel.text:
-                    return None
-                text = sentinel.text
-        return strip_envelope_prefix(text) if text else text
+        result = normalize_reply_text(
+            text, enable_silent_reply=self._config.enable_silent_reply
+        )
+        return None if result.action and not result.text else result.text
 
     async def _finish_agent_run(
         self,
@@ -1533,32 +1536,32 @@ class MessageRouter:
             ),
         }
 
-        # Publish MessageSending event for observation/audit hooks.
-        sending_result = await self._event_bus.publish(
-            MessageSending(
-                payload=MessagePayload(
-                    message=inbound,
-                    session_id=session_id,
-                    outbound=outbound,
-                    **message_payload_kwargs,
-                ),
-                source="message_router",
-            )
-        )
-        logger.debug(
-            "message_router.message_sending_published",
-            session_id=session_id,
-            dispatched=sending_result.dispatched,
-            failure_count=len(sending_result.failures),
-            **_inbound_log_fields(inbound),
-            **_outbound_log_fields(outbound),
-        )
-
         # Node-originated turns are delivered by NodeEventBridge.  Publishing
         # MessageSent here keeps the normal event contract without inventing a
         # fake Channel implementation or treating a device as a chat account.
         reply_route = str(message_payload_kwargs["reply_route"])
         if reply_route.startswith("node:"):
+            # Publish MessageSending event for observation/audit hooks.
+            sending_result = await self._event_bus.publish(
+                MessageSending(
+                    payload=MessagePayload(
+                        message=inbound,
+                        session_id=session_id,
+                        outbound=outbound,
+                        **message_payload_kwargs,
+                    ),
+                    source="message_router",
+                )
+            )
+            logger.debug(
+                "message_router.message_sending_published",
+                session_id=session_id,
+                dispatched=sending_result.dispatched,
+                failure_count=len(sending_result.failures),
+                **_inbound_log_fields(inbound),
+                **_outbound_log_fields(outbound),
+            )
+
             # Run motion planner only on the Desktop node path so
             # non-Desktop channels (milky, telegram, onebot) are never
             # blocked by this LLM call.
@@ -1595,68 +1598,32 @@ class MessageRouter:
             )
             return
 
-        channel = self._channels.get(inbound.platform)
-        if channel is None:
-            logger.warning(
-                "message_router.no_channel",
-                platform=inbound.platform,
-                session_id=session_id,
-            )
-            return
-
         outbound_message = (
             _with_chat_address(outbound, _address_from_inbound(inbound))
             if inbound.platform in {"milky", "onebot", "feishu", "github"}
             else outbound
         )
-
-        # Send via channel.
-        logger.debug(
-            "message_router.channel_send_start",
-            session_id=session_id,
-            channel=inbound.platform,
-            target=inbound.chat_id,
-            **_inbound_log_fields(inbound),
-            **_outbound_log_fields(outbound_message),
-        )
-        started_at = time.monotonic()
-        try:
-            msg_id = await channel.send_message(inbound.chat_id, outbound_message)
-        except Exception:
-            logger.exception(
-                "message_router.channel_send_failed",
+        msg_id = await send_channel_message(
+            self._channels,
+            inbound.platform,
+            inbound.chat_id,
+            outbound_message,
+            event_bus=self._event_bus,
+            payload=MessagePayload(
+                message=inbound,
                 session_id=session_id,
-                channel=inbound.platform,
-                target=inbound.chat_id,
-                latency_seconds=round(time.monotonic() - started_at, 3),
-                **_inbound_log_fields(inbound),
-                **_outbound_log_fields(outbound_message),
-            )
-            raise
-        await self._cleanup_message_temp_files(outbound_message, session_id=session_id)
-
-        # Publish MessageSent event
-        sent_result = await self._event_bus.publish(
-            MessageSent(
-                payload=MessagePayload(
-                    message=inbound,
-                    session_id=session_id,
-                    outbound=outbound_message,
-                    **message_payload_kwargs,
-                ),
-                source="message_router",
-            )
+                outbound=outbound_message,
+                **message_payload_kwargs,
+            ),
+            source="message_router",
+            cleanup=partial(self._cleanup_message_temp_files, session_id=session_id),
         )
-
         logger.debug(
             "message_router.response_sent",
             platform=inbound.platform,
             chat_id=inbound.chat_id,
             session_id=session_id,
             msg_id=msg_id,
-            latency_seconds=round(time.monotonic() - started_at, 3),
-            message_sent_dispatched=sent_result.dispatched,
-            message_sent_failure_count=len(sent_result.failures),
             **_outbound_log_fields(outbound_message),
         )
 
@@ -1815,12 +1782,17 @@ def _render_observed_batch_context(
             block_lines.append(f"Batch message_id: {msg.message_id}")
         block_lines.append(
             render_message_with_context(
-                msg.text, context_from_inbound(msg), role="batch_message"
+                msg.text,
+                context_from_inbound(msg),
+                role="batch_message",
+                max_chars=(
+                    max(0, remaining - sum(len(line) + 1 for line in block_lines))
+                    if remaining > 0
+                    else None
+                ),
             )
         )
         block = "\n".join(block_lines)
-        if remaining > 0 and len(block) > remaining:
-            block = block[:remaining].rstrip() + "\n[attention frame truncated]"
         lines.append(block)
         if remaining > 0:
             remaining -= min(len(block), remaining)
@@ -1853,21 +1825,6 @@ def _trigger_kind(inbound: InboundMessage, *, source_tag: str) -> str:
     if prefix and inbound.text.lstrip().startswith(prefix):
         return "command"
     return "always"
-
-
-def _address_from_inbound(inbound: InboundMessage) -> ChatAddress:
-    """Build a ChatAddress from an InboundMessage's metadata."""
-    chat_type = ""
-    if inbound.chat_context and inbound.chat_context.chat_type:
-        chat_type = inbound.chat_context.chat_type
-    elif inbound.message_context and inbound.message_context.chat_type:
-        chat_type = inbound.message_context.chat_type
-    return ChatAddress.from_inbound(
-        inbound.platform,
-        inbound.chat_id,
-        is_group=inbound.is_group,
-        chat_type=chat_type,
-    )
 
 
 def _with_chat_address(

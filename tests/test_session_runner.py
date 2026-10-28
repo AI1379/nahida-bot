@@ -10,6 +10,44 @@ from nahida_bot.core.session_runner import ActiveRunTracker
 
 
 @pytest.mark.asyncio
+async def test_reactive_observation_uses_complete_envelope_when_truncated():
+    from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
+    from nahida_bot.core.message_context import message_context_to_metadata
+    from nahida_bot.core.session_runner import SessionRunner
+    from nahida_bot.plugins.base import MessageContext
+
+    runner = SessionRunner(group_context_max_chars=300)
+    runner._memory = object()
+    context = MessageContext(
+        channel="test",
+        chat_type="group",
+        chat_id="g",
+        sender_id="other-bot",
+        message_id="original",
+    )
+    record = MemoryRecord(
+        1,
+        "s",
+        ConversationTurn(
+            "user",
+            "很长的消息" * 500,
+            metadata={
+                "observed_only": True,
+                "message_context": message_context_to_metadata(context),
+            },
+        ),
+    )
+    rendered = await runner._load_observed_group_context(
+        "s", records=[record], current_message_context=context
+    )
+    assert rendered is not None
+    assert "sender: other-bot" in rendered.content
+    assert "mentions_bot: no" in rendered.content
+    assert "[message text truncated]" in rendered.content
+    assert rendered.content.endswith("</message_context>")
+
+
+@pytest.mark.asyncio
 async def test_request_stop_sets_event_without_cancelling_task() -> None:
     """Stopping a run signals stop_event and leaves the task alive to finish.
 

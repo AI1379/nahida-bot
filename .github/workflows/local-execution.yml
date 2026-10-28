@@ -1,0 +1,24 @@
+name: Local command execution
+
+on:
+  push:
+    branches: [v2, develop]
+  pull_request:
+
+jobs:
+  local-execution:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --python 3.12 --dev --group telegram
+      - name: Test resource monitoring and process ownership
+        run: uv run pytest tests/test_exec_runner.py tests/test_exec_integration.py tests/test_exec_stop_notifications.py tests/test_process_tree.py tests/test_scheduler.py tests/test_plugin_tool_executor.py -o addopts= -q --tb=short

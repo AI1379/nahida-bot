@@ -4,6 +4,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.outbound import (
+    DeliveryError,
+    outbound_payload,
+    send_channel_message,
+)
 from nahida_bot.gateway.deps import get_application
 from nahida_bot.gateway.schemas import SendMessageRequest, SendMessageResponse
 from nahida_bot.plugins.base import OutboundMessage
@@ -53,12 +58,21 @@ async def send_message(
             detail=f"Channel '{address.channel}' not found or not connected",
         )
 
-    message_id = await channel.send_message(
-        address.target_id,
-        OutboundMessage(text=body.text, extra={"chat_address": address.chat_key}),
-    )
     delivery_store = getattr(app, "message_delivery_store", None)
-    if not message_id:
+    outbound = OutboundMessage(text=body.text, extra={"chat_address": address.chat_key})
+    try:
+        message_id = await send_channel_message(
+            app.channel_registry,
+            address.channel,
+            address.target_id,
+            outbound,
+            event_bus=getattr(app, "event_bus", None),
+            source="webapi_send",
+            payload=outbound_payload(
+                address.target_id, address.channel, outbound, notification=True
+            ),
+        )
+    except DeliveryError as exc:
         if delivery_store is not None:
             await delivery_store.record(
                 target_chat_address=address.chat_key,
@@ -78,7 +92,7 @@ async def send_message(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Channel did not confirm message delivery",
-        )
+        ) from exc
 
     delivery_id: str | None = None
     if delivery_store is not None:

@@ -8,7 +8,6 @@ must be SIGKILLed and reaped instead of orphaning the shell's children.
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import os
 import signal
 import sys
@@ -16,6 +15,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import psutil
+from nahida_bot.core.exec_runner import ExecCommandError
 
 from nahida_bot.core.process_tree import (
     close_process_pipes,
@@ -39,31 +40,11 @@ time.sleep(60)
 
 
 def _pid_alive(pid: int) -> bool:
-    if _IS_WIN:
-        synchronize = 0x00100000
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(synchronize, False, pid)
-        if not handle:
-            return False
-        try:
-            wait_timeout = 0x102
-            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
-        finally:
-            kernel32.CloseHandle(handle)
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        p = psutil.Process(pid)
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    except PermissionError:
-        return True
-    # os.kill succeeds on zombies too; an unreaped zombie is dead for our
-    # purposes (it holds no memory).
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
-            state = stat.read().rsplit(")", 1)[1].split()[0]
-    except OSError:
-        return False
-    return state != "Z"
 
 
 async def _wait_for_worker_pid(marker: Path, timeout: float = 10.0) -> int:
@@ -246,14 +227,14 @@ async def test_tool_exec_warns_when_no_workspace_resolvable(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_tool_exec_timeout_returns_message(tmp_path: Path) -> None:
     plugin = _plugin(tmp_path)
-    result = await plugin._tool_exec(
-        f'"{sys.executable}" -c "import time; time.sleep(60)"', timeout=1
-    )
-    assert result.startswith("Command timed out after 1s.")
+    with pytest.raises(ExecCommandError, match="Command timed out after 1s") as caught:
+        await plugin._tool_exec(
+            f'"{sys.executable}" -c "import time; time.sleep(60)"', timeout=1
+        )
+    assert caught.value.code == "timeout"
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(_IS_WIN, reason="no process groups on Windows")
 async def test_tool_exec_timeout_kills_whole_tree(tmp_path: Path) -> None:
     """Timeout must recycle the spawned tree, not just the shell (#57)."""
     worker = tmp_path / "worker.py"
@@ -261,10 +242,8 @@ async def test_tool_exec_timeout_kills_whole_tree(tmp_path: Path) -> None:
     worker.write_text(_WORKER_SRC, encoding="utf-8")
     plugin = _plugin(tmp_path)
 
-    result = await plugin._tool_exec(
-        f'"{sys.executable}" "{worker}" "{marker}"', timeout=1
-    )
-    assert result.startswith("Command timed out after 1s.")
+    with pytest.raises(ExecCommandError, match="Command timed out after 1s"):
+        await plugin._tool_exec(f'"{sys.executable}" "{worker}" "{marker}"', timeout=1)
     worker_pid = await _wait_for_worker_pid(marker)
     assert await _wait_for_pid_death(worker_pid), (
         "worker survived the exec timeout kill"
@@ -272,7 +251,6 @@ async def test_tool_exec_timeout_kills_whole_tree(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(_IS_WIN, reason="no process groups on Windows")
 async def test_tool_exec_cancellation_kills_whole_tree(tmp_path: Path) -> None:
     """The production trigger: run replaced mid-tool, exec task cancelled.
 
@@ -312,7 +290,6 @@ async def test_execute_script_timeout_returns_result(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(_IS_WIN, reason="no process groups on Windows")
 async def test_execute_script_timeout_kills_whole_tree(tmp_path: Path) -> None:
     worker = tmp_path / "worker.py"
     marker = tmp_path / "worker.pid"
@@ -329,7 +306,6 @@ async def test_execute_script_timeout_kills_whole_tree(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(_IS_WIN, reason="no process groups on Windows")
 async def test_execute_script_cancellation_kills_whole_tree(
     tmp_path: Path,
 ) -> None:

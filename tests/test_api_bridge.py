@@ -559,6 +559,25 @@ async def test_managed_temp_file_is_cleaned_after_send(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_channel_cannot_fake_success_or_delete_attachment(
+    tmp_path: Path,
+) -> None:
+    from nahida_bot.core.outbound import DeliveryError
+
+    api, _, _, _ = _api(tmp_path)
+    temp = await api.create_temp_file(suffix=".png", purpose="retry")
+    path = Path(temp.path)
+    path.write_bytes(b"image")
+    with pytest.raises(DeliveryError, match="unavailable"):
+        await api.send_message(
+            "chat-123",
+            OutboundMessage(text="", attachments=[temp.as_attachment(type="photo")]),
+            channel="missing",
+        )
+    assert path.read_bytes() == b"image"
+
+
+@pytest.mark.asyncio
 async def test_workspace_and_memory_methods_delegate_to_runtime(
     tmp_path: Path,
 ) -> None:

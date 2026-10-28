@@ -33,6 +33,7 @@ from nahida_bot.core.logging import configure_logging
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.tasks import TaskManager
 from nahida_bot.core.process_supervisor import ProcessSupervisor
+from nahida_bot.core.exec_runner import ExecRunner
 from nahida_bot.plugins.commands import CommandMatcher
 
 if TYPE_CHECKING:
@@ -100,6 +101,7 @@ class Application:
             EventContext(app=self, settings=self.settings, logger=logger)
         )
         self.channel_registry = ChannelRegistry()
+        self.exec_runner = ExecRunner(**self.settings.execution.model_dump())
         self.plugin_manager: PluginManager | None = None
         self.message_router: MessageRouter | None = None
         self.agent_loop: AgentLoop | None = None
@@ -205,6 +207,7 @@ class Application:
             )
             self.plugin_manager = PluginManager(
                 event_bus=self.event_bus,
+                exec_runner=self.exec_runner,
                 channel_registry=self.channel_registry,
                 webhost_service=self.webhost_service,
                 task_manager=self.task_manager,
@@ -830,7 +833,9 @@ class Application:
             # memory. ``channel_registry`` is populated lazily as channel
             # plugins register, so the deliverer resolves channels at
             # delivery time.
-            completion_deliverer=ChannelCompletionDeliverer(self.channel_registry),
+            completion_deliverer=ChannelCompletionDeliverer(
+                self.channel_registry, event_bus=self.event_bus
+            ),
         )
 
         # Register image_understand tool when fallback mode is "tool"
@@ -877,6 +882,7 @@ class Application:
         scheduler_cfg = self.settings.scheduler
         self.scheduler_service = SchedulerService(
             repo,
+            exec_runner=self.exec_runner,
             authorization=self._authorization_gate,
             runner=self.session_runner,
             channel_registry=self.channel_registry,

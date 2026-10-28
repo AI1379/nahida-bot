@@ -13,7 +13,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Coroutine
 
-from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.chat_address import (
+    typed_address_from_session_context as _typed_address_from_session_context,
+)
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.plugins.base import Attachment, InboundMessage, OutboundMessage, Plugin
 from nahida_bot.plugins.image_generation.client import (
@@ -661,18 +663,3 @@ def _configured_command_names(raw_names: list[str]) -> list[str]:
         names.append(name)
         seen.add(name)
     return names or ["draw"]
-
-
-def _address_from_session_context(ctx: Any) -> ChatAddress:
-    address = getattr(ctx, "chat_address", None)
-    if isinstance(address, ChatAddress):
-        return address
-    return ChatAddress.from_inbound(
-        str(getattr(ctx, "platform", "")),
-        str(getattr(ctx, "chat_id", "")),
-    )
-
-
-def _typed_address_from_session_context(ctx: Any) -> ChatAddress | None:
-    address = _address_from_session_context(ctx)
-    return address if address.is_typed else None

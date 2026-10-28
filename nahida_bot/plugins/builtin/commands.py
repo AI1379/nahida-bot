@@ -43,7 +43,7 @@ from nahida_bot.core.chat_address import (
 from nahida_bot.core.context import current_session
 from nahida_bot.core.events import AgentStopPayload, AgentStopRequested
 from nahida_bot.core.exec_env import build_exec_env, exec_venv_path
-from nahida_bot.core.process_tree import kill_process_tree
+from nahida_bot.core.exec_runner import ExecCommandError, ExecRunner
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     runtime_settings_from_meta,
@@ -60,6 +60,8 @@ class BuiltinCommandsPlugin(Plugin):
 
     def __init__(self, api: BotAPI, manifest: PluginManifest) -> None:
         super().__init__(api, manifest)
+        runner = getattr(api, "exec_runner", None)
+        self._exec_runner = runner if isinstance(runner, ExecRunner) else ExecRunner()
         self._agent_tools = AgentTools(api)
         self._cron_tools = CronTools(api)
         self._desktop_tools = DesktopTools(api)
@@ -270,6 +272,10 @@ class BuiltinCommandsPlugin(Plugin):
             "The command runs with its working directory set to the current workspace "
             "root unless working_dir is given (also relative to the workspace root); "
             "the resolved working directory is reported in the output header. "
+            "Execution has time, concurrency, output and monitored process-tree "
+            "memory limits on all platforms; resize large images "
+            "and process data in batches. Do not retry an unchanged command "
+            "after a memory-limit failure. "
             f"{venv_note}"
             "Do not pass absolute paths from exec into workspace_read/workspace_write: "
             "those tools only accept workspace-relative paths.",
@@ -318,67 +324,56 @@ class BuiltinCommandsPlugin(Plugin):
         cwd, cwd_notes = self._resolve_exec_cwd(working_dir)
 
         try:
-            proc = await asyncio.create_subprocess_shell(
+            result = await self._exec_runner.run(
                 command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                # Dedicated Python venv (when configured): pip installs from
-                # spawned code must never mutate the bot's own environment.
-                env=build_exec_env(),
-                # Issue #57: dedicated session/process group so cleanup can
-                # kill the whole spawned tree (shell pipelines, interpreters)
-                # instead of orphaning everything but the shell.
-                start_new_session=True,
-            )
-        except Exception as e:
-            _logger.exception("tool.exec.error", command=command)
-            return (
-                f"Failed to execute command: {e}\n"
-                f"Working directory: {self._format_working_directory(cwd, cwd_notes)}"
-            )
-
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=actual_timeout
-            )
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
-        except asyncio.TimeoutError:
-            _logger.warning(
-                "tool.exec.timeout_killed",
-                command=command,
                 timeout=actual_timeout,
-                pid=proc.pid,
+                cwd=cwd,
+                env=build_exec_env(),
             )
-            return f"Command timed out after {actual_timeout}s.\nCommand: {command}"
         except asyncio.CancelledError:
-            # Run replaced/stopped mid-tool: the exec coroutine is abandoned,
-            # so nothing else will ever reap the subprocess.
-            _logger.info("tool.exec.cancelled_killed", command=command, pid=proc.pid)
+            _logger.info("tool.exec.cancelled_killed", command=command)
             raise
         except Exception as e:
             _logger.exception("tool.exec.error", command=command)
-            return f"Failed to execute command: {e}"
-        finally:
-            # Issue #57: single hard-recycling point. On every abnormal exit
-            # (timeout, cancellation, error) SIGKILL the whole process group
-            # and reap it; after a normal communicate() the child has exited
-            # and this only closes the pipe transports.
-            await kill_process_tree(proc)
+            raise ExecCommandError(
+                "spawn_error", f"Failed to execute command: {e}"
+            ) from e
 
-        output = f"Exit code: {proc.returncode}\n"
+        output = f"Exit code: {result.returncode}\n"
         output += (
             f"Working directory: {self._format_working_directory(cwd, cwd_notes)}\n"
         )
-        if stdout:
-            output += f"--- stdout ---\n{stdout}"
-        if stderr:
-            output += f"--- stderr ---\n{stderr}"
+        if result.termination_reason == "timeout":
+            output += f"Command timed out after {actual_timeout}s.\n"
+        elif not result.succeeded:
+            output += (
+                f"Execution stopped: {result.termination_reason}. {result.error}\n"
+            )
+        if result.memory_limited:
+            _logger.warning(
+                "tool.exec.memory_limited",
+                memory_limit_mb=self._exec_runner.memory_limit_mb,
+            )
+            output += (
+                "Command stopped: process tree exceeded its "
+                f"{self._exec_runner.memory_limit_mb} MiB memory limit. "
+                "Resize images or process smaller batches before retrying.\n"
+            )
+        if result.stdout:
+            output += f"--- stdout ---\n{result.stdout}"
+        if result.stderr:
+            output += f"--- stderr ---\n{result.stderr}"
 
-        if len(output) > _MAX_EXEC_OUTPUT:
+        if result.truncated or len(output) > _MAX_EXEC_OUTPUT:
             output = output[:_MAX_EXEC_OUTPUT] + "\n... (output truncated)"
 
+        if not result.succeeded:
+            _logger.warning(
+                "tool.exec.failed",
+                reason=result.termination_reason,
+                peak_rss_bytes=result.peak_rss_bytes,
+            )
+            raise ExecCommandError(result.termination_reason, output)
         return output
 
     @staticmethod

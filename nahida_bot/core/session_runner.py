@@ -52,9 +52,8 @@ from nahida_bot.core.message_context import (
     message_context_from_metadata,
     message_context_to_metadata,
     render_message_with_context,
-    strip_envelope_prefix,
 )
-from nahida_bot.core.sentinel import detect_sentinel
+from nahida_bot.core.sentinel import normalize_reply_text
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     ReasoningRuntimeSettings,
@@ -1349,36 +1348,34 @@ class SessionRunner:
         capabilities: ModelCapabilities | None = None,
         message_context: MessageContext | None = None,
     ) -> list[ContextMessage]:
-        # Group dialogue continuity gate (issue #37): bound group-chat history
-        # to the current conversation segment. A gap larger than the
-        # configured threshold between consecutive dialogue turns (or between
-        # the last dialogue turn and the current trigger) starts a new segment,
-        # so stale dialogue from a different conversation is dropped while the
-        # fresh observed-context window is retained. Private chats and any
-        # context without a group message_context keep the legacy count-only
-        # behavior.
-        dialogue_cutoff = self._group_dialogue_cutoff(
-            records,
-            message_context=message_context,
+        history_cutoff = _latest_cutoff(
+            self._group_dialogue_cutoff(records, message_context=message_context),
+            self._group_topic_cutoff(records, message_context=message_context),
         )
-        topic_cutoff = self._group_topic_cutoff(
-            records,
-            message_context=message_context,
-        )
-        history_cutoff = _latest_cutoff(dialogue_cutoff, topic_cutoff)
-        # Phase 5: when transcript replay is wired, rebuild history from the
-        # canonical run transcripts (paired tool_use/tool_result) instead of
-        # the stripped plain-text turns — the #24 fix. Falls back to the text
-        # path below when there are no transcripts yet (legacy) or projection
-        # fails.
+        eligible = [
+            record
+            for record in records
+            if not (record.turn.metadata or {}).get("observed_only")
+            and (history_cutoff is None or record.turn.created_at >= history_cutoff)
+        ]
+        messages: list[ContextMessage] = []
         projector = self._transcript_projector
-        replay_wired = projector is not None
+        replayed = False
         if projector is not None:
+            # These rows are written outside the AgentLoop, so no run transcript
+            # contains them. User/assistant run projections must not be duplicated.
+            events = [
+                (record.turn.created_at, await self._history_record_message(record))
+                for record in eligible
+                if record.turn.role == "system"
+                or record.turn.source.startswith("subagent_")
+            ]
             try:
-                replay = await projector.project(
+                messages = await projector.project(
                     session_id,
                     capabilities=capabilities,
                     since=history_cutoff,
+                    events=events,
                 )
             except Exception:
                 logger.warning(
@@ -1386,77 +1383,16 @@ class SessionRunner:
                     session_id=session_id,
                     exc_info=True,
                 )
-                replay = []
-            if replay:
-                messages = replay
-                if len(messages) > self._max_history_turns:
-                    messages = messages[-self._max_history_turns :]
-                # Transcript replay strips image parts (message_to_dict keeps
-                # text only), so re-attach them from the compact attachment
-                # refs stamped on each user turn at persist time (#28 root
-                # cause B). Without this, every prior user image vanishes on
-                # the next turn even though it was seen on the turn it landed.
-                messages = await self._merge_replay_image_parts(messages)
-                if self._multimodal_config is not None and any(
-                    m.parts for m in messages if m.role == "user"
-                ):
-                    messages = self._apply_media_context_policy(
-                        messages,
-                        policy=self._multimodal_config.media_context_policy,
-                        capabilities=capabilities,
-                    )
-                logger.debug(
-                    "session_runner.history_context_built",
-                    session_id=session_id,
-                    message_count=len(messages),
-                    protocol_summary=self._context_protocol_summary(messages),
-                    transcript_replay=True,
-                )
-                return messages
-        messages: list[ContextMessage] = []
-        for r in records:
-            metadata = r.turn.metadata
-            if isinstance(metadata, dict) and metadata.get("observed_only") is True:
-                continue
-            if history_cutoff is not None and r.turn.created_at < history_cutoff:
-                continue
-            parts = (
-                await self._reconstruct_parts_for_history(metadata)
-                if r.turn.role == "user"
-                else []
-            )
-            turn_context = message_context_from_metadata(metadata)
-            visible_content = render_message_with_context(
-                r.turn.content,
-                turn_context,
-                role=r.turn.role,
-            )
-            if r.turn.role == "user" and parts:
-                parts = self._prepend_text_part(visible_content, parts)
-            reasoning = None
-            reasoning_signature = None
-            has_redacted = False
-            if r.turn.role == "assistant" and isinstance(metadata, dict):
-                reasoning = metadata.get("reasoning")
-                reasoning_signature = metadata.get("reasoning_signature")
-                has_redacted = metadata.get("has_redacted_thinking", False)
+            replayed = bool(messages)
+        if replayed:
+            messages = await self._merge_replay_image_parts(messages)
+        else:
+            messages = [
+                await self._history_record_message(record) for record in eligible
+            ]
 
-            messages.append(
-                ContextMessage(
-                    role=r.turn.role,  # type: ignore[arg-type]
-                    content=visible_content,
-                    source=r.turn.source,
-                    metadata=metadata,
-                    parts=parts,
-                    reasoning=reasoning,
-                    reasoning_signature=reasoning_signature,
-                    has_redacted_thinking=has_redacted,
-                )
-            )
-
+        # Both representations obey the same atomic window and media policy.
         messages = truncate_messages_to_window(messages, self._max_history_turns)
-
-        # Apply media context policy to history
         if self._multimodal_config is not None and any(
             m.parts for m in messages if m.role == "user"
         ):
@@ -1465,24 +1401,45 @@ class SessionRunner:
                 policy=self._multimodal_config.media_context_policy,
                 capabilities=capabilities,
             )
-            logger.debug(
-                "session_runner.history_media_policy_applied",
-                session_id=session_id,
-                policy=self._multimodal_config.media_context_policy,
-                message_count=len(messages),
-                part_count=sum(len(m.parts) for m in messages),
-            )
-
         logger.debug(
             "session_runner.history_context_built",
             session_id=session_id,
             message_count=len(messages),
             protocol_summary=self._context_protocol_summary(messages),
-            transcript_replay=False,
-            replay_wired=replay_wired,
+            transcript_replay=replayed,
+            replay_wired=projector is not None,
         )
-
         return messages
+
+    async def _history_record_message(self, record: MemoryRecord) -> ContextMessage:
+        """Render a stored turn identically in fallback and merged event history."""
+        turn = record.turn
+        metadata = turn.metadata
+        parts = (
+            await self._reconstruct_parts_for_history(metadata)
+            if turn.role == "user"
+            else []
+        )
+        visible = render_message_with_context(
+            turn.content,
+            message_context_from_metadata(metadata),
+            role=turn.role,
+        )
+        if turn.role == "user" and parts:
+            parts = self._prepend_text_part(visible, parts)
+        reasoning = (
+            metadata if turn.role == "assistant" and isinstance(metadata, dict) else {}
+        )
+        return ContextMessage(
+            role=turn.role,  # type: ignore[arg-type]
+            content=visible,
+            source=turn.source,
+            metadata=metadata,
+            parts=parts,
+            reasoning=reasoning.get("reasoning"),
+            reasoning_signature=reasoning.get("reasoning_signature"),
+            has_redacted_thinking=reasoning.get("has_redacted_thinking", False),
+        )
 
     def _group_topic_cutoff(
         self,
@@ -1648,12 +1605,10 @@ class SessionRunner:
                 record.turn.content,
                 message_context_from_metadata(record.turn.metadata),
                 role=record.turn.role,
+                max_chars=remaining,
             )
-            line = f"- {visible}".replace("\n", "\n  ")
-            if len(line) > remaining:
-                line = line[:remaining].rstrip() + "..."
-            lines.append(line)
-            remaining -= len(line)
+            lines.append(visible)
+            remaining -= len(visible) + 1
             if remaining <= 0:
                 break
 
@@ -2740,13 +2695,19 @@ class SessionRunner:
         seen: set[str] = set()
 
         for message in assistant_messages:
-            content = _visible_text(str(getattr(message, "content", "") or ""))
+            content = _visible_text(
+                str(getattr(message, "content", "") or ""),
+                enable_silent_reply=self._enable_silent_reply,
+            )
             if not content or content in seen:
                 continue
             visible.append((content, message))
             seen.add(content)
 
-        final_response = _visible_text(str(result.final_response or ""))
+        final_response = _visible_text(
+            str(result.final_response or ""),
+            enable_silent_reply=self._enable_silent_reply,
+        )
         fallback_metadata_source = (
             assistant_messages[-1] if assistant_messages else None
         )
@@ -3179,7 +3140,7 @@ def _safe_int(value: object, default: int = 0) -> int:
         return default
 
 
-def _visible_text(raw: str) -> str:
+def _visible_text(raw: str, *, enable_silent_reply: bool = True) -> str:
     """Strip envelope prefix and any reply sentinel, returning the visible text.
 
     Used when projecting assistant turns into memory so a voice-only reply
@@ -3187,9 +3148,7 @@ def _visible_text(raw: str) -> str:
     sentinel (``"summary\\nNO_REPLY"``) keeps only the real text — matching what
     the router actually sends. Returns ``""`` for a pure sentinel.
     """
-    text = strip_envelope_prefix(raw)
-    result = detect_sentinel(text)
-    return result.text if result.action is not None else text
+    return normalize_reply_text(raw, enable_silent_reply=enable_silent_reply).text
 
 
 def _message_context_log_fields(message_context: Any | None) -> dict[str, object]:

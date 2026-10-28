@@ -37,6 +37,7 @@ dependencies = [
     "croniter>=6.2.2",
     "sqlite-vec>=0.1.9",
     "psutil>=7.2.2",
+    "pywin32>=311; sys_platform == 'win32'",
     # SDK (workspace member)
     "nahida-bot-sdk",
 ]

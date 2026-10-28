@@ -10,6 +10,8 @@ config:
   # Read-only directories searchable by the search_files tool (available to
   # every sender, no shell). Empty disables the tool entirely.
   file_search_roots: []
+  # Command limits are configured in the top-level execution section and
+  # shared with cron scripts; see docs/guide/exec-resource-limits.md.
 permissions:
   filesystem:
     read:

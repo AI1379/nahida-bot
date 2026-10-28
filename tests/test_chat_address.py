@@ -8,7 +8,51 @@ from nahida_bot.core.chat_address import (
     ChatAddress,
     SessionKey,
     classify_session_key,
+    address_from_inbound,
+    address_from_session_context,
+    typed_address_from_session_context,
 )
+
+
+@pytest.mark.parametrize(
+    "chat_type,envelope_type,is_group,expected",
+    [
+        ("thread", "group", True, "thread"),
+        ("", "private", True, "private"),
+        ("", "", True, "group"),
+        ("", "", False, "unknown"),
+        ("unknown", "group", True, "unknown"),
+    ],
+)
+def test_shared_inbound_address_precedence(
+    chat_type, envelope_type, is_group, expected
+):
+    from nahida_bot.plugins.base import ChatContext, InboundMessage, MessageContext
+
+    message = InboundMessage(
+        message_id="m",
+        platform="test",
+        chat_id="g",
+        user_id="u",
+        text="",
+        raw_event={},
+        is_group=is_group,
+        chat_context=ChatContext(chat_type=chat_type),
+        message_context=MessageContext(chat_type=envelope_type),
+    )
+    assert address_from_inbound(message) == ChatAddress("test", expected, "g")
+
+
+def test_shared_session_address_preserves_explicit_threads_and_unknown_fallback():
+    from types import SimpleNamespace
+
+    explicit = ChatAddress("test", "thread", "g", "topic")
+    context = SimpleNamespace(platform="test", chat_id="g", chat_address=explicit)
+    assert address_from_session_context(context) is explicit
+    assert typed_address_from_session_context(context) is explicit
+    context.chat_address = None
+    assert address_from_session_context(context).target_type == "unknown"
+    assert typed_address_from_session_context(context) is None
 
 
 # ── ChatAddress construction ────────────────────────────────────────

@@ -5,6 +5,7 @@ from __future__ import annotations
 from nahida_bot.agent.loop import ToolExecutionResult, ToolExecutor
 from nahida_bot.agent.providers import ToolCall, ToolDefinition
 from nahida_bot.plugins.registry import ToolEntry, ToolRegistry
+from nahida_bot.core.exec_runner import ExecCommandError
 
 
 def tool_entry_to_definition(entry: ToolEntry) -> ToolDefinition:
@@ -32,7 +33,15 @@ class RegistryToolExecutor(ToolExecutor):
                 retryable=False,
             )
 
-        result = await entry.handler(**tool_call.arguments)
+        try:
+            result = await entry.handler(**tool_call.arguments)
+        except ExecCommandError as exc:
+            return ToolExecutionResult.error(
+                code=exc.code,
+                message=str(exc),
+                retryable=False,
+                logs=[f"plugin={entry.plugin_id}"],
+            )
         return ToolExecutionResult.success(
             output=result,
             logs=[f"plugin={entry.plugin_id}"],
