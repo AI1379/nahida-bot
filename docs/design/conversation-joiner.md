@@ -11,6 +11,7 @@
 > - [聊天地址与会话 ID](chat-address-and-session-id.md)
 > - [跨会话消息](cross-session-messaging.md)
 > - [配置参考](../guide/configuration.md)
+> - [情绪连续性与 Inner Thoughts](../guide/social-continuity.md)（可选状态层；参与状态机仍为内存态）
 
 ## 1. 背景
 

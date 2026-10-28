@@ -63,6 +63,17 @@ class MessageContext:
 
 
 @dataclass(slots=True, frozen=True)
+class AgentContextRequest:
+    """Inputs for a plugin's once-per-run, non-system context snapshot."""
+
+    session_id: str
+    source: str
+    user_message: str
+    message_context: MessageContext
+    workspace_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class InboundMessage:
     """Normalized message received from an external platform."""
 

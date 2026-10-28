@@ -16,6 +16,7 @@ from nahida_bot_sdk.chat_address import (  # noqa: F401
 
 # Messaging
 from nahida_bot_sdk.messaging import (  # noqa: F401
+    AgentContextRequest,
     Attachment,
     AttentionFrame,
     ChatContext,
@@ -144,6 +145,7 @@ from nahida_bot_sdk.testing import (  # noqa: F401
 )
 
 __all__ = [
+    "AgentContextRequest",
     # Chat addressing
     "ChatAddress",
     "KNOWN_TARGET_TYPES",

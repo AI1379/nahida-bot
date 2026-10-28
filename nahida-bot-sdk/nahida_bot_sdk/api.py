@@ -17,6 +17,7 @@ from typing import (
 
 from nahida_bot_sdk.chat_address import ChatAddress
 from nahida_bot_sdk.messaging import (
+    AgentContextRequest,
     Attachment,
     AttentionFrame,
     InboundAttachment,
@@ -409,6 +410,20 @@ class BotAPI(Protocol):
 
     def unregister_prompt_supplement(self, key: str) -> bool:
         """Remove a previously registered prompt supplement. Returns ``True`` if found."""
+        ...
+
+    def register_context_provider(
+        self,
+        key: str,
+        handler: Callable[[AgentContextRequest], Awaitable[str | None]],
+    ) -> None:
+        """Register bounded context data collected once before an agent run.
+
+        Unlike a prompt supplement, this is appended after history as user-role
+        context data. It cannot grant tools or override instructions. Providers
+        share prompt-supplement ownership and lifecycle; unregister with
+        ``unregister_prompt_supplement``. Failures degrade to no context.
+        """
         ...
 
     # ── Status Provider Registration ──────────────────

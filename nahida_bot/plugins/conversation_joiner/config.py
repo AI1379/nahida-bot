@@ -125,6 +125,20 @@ class GroupJoinerConfig(BaseModel):
     engagement: EngagementConfig | None = None
 
 
+class InnerThoughtsConfig(BaseModel):
+    """Bounded, opt-in social continuity; never an independent tool agent."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    private_enabled: bool = False
+    mood_half_life_seconds: float = Field(default=900, ge=30)
+    state_ttl_seconds: float = Field(default=3600, ge=60, le=86400)
+    thought_ttl_seconds: float = Field(default=600, ge=10, le=3600)
+    direct_update_interval_seconds: float = Field(default=20, ge=0, le=300)
+    max_context_chars: int = Field(default=1800, ge=900, le=3500)
+
+
 class ConversationJoinerConfig(BaseModel):
     """Top-level conversation joiner configuration."""
 
@@ -142,6 +156,7 @@ class ConversationJoinerConfig(BaseModel):
     prefilter: JoinerPrefilterConfig = Field(default_factory=JoinerPrefilterConfig)
     persona_context: PersonaContextConfig = Field(default_factory=PersonaContextConfig)
     engagement: EngagementConfig = Field(default_factory=EngagementConfig)
+    inner_thoughts: InnerThoughtsConfig = Field(default_factory=InnerThoughtsConfig)
     groups: dict[str, GroupJoinerConfig] = Field(default_factory=dict)
 
 

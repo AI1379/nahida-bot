@@ -52,6 +52,7 @@
 - [x] 知识库插件：文档导入（MarkItDown 富文档转换）、分块、FTS/向量/混合检索、可选 embedding、SQLite Document Store
 - [x] 生图插件：OpenAI 兼容 Images API 后端、`/draw`·`/生图` 命令、24h 滚动配额管理、自动发送附件
 - [x] 群聊主动接入插件（Conversation Joiner）：observed-only 群上下文观察 + engagement 状态机，决定何时自然加入话题（in-memory MVP）
+- [x] 可选[情绪连续性与 Inner Thoughts](docs/guide/social-continuity.md)：带消息证据的场面、短时心情和未表达想法；持久化、衰减及运行级上下文快照
 - [x] Desktop 桌宠：Tauri + Rust + Vue 3 + Live2D，边缘隐藏窗口、接近检测、气泡/输入框、本地 TTS 播放管线
 - [x] Subagent 编排：spawn 子 Agent、BackgroundTask 账本、policy hook、父子 session 管理（Phase 3.8 主体）
 - [x] 记忆与文档存储：Memory Store（consolidation/markdown/scope）+ Document Store 分离，按 chat/global scope 隔离的持久记忆

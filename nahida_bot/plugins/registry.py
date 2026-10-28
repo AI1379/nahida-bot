@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+import structlog
+
 if TYPE_CHECKING:
-    from nahida_bot_sdk.messaging import MessageContext
+    from nahida_bot_sdk.messaging import AgentContextRequest, MessageContext
 
 
 @dataclass(slots=True, frozen=True)
@@ -119,6 +122,9 @@ class PromptSupplementEntry:
     plugin_id: str
     channel: str | None = None
     filter: Callable[["MessageContext"], bool] | None = field(default=None, repr=False)
+    context_provider: (
+        Callable[["AgentContextRequest"], Awaitable[str | None]] | None
+    ) = field(default=None, repr=False)
 
 
 class PromptSupplementRegistry:
@@ -126,6 +132,8 @@ class PromptSupplementRegistry:
 
     def __init__(self) -> None:
         self._entries: dict[str, PromptSupplementEntry] = {}
+        self._epochs: dict[str, int] = {}
+        self._epoch = 0
 
     def register(self, entry: PromptSupplementEntry) -> None:
         """Register a prompt supplement. Raises KeyError if the key is already taken."""
@@ -136,10 +144,13 @@ class PromptSupplementRegistry:
                 f"'{existing.plugin_id}'"
             )
         self._entries[entry.key] = entry
+        self._epoch += 1
+        self._epochs[entry.key] = self._epoch
 
     def unregister(self, key: str) -> None:
         """Remove a prompt supplement by key."""
         self._entries.pop(key, None)
+        self._epochs.pop(key, None)
 
     def get(self, key: str) -> PromptSupplementEntry | None:
         """Look up a prompt supplement by key."""
@@ -153,19 +164,42 @@ class PromptSupplementRegistry:
         """Remove all prompt supplements owned by a plugin. Returns count removed."""
         to_remove = [k for k, e in self._entries.items() if e.plugin_id == plugin_id]
         for k in to_remove:
-            self._entries.pop(k, None)
+            self.unregister(k)
         return len(to_remove)
 
     def get_matching(self, context: "MessageContext") -> list[str]:
         """Return instruction strings for all entries whose conditions match."""
         results: list[str] = []
         for entry in self._entries.values():
+            if entry.context_provider is not None:
+                continue
             if entry.channel is not None and entry.channel != context.channel:
                 continue
             if entry.filter is not None and not entry.filter(context):
                 continue
             results.append(entry.instruction)
         return results
+
+    async def collect_context(
+        self, request: "AgentContextRequest"
+    ) -> list[tuple[str, str]]:
+        """Take immutable, bounded snapshots; disabled plugins cannot inject."""
+        result: list[tuple[str, str]] = []
+        for entry in list(self._entries.values()):
+            if entry.context_provider is None:
+                continue
+            epoch = self._epochs.get(entry.key)
+            try:
+                text = await asyncio.wait_for(entry.context_provider(request), 10.0)
+                if self._epochs.get(entry.key) != epoch:
+                    continue
+                if isinstance(text, str) and text.strip():
+                    result.append((entry.key, text[:4000]))
+            except Exception:
+                structlog.get_logger(__name__).warning(
+                    "plugin.context_provider_failed", key=entry.key, exc_info=True
+                )
+        return result
 
 
 @dataclass(slots=True, frozen=True)

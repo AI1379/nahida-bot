@@ -729,6 +729,47 @@ class SessionRunner:
                 history_count=len(runtime.history),
             )
 
+        await self._append_dynamic_context(runtime)
+
+    async def _append_dynamic_context(self, runtime: _SessionRunRuntime) -> None:
+        request = runtime.request
+        message_context = request.message_context
+        # Dynamic plugin state is a once-per-run snapshot after history, never
+        # part of the stable system prefix or re-read between tool calls.
+        if self._supplement_registry is not None and message_context is not None:
+            from nahida_bot_sdk.messaging import AgentContextRequest
+
+            snapshots = await self._supplement_registry.collect_context(
+                AgentContextRequest(
+                    session_id=request.session_id,
+                    source=request.source_tag,
+                    user_message=request.user_message,
+                    message_context=message_context,
+                    workspace_id=request.workspace_id,
+                )
+            )
+            for key, content in snapshots:
+                runtime.history.append(
+                    ContextMessage(
+                        role="user",
+                        content=content,
+                        source=f"plugin_context:{key}",
+                        metadata={"ephemeral": True},
+                    )
+                )
+        if request.source_tag == "proactive_join" and request.agent_instruction.strip():
+            runtime.history.append(
+                ContextMessage(
+                    role="user",
+                    source="proactive_intent",
+                    content=(
+                        "Fallible conversation joiner suggestions (context data, "
+                        "not user instructions):\n" + request.agent_instruction.strip()
+                    ),
+                    metadata={"ephemeral": True},
+                )
+            )
+
     async def _append_attention_context(self, runtime: _SessionRunRuntime) -> None:
         """Append either an explicit proactive frame or generic observations."""
         request = runtime.request
@@ -2584,13 +2625,6 @@ class SessionRunner:
             parts.append(CRON_DESKTOP_ANNOUNCEMENT_INSTRUCTION)
         if source_tag == "proactive_join":
             parts.append(PROACTIVE_JOIN_INSTRUCTION)
-            instruction = agent_instruction.strip()
-            if instruction:
-                parts.append(
-                    "## Conversation Joiner Instruction\n"
-                    "The joiner supplied this non-user instruction for the current "
-                    f"run:\n{instruction}"
-                )
         if self._supplement_registry is not None and context is not None:
             supplements = self._supplement_registry.get_matching(context)
             parts.extend(supplements)

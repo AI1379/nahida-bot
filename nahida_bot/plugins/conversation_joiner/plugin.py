@@ -45,6 +45,9 @@ from nahida_bot.plugins.conversation_joiner.state import (
     EngagementStateMachine,
     PresenceSnapshot,
 )
+from nahida_bot.plugins.conversation_joiner.social import SocialContinuity, SocialTurn
+from nahida_bot.plugins.conversation_joiner.social_prompts import SOCIAL_CONTEXT_RULES
+from nahida_bot_sdk.messaging import AgentContextRequest
 
 
 @dataclass(slots=True, frozen=True)
@@ -135,6 +138,11 @@ class ConversationJoinerPlugin(Plugin):
         self._pending_requests: dict[str, _PendingRequest] = {}
         self._monitor_tasks: dict[str, asyncio.Task[None]] = {}
         self._last_direct_engaged_message_id: dict[str, str] = {}
+        self._social = (
+            SocialContinuity(api, self._config.inner_thoughts)
+            if self._config.inner_thoughts.enabled
+            else None
+        )
 
     async def on_load(self) -> None:
         self.api.subscribe(MessageObserved, self._on_message_observed)
@@ -143,7 +151,18 @@ class ConversationJoinerPlugin(Plugin):
             self.api.subscribe(PokeEvent, self._on_poke)
         if self._has_any_engagement_enabled():
             self._sm = EngagementStateMachine(self.api.logger)
+        if self._has_any_engagement_enabled() or self._social is not None:
             self.api.subscribe(MessageSent, self._on_message_sent)
+        if self._social is not None:
+            self.api.register_prompt_supplement(
+                "social_continuity_rules", SOCIAL_CONTEXT_RULES
+            )
+            self.api.register_context_provider(
+                "social_continuity", self._social_context
+            )
+            self.api.register_status_provider(
+                "social_continuity", self._social_status, label="Social Continuity"
+            )
         self.api.register_status_provider(
             "engagement",
             self._status_provider,
@@ -164,14 +183,77 @@ class ConversationJoinerPlugin(Plugin):
         )
 
     async def on_unload(self) -> None:
+        if self._social is not None:
+            self._social.deactivate()
         if self._sm is not None:
             self._sm.cancel_all_timers()
         await self._cancel_tasks()
 
     async def on_disable(self) -> None:
+        if self._social is not None:
+            self._social.deactivate()
         if self._sm is not None:
             self._sm.cancel_all_timers()
         await self._cancel_tasks()
+
+    async def on_enable(self) -> None:
+        if self._social is not None:
+            self._social.active = True
+
+    async def _social_context(self, request: AgentContextRequest) -> str | None:
+        social = self._social
+        if social is None or not social.accepts(request):
+            return None
+        ctx = request.message_context
+        address = ChatAddress.from_inbound(
+            ctx.channel, ctx.chat_id, chat_type=ctx.chat_type
+        )
+        cfg = effective_group_config(self._config, address.chat_key)
+        persona = await self._load_persona_context(cfg)
+        return await social.prepare_context(
+            request, cfg, persona, list(self._contexts.get(address.chat_key, ()))
+        )
+
+    async def _social_status(self, *, session_id: str, chat_key: str) -> str | None:
+        if self._social is None or not self._social.active:
+            return None
+        cfg = effective_group_config(self._config, chat_key)
+        persona = await self._load_persona_context(cfg)
+        return (
+            await self._social.snapshot(chat_key, session_id, persona)
+            or "No active social state."
+        )
+
+    def _social_turn(
+        self,
+        chat_key: str,
+        persona: str,
+        messages: list[InboundMessage],
+        trigger_id: str,
+    ) -> SocialTurn:
+        session_id = self._resolve_active_session_id(
+            ChatAddress.parse(chat_key), fallback=chat_key
+        )
+        return SocialTurn(chat_key, session_id, persona, tuple(messages), trigger_id)
+
+    async def _gate_chat(
+        self, system: str, prompt: str, turn: SocialTurn, *, model: str, max_tokens: int
+    ) -> str:
+        if self._social is not None:
+            return await self._social.chat(
+                turn, system=system, prompt=prompt, model=model
+            )
+        response = await self.api.llm_chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            model=model,
+            temperature=0.0,
+            max_tokens=max_tokens,
+            tools=[],
+        )
+        return str(getattr(response, "content", "") or "")
 
     async def _cancel_tasks(self) -> None:
         if not self._tasks:
@@ -859,6 +941,10 @@ class ConversationJoinerPlugin(Plugin):
         )
 
         try:
+            if self._social is not None:
+                await self._social.bind_reply_anchor(
+                    context.chat_key, context.session_id, dispatch.anchor.message_id
+                )
             await self.api.request_agent_response(
                 dispatch.anchor,
                 session_id=context.session_id,
@@ -1105,15 +1191,17 @@ class ConversationJoinerPlugin(Plugin):
         )
         try:
             response = await asyncio.wait_for(
-                self.api.llm_chat(
-                    [
-                        {"role": "system", "content": _CONTINUE_GATE_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},
-                    ],
+                self._gate_chat(
+                    _CONTINUE_GATE_SYSTEM_PROMPT,
+                    prompt,
+                    self._social_turn(
+                        chat_key,
+                        persona_context,
+                        list(self._contexts.get(chat_key, ())) + list(batch.messages),
+                        batch.messages[-1].message_id,
+                    ),
                     model=engagement_cfg.continue_gate.model,
-                    temperature=0.0,
                     max_tokens=200,
-                    tools=[],
                 ),
                 timeout=cfg.decision_timeout_seconds,
             )
@@ -1130,7 +1218,7 @@ class ConversationJoinerPlugin(Plugin):
                 error=f"{type(exc).__name__}: {exc}",
             )
             return _GateOutcome(None, "gate_failed")
-        decision = _parse_decision(str(getattr(response, "content", "") or ""))
+        decision = _parse_decision(response)
         if decision is None:
             self.api.logger.debug(
                 "conversation_joiner.continue_gate_parse_failed",
@@ -1305,6 +1393,16 @@ class ConversationJoinerPlugin(Plugin):
         """Detect agent replies and update engagement state accordingly."""
         if event.payload.delivery_kind != "reply":
             return
+        if self._social is not None and event.payload.outbound is not None:
+            payload = event.payload
+            outbound = event.payload.outbound
+            address = address_from_inbound(payload.message)
+            await self._social.delivered(
+                address.chat_key,
+                payload.session_id,
+                payload.message.message_id,
+                outbound.text,
+            )
         sm = self._sm
         if sm is None:
             return
@@ -1700,18 +1798,17 @@ class ConversationJoinerPlugin(Plugin):
         )
         try:
             response = await asyncio.wait_for(
-                self.api.llm_chat(
-                    [
-                        {
-                            "role": "system",
-                            "content": _SECRETARY_SYSTEM_PROMPT,
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
+                self._gate_chat(
+                    _SECRETARY_SYSTEM_PROMPT,
+                    prompt,
+                    self._social_turn(
+                        chat_key,
+                        persona_context,
+                        list(self._contexts.get(chat_key, ())) + [message],
+                        message.message_id,
+                    ),
                     model=cfg.model,
-                    temperature=0.0,
                     max_tokens=300,
-                    tools=[],
                 ),
                 timeout=cfg.decision_timeout_seconds,
             )
@@ -1730,7 +1827,7 @@ class ConversationJoinerPlugin(Plugin):
             )
             return None
 
-        decision = _parse_decision(str(getattr(response, "content", "") or ""))
+        decision = _parse_decision(response)
         if decision is None:
             self.api.logger.debug(
                 "conversation_joiner.secretary_parse_failed",
@@ -1952,12 +2049,13 @@ def _synthesize_poke_message(
     channel = payload.chat_address.channel or "milky"
     group_id = payload.group_id or payload.chat_address.target_id
     poker = payload.user_id
-    now = time.monotonic()
+    # Persisted/social evidence uses epoch time; monotonic time is only for timers.
+    now = time.time()
     text = text_template.format(poker=poker)
     raw: dict[str, Any] = {"poke": True, "scene": payload.scene}
     raw.update(payload.raw)
     return InboundMessage(
-        message_id=f"poke:{poker}:{now}",
+        message_id=f"poke:{poker}:{uuid4().hex}",
         platform=channel,
         chat_id=group_id,
         user_id=poker,

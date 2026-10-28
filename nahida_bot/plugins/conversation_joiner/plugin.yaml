@@ -39,6 +39,15 @@ config:
       - SOUL.md
     max_chars: 4000
     cache_ttl_seconds: 60
+  # 状态只在 gate / 直接回复前更新，不增加空闲定时思考。
+  inner_thoughts:
+    enabled: false
+    private_enabled: false
+    mood_half_life_seconds: 900
+    state_ttl_seconds: 3600
+    thought_ttl_seconds: 600
+    direct_update_interval_seconds: 20
+    max_context_chars: 1800
   prefilter:
     ignore_commands: true
     ignore_mentions: true

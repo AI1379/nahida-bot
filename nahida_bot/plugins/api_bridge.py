@@ -822,6 +822,20 @@ class RealBotAPI:
         self._supplement_registry.register(self._registered_supplements[global_key])
         self._active_supplements.add(global_key)
 
+    def register_context_provider(self, key: str, handler: Any) -> None:
+        """Use supplement lifecycle while keeping volatile data out of system."""
+        global_key = f"{self._plugin_id}:{key}"
+        if global_key in self._registered_supplements:
+            raise KeyError(f"Context provider {key!r} already registered")
+        self._registered_supplements[global_key] = PromptSupplementEntry(
+            key=global_key,
+            instruction="",
+            plugin_id=self._plugin_id,
+            context_provider=handler,
+        )
+        if self._registrations_active:
+            self._activate_supplement(global_key)
+
     # ── Status Provider Registration ──────────────────
 
     def register_status_provider(

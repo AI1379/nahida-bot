@@ -954,7 +954,11 @@ class TestMessageRouterAgentDispatch:
 
         assert len(agent.calls) == 1
         assert "Proactive Conversation Join" in agent.calls[0]["system_prompt"]
-        assert "focus on deployment status" in agent.calls[0]["system_prompt"]
+        assert "focus on deployment status" not in agent.calls[0]["system_prompt"]
+        assert any(
+            m.source == "proactive_intent" and "focus on deployment status" in m.content
+            for m in agent.calls[0]["history_messages"]
+        )
         turns = memory.sessions["test:group:g1"]
         assert turns[0].source == "proactive_join"
 

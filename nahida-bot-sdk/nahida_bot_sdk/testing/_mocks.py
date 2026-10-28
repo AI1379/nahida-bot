@@ -174,6 +174,9 @@ class MockBotAPI:
     ) -> None:
         pass
 
+    def register_context_provider(self, key: str, handler: Any) -> None:
+        pass
+
     def unregister_prompt_supplement(self, key: str) -> bool:
         return False
 
@@ -519,6 +522,11 @@ class RecordingMockBotAPI(MockBotAPI):
             "channel": channel,
             "filter": filter,
         }
+
+    def register_context_provider(self, key: str, handler: Any) -> None:
+        if key in self.registered_prompt_supplements:
+            raise KeyError(f"Context provider {key!r} already registered")
+        self.registered_prompt_supplements[key] = {"context_provider": handler}
 
     def unregister_prompt_supplement(self, key: str) -> bool:
         return self.registered_prompt_supplements.pop(key, None) is not None
@@ -906,6 +914,9 @@ class ConsoleMockBotAPI:
         channel: str | None = None,
         filter: Any | None = None,
     ) -> None:
+        pass
+
+    def register_context_provider(self, key: str, handler: Any) -> None:
         pass
 
     def unregister_prompt_supplement(self, key: str) -> bool:
