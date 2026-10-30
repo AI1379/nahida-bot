@@ -7,6 +7,10 @@
 > 关联：[memory-architecture-exploration.md](memory-architecture-exploration.md)、
 > [memory-soft-scope-and-authz.md](memory-soft-scope-and-authz.md)。关联 issue：#22（tracking）。
 
+> 2026-10-30 核查补充：共享 workspace 的投影仍被自动上下文和 `memory_read` 加载，
+> sensitivity 过滤未解决人物归属和跨群上下文混入。后续调整见
+> [记忆归属与统一读写入口重构](memory-attribution-refactor.md)；该重构尚未实施。
+
 ## 1. 起因
 
 soft-scope + sensitivity 改造（Piece A：`2fcea96` + 评审修复 `96860d7`、`6909773`）落地后，回看整张
