@@ -234,7 +234,7 @@ async def test_empty_steer_does_not_interrupt_active_run(command):
         await _publish(bus, command)
         assert not router._runner.run_tracker.get("test:private:c1").stop_event.is_set()
         assert not router._pending
-        assert channel.sent[-1][1].text == "Usage: /steer <prompt>"
+        assert channel.sent[-1][1].text == "[Command] /steer\n\nUsage: /steer <prompt>"
 
 
 async def test_full_queue_rejects_steer_without_stopping_or_dropping_messages():

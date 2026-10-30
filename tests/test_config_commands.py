@@ -84,7 +84,7 @@ def test_schema_exposes_subagent_notification_switch() -> None:
     )[0]
 
     assert entry.type_ == "bool"
-    assert entry.default_ == "True"
+    assert entry.default_ == "False"
 
 
 def test_schema_includes_builtin_plugin_config_defaults() -> None:

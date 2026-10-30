@@ -49,7 +49,7 @@ class TestAgentConfig:
         assert cfg.tool_retry_attempts == 1
         assert cfg.tool_retry_backoff_seconds == 0.1
         assert cfg.max_tool_log_chars == 400
-        assert cfg.subagent_notifications_enabled is True
+        assert cfg.subagent_notifications_enabled is False
         assert "Tool use policy" in cfg.tool_use_system_prompt
         assert "{code}" in cfg.provider_error_template
 
