@@ -754,7 +754,7 @@ def test_dream_system_prompt_uses_app_name_without_language_hardcoding() -> None
 
 
 @pytest.mark.asyncio
-async def test_memory_consolidator_auto_applies_and_projects_workspace(
+async def test_memory_consolidator_applies_without_mutating_shared_workspace(
     memory_store: SQLiteMemoryStore,
     tmp_path: Path,
 ) -> None:
@@ -775,15 +775,13 @@ async def test_memory_consolidator_auto_applies_and_projects_workspace(
 
     items = await memory_store.search_items("中文回答")
     candidates = await memory_store.list_candidates(status="auto_applied")
-    summary = (workspace_root / MEMORY_SUMMARY_FILE).read_text(encoding="utf-8")
-    memory_md = (workspace_root / "MEMORY.md").read_text(encoding="utf-8")
-
     assert applied == 1
     assert items
     assert candidates
-    assert "中文回答" in summary
-    assert "nahida-memory-generated:start" in memory_md
-    assert "## Manual" in memory_md
+    assert not (workspace_root / MEMORY_SUMMARY_FILE).exists()
+    assert (workspace_root / "MEMORY.md").read_text(
+        encoding="utf-8"
+    ) == "# Memory\n\n## Manual\n"
 
 
 @pytest.mark.asyncio

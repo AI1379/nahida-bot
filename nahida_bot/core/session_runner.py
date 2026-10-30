@@ -21,17 +21,6 @@ from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.agent.memory.models import ConversationTurn, MemoryRecord
 from nahida_bot.agent.memory.scope import resolve_scope_from_session
 from nahida_bot.agent.providers import ToolDefinition
-from nahida_bot.agent.retrieval import (
-    MemoryStoreRetrievalAdapter,
-    RetrievalRequest,
-    RetrievalScope,
-    RetrievalService,
-)
-from nahida_bot.agent.storage.tokenization import build_fts_query
-from nahida_bot.identity.policy import (
-    memory_read_request_from_context,
-    resolve_memory_read_scopes,
-)
 from nahida_bot.core.attachments import resolve_attachment
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
@@ -1734,76 +1723,37 @@ class SessionRunner:
         )
         if not fts_enabled and not vector_enabled:
             return None
-        if fts_enabled and not build_fts_query(query):
-            return None
-
-        # Identity-aware read cascade (issue #7, Phase 2): person -> account ->
-        # chat -> global for private chats, chat -> global for groups. When
-        # identity is off or the sender is unlinked this collapses to the V1
-        # chat -> global cascade (or global-only for legacy sessions).
-        read_request = memory_read_request_from_context(
-            current_session.get(), session_id
-        )
-        scopes = tuple(
-            RetrievalScope(scope_type=scope_type, scope_id=scope_id)
-            for scope_type, scope_id in resolve_memory_read_scopes(read_request)
-        )
+        from nahida_bot.agent.memory.service import MemoryService
+        from nahida_bot.agent.memory.rendering import format_memory_items
 
         try:
-            adapter = MemoryStoreRetrievalAdapter(
-                memory_store=self._memory,
+            service = MemoryService(
+                cast(Any, self._memory),
+                soft_scope=bool(cfg.soft_scope) if cfg else False,
+            )
+            results = await service.retrieve(
+                query,
+                ctx=current_session.get(),
+                session_id=session_id,
+                limit=limit,
                 embedding_provider=self._memory_embedding_provider,
                 vector_index=self._memory_vector_index,
-                soft_scope=bool(cfg.soft_scope) if cfg is not None else False,
-            )
-            service = RetrievalService({"memory": adapter})
-            results = await service.retrieve(
-                RetrievalRequest(
-                    query=query,
-                    source_type="memory",
-                    limit=limit,
-                    scopes=scopes,
-                    fts_enabled=fts_enabled,
-                    vector_enabled=vector_enabled,
-                    hybrid_enabled=cfg.hybrid_enabled if cfg is not None else True,
-                )
+                fts_enabled=fts_enabled,
+                vector_enabled=vector_enabled,
+                hybrid_enabled=cfg.hybrid_enabled if cfg else True,
+                automatic=True,
             )
         except Exception as exc:
             logger.warning("session_runner.memory_search_failed", error=str(exc))
             return None
         if not results:
             return None
-
-        lines = [
-            "Relevant durable memory:",
-            "Treat memory as helpful context, not unquestionable truth. Current user instructions and current files take precedence.",
-        ]
-        remaining = max_chars
-        for result in results:
-            kind = str(result.metadata.get("kind") or "memory")
-            title = result.title
-            content = result.text.strip()
-            item_id = result.result_id
-            if not content:
-                continue
-            prefix = f"- [{kind}"
-            if item_id:
-                prefix += f" {item_id}"
-            prefix += "] "
-            if title:
-                prefix += f"{title}: "
-            allowance = max(remaining - len(prefix), 0)
-            if allowance <= 0:
-                break
-            if len(content) > allowance:
-                content = content[:allowance].rstrip() + "..."
-            line = prefix + content
-            lines.append(line)
-            remaining -= len(line)
-            if remaining <= 0:
-                break
-
-        if len(lines) <= 2:
+        content = format_memory_items(
+            [result.raw for result in results if result.raw is not None],
+            max_chars=max_chars,
+            heading="Relevant durable memory:",
+        )
+        if content == "No matching durable memory found.":
             return None
         # Derive the backend label from the mode the adapter actually executed,
         # not from the request flags: the adapter may degrade hybrid/vector to fts
@@ -1818,10 +1768,10 @@ class SessionRunner:
         return ContextMessage(
             role="system",
             source="long_term_memory",
-            content="\n".join(lines),
+            content=content,
             metadata={
                 "memory_backend": backend,
-                "memory_count": len(lines) - 2,
+                "memory_count": len(results),
             },
         )
 
@@ -2923,7 +2873,7 @@ class SessionRunner:
             attention_episode_id=attention_episode_id,
         )
         if inbound_batch:
-            await self._persist_batch_messages(
+            evidence_records = await self._persist_batch_messages(
                 session_id,
                 inbound_batch,
                 image_descriptions=image_descriptions,
@@ -2933,7 +2883,8 @@ class SessionRunner:
             user_turn = ConversationTurn(
                 role="user", content=user_message, source=source_tag, metadata=metadata
             )
-            await self._memory.append_turn(session_id, user_turn)
+            turn_id = await self._memory.append_turn(session_id, user_turn)
+            evidence_records = [MemoryRecord(turn_id, session_id, user_turn)]
 
         assistant_turns = self._assistant_visible_turns(
             result,
@@ -2977,6 +2928,7 @@ class SessionRunner:
             assistant_message="\n\n".join(turn.content for turn in assistant_turns),
             workspace_id=workspace_id,
             workspace_root=workspace_root,
+            records=evidence_records,
         )
         logger.debug(
             "session_runner.persist_turns_done",
@@ -2993,10 +2945,11 @@ class SessionRunner:
         *,
         image_descriptions: dict[str, str] | None,
         source_tag: str,
-    ) -> None:
+    ) -> list[MemoryRecord]:
         """Persist the original inputs separately, without a synthetic extra turn."""
         if self._memory is None:
-            return
+            return []
+        records = []
         message_ids = [message.message_id for message in messages]
         for index, message in enumerate(messages):
             metadata = await self._build_user_turn_metadata(
@@ -3009,15 +2962,12 @@ class SessionRunner:
             metadata = metadata or {}
             metadata["input_batch_message_ids"] = message_ids
             metadata["input_batch_index"] = index
-            await self._memory.append_turn(
-                session_id,
-                ConversationTurn(
-                    role="user",
-                    content=message.text,
-                    source=source_tag,
-                    metadata=metadata,
-                ),
+            turn = ConversationTurn(
+                role="user", content=message.text, source=source_tag, metadata=metadata
             )
+            turn_id = await self._memory.append_turn(session_id, turn)
+            records.append(MemoryRecord(turn_id, session_id, turn))
+        return records
 
     async def _persist_transcript(
         self,
@@ -3103,6 +3053,7 @@ class SessionRunner:
         assistant_message: str,
         workspace_id: str | None,
         workspace_root: Any,
+        records: list[MemoryRecord] | None = None,
     ) -> None:
         """Run non-blocking-looking memory consolidation on the completed turn."""
         if self._memory_consolidator is None:
@@ -3117,18 +3068,28 @@ class SessionRunner:
             ctx = current_session.get()
             person_id = ctx.person_id if ctx is not None else None
             sender_account_key = ctx.sender_account_key if ctx is not None else ""
-            applied = await self._memory_consolidator.consolidate_turn(
-                session_id=session_id,
-                user_message=user_message,
-                assistant_message=assistant_message,
-                workspace_id=workspace_id,
-                workspace_root=resolved_root,
-                run_rules=self._memory_consolidation_rule_based_enabled,
-                scope_type=scope_type,
-                scope_id=scope_id,
-                person_id=person_id,
-                sender_account_key=sender_account_key,
-            )
+            from nahida_bot.agent.memory.attribution import EvidenceRef
+
+            applied = 0
+            for record in records or [None]:
+                account = (
+                    EvidenceRef.from_record(record).account_key
+                    if record
+                    else sender_account_key
+                )
+                applied += await self._memory_consolidator.consolidate_turn(
+                    session_id=session_id,
+                    user_message=record.turn.content if record else user_message,
+                    assistant_message=assistant_message,
+                    workspace_id=workspace_id,
+                    workspace_root=resolved_root,
+                    run_rules=self._memory_consolidation_rule_based_enabled,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    person_id=person_id if account == sender_account_key else None,
+                    sender_account_key=account,
+                    records=[record] if record else None,
+                )
             if applied:
                 logger.debug(
                     "session_runner.memory_consolidated",

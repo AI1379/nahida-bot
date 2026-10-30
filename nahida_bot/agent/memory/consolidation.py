@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import re
 import json
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
-from nahida_bot.agent.memory.models import Sensitivity, SensitivitySource
+from nahida_bot.agent.memory.models import (
+    Sensitivity,
+    SensitivitySource,
+    MemoryChanges,
+    MemoryRecord,
+)
+
+if TYPE_CHECKING:
+    from nahida_bot.identity.policy import MemoryWriteRequest
 from nahida_bot.agent.memory.portability import (
-    metadata_is_portable,
     normalize_portable,
 )
 
@@ -130,12 +136,16 @@ Rules:
 - Never store routine chat recaps, transient reactions, image-only exchanges, greetings, or "recent conversation" summaries.
 - Do not store secrets, credentials, tokens, cookies, private keys, signed URLs, base64, or raw event dumps.
 - Do not invent facts. Use the conversation as evidence.
+- Input message records include trusted turn IDs, authors and source chats. Preserve who said what; never merge different people into "the user".
+- For each addition and archive, return evidence_turn_ids from these records. Assistant replies, quotations, forwards and existing memories are not independent user assertions.
+- Each addition must include subject: {"kind": "account", "id": "channel:user:id"} for a known participant, {"kind": "chat", "id": "source chat key"} for shared context, or {"kind": "unknown", "id": ""} when unresolved. The speaker is not necessarily the subject. Unknown personal claims will be held for review.
+- Never infer Person links or treat matching display names as identity. Preserve uncertainty and distinguish reports about others from their own statements.
 - Content that reached this conversation via knowledge-base recall (auto-recalled snippets or kb_search/context_read results, including dream-promoted nodes) is existing knowledge, not new evidence: never create a memory entry that merely restates it.
 - Prefer the language and terminology the user normally uses in the conversation.
 - Archive an existing memory only when the new conversation clearly makes it obsolete or contradictory.
 - Audience is independent from kind. Use "current" unless the item is intentionally applicable across every chat and user of this bot.
 - "global" is exceptional: only cross-chat bot-wide decisions, procedures, or warnings qualify. Personal information, project/session state, cron-specific instructions, and every summary must use "current".
-- A group-local nickname for the current sender is a contextual alias: set relation="alias", subject="current_sender", alias to the nickname, and portable=false. Do not infer aliases for third parties or use an alias as proof that two accounts are the same Person.
+- A group-local nickname for the current sender is a contextual alias: set relation="alias", subject to the identified account, alias to the nickname, and portable=false. Do not infer aliases for third parties or use an alias as proof that two accounts are the same Person.
 
 Schema:
 {
@@ -149,7 +159,8 @@ Schema:
       "importance": 0.0,
       "evidence": "short quote or reason",
       "relation": "alias or omit",
-      "subject": "current_sender or omit",
+      "subject": {"kind": "account|chat|unknown", "id": "verified ID or empty"},
+      "evidence_turn_ids": [1],
       "alias": "group-local nickname or omit",
       "portable": true
     }
@@ -157,7 +168,8 @@ Schema:
   "archive": [
     {
       "item_id": "existing memory id",
-      "reason": "why this should be archived"
+      "reason": "why this should be archived",
+      "evidence_turn_ids": [2]
     }
   ]
 }
@@ -192,6 +204,7 @@ class DreamArchive:
 
     item_id: str
     reason: str
+    evidence_turn_ids: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True, frozen=True)
@@ -414,33 +427,26 @@ class LlmMemoryDreamer:
         assistant_message: str,
         existing_items: list[Any],
     ) -> str:
-        existing_lines: list[str] = []
-        for item in existing_items:
-            item_id = str(getattr(item, "item_id", "") or "")
-            kind = str(getattr(item, "kind", "fact") or "fact")
-            title = str(getattr(item, "title", "") or "").strip()
-            content = str(getattr(item, "content", "") or "").strip()
-            if not item_id or not content:
-                continue
-            label = f"{item_id} ({kind})"
-            if title:
-                label += f" {title}"
-            existing_lines.append(f"- {label}: {content[:400]}")
+        from nahida_bot.agent.memory.rendering import format_memory_items
 
-        existing_block = "\n".join(existing_lines) or "(none)"
+        existing_block = (
+            format_memory_items(existing_items, max_chars=8000)
+            if existing_items
+            else "(none)"
+        )
         return (
             f"Session: {session_id}\n\n"
             "Existing durable memories:\n"
             f"{existing_block}\n\n"
             "Recent conversation:\n"
-            f"User: {_compact_text(user_message)[:2000]}\n"
-            f"Assistant: {_compact_text(assistant_message)[:2000]}\n\n"
+            f"User: {user_message}\n"
+            f"Assistant: {assistant_message}\n\n"
             "Return the JSON memory changes now."
         )
 
 
 class MemoryConsolidator:
-    """Promote extracted conversation memory into durable memory items."""
+    """Extract candidates; MemoryService owns policy and durable mutations."""
 
     def __init__(
         self,
@@ -463,7 +469,14 @@ class MemoryConsolidator:
         self._default_person_id = default_person_id
         self._default_sender_account_key = default_sender_account_key
 
-    async def consolidate_turn(
+    async def consolidate_turn(self, **kwargs: Any) -> int:
+        """Compatibility entry for immediate rules; never projects shared files."""
+        from nahida_bot.agent.memory.service import MemoryService
+
+        changes = await self.prepare_turn(**kwargs)
+        return await MemoryService(self._memory).apply_changes(changes)
+
+    async def prepare_turn(
         self,
         *,
         session_id: str,
@@ -478,33 +491,47 @@ class MemoryConsolidator:
         scope_id: str | None = None,
         person_id: str | None = None,
         sender_account_key: str = "",
-    ) -> int:
-        """Extract and auto-apply durable memory from one completed turn."""
-        append_item = getattr(self._memory, "append_item", None)
-        if not callable(append_item):
-            return 0
+        records: list[MemoryRecord] | None = None,
+    ) -> MemoryChanges:
+        from nahida_bot.agent.memory.models import MemoryChanges
+        from nahida_bot.identity.policy import MemoryWriteRequest
+
+        changes = MemoryChanges()
         if not run_rules and dream_provider is None:
-            return 0
+            return changes
+        scope_type = scope_type or self._default_scope_type
+        scope_id = scope_id or self._default_scope_id
+        request = MemoryWriteRequest(
+            chat_scope_id=scope_id if scope_type == SCOPE_TYPE_CHAT else "",
+            person_id=person_id or self._default_person_id,
+            sender_account_key=sender_account_key or self._default_sender_account_key,
+        )
+        query = (
+            "\n".join(record.turn.content for record in records)
+            if records
+            else user_message
+        )
+        existing = await self._load_existing_items(
+            scope_type=scope_type, scope_id=scope_id, query=query
+        )
+        if ":private:" in request.chat_scope_id:
+            from nahida_bot.agent.memory.attribution import EvidenceRef
 
-        eff_scope_type = scope_type or self._default_scope_type
-        eff_scope_id = scope_id or self._default_scope_id
-        # Identity-aware write scope (issue #7, Phase 3). Empty identity
-        # (background dreaming, legacy callers) reproduces V1 chat/global.
-        from nahida_bot.identity.policy import (
-            MemoryWriteRequest,
-            resolve_memory_write_scope,
-        )
+            accounts = {
+                EvidenceRef.from_record(record).account_key for record in records or []
+            }
+            accounts.add(request.sender_account_key)
+            scopes = [("account", account) for account in accounts if account]
+            if request.person_id:
+                scopes.insert(0, ("person", request.person_id))
+            for identity_type, identity_id in scopes:
+                existing.extend(
+                    await self._load_existing_items(
+                        scope_type=identity_type, scope_id=identity_id, query=query
+                    )
+                )
+            existing = list({item.item_id: item for item in existing}.values())
 
-        eff_person_id = person_id if person_id is not None else self._default_person_id
-        eff_account_key = sender_account_key or self._default_sender_account_key
-        write_req = MemoryWriteRequest(
-            chat_scope_id=eff_scope_id if eff_scope_type == SCOPE_TYPE_CHAT else "",
-            person_id=eff_person_id,
-            sender_account_key=eff_account_key,
-        )
-        existing_items = await self._load_existing_items(
-            scope_type=eff_scope_type, scope_id=eff_scope_id
-        )
         extracted = (
             self._extractor.extract(
                 session_id=session_id,
@@ -514,157 +541,229 @@ class MemoryConsolidator:
             if run_rules
             else []
         )
-        if extracted:
-            logger.debug(
-                "memory_consolidation.rule_extracted",
-                session_id=session_id,
-                count=len(extracted),
-            )
-        archives: list[DreamArchive] = []
+        archives = []
         if dream_provider is not None:
-            try:
-                dream = await LlmMemoryDreamer(
-                    dream_provider,
-                    model=dream_model,
-                    app_name=self._app_name,
-                ).dream(
-                    session_id=session_id,
-                    user_message=user_message,
-                    assistant_message=assistant_message,
-                    existing_items=existing_items,
-                )
-                extracted = _dedupe_extractions([*extracted, *dream.additions])
-                archives = dream.archives
-                logger.debug(
-                    "memory_consolidation.dream_extracted",
-                    session_id=session_id,
-                    additions=len(dream.additions),
-                    archives=len(dream.archives),
-                    merged_additions=len(extracted),
-                )
-            except Exception as exc:
-                logger.warning("memory_consolidation.dream_failed", error=str(exc))
-
-        applied = 0
-        skipped_duplicates = 0
-        skipped_unsafe = 0
+            # A failed request/parse must propagate, so batch processing cannot
+            # mistake it for a successful empty dream and advance its cursor.
+            dream = await LlmMemoryDreamer(
+                dream_provider, model=dream_model, app_name=self._app_name
+            ).dream(
+                session_id=session_id,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                existing_items=existing,
+            )
+            extracted = _dedupe_extractions([*extracted, *dream.additions])
+            archives = dream.archives
         for memory in extracted:
-            if validate_memory_content(memory.content) is not None:
-                skipped_unsafe += 1
-                continue
-            sensitivity, sensitivity_source = classify_sensitivity(
-                memory.content, title=memory.title
-            )
-            item_metadata = dict(memory.metadata)
-            portable = metadata_is_portable(item_metadata)
-            if not portable:
-                # Context-bound memories (for example a group-local nickname)
-                # belong to the exact current chat even when ``kind=fact``
-                # would normally follow the sender into person/account scope.
-                if eff_scope_type != SCOPE_TYPE_CHAT or not eff_scope_id:
-                    skipped_unsafe += 1
-                    continue
-                item_scope_type, item_scope_id = SCOPE_TYPE_CHAT, eff_scope_id
-            else:
-                item_scope_type, item_scope_id = resolve_memory_write_scope(
-                    write_req,
-                    memory.kind,
-                    global_scope=(
-                        memory.audience == "global" and sensitivity == "public"
-                    ),
-                )
-            if item_metadata.get("relation") == "alias":
-                if not eff_person_id and not eff_account_key:
-                    # Background group dreaming currently aggregates multiple
-                    # senders. Without a turn-level actor, "current_sender"
-                    # is ambiguous and must not become an identity fact.
-                    skipped_unsafe += 1
-                    continue
-                item_metadata["context_chat_id"] = item_scope_id
-                if eff_person_id:
-                    item_metadata["subject_person_id"] = eff_person_id
-                if eff_account_key:
-                    item_metadata["subject_account_key"] = eff_account_key
-            # A legacy/untyped session has no private destination. Never fall
-            # back to a restricted global row; skip it until the session can
-            # provide a typed chat/person/account scope.
-            if item_scope_type == SCOPE_TYPE_GLOBAL and sensitivity != "public":
-                skipped_unsafe += 1
-                continue
-            if await self._has_duplicate(
-                memory.content,
-                scope_type=item_scope_type,
-                scope_id=item_scope_id,
-            ):
-                skipped_duplicates += 1
-                continue
-            candidate_memory = ExtractedMemory(
-                kind=memory.kind,
-                title=memory.title,
-                content=memory.content,
-                audience=memory.audience,
-                confidence=memory.confidence,
-                importance=memory.importance,
-                evidence=memory.evidence,
-                metadata=item_metadata,
-            )
-            candidate_id = await self._append_candidate(
-                candidate_memory,
+            await self._prepare_addition(
+                changes,
+                memory,
+                request=request,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                session_id=session_id,
                 workspace_id=workspace_id,
-                scope_type=item_scope_type,
-                scope_id=item_scope_id,
+                records=records,
             )
-            metadata = {
-                **item_metadata,
-                "session_id": session_id,
-                "workspace_id": workspace_id or "",
-                "candidate_id": candidate_id,
-                "audience": (
-                    "global" if item_scope_type == SCOPE_TYPE_GLOBAL else "current"
-                ),
-                "consolidated_at": datetime.now(UTC).isoformat(),
-            }
-            await cast(Any, append_item)(
-                title=memory.title,
-                content=memory.content,
-                scope_type=item_scope_type,
-                scope_id=item_scope_id,
-                kind=memory.kind,
-                source="consolidation",
-                confidence=memory.confidence,
-                importance=memory.importance,
-                sensitivity=sensitivity,
-                sensitivity_source=sensitivity_source,
-                evidence=memory.evidence,
-                metadata=metadata,
-            )
-            if candidate_id:
-                await self._mark_candidate_applied(candidate_id)
-            applied += 1
+        existing_by_id = {item.item_id: item for item in existing}
+        for archive in archives:
+            old = existing_by_id.get(archive.item_id)
+            if old is None:
+                continue
+            if records is not None:
+                from nahida_bot.agent.memory.attribution import (
+                    attribution_for_candidate,
+                    item_subject,
+                )
 
-        applied += await self._apply_archives(
-            archives,
-            existing_items=existing_items,
-            workspace_id=workspace_id,
-            scope_type=eff_scope_type,
-            scope_id=eff_scope_id,
+                try:
+                    attribution_for_candidate(
+                        {
+                            "evidence_turn_ids": archive.evidence_turn_ids,
+                            "subject": asdict(item_subject(old)),
+                        },
+                        records,
+                    )
+                except ValueError:
+                    continue
+            changes.archives.append(archive.item_id)
+            from nahida_bot.agent.memory.models import MemoryCandidate
+
+            changes.candidates.append(
+                MemoryCandidate(
+                    candidate_id=f"cand_{uuid4().hex}",
+                    scope_type=old.scope_type,
+                    scope_id=old.scope_id,
+                    kind="archive",
+                    title=f"Archive {old.item_id}",
+                    content=archive.reason,
+                    status="auto_applied",
+                    evidence={
+                        "item_id": old.item_id,
+                        "evidence_turn_ids": archive.evidence_turn_ids,
+                    },
+                )
+            )
+        return changes
+
+    async def _prepare_addition(
+        self,
+        changes: MemoryChanges,
+        memory: ExtractedMemory,
+        *,
+        request: MemoryWriteRequest,
+        scope_type: str,
+        scope_id: str,
+        session_id: str,
+        workspace_id: str | None,
+        records: list[MemoryRecord] | None,
+    ) -> None:
+        from nahida_bot.agent.memory.attribution import (
+            EvidenceRef,
+            MemoryAttribution,
+            MemorySubject,
+            attribution_for_candidate,
+            item_subject,
         )
-        logger.debug(
-            "memory_consolidation.applied",
+        from nahida_bot.agent.memory.models import MemoryCandidate
+        from nahida_bot.agent.memory.service import MemoryService
+        from dataclasses import replace
+
+        metadata = dict(memory.metadata)
+        rejection = validate_memory_content(memory.content) or ""
+        if rejection:
+            return
+        if records is not None:
+            if memory.metadata.get("extractor") != "llm_dream" and len(records) == 1:
+                ref = EvidenceRef.from_record(records[0])
+                metadata["evidence_turn_ids"] = [ref.turn_id]
+                metadata["subject"] = (
+                    {"kind": "account", "id": ref.account_key}
+                    if ref.account_key
+                    else {"kind": "chat", "id": ref.chat_id}
+                )
+            try:
+                attribution = attribution_for_candidate(metadata, records)
+                metadata["attribution"] = attribution.to_dict()
+                if attribution.subject.kind == "unknown":
+                    rejection = (
+                        "memory requires an identified subject or shared chat context"
+                    )
+            except ValueError as exc:
+                rejection = str(exc)
+        else:
+            subject = (
+                MemorySubject("account", request.sender_account_key)
+                if request.sender_account_key
+                else MemorySubject()
+            )
+            metadata["attribution"] = MemoryAttribution(subject).to_dict()
+        if metadata.get("relation") == "alias":
+            attribution = MemoryAttribution.parse(metadata)
+            account = (
+                attribution.subject.id if attribution.subject.kind == "account" else ""
+            )
+            if records is not None:
+                own_evidence = [
+                    record
+                    for record in records
+                    if record.turn_id in metadata.get("evidence_turn_ids", [])
+                    and EvidenceRef.from_record(record).account_key == account
+                ]
+                if not account or not any(
+                    _extract_contextual_self_alias(record.turn.content, session_id)
+                    for record in own_evidence
+                ):
+                    rejection = "alias requires an evidenced self-identification"
+            elif not request.sender_account_key and not request.person_id:
+                rejection = "alias requires a single identified speaker"
+            metadata.update(context_chat_id=request.chat_scope_id, portable=False)
+            if account:
+                metadata["subject_account_key"] = account
+            if request.person_id and account == request.sender_account_key:
+                metadata["subject_person_id"] = request.person_id
+        candidate_id = f"cand_{uuid4().hex}"
+        metadata.update(
             session_id=session_id,
-            applied=applied,
-            skipped_duplicates=skipped_duplicates,
-            skipped_unsafe=skipped_unsafe,
-            archive_requests=len(archives),
+            workspace_id=workspace_id or "",
+            candidate_id=candidate_id,
         )
-
-        if applied and workspace_root is not None:
-            await self.project_workspace_memory(
-                workspace_root,
-                scope_type=eff_scope_type,
-                scope_id=eff_scope_id,
+        if rejection:
+            changes.candidates.append(
+                MemoryCandidate(
+                    candidate_id=candidate_id,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    kind=memory.kind,
+                    title=memory.title,
+                    content=memory.content,
+                    status="pending",
+                    confidence=memory.confidence,
+                    evidence=memory.evidence,
+                    metadata={
+                        **metadata,
+                        "rejection_reason": rejection,
+                        "batch_turn_ids": [r.turn_id for r in records or []],
+                    },
+                )
             )
-        return applied
+            logger.info(
+                "memory_consolidation.candidate_deferred",
+                session_id=session_id,
+                reason=rejection,
+            )
+            return
+        sensitivity, sensitivity_source = classify_sensitivity(
+            memory.content, title=memory.title
+        )
+        try:
+            item = MemoryService(self._memory).prepare_item(
+                memory.title,
+                memory.content,
+                session_id=session_id,
+                write_request=request,
+                metadata={
+                    **metadata,
+                    "kind": memory.kind,
+                    "source": "consolidation",
+                    "audience": memory.audience,
+                    "confidence": memory.confidence,
+                    "importance": memory.importance,
+                    "evidence": memory.evidence,
+                    "sensitivity": sensitivity,
+                },
+            )
+        except ValueError:
+            return
+        item = replace(item, sensitivity_source=sensitivity_source)
+        duplicates = await self._memory.search_items(
+            item.content,
+            scope_type=item.scope_type,
+            scope_id=item.scope_id,
+            limit=10,
+        )
+        if any(
+            _normalize_for_dedupe(other.content) == _normalize_for_dedupe(item.content)
+            and item_subject(other) == item_subject(item)
+            for other in [*duplicates, *changes.additions]
+        ):
+            return
+        changes.additions.append(item)
+        changes.candidates.append(
+            MemoryCandidate(
+                candidate_id=candidate_id,
+                scope_type=item.scope_type,
+                scope_id=item.scope_id,
+                kind=item.kind,
+                title=item.title,
+                content=item.content,
+                status="auto_applied",
+                confidence=item.confidence,
+                evidence=item.evidence,
+                metadata=item.metadata,
+            )
+        )
 
     async def project_workspace_memory(
         self,
@@ -673,15 +772,9 @@ class MemoryConsolidator:
         scope_type: str = SCOPE_TYPE_GLOBAL,
         scope_id: str = SCOPE_ID_GLOBAL,
     ) -> None:
-        """Regenerate workspace memory projection files from structured memory.
-
-        Delegates to the shared, sensitivity-filtered projection in
-        :mod:`nahida_bot.agent.memory.service` so the consolidator and the
-        :class:`MemoryService` / REST path project identically: only public
-        items reach the Markdown files (grep-fallback recall without leaks).
-        """
+        """Explicit operator export only; never called by consolidation."""
         await project_workspace_memory(
-            cast(Any, self._memory),
+            self._memory,
             workspace_root,
             scope_type=scope_type,
             scope_id=scope_id,
@@ -689,115 +782,25 @@ class MemoryConsolidator:
         )
 
     async def _load_existing_items(
-        self, *, scope_type: str, scope_id: str
+        self, *, scope_type: str, scope_id: str, query: str = ""
     ) -> list[Any]:
-        search_items = getattr(self._memory, "search_items", None)
-        if not callable(search_items):
-            return []
-        try:
-            return list(
-                await cast(Any, search_items)(
-                    "",
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    limit=self._projection_limit,
-                )
+        relevant = (
+            await self._memory.search_items(
+                query,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=self._projection_limit // 2,
             )
-        except Exception as exc:
-            logger.warning("memory_consolidation.load_existing_failed", error=str(exc))
-            return []
-
-    async def _apply_archives(
-        self,
-        archives: list[DreamArchive],
-        *,
-        existing_items: list[Any],
-        workspace_id: str | None,
-        scope_type: str,
-        scope_id: str,
-    ) -> int:
-        archive_item = getattr(self._memory, "archive_item", None)
-        if not callable(archive_item) or not archives:
-            return 0
-        existing_ids = {
-            str(getattr(item, "item_id", "") or "")
-            for item in existing_items
-            if getattr(item, "item_id", "")
-        }
-        applied = 0
-        for archive in archives:
-            if archive.item_id not in existing_ids:
-                continue
-            candidate_id = f"cand_{uuid4().hex}"
-            append_candidate = getattr(self._memory, "append_candidate", None)
-            if callable(append_candidate):
-                await cast(Any, append_candidate)(
-                    candidate_id=candidate_id,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                    kind="archive",
-                    title=f"Archive {archive.item_id}",
-                    content=archive.reason,
-                    status="auto_applied",
-                    confidence=0.8,
-                    evidence={"item_id": archive.item_id, "reason": archive.reason},
-                    metadata={
-                        "extractor": "llm_dream",
-                        "workspace_id": workspace_id or "",
-                    },
-                )
-            if await cast(Any, archive_item)(archive.item_id):
-                applied += 1
-        return applied
-
-    async def _append_candidate(
-        self,
-        memory: ExtractedMemory,
-        *,
-        workspace_id: str | None,
-        scope_type: str,
-        scope_id: str,
-    ) -> str:
-        append_candidate = getattr(self._memory, "append_candidate", None)
-        if not callable(append_candidate):
-            return ""
-        candidate_id = f"cand_{uuid4().hex}"
-        await cast(Any, append_candidate)(
-            candidate_id=candidate_id,
+            if query.strip()
+            else []
+        )
+        recent = await self._memory.search_items(
+            "",
             scope_type=scope_type,
             scope_id=scope_id,
-            kind=memory.kind,
-            title=memory.title,
-            content=memory.content,
-            status="auto_applied",
-            confidence=memory.confidence,
-            evidence=memory.evidence,
-            metadata={**memory.metadata, "workspace_id": workspace_id or ""},
+            limit=self._projection_limit // 2,
         )
-        return candidate_id
-
-    async def _mark_candidate_applied(self, candidate_id: str) -> None:
-        mark_candidate_applied = getattr(self._memory, "mark_candidate_applied", None)
-        if callable(mark_candidate_applied):
-            await cast(Any, mark_candidate_applied)(candidate_id)
-
-    async def _has_duplicate(
-        self, content: str, *, scope_type: str, scope_id: str
-    ) -> bool:
-        search_items = getattr(self._memory, "search_items", None)
-        if not callable(search_items):
-            return False
-        try:
-            results = await cast(Any, search_items)(
-                content, scope_type=scope_type, scope_id=scope_id, limit=10
-            )
-        except Exception:
-            return False
-        needle = _normalize_for_dedupe(content)
-        return any(
-            _normalize_for_dedupe(str(getattr(item, "content", ""))) == needle
-            for item in results
-        )
+        return list({item.item_id: item for item in [*relevant, *recent]}.values())
 
 
 def _candidate_sentences(text: str) -> list[str]:
@@ -880,7 +883,9 @@ def _dedupe_extractions(items: list[ExtractedMemory]) -> list[ExtractedMemory]:
     seen: set[str] = set()
     result: list[ExtractedMemory] = []
     for item in items:
-        key = _normalize_for_dedupe(item.content)
+        key = _normalize_for_dedupe(item.content) + json.dumps(
+            item.metadata.get("subject"), sort_keys=True
+        )
         if not key or key in seen:
             continue
         seen.add(key)
@@ -898,12 +903,16 @@ def parse_memory_dream(raw: str) -> MemoryDream:
     if not isinstance(data, dict):
         raise ValueError("memory dream output must be a JSON object")
 
+    if not isinstance(data.get("add"), list) or not isinstance(
+        data.get("archive"), list
+    ):
+        raise ValueError("memory dream must contain add and archive arrays")
     additions: list[ExtractedMemory] = []
-    raw_additions = data.get("add", [])
+    raw_additions = data["add"]
     if isinstance(raw_additions, list):
         for raw_item in raw_additions:
             if not isinstance(raw_item, dict):
-                continue
+                raise ValueError("memory addition must be an object")
             content = _clean_candidate_content(str(raw_item.get("content", "")))
             if not content:
                 continue
@@ -918,12 +927,22 @@ def parse_memory_dream(raw: str) -> MemoryDream:
             if not title:
                 title = _title_from_content(content)
             evidence_text = _clean_candidate_content(str(raw_item.get("evidence", "")))
-            metadata: dict[str, Any] = {"extractor": "llm_dream"}
+            metadata: dict[str, Any] = {
+                "extractor": "llm_dream",
+                "evidence_turn_ids": raw_item.get("evidence_turn_ids", []),
+                "subject": raw_item.get("subject", {}),
+            }
             relation = str(raw_item.get("relation", "") or "").strip().casefold()
             subject = str(raw_item.get("subject", "") or "").strip().casefold()
             alias = _clean_candidate_content(str(raw_item.get("alias", "") or ""))
             if relation == "alias" and subject == "current_sender" and alias:
                 metadata.update(_contextual_alias_metadata(alias))
+            elif (
+                relation == "alias"
+                and isinstance(raw_item.get("subject"), dict)
+                and alias
+            ):
+                metadata.update(relation="alias", alias=alias, portable=False)
             elif "portable" in raw_item:
                 metadata["portable"] = normalize_portable(
                     raw_item.get("portable"), default=True
@@ -946,11 +965,17 @@ def parse_memory_dream(raw: str) -> MemoryDream:
     if isinstance(raw_archives, list):
         for raw_item in raw_archives:
             if not isinstance(raw_item, dict):
-                continue
+                raise ValueError("memory archive request must be an object")
             item_id = str(raw_item.get("item_id", "") or "").strip()
             reason = _clean_candidate_content(str(raw_item.get("reason", "")))
             if item_id and reason:
-                archives.append(DreamArchive(item_id=item_id, reason=reason))
+                archives.append(
+                    DreamArchive(
+                        item_id=item_id,
+                        reason=reason,
+                        evidence_turn_ids=raw_item.get("evidence_turn_ids", []),
+                    )
+                )
 
     return MemoryDream(
         additions=_dedupe_extractions(additions),

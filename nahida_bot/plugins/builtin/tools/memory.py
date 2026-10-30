@@ -9,10 +9,7 @@ from typing import Any
 import structlog
 
 from nahida_bot.agent.memory.markdown import (
-    MEMORY_FILE,
-    MEMORY_SUMMARY_FILE,
     MAX_TOOL_READ_CHARS,
-    filter_memory_text,
     validate_memory_content,
 )
 from nahida_bot.plugins.tooling import PluginToolDefinition
@@ -54,6 +51,21 @@ _READ_PARAMETERS: dict[str, Any] = {
 _WRITE_PARAMETERS: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "subject": {
+            "type": "string",
+            "enum": ["current_sender", "chat", "unknown"],
+            "description": "Whose fact this is. Choose current_sender only for their own facts, chat for shared context. Unknown is never assumed to be the current user.",
+        },
+        "subject_account_key": {
+            "type": "string",
+            "description": "For a third party, their verified channel:user:id from cited conversation evidence; never infer from a display name.",
+        },
+        "evidence_turn_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "maxItems": 100,
+            "description": "Original turn IDs in the current chat, required for third-party facts. Retain reporting uncertainty in the content.",
+        },
         "content": {
             "type": "string",
             "description": "Concise memory text to append.",
@@ -270,26 +282,15 @@ class MemoryTools:
         )
 
     async def read(self, query: str = "", max_length: int = 10000) -> str:
-        """Read structured and compatible Markdown durable memory."""
+        """Read attributed durable memory through the shared retrieval policy."""
         _logger.debug("tool.memory_read", query=query)
         structured = await self._api.memory_search(query, limit=20)
         max_chars = min(max(max_length, 1), MAX_TOOL_READ_CHARS)
-        blocks: list[str] = []
-        if structured:
-            blocks.append(self.format_refs(structured))
-        for path in (MEMORY_FILE, MEMORY_SUMMARY_FILE):
-            raw = await self.read_workspace_text_or_empty(path)
-            filtered = filter_memory_text(raw, query).strip()
-            if filtered:
-                blocks.append(f"## {path}\n{filtered}")
+        from nahida_bot.agent.memory.rendering import format_memory_items, item_from_ref
 
-        if not blocks:
-            return "No matching durable memory found."
-
-        result = "\n\n".join(blocks)
-        if len(result) > max_chars:
-            result = result[:max_chars].rstrip() + "\n... (memory truncated)"
-        return result
+        return format_memory_items(
+            [item_from_ref(item) for item in structured], max_chars=max_chars
+        )
 
     async def write(
         self,
@@ -299,6 +300,9 @@ class MemoryTools:
         audience: str = "current",
         sensitivity: str = "public",
         portable: bool = True,
+        subject: str = "unknown",
+        subject_account_key: str = "",
+        evidence_turn_ids: list[int] | None = None,
     ) -> str:
         """Create one durable-memory item after policy validation."""
         _logger.debug(
@@ -329,6 +333,9 @@ class MemoryTools:
                     "audience": audience,
                     "sensitivity": sensitivity,
                     "portable": portable,
+                    "subject": subject,
+                    "subject_account_key": subject_account_key,
+                    "evidence_turn_ids": evidence_turn_ids,
                 },
             )
         except Exception as exc:
@@ -420,42 +427,9 @@ class MemoryTools:
         _logger.info("tool.memory_archived", item_id=item_id, reason=reason)
         return f"Memory archived: {item_id}"
 
-    async def read_workspace_text_or_empty(self, path: str) -> str:
-        """Read a workspace text file, treating ordinary absence as empty."""
-        try:
-            return await self._api.workspace_read(path)
-        except FileNotFoundError:
-            return ""
-        except Exception as exc:
-            if exc.__class__.__name__ in {
-                "WorkspacePathError",
-                "WorkspaceNotFoundError",
-            }:
-                raise
-            return ""
-
     @staticmethod
     def format_refs(results: list[Any]) -> str:
-        """Format memory references for model and command output."""
-        if not results:
-            return "No memory found."
-        lines = ["Memory results:"]
-        for idx, item in enumerate(results, start=1):
-            title = ""
-            scope_type = ""
-            audience = ""
-            sensitivity = ""
-            metadata = getattr(item, "metadata", None)
-            if isinstance(metadata, dict):
-                title_value = metadata.get("title")
-                if isinstance(title_value, str) and title_value:
-                    title = f"{title_value}: "
-                scope_type = str(metadata.get("scope_type", "") or "")
-                audience = str(metadata.get("audience", "") or "")
-                sensitivity = str(metadata.get("sensitivity", "") or "")
-            key = getattr(item, "key", "")
-            content = getattr(item, "content", "")
-            scope_parts = [p for p in (scope_type, audience, sensitivity) if p]
-            scope_label = f" ({', '.join(scope_parts)})" if scope_parts else ""
-            lines.append(f"{idx}. [{key}]{scope_label} {title}{str(content)[:500]}")
-        return "\n".join(lines)
+        """Preserve the same attribution as automatic recall."""
+        from nahida_bot.agent.memory.rendering import format_memory_items, item_from_ref
+
+        return format_memory_items([item_from_ref(item) for item in results])

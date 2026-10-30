@@ -10,11 +10,6 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 
-from nahida_bot.agent.memory.markdown import (
-    MAX_CONTEXT_MEMORY_CHARS,
-    build_memory_context,
-    load_workspace_markdown_memory,
-)
 from nahida_bot.agent.tokenization import Tokenizer, resolve_tokenizer
 from nahida_bot.workspace.skills import SkillCatalog
 from nahida_bot.core.logging import log_trace
@@ -360,25 +355,6 @@ class ContextBuilder:
             )
         return messages
 
-    def load_workspace_memory(self, workspace_root: Path) -> ContextMessage | None:
-        """Load bounded Markdown memory from the active workspace."""
-        entries = load_workspace_markdown_memory(
-            workspace_root,
-            max_chars=MAX_CONTEXT_MEMORY_CHARS,
-        )
-        content = build_memory_context(entries, max_chars=MAX_CONTEXT_MEMORY_CHARS)
-        if not content:
-            return None
-        return ContextMessage(
-            role="system",
-            source="workspace_memory:markdown",
-            content=content,
-            metadata={
-                "memory_paths": [entry.path for entry in entries],
-                "memory_backend": "markdown",
-            },
-        )
-
     def build_context(
         self,
         *,
@@ -414,9 +390,8 @@ class ContextBuilder:
                         role="system", source="skill_catalog", content=catalog_text
                     )
                 )
-            memory_message = self.load_workspace_memory(workspace_root)
-            if memory_message is not None:
-                prefix_messages.append(memory_message)
+            # Dynamic memory is prepared by MemoryService for this audience.
+            # Shared workspace exports are never a source of model context.
 
         optional_messages = [*(history_messages or []), *(tool_messages or [])]
         protected = list(protected_messages or [])

@@ -763,7 +763,13 @@ async def test_memory_store_explicit_sensitivity_is_explicit(tmp_path: Path) -> 
     """An explicit sensitivity is recorded with source='explicit' (Piece A4)."""
     api, _, _, _ = _api(tmp_path)
     await api.memory_store(
-        "secret note", "keep this between us", metadata={"sensitivity": "private"}
+        "secret note",
+        "keep this between us",
+        metadata={
+            "sensitivity": "private",
+            "scope_type": "chat",
+            "scope_id": "milky:private:owner",
+        },
     )
     item = cast(Any, api)._memory.items[-1]
     assert item.sensitivity == "private"

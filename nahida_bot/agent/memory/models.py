@@ -143,3 +143,20 @@ class SessionSummary:
     last_active_at: str
     turn_count: int
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class MemoryChanges:
+    """Validated mutations prepared outside a storage transaction."""
+
+    additions: list[MemoryItem] = field(default_factory=list)
+    candidates: list[MemoryCandidate] = field(default_factory=list)
+    archives: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True, frozen=True)
+class ConsolidationOutcome:
+    status: Literal["applied", "empty", "failed", "stale"]
+    applied: int = 0
+    last_turn_id: int = 0
+    error: str = ""

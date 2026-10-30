@@ -1,5 +1,9 @@
 # Nahida Bot 记忆系统设计草案
 
+> 2026-10-30 实现更新：动态记忆统一从数据库读取并携带人物与来源，后台整理按完整消息批次提交。
+> `MEMORY.md` / `memory_summary.md` 已退出自动提示和 `memory_read` 回退路径，保留显式导出用途。
+> 下文的早期 Markdown 自动注入设计属于历史记录；当前行为见 [归属重构](memory-attribution-refactor.md)。
+
 > 记录时间：2026-05-11
 > 最近审计：2026-08-10
 > 状态：大部分已实现；**Phase 4（agent run/event）写入侧已落地**于 `nahida_bot/agent/runtime/`（`RunRecorder`/`AgentRunStore`，详见 [agent-loop-repair-plan.md](agent-loop-repair-plan.md)）。Phase 5 轻量图谱仍待实现。

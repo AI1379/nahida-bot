@@ -32,6 +32,184 @@ class SQLiteMemoryRepository:
     def __init__(self, engine: DatabaseEngine) -> None:
         self._engine = engine
 
+    async def get_turns_after(
+        self, session_id: str, after_id: int, *, limit: int
+    ) -> list[dict[str, Any]]:
+        rows = await self._engine.fetch_all(
+            "SELECT * FROM memory_turns WHERE session_id = ? AND id > ? ORDER BY id LIMIT ?",
+            (session_id, after_id, limit),
+        )
+        return [self._row_to_dict(row) for row in rows]
+
+    async def get_turns_by_ids(self, ids: list[int]) -> list[dict[str, Any]]:
+        if not ids or len(ids) > 100 or any(type(i) is not int for i in ids):
+            return []
+        rows = await self._engine.fetch_all(
+            f"SELECT * FROM memory_turns WHERE id IN ({','.join('?' for _ in ids)}) ORDER BY id",
+            tuple(ids),
+        )
+        return [self._row_to_dict(row) for row in rows]
+
+    async def search_memory_literal(
+        self,
+        query: str,
+        *,
+        scope_type: str | None,
+        scope_id: str | None,
+        limit: int,
+        public_only: bool = False,
+        portable_only: bool = False,
+        attributed_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        conditions = [
+            "status = 'active'",
+            "(instr(lower(content), lower(?)) > 0 OR instr(lower(title), lower(?)) > 0)",
+        ]
+        params: list[Any] = [query, query]
+        for name, value in (("scope_type", scope_type), ("scope_id", scope_id)):
+            if value is not None:
+                conditions.append(f"{name} = ?")
+                params.append(value)
+        if public_only:
+            conditions.append("sensitivity = 'public'")
+        if attributed_only:
+            conditions.append(
+                "json_extract(metadata_json, '$.attribution.subject.kind') IN ('account','person','chat')"
+            )
+        if portable_only:
+            conditions.append(
+                "COALESCE(json_extract(metadata_json, '$.portable'), 1) != 0"
+            )
+        rows = await self._engine.fetch_all(
+            "SELECT *, 0.0 AS score FROM memory_items WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            (*params, limit),
+        )
+        return [self._memory_item_row_to_dict(row) for row in rows]
+
+    async def apply_memory_changes(
+        self,
+        items: list[dict[str, Any]],
+        candidates: list[dict[str, Any]],
+        archives: list[str],
+        *,
+        session_id: str = "",
+        expected_turn_id: int | None = None,
+        last_turn_id: int = 0,
+    ) -> int:
+        """Commit a prepared batch and its checkpoint together; -1 is stale."""
+        async with self._engine.write_lock:
+            await self._engine.execute("BEGIN IMMEDIATE")
+            try:
+                metadata = (
+                    await self.get_session_metadata(session_id)
+                    if expected_turn_id is not None
+                    else {}
+                )
+                if (
+                    expected_turn_id is not None
+                    and int(metadata.get("memory_dream_last_turn_id", 0))
+                    != expected_turn_id
+                ):
+                    await self._engine.db.rollback()
+                    return -1
+                for item_id in archives:
+                    active = await self._engine.fetch_one(
+                        "SELECT item_id FROM memory_items WHERE item_id=? AND status='active'",
+                        (item_id,),
+                    )
+                    if active is None:
+                        await self._engine.db.rollback()
+                        return -1
+                for item in items:
+                    await self._insert_prepared_item(item)
+                for candidate in candidates:
+                    columns = (
+                        "candidate_id",
+                        "scope_type",
+                        "scope_id",
+                        "kind",
+                        "title",
+                        "content",
+                        "status",
+                        "confidence",
+                        "evidence_json",
+                        "metadata_json",
+                        "created_at",
+                        "updated_at",
+                    )
+                    await self._engine.execute(
+                        f"INSERT INTO memory_candidates ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+                        tuple(candidate[name] for name in columns),
+                    )
+                archived = 0
+                for item_id in archives:
+                    cursor = await self._engine.execute(
+                        "UPDATE memory_items SET status='archived', updated_at=? WHERE item_id=? AND status='active'",
+                        (_utc_now_iso(), item_id),
+                    )
+                    archived += cursor.rowcount
+                if expected_turn_id is not None:
+                    metadata.update(
+                        memory_dream_last_turn_id=last_turn_id,
+                        memory_dream_last_at=_utc_now_iso(),
+                        memory_dream_error="",
+                    )
+                    cursor = await self._engine.execute(
+                        "UPDATE sessions SET metadata_json=? WHERE session_id=?",
+                        (json.dumps(metadata, ensure_ascii=False), session_id),
+                    )
+                    if cursor.rowcount != 1:
+                        raise ValueError("memory batch session no longer exists")
+                await self._engine.db.commit()
+                return len(items) + archived
+            except BaseException:
+                await self._engine.db.rollback()
+                raise
+
+    async def _insert_prepared_item(self, item: dict[str, Any]) -> None:
+        columns = (
+            "item_id",
+            "scope_type",
+            "scope_id",
+            "kind",
+            "title",
+            "content",
+            "status",
+            "confidence",
+            "importance",
+            "sensitivity",
+            "sensitivity_source",
+            "source",
+            "evidence_json",
+            "metadata_json",
+            "created_at",
+            "updated_at",
+            "parent_id",
+            "root_id",
+            "node_type",
+            "path",
+            "source_id",
+        )
+        await self._engine.execute(
+            f"INSERT INTO memory_items ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+            tuple(item[name] for name in columns),
+        )
+        await self._engine.execute(
+            "INSERT INTO memory_item_fts (item_id, scope_type, scope_id, title_index, content_index) VALUES (?, ?, ?, ?, ?)",
+            tuple(
+                item[name]
+                for name in (
+                    "item_id",
+                    "scope_type",
+                    "scope_id",
+                    "title_index",
+                    "content_index",
+                )
+            ),
+        )
+
     async def ensure_session(
         self, session_id: str, workspace_id: str | None = None
     ) -> None:
@@ -368,10 +546,10 @@ class SQLiteMemoryRepository:
         self, session_id: str, updates: dict[str, Any]
     ) -> None:
         """Merge updates into session metadata_json (upsert)."""
-        existing = await self.get_session_metadata(session_id)
-        merged = {**existing, **updates}
-        merged_json = json.dumps(merged, ensure_ascii=False)
         async with self._engine.write_lock:
+            existing = await self.get_session_metadata(session_id)
+            merged = {**existing, **updates}
+            merged_json = json.dumps(merged, ensure_ascii=False)
             await self._engine.execute(
                 "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
                 (merged_json, session_id),
@@ -599,6 +777,7 @@ class SQLiteMemoryRepository:
         fts_query: str,
         *,
         limit: int = 10,
+        attributed_only: bool = False,
     ) -> list[dict[str, Any]]:
         """FTS5 search across all scopes for public, portable items.
 
@@ -618,9 +797,10 @@ class SQLiteMemoryRepository:
             "AND mi.status = 'active' "
             "AND mi.sensitivity = 'public' "
             "AND COALESCE(json_extract(mi.metadata_json, '$.portable'), 1) != 0 "
+            "AND (? = 0 OR json_extract(mi.metadata_json, '$.attribution.subject.kind') IN ('account','person','chat')) "
             "ORDER BY score ASC, mi.importance DESC, mi.updated_at DESC "
             "LIMIT ?",
-            (fts_query, limit),
+            (fts_query, int(attributed_only), limit),
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 
@@ -628,6 +808,7 @@ class SQLiteMemoryRepository:
         self,
         *,
         limit: int = 100,
+        attributed_only: bool = False,
     ) -> list[dict[str, Any]]:
         """List recent active public, portable items across all scopes.
 
@@ -642,8 +823,9 @@ class SQLiteMemoryRepository:
             "FROM memory_items "
             "WHERE status = 'active' AND sensitivity = 'public' "
             "AND COALESCE(json_extract(metadata_json, '$.portable'), 1) != 0 "
+            "AND (? = 0 OR json_extract(mi.metadata_json, '$.attribution.subject.kind') IN ('account','person','chat')) "
             "ORDER BY importance DESC, updated_at DESC LIMIT ?",
-            (limit,),
+            (int(attributed_only), limit),
         )
         return [self._memory_item_row_to_dict(row) for row in rows]
 

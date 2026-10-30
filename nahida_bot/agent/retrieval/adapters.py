@@ -203,11 +203,15 @@ class MemoryStoreRetrievalAdapter:
         embedding_provider: Any | None = None,
         vector_index: Any | None = None,
         soft_scope: bool = False,
+        automatic: bool = False,
+        allow_empty_query: bool = False,
     ) -> None:
         self._memory_store = memory_store
         self._embedding_provider = embedding_provider
         self._vector_index = vector_index
         self._soft_scope = soft_scope
+        self._automatic = automatic
+        self._allow_empty_query = allow_empty_query
 
     async def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
         """Search memory, cascading across the request's scopes in priority order.
@@ -222,10 +226,10 @@ class MemoryStoreRetrievalAdapter:
         """
         query = request.query.strip()
         limit = max(0, int(request.limit))
-        if not query or limit <= 0:
+        if (not query and not self._allow_empty_query) or limit <= 0:
             return []
 
-        fts_enabled = request.fts_enabled and bool(build_fts_query(query))
+        fts_enabled = request.fts_enabled
         vector_enabled = request.vector_enabled and self._embedding_provider is not None
         if not fts_enabled and not vector_enabled:
             return []
@@ -316,6 +320,12 @@ class MemoryStoreRetrievalAdapter:
             for item in public_items:
                 if item.result_id in seen or not item_is_portable(item.raw):
                     continue
+                from nahida_bot.agent.memory.attribution import (
+                    allows_automatic_cross_recall,
+                )
+
+                if self._automatic and not allows_automatic_cross_recall(item.raw):
+                    continue
                 seen.add(item.result_id)
                 results.append(item)
                 remaining -= 1
@@ -338,6 +348,12 @@ class MemoryStoreRetrievalAdapter:
         search_public = getattr(
             self._memory_store, "search_items_public_all_scopes", None
         )
+        if self._automatic:
+            attributed_search = getattr(
+                self._memory_store, "search_items_public_attributed_all_scopes", None
+            )
+            if callable(attributed_search):
+                search_public = attributed_search
         if not callable(search_public):
             return []
         search_public = cast(Any, search_public)
@@ -502,6 +518,9 @@ def _turn_record_to_retrieval(record: Any) -> RetrievalResult:
         ),
         metadata={
             "session_id": session_id,
+            "message_context": _dict_metadata(getattr(turn, "metadata", None)).get(
+                "message_context", {}
+            ),
             "chat_key": chat_key,
             "role": role,
             "turn_source": source,
@@ -601,6 +620,9 @@ def _memory_item_to_retrieval(item: Any, *, mode: RetrievalMode) -> RetrievalRes
         "source": str(getattr(item, "source", "")),
         "sensitivity": str(getattr(item, "sensitivity", "")),
         "evidence": evidence,
+        "created_at": item.created_at.isoformat()
+        if getattr(item, "created_at", None)
+        else "",
     }
     return RetrievalResult(
         result_id=item_id,

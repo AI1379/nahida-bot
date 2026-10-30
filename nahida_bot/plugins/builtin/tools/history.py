@@ -540,7 +540,14 @@ class HistoryTools:
         content = self.sanitize_turn(str(row.get("content", "") or ""))
         if source_type == "conversation_turns":
             role = str(row.get("role", "") or "turn")
-            return f"\n{idx}. [past turn] [{label}] {created} [{role}]\n{content}"
+            context = row.get("message_context") or {}
+            sender = str(context.get("sender_id") or "unknown")
+            name = str(context.get("sender_display_name") or "")
+            return (
+                f"\n{idx}. [past turn] [{label}] {created} [{role}]\n"
+                f"Sender: {sender} ({name}); Message: {context.get('message_id', '')}; "
+                f"Reply to: {context.get('reply_to_message_id', '')}\n{content}"
+            )
         scope_type = str(row.get("scope_type", "") or "global")
         scope_id = str(row.get("scope_id", "") or "")
         kind = str(row.get("kind", "") or "memory")
@@ -550,7 +557,21 @@ class HistoryTools:
             head += f" {kind}"
         if title:
             head += f" {title}"
-        return f"\n{idx}. {head} ({created})\n{content}"
+        from nahida_bot.agent.memory.models import MemoryItem
+        from nahida_bot.agent.memory.rendering import format_memory_items
+
+        item = MemoryItem(
+            item_id=str(row.get("result_id", "")),
+            scope_type=scope_type,
+            scope_id=scope_id,
+            kind=kind,
+            title=title,
+            content=content,
+            metadata={"attribution": row.get("attribution", {}), "created_at": created},
+        )
+        return "\n" + format_memory_items(
+            [item], max_chars=4000, heading=f"{idx}. {head} ({created})"
+        )
 
     async def resolve_chat_names(self, session_ids: list[str]) -> dict[str, str]:
         """Resolve base chat keys to friendly display names."""

@@ -12,8 +12,6 @@ from uuid import uuid4
 import structlog
 from croniter import croniter
 
-from nahida_bot.agent.memory.consolidation import MemoryConsolidator
-from nahida_bot.agent.memory.scope import resolve_scope_from_session
 from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.system_text import format_system_text
 from nahida_bot.core.context import SessionContext, current_session
@@ -658,91 +656,24 @@ class SchedulerService:
         if memory is None:
             return 0
 
-        meta = await memory.get_session_meta(session_id)
-        last_turn_id = _safe_int(meta.get("memory_dream_last_turn_id"), default=0)
-        records = await memory.get_recent(
-            session_id, limit=self._config.memory_dreaming_recent_turn_limit
-        )
-        new_records = [record for record in records if record.turn_id > last_turn_id]
-        if len(new_records) < 2:
-            logger.debug(
-                "scheduler.memory_dreaming_session_skipped",
-                session_id=session_id,
-                reason="not_enough_new_turns",
-                new_turns=len(new_records),
-                last_turn_id=last_turn_id,
-            )
-            return 0
-
         resolved = await self._resolve_memory_dream_provider(session_id)
         if resolved is None:
-            logger.debug(
-                "scheduler.memory_dreaming_session_skipped",
-                session_id=session_id,
-                reason="no_dream_provider",
-            )
             return 0
-        provider_slot, selected_model, provider_reason = resolved
+        provider_slot, selected_model, _reason = resolved
+        from nahida_bot.agent.memory.dreaming import MemoryDreamingService
 
-        logger.debug(
-            "scheduler.memory_dreaming_session_start",
-            session_id=session_id,
-            new_turns=len(new_records),
-            last_turn_id=last_turn_id,
-            provider_id=provider_slot.id,
-            model=selected_model or provider_slot.default_model,
-            provider_reason=provider_reason,
-        )
-
-        workspace_id = workspace_id or str(meta.get("workspace_id") or "") or None
-        workspace_root = self._runner.workspace_root_for(workspace_id)
-        conversation = "\n".join(
-            f"{record.turn.role}: {record.turn.content}"
-            for record in new_records
-            if record.turn.content.strip()
-        )
-        if not conversation.strip():
-            logger.debug(
-                "scheduler.memory_dreaming_session_skipped",
-                session_id=session_id,
-                reason="empty_conversation",
-            )
-            return 0
-
-        dream_scope_type, dream_scope_id = resolve_scope_from_session(session_id)
-        consolidator = MemoryConsolidator(
-            memory,
-            app_name=self._app_name,
-            default_scope_type=dream_scope_type,
-            default_scope_id=dream_scope_id,
-        )
-        applied = await consolidator.consolidate_turn(
-            session_id=session_id,
-            user_message=conversation,
-            assistant_message="",
-            workspace_id=workspace_id,
-            workspace_root=workspace_root,
-            dream_provider=provider_slot.provider,
-            dream_model=selected_model,
-            run_rules=False,
-        )
-        if applied:
-            await self._refresh_memory_embeddings()
-        max_turn_id = max(record.turn_id for record in new_records)
-        await memory.update_session_meta(
+        outcome = await MemoryDreamingService(
+            memory, app_name=self._app_name
+        ).run_session(
             session_id,
-            {
-                "memory_dream_last_turn_id": max_turn_id,
-                "memory_dream_last_at": datetime.now(UTC).isoformat(),
-            },
+            provider=provider_slot.provider,
+            model=selected_model,
+            workspace_id=workspace_id,
+            turn_limit=self._config.memory_dreaming_recent_turn_limit,
         )
-        logger.debug(
-            "scheduler.memory_dreaming_session_done",
-            session_id=session_id,
-            applied=applied,
-            max_turn_id=max_turn_id,
-        )
-        return applied
+        if outcome.applied:
+            await self._refresh_memory_embeddings()
+        return outcome.applied
 
     async def _refresh_memory_embeddings(self) -> None:
         """Refresh durable memory embeddings after background dreaming changes."""

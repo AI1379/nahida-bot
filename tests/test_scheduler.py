@@ -164,6 +164,8 @@ class _DreamProvider(ChatProvider):
               "add": [
                 {
                   "kind": "preference",
+                  "subject": {"kind": "account", "id": "milky:user:alice"},
+                  "evidence_turn_ids": [1],
                   "title": "语言偏好",
                   "content": "用户偏好用中文讨论项目实现。",
                   "confidence": 0.9,
@@ -650,17 +652,18 @@ async def test_scheduler_runs_memory_dreaming_as_internal_periodic_job() -> None
     await engine.initialize()
     try:
         memory = SQLiteMemoryStore(engine)
-        await memory.ensure_session("s1", workspace_id="default")
+        await memory.ensure_session("milky:group:100", workspace_id="default")
         await memory.append_turn(
-            "s1",
+            "milky:group:100",
             ConversationTurn(
                 role="user",
                 content="我们之后继续用中文讨论这个项目的实现。",
                 source="user_input",
+                metadata={"message_context": {"sender_id": "alice"}},
             ),
         )
         await memory.append_turn(
-            "s1",
+            "milky:group:100",
             ConversationTurn(
                 role="assistant",
                 content="好的，之后默认用中文讨论。",
@@ -698,8 +701,10 @@ async def test_scheduler_runs_memory_dreaming_as_internal_periodic_job() -> None
 
         applied = await service._run_memory_dreaming_once()
         repeated = await service._run_memory_dreaming_once()
-        results = await memory.search_items("中文讨论")
-        meta = await memory.get_session_meta("s1")
+        results = await memory.search_items(
+            "中文讨论", scope_type="chat", scope_id="milky:group:100"
+        )
+        meta = await memory.get_session_meta("milky:group:100")
 
         assert applied == 1
         assert repeated == 0

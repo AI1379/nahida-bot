@@ -9,7 +9,7 @@
 
 > 2026-10-30 核查补充：共享 workspace 的投影仍被自动上下文和 `memory_read` 加载，
 > sensitivity 过滤未解决人物归属和跨群上下文混入。后续调整见
-> [记忆归属与统一读写入口重构](memory-attribution-refactor.md)；该重构尚未实施。
+> [记忆归属与统一读写入口重构](memory-attribution-refactor.md)；代码重构已实现；生产部署与历史数据修复另行执行。
 
 ## 1. 起因
 

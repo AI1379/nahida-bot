@@ -996,22 +996,14 @@ class RealBotAPI:
             session_id=session_id,
             limit=limit,
         )
+        from nahida_bot.agent.memory.rendering import memory_ref_metadata
+
         return [
             MemoryRef(
                 key=item.item_id,
                 content=item.content,
                 score=item.score,
-                metadata={
-                    "scope_type": item.scope_type,
-                    "scope_id": item.scope_id,
-                    "kind": item.kind,
-                    "title": item.title,
-                    "source": item.source,
-                    "sensitivity": getattr(item, "sensitivity", "public"),
-                    "audience": getattr(item, "metadata", {}).get(
-                        "audience", "current"
-                    ),
-                },
+                metadata=memory_ref_metadata(item),
             )
             for item in items
         ]
@@ -1219,6 +1211,8 @@ class RealBotAPI:
                     "kind": str(result.metadata.get("kind", "")),
                     "sensitivity": str(result.metadata.get("sensitivity", "")),
                     "turn_source": str(result.metadata.get("turn_source", "")),
+                    "attribution": result.metadata.get("attribution", {}),
+                    "message_context": result.metadata.get("message_context", {}),
                 }
             )
         return payload

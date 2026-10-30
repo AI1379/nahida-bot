@@ -10,6 +10,7 @@ from uuid import uuid4
 from nahida_bot.agent.memory.models import (
     ConversationTurn,
     MemoryCandidate,
+    MemoryChanges,
     MemoryEmbedding,
     MemoryItem,
     MemoryRecord,
@@ -398,6 +399,55 @@ class SQLiteMemoryStore(MemoryStore):
         )
         return memory_id
 
+    async def get_turns_after(
+        self, session_id: str, after_id: int, *, limit: int = 40
+    ) -> list[MemoryRecord]:
+        return [
+            _row_to_record(row)
+            for row in await self._repo.get_turns_after(
+                session_id, after_id, limit=limit
+            )
+        ]
+
+    async def get_turns_by_ids(self, ids: list[int]) -> list[MemoryRecord]:
+        return [_row_to_record(row) for row in await self._repo.get_turns_by_ids(ids)]
+
+    async def apply_memory_changes(
+        self,
+        changes: MemoryChanges,
+        *,
+        session_id: str = "",
+        expected_turn_id: int | None = None,
+        last_turn_id: int = 0,
+    ) -> int:
+        from dataclasses import asdict
+        import json
+
+        def fields(value: Any) -> dict[str, Any]:
+            row = asdict(value)
+            row["created_at"] = value.created_at.isoformat()
+            row["updated_at"] = value.updated_at.isoformat()
+            for key in ("metadata", "evidence"):
+                row[key + "_json"] = json.dumps(row.pop(key), ensure_ascii=False)
+            return row
+
+        items = []
+        for item in changes.additions:
+            row = fields(item)
+            row.update(
+                title_index=tokenize_for_fts(item.title),
+                content_index=tokenize_for_fts(item.content),
+            )
+            items.append(row)
+        return await self._repo.apply_memory_changes(
+            items,
+            [fields(candidate) for candidate in changes.candidates],
+            changes.archives,
+            session_id=session_id,
+            expected_turn_id=expected_turn_id,
+            last_turn_id=last_turn_id,
+        )
+
     async def search_items(
         self,
         query: str = "",
@@ -420,6 +470,15 @@ class SQLiteMemoryStore(MemoryStore):
                 scope_type=scope_type,
                 scope_id=scope_id,
                 limit=limit,
+            )
+        if query.strip() and (not fts_query or not rows):
+            rows = await self._repo.search_memory_literal(
+                query.strip(),
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=limit,
+                public_only=False,
+                portable_only=False,
             )
         return [_row_to_item(row) for row in rows]
 
@@ -455,6 +514,15 @@ class SQLiteMemoryStore(MemoryStore):
                 scope_id=scope_id,
                 limit=limit,
             )
+        if query.strip() and (not fts_query or not rows):
+            rows = await self._repo.search_memory_literal(
+                query.strip(),
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=limit,
+                public_only=True,
+                portable_only=False,
+            )
         return [_row_to_item(row) for row in rows]
 
     async def list_public_items(
@@ -483,6 +551,7 @@ class SQLiteMemoryStore(MemoryStore):
         query: str = "",
         *,
         limit: int = 10,
+        attributed_only: bool = False,
     ) -> list[MemoryItem]:
         """Soft-scope recall (Piece A2): public portable items, all scopes.
 
@@ -494,11 +563,30 @@ class SQLiteMemoryStore(MemoryStore):
         fts_query = build_fts_query(query)
         if fts_query:
             rows = await self._repo.search_memory_items_public_all_scopes(
-                fts_query, limit=limit
+                fts_query, limit=limit, attributed_only=attributed_only
             )
         else:
-            rows = await self._repo.list_memory_items_public_all_scopes(limit=limit)
+            rows = await self._repo.list_memory_items_public_all_scopes(
+                limit=limit, attributed_only=attributed_only
+            )
+        if query.strip() and (not fts_query or not rows):
+            rows = await self._repo.search_memory_literal(
+                query.strip(),
+                scope_type=None,
+                scope_id=None,
+                limit=limit,
+                public_only=True,
+                portable_only=True,
+                attributed_only=attributed_only,
+            )
         return [_row_to_item(row) for row in rows]
+
+    async def search_items_public_attributed_all_scopes(
+        self, query: str = "", *, limit: int = 10
+    ) -> list[MemoryItem]:
+        return await self.search_items_public_all_scopes(
+            query, limit=limit, attributed_only=True
+        )
 
     async def append_candidate(
         self,

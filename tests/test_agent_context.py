@@ -405,8 +405,10 @@ class TestContextBuilder:
         assert "files" in result[2].content
         assert "Work with files" in result[2].content
 
-    def test_build_context_injects_markdown_memory(self, temp_dir: Path) -> None:
-        """Context should include bounded workspace Markdown memory when present."""
+    def test_build_context_excludes_shared_markdown_memory(
+        self, temp_dir: Path
+    ) -> None:
+        """Shared workspace memory must not bypass conversation-scoped recall."""
         workspace_dir = temp_dir / "ws"
         daily_dir = workspace_dir / "memory"
         daily_dir.mkdir(parents=True)
@@ -424,12 +426,8 @@ class TestContextBuilder:
         memory_messages = [
             item for item in result if item.source == "workspace_memory:markdown"
         ]
-        assert len(memory_messages) == 1
-        assert "User prefers Chinese" in memory_messages[0].content
-        assert memory_messages[0].metadata == {
-            "memory_paths": ["MEMORY.md"],
-            "memory_backend": "markdown",
-        }
+        assert memory_messages == []
+        assert all("User prefers Chinese" not in item.content for item in result)
 
     def test_build_context_skips_empty_markdown_memory(self, temp_dir: Path) -> None:
         """Default empty memory skeletons should not consume context."""
