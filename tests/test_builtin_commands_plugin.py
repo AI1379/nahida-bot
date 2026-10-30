@@ -1424,7 +1424,7 @@ async def test_reset_status_model_and_help_commands() -> None:
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
     assert await plugin._cmd_reset(args="", inbound=_inbound(), session_id="s1") == (
-        "Session cleared. 2 message(s) removed."
+        "✅ Session cleared. 2 message(s) removed."
     )
     status = await plugin._cmd_status(args="", inbound=_inbound(), session_id="s1")
     assert "Provider: p1" in status
@@ -1436,16 +1436,16 @@ async def test_reset_status_model_and_help_commands() -> None:
     switched = await plugin._cmd_model(
         args="model-b", inbound=_inbound(), session_id="s1"
     )
-    assert switched == "Switched to model-b (via p2)"
+    assert switched == "✅ Switched to model-b (via p2)"
     # Compound "provider_id/model" format should also work
     switched_compound = await plugin._cmd_model(
         args="p2/model-b", inbound=_inbound(), session_id="s1"
     )
-    assert switched_compound == "Switched to p2/model-b (via p2)"
+    assert switched_compound == "✅ Switched to p2/model-b (via p2)"
     missing = await plugin._cmd_model(
         args="missing", inbound=_inbound(), session_id="s1"
     )
-    assert missing == "Model 'missing' not found in any provider."
+    assert missing == "⚠️ Model 'missing' not found in any provider."
     help_text = await plugin._cmd_help(args="", inbound=_inbound(), session_id="s1")
     assert "/help (h)" in help_text
     assert "Show help" in help_text
@@ -1457,31 +1457,31 @@ async def test_reasoning_command_updates_runtime_settings() -> None:
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
     initial = await plugin._cmd_reasoning(args="", inbound=_inbound(), session_id="s1")
-    assert "display: default" in initial
-    assert "effort: default" in initial
+    assert "Display: default" in initial
+    assert "Effort: default" in initial
 
     enabled = await plugin._cmd_reasoning(
         args="on", inbound=_inbound(), session_id="s1"
     )
-    assert "display: on" in enabled
+    assert "Display: on" in enabled
     assert api.session_meta["runtime"]["reasoning"]["show"] is True
 
     effort = await plugin._cmd_reasoning(
         args="effort high", inbound=_inbound(), session_id="s1"
     )
-    assert "effort: high" in effort
+    assert "Effort: high" in effort
     assert api.session_meta["runtime"]["reasoning"]["effort"] == "high"
 
     reset_effort = await plugin._cmd_reasoning(
         args="effort default", inbound=_inbound(), session_id="s1"
     )
-    assert "effort: default" in reset_effort
+    assert "Effort: default" in reset_effort
     assert "effort" not in api.session_meta["runtime"]["reasoning"]
 
     reset_all = await plugin._cmd_reasoning(
         args="reset", inbound=_inbound(), session_id="s1"
     )
-    assert "display: default" in reset_all
+    assert "Display: default" in reset_all
     assert api.session_meta["runtime"] == {}
 
 
@@ -1505,7 +1505,7 @@ async def test_memory_command_search_list_and_remember() -> None:
         inbound=_inbound(),
         session_id="s1",
     )
-    assert remember_result == "Memory stored."
+    assert remember_result == "✅ Memory stored."
     assert api.stored_memories[0][1] == "User prefers Chinese search."
 
 
@@ -1550,7 +1550,7 @@ async def test_new_command_switches_router_session() -> None:
 
     result = await plugin._cmd_new(args="", inbound=_inbound(), session_id="old")
 
-    assert result == "New session started: telegram:private:c1:abc12345"
+    assert result == "✅ New session started.\nSession: telegram:private:c1:abc12345"
     assert api.new_sessions == ["telegram:private:c1"]
 
 
@@ -1897,3 +1897,32 @@ async def test_cron_tools_hide_jobs_owned_by_other_user() -> None:
     assert listed == "No active scheduled tasks for this chat."
     assert deleted == "Error: Job 'job1' does not belong to this chat."
     assert scheduler.deleted == []
+
+
+@pytest.mark.parametrize(
+    "arguments", [{}, {"timeout_seconds": 1800}, {"timeout_seconds": None}]
+)
+async def test_cron_tool_timeout_omission_and_reset(arguments):
+    api = _FakeAPI()
+    api.scheduler_service = _FakeScheduler()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    token = current_session.set(
+        SessionContext(
+            platform="telegram",
+            chat_id="c1",
+            session_id="telegram:private:c1",
+            chat_address=ChatAddress(
+                channel="telegram", target_type="private", target_id="c1"
+            ),
+        )
+    )
+    try:
+        result = await plugin._cron_tools.update("job1", **arguments)
+    finally:
+        current_session.reset(token)
+    assert "Updated task job1" in result
+    forwarded = api.scheduler_service.updated
+    if "timeout_seconds" in arguments:
+        assert forwarded["timeout_seconds"] == arguments["timeout_seconds"]
+    else:
+        assert "timeout_seconds" not in forwarded

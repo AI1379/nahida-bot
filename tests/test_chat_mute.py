@@ -67,7 +67,7 @@ async def test_disabled_feature_does_not_modify_or_enforce_saved_state(mute_serv
         SQLiteChatMuteRepository(engine), MuteConfig(), clock=lambda: clock[0]
     )
     assert (
-        "未启用"
+        "disabled"
         in (await disabled.command("unmute", "", ADDRESS, "test:user:admin")).text
     )
     assert not (await disabled.status(ADDRESS)).muted
@@ -77,10 +77,16 @@ async def test_disabled_feature_does_not_modify_or_enforce_saved_state(mute_serv
 @pytest.mark.parametrize("actor", ["", "test:user:other", "person:admin"])
 async def test_non_admin_cannot_mute_or_unmute(mute_service, actor):
     service, _, _ = mute_service
-    assert "管理员" in (await service.command("mute", "1h", ADDRESS, actor)).text
+    assert (
+        "authorization.admins"
+        in (await service.command("mute", "1h", ADDRESS, actor)).text
+    )
     assert not (await service.status(ADDRESS)).muted
     await service.command("mute", "1h", ADDRESS, "test:user:admin")
-    assert "管理员" in (await service.command("unmute", "", ADDRESS, actor)).text
+    assert (
+        "authorization.admins"
+        in (await service.command("unmute", "", ADDRESS, actor)).text
+    )
     assert (await service.status(ADDRESS)).muted
 
 

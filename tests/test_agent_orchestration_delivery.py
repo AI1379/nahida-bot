@@ -50,7 +50,7 @@ def test_notification_success_includes_summary() -> None:
     )
     assert "Summarize PR" in text
     assert "PR adds tests." in text
-    assert "done" in text.lower()
+    assert text.startswith("[Task] Completed\nTask: task_abc")
 
 
 def test_notification_failure_includes_error() -> None:

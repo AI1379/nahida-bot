@@ -40,6 +40,7 @@ class CronJob:
     script_command: str = ""
     script_working_dir: str = ""
     script_timeout_seconds: int = 30
+    timeout_seconds: int | None = None
 
 
 @dataclass(slots=True, frozen=True)

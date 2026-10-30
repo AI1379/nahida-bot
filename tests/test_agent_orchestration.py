@@ -776,6 +776,7 @@ async def test_spawn_captures_delivery_target_from_real_channel(tmp_path) -> Non
         orchestrator = AgentOrchestrator(
             executor=LocalAgentRunExecutor(_FakeRunner()),
             task_store=SQLiteBackgroundTaskStore(engine),
+            config=OrchestrationConfig(subagent_notifications_enabled=True),
             completion_deliverer=deliverer,
         )
         session_token = current_session.set(
@@ -860,6 +861,7 @@ async def test_delivery_is_at_most_once(tmp_path) -> None:
         orchestrator = AgentOrchestrator(
             executor=LocalAgentRunExecutor(runner),
             task_store=SQLiteBackgroundTaskStore(engine),
+            config=OrchestrationConfig(subagent_notifications_enabled=True),
             completion_deliverer=deliverer,
         )
         session_token = current_session.set(
@@ -925,6 +927,7 @@ async def test_concurrent_delivery_callbacks_send_once(tmp_path) -> None:
         orchestrator = AgentOrchestrator(
             executor=LocalAgentRunExecutor(_FakeRunner()),
             task_store=SQLiteBackgroundTaskStore(engine),
+            config=OrchestrationConfig(subagent_notifications_enabled=True),
             completion_deliverer=deliverer,
         )
         session_token = current_session.set(
@@ -987,6 +990,7 @@ async def test_delivery_failure_leaves_task_undelivered(tmp_path) -> None:
         orchestrator = AgentOrchestrator(
             executor=LocalAgentRunExecutor(_FakeRunner()),
             task_store=SQLiteBackgroundTaskStore(engine),
+            config=OrchestrationConfig(subagent_notifications_enabled=True),
             completion_deliverer=deliverer,
         )
         session_token = current_session.set(
@@ -1105,6 +1109,7 @@ async def test_silent_notify_policy_skips_channel_delivery(tmp_path) -> None:
         orchestrator = AgentOrchestrator(
             executor=LocalAgentRunExecutor(_FakeRunner()),
             task_store=SQLiteBackgroundTaskStore(engine),
+            config=OrchestrationConfig(subagent_notifications_enabled=True),
             completion_deliverer=deliverer,
         )
         session_token = current_session.set(

@@ -86,7 +86,7 @@ class AgentConfig(BaseModel):
     tool_retry_backoff_seconds: float = Field(default=0.1, ge=0)
     max_tool_log_chars: int = Field(default=400, ge=0)
     subagent_notifications_enabled: bool = Field(
-        default=True,
+        default=False,
         description="Send subagent completion notifications to the originating chat.",
     )
     tool_use_system_prompt: str = (
@@ -403,8 +403,8 @@ class MuteNoticeConfig(BaseModel):
     """Messages broadcast when a chat enters or leaves mute mode."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
-    offline: str = Field(default="虚空系统已下线", min_length=1, max_length=500)
-    online: str = Field(default="虚空系统已恢复上线", min_length=1, max_length=500)
+    offline: str = Field(default="Chat muted.", min_length=1, max_length=500)
+    online: str = Field(default="Chat unmuted.", min_length=1, max_length=500)
 
 
 class MuteConfig(BaseModel):

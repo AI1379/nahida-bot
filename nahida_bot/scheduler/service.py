@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from croniter import croniter
 from nahida_bot.agent.memory.consolidation import MemoryConsolidator
 from nahida_bot.agent.memory.scope import resolve_scope_from_session
 from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.system_text import format_system_text
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.exec_runner import ExecRunner
 from nahida_bot.core.outbound import outbound_payload, send_channel_message
@@ -43,6 +45,10 @@ _CRON_TOOL_NAMES = frozenset(
     {"cron_create", "cron_update", "cron_list", "cron_cancel", "cron_delete"}
 )
 _DEFAULT_SCRIPT_TIMEOUT_SECONDS = 30
+
+
+class _Unchanged(Enum):
+    TIMEOUT = "unchanged"
 
 
 class SchedulerService:
@@ -190,6 +196,7 @@ class SchedulerService:
         script_command: str = "",
         script_working_dir: str = "",
         script_timeout_seconds: int = _DEFAULT_SCRIPT_TIMEOUT_SECONDS,
+        timeout_seconds: int | None = None,
         created_by_user_id: str = "",
         created_from_session_id: str = "",
         created_from_chat_address: str = "",
@@ -212,6 +219,7 @@ class SchedulerService:
         job_id = uuid4().hex[:16]
         self._validate_prompt(prompt)
         self._validate_max_runs(max_runs)
+        self._validate_timeout(timeout_seconds)
         (
             normalized_executor_type,
             normalized_script_command,
@@ -269,6 +277,7 @@ class SchedulerService:
             script_command=normalized_script_command,
             script_working_dir=normalized_script_working_dir,
             script_timeout_seconds=normalized_script_timeout,
+            timeout_seconds=timeout_seconds,
         )
 
         await self._repo.insert_job_with_quota(
@@ -299,6 +308,7 @@ class SchedulerService:
         script_command: str | None = None,
         script_working_dir: str | None = None,
         script_timeout_seconds: int | None = None,
+        timeout_seconds: int | None | _Unchanged = _Unchanged.TIMEOUT,
     ) -> CronJob:
         """Update a scheduled job that is not currently running.
 
@@ -313,6 +323,12 @@ class SchedulerService:
 
         now = datetime.now(UTC)
         new_prompt = prompt if prompt is not None else existing.prompt
+        new_timeout = (
+            existing.timeout_seconds
+            if timeout_seconds is _Unchanged.TIMEOUT
+            else timeout_seconds
+        )
+        self._validate_timeout(new_timeout)
         self._validate_prompt(new_prompt)
         new_session_mode, new_session_name = self._resolve_session_mode_update(
             existing,
@@ -418,6 +434,7 @@ class SchedulerService:
             script_command=new_script_command,
             script_working_dir=new_script_working_dir,
             script_timeout_seconds=new_script_timeout,
+            timeout_seconds=new_timeout,
         )
         if not updated:
             raise RuntimeError(f"Job '{job_id}' is currently running")
@@ -779,21 +796,26 @@ class SchedulerService:
 
     async def _fire_job(self, job: CronJob) -> None:
         """Execute a scheduled job: run agent and send response."""
+        timeout = (
+            job.timeout_seconds
+            if job.timeout_seconds is not None
+            else self._config.job_timeout_seconds
+        )
         try:
             if await self._skip_if_stale(job):
                 return
             await asyncio.wait_for(
                 self._execute_fire(job),
-                timeout=self._config.job_timeout_seconds,
+                timeout=timeout,
             )
         except TimeoutError:
             logger.warning(
                 "scheduler.fire_timeout",
                 job_id=job.job_id,
-                timeout=self._config.job_timeout_seconds,
+                timeout=timeout,
             )
             await self._mark_failed(job, "timeout")
-            await self._send_error(job, "Scheduled task timed out.")
+            await self._send_error(job, "Timed out", timeout=timeout)
             if self.on_job_event is not None:
                 await self.on_job_event(
                     "failed", job.job_id, success=False, error="timeout"
@@ -809,7 +831,7 @@ class SchedulerService:
         except Exception as exc:
             logger.exception("scheduler.fire_error", job_id=job.job_id)
             await self._mark_failed(job, f"{type(exc).__name__}: {exc}")
-            await self._send_error(job, "Scheduled task failed.")
+            await self._send_error(job, "Failed")
             if self.on_job_event is not None:
                 await self.on_job_event(
                     "failed", job.job_id, success=False, error=str(exc)
@@ -965,6 +987,11 @@ class SchedulerService:
             error=error,
             deactivate=deactivate,
         )
+
+    @staticmethod
+    def _validate_timeout(value: int | None) -> None:
+        if value is not None and (type(value) is not int or value < 1):
+            raise ValueError("timeout_seconds must be a positive integer or null")
 
     async def _execute_fire(self, job: CronJob) -> None:
         """Execute a job through its configured executor."""
@@ -1165,9 +1192,22 @@ class SchedulerService:
             script_fallback_used=script_result is not None,
         )
 
-    async def _send_error(self, job: CronJob, message: str) -> None:
-        """Send a brief error message to the originating chat."""
-        text = f"[Scheduler] {message}"
+    async def _send_error(
+        self, job: CronJob, message: str, *, timeout: float | None = None
+    ) -> None:
+        """Identify the failed job and explain whether it will retry."""
+        failures = job.failure_count + 1
+        maximum = self._config.max_consecutive_failures
+        next_action = (
+            "Disabled after repeated failures."
+            if failures >= maximum
+            else f"Retry in {self._config.failure_retry_seconds} s."
+        )
+        fields = [("Task", job.job_id), ("Request", job.prompt)]
+        if timeout is not None:
+            fields.append(("Timeout", f"{timeout:g} s"))
+        fields.extend((("Failures", f"{failures}/{maximum}"), ("Next", next_action)))
+        text = format_system_text("Scheduler", message, fields=fields)
         await self._publish_notification(
             job,
             session_id=job.created_from_session_id,

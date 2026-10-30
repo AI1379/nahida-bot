@@ -17,6 +17,8 @@ from nahida_bot.plugins.base import (
     Plugin,
     PluginManifest,
 )
+from nahida_bot.plugins.builtin import command_text
+from nahida_bot.core.system_text import format_text_section
 from nahida_bot.plugins.builtin.tools.agent import AgentTools
 from nahida_bot.plugins.builtin.tools.context import (
     address_from_inbound as _address_from_inbound,
@@ -578,16 +580,18 @@ class BuiltinCommandsPlugin(Plugin):
     ) -> str:
         router = self._get_router()
         if router is None:
-            return "会话禁言服务不可用。"
-        return await router.execute_mute_command("mute", args, inbound, session_id)
+            return "Error: Chat mute service is unavailable."
+        result = await router.execute_mute_command("mute", args, inbound, session_id)
+        return format_text_section("Chat mute", (result,), icon="🔇")
 
     async def _cmd_unmute(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
         router = self._get_router()
         if router is None:
-            return "会话禁言服务不可用。"
-        return await router.execute_mute_command("unmute", args, inbound, session_id)
+            return "Error: Chat mute service is unavailable."
+        result = await router.execute_mute_command("unmute", args, inbound, session_id)
+        return format_text_section("Chat mute", (result,), icon="🔊")
 
     async def _cmd_reset(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -600,7 +604,7 @@ class BuiltinCommandsPlugin(Plugin):
         )
         deleted = await self.api.clear_session(session_id)
         _logger.debug("cmd.reset.done", session_id=session_id, deleted=deleted)
-        return f"Session cleared. {deleted} message(s) removed."
+        return f"✅ Session cleared. {deleted} message(s) removed."
 
     async def _cmd_new(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -618,14 +622,14 @@ class BuiltinCommandsPlugin(Plugin):
             inbound_address = _address_from_inbound(inbound)
             address = inbound_address if inbound_address.is_typed else None
         if address is None:
-            return "Failed to create new session: current chat type is unavailable."
+            return "⚠️ Failed to create new session: current chat type is unavailable."
 
         new_id = await self.api.start_new_session(address)
         if new_id is not None:
             _logger.debug("cmd.new.success", new_session_id=new_id)
-            return f"New session started: {new_id}"
+            return f"✅ New session started.\nSession: {new_id}"
         _logger.warning("cmd.new.no_router")
-        return "Failed to create new session — router not available."
+        return "⚠️ Failed to create new session: router not available."
 
     async def _cmd_status(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -637,23 +641,29 @@ class BuiltinCommandsPlugin(Plugin):
         reasoning_display = self._format_optional_bool(runtime.reasoning.show)
         reasoning_effort = runtime.reasoning.effort or "default"
 
-        lines = [
-            f"Session: {session_id}",
-            f"Session key: {_format_session_key_kind(classify_session_key(session_id))}",
-            f"Provider: {provider_id}",
-            f"Model: {model}",
-        ]
-
         run_status = self.api.get_session_run_status(session_id)
         agent_line = self._format_agent_status(run_status)
-        lines.append(f"Agent: {agent_line}")
-
-        lines.extend(
-            [
-                f"Reasoning display: {reasoning_display}",
-                f"Reasoning effort: {reasoning_effort}",
-            ]
-        )
+        sections = [
+            f"{command_text.state_icon(run_status.get('state', 'idle'))} Agent: {agent_line}",
+            format_text_section(
+                "Model",
+                [
+                    f"Provider: {provider_id}",
+                    f"Model: {model}",
+                    f"Reasoning display: {reasoning_display}",
+                    f"Reasoning effort: {reasoning_effort}",
+                ],
+                icon="🤖",
+            ),
+            format_text_section(
+                "Session",
+                [
+                    f"Session: {session_id}",
+                    f"Session key: {_format_session_key_kind(classify_session_key(session_id))}",
+                ],
+                icon="💬",
+            ),
+        ]
 
         # Collect supplementary status from registered providers.
         try:
@@ -664,11 +674,8 @@ class BuiltinCommandsPlugin(Plugin):
             session_id=session_id,
             chat_key=chat_key,
         )
-        for block in provider_blocks:
-            lines.append("")
-            lines.append(block)
-
-        return "\n".join(lines)
+        sections.extend(provider_blocks)
+        return "\n\n".join(sections)
 
     async def _cmd_quota(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -685,51 +692,7 @@ class BuiltinCommandsPlugin(Plugin):
             provider_id,
             force_refresh=force_refresh,
         )
-        if not reports:
-            return "No configured providers are available."
-
-        lines = ["Provider quota"]
-        for report in reports:
-            report_id = str(report.get("provider_id") or "unknown")
-            snapshot = report.get("snapshot")
-            if not isinstance(snapshot, dict):
-                error = str(report.get("error") or "Quota unavailable")
-                lines.append(f"\n{report_id}: {error}")
-                continue
-
-            label = str(snapshot.get("provider_label") or report_id)
-            plan_name = snapshot.get("plan_name")
-            title = f"\n{report_id} ({label})"
-            if plan_name:
-                title += f" - {plan_name}"
-            lines.append(title)
-            windows = snapshot.get("windows")
-            if isinstance(windows, list):
-                for window in windows:
-                    if not isinstance(window, dict):
-                        continue
-                    name = str(window.get("name") or "Quota")
-                    remaining = window.get("percent_remaining")
-                    used = window.get("used")
-                    limit = window.get("limit")
-                    unit = str(window.get("unit") or "")
-                    if used is not None and limit is not None:
-                        value = f"{used:g}/{limit:g} {unit}".strip()
-                    elif limit is not None:
-                        value = f"{limit:g} {unit}".strip()
-                    elif remaining is not None:
-                        value = f"{remaining:g}% remaining"
-                    else:
-                        value = "available"
-                    reset_at = window.get("reset_at")
-                    if reset_at:
-                        value += f"; reset at {reset_at}"
-                    lines.append(f"  {name}: {value}")
-            error = report.get("error")
-            if error:
-                lines.append(f"  Note: {error} (showing last successful result)")
-
-        return "\n".join(lines)
+        return command_text.format_quota(reports)
 
     async def _cmd_identity(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -747,13 +710,13 @@ class BuiltinCommandsPlugin(Plugin):
             return self._identity_usage()
         ctx = current_session.get()
         if ctx is None:
-            return "No active session context."
+            return "⚠️ No active session context."
         if action != "whoami":
             try:
                 return await self._run_identity_management(action, parts[1:])
             except Exception as exc:
-                return f"Identity operation failed: {exc}"
-        lines = [f"Session: {session_id}"]
+                return f"⚠️ Identity operation failed: {exc}"
+        lines = ["👤 Identity", f"Session: {session_id}"]
         if ctx.sender_account_key:
             lines.append(f"Account: {ctx.sender_account_key}")
         else:
@@ -772,12 +735,16 @@ class BuiltinCommandsPlugin(Plugin):
             result = await self.api.identity_manage("list")
             people = result.get("people", [])
             if not people:
-                return "No people configured."
-            return "\n".join(
-                f"{item.get('person_id')}: {item.get('display_name') or '-'} "
-                f"[{', '.join(item.get('accounts', [])) or 'no accounts'}]"
-                for item in people
-                if isinstance(item, dict)
+                return "ℹ️ No people configured."
+            return format_text_section(
+                "People",
+                (
+                    f"{item.get('person_id')}: {item.get('display_name') or '-'} "
+                    f"[{', '.join(item.get('accounts', [])) or 'no accounts'}]"
+                    for item in people
+                    if isinstance(item, dict)
+                ),
+                icon="👥",
             )
         if action == "observations":
             account_key = args[0] if args else ""
@@ -787,12 +754,16 @@ class BuiltinCommandsPlugin(Plugin):
             )
             rows = result.get("observations", [])
             if not rows:
-                return "No identity observations."
-            return "\n".join(
-                f"{item.get('account_key')} in {item.get('chat_address')} "
-                f"({item.get('display_name') or '-'})"
-                for item in rows
-                if isinstance(item, dict)
+                return "ℹ️ No identity observations."
+            return format_text_section(
+                "Observations",
+                (
+                    f"{item.get('account_key')} in {item.get('chat_address')} "
+                    f"({item.get('display_name') or '-'})"
+                    for item in rows
+                    if isinstance(item, dict)
+                ),
+                icon="🔎",
             )
         if action == "create" and args:
             result = await self.api.identity_manage(
@@ -800,20 +771,20 @@ class BuiltinCommandsPlugin(Plugin):
                 person_id=args[0],
                 display_name=" ".join(args[1:]),
             )
-            return f"Person saved: {result.get('person_id')}"
+            return f"✅ Person saved: {result.get('person_id')}"
         if action == "link" and len(args) == 2:
             result = await self.api.identity_manage(
                 "link",
                 account_key=args[0],
                 person_id=args[1],
             )
-            return f"Linked {result.get('account_key')} -> {result.get('person_id')}"
+            return f"✅ Linked {result.get('account_key')} -> {result.get('person_id')}"
         if action == "unlink" and len(args) == 1:
             result = await self.api.identity_manage("unlink", account_key=args[0])
             return (
-                f"Unlinked {args[0]}"
+                f"✅ Unlinked {args[0]}"
                 if result.get("unlinked")
-                else f"No active link for {args[0]}"
+                else f"ℹ️ No active link for {args[0]}"
             )
         return self._identity_usage()
 
@@ -876,7 +847,7 @@ class BuiltinCommandsPlugin(Plugin):
         if not args.strip():
             models = self.api.list_models()
             if not models:
-                return "No providers configured."
+                return "ℹ️ No providers configured."
             info = await self.api.get_session_info(session_id)
             current_model = info.get("model", "")
             current_provider = info.get("provider_id", "")
@@ -887,15 +858,16 @@ class BuiltinCommandsPlugin(Plugin):
                 current_model=current_model,
                 model_count=len(models),
             )
-            lines = ["Available models:"]
+            lines = ["🤖 Available models"]
             for entry in models:
                 marker = (
-                    " (current)"
+                    " (current) ✓"
                     if entry["provider_id"] == current_provider
                     and entry["model"] == current_model
                     else ""
                 )
-                lines.append(f"  {entry['provider_id']}/{entry['model']}{marker}")
+                lines.append(f"- {entry['provider_id']}/{entry['model']}{marker}")
+            lines.extend(("", "Usage: /model <provider/model>"))
             return "\n".join(lines)
 
         model_name = args.strip()
@@ -912,13 +884,13 @@ class BuiltinCommandsPlugin(Plugin):
                 requested_model=model_name,
                 provider_id=provider_id,
             )
-            return f"Switched to {model_name} (via {provider_id})"
+            return f"✅ Switched to {model_name} (via {provider_id})"
         _logger.debug(
             "cmd.model.switch_not_found",
             session_id=session_id,
             requested_model=model_name,
         )
-        return f"Model '{model_name}' not found in any provider."
+        return f"⚠️ Model '{model_name}' not found in any provider."
 
     async def _cmd_reasoning(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -964,7 +936,9 @@ class BuiltinCommandsPlugin(Plugin):
                 )
             if effort not in REASONING_EFFORTS:
                 allowed = ", ".join(sorted(REASONING_EFFORTS))
-                return f"Invalid reasoning effort '{effort}'. Use: {allowed}, default."
+                return (
+                    f"⚠️ Invalid reasoning effort '{effort}'. Use: {allowed}, default."
+                )
             await self.api.update_runtime_settings(
                 session_id, {"reasoning": {"effort": effort}}
             )
@@ -998,12 +972,12 @@ class BuiltinCommandsPlugin(Plugin):
         runtime = runtime_settings_from_meta(info)
         lines: list[str] = []
         if prefix:
-            lines.append(prefix)
+            lines.extend((f"✅ {prefix}", ""))
         lines.extend(
             [
-                "Current reasoning settings:",
-                f"  display: {self._format_optional_bool(runtime.reasoning.show)}",
-                f"  effort: {runtime.reasoning.effort or 'default'}",
+                "🧠 Reasoning",
+                f"Display: {self._format_optional_bool(runtime.reasoning.show)}",
+                f"Effort: {runtime.reasoning.effort or 'default'}",
             ]
         )
         return "\n".join(lines)
@@ -1076,40 +1050,16 @@ class BuiltinCommandsPlugin(Plugin):
         from nahida_bot.workspace.skills import SkillCatalog
 
         commands = self.api.list_commands()
-        lines: list[str] = []
-
-        if commands:
-            lines.append("Available commands:")
-            for cmd in sorted(commands, key=lambda c: c.name):
-                aliases = f" ({', '.join(cmd.aliases)})" if cmd.aliases else ""
-                desc = f" — {cmd.description}" if cmd.description else ""
-                lines.append(f"  /{cmd.name}{aliases}{desc}")
-
-        # Append available skills
+        skills = []
         ctx = current_session.get()
         if ctx and ctx.workspace_id:
             try:
-                workspace_root_str = self.api.get_workspace_root(ctx.workspace_id)
-                if workspace_root_str is None:
-                    raise ValueError("workspace not available")
-                workspace_root = Path(workspace_root_str)
-                skills = SkillCatalog.scan_catalog(workspace_root)
-                if skills:
-                    lines.append("")
-                    lines.append(
-                        "Available skills (use /<name> or let the agent invoke them):"
-                    )
-                    for skill in sorted(skills, key=lambda s: s.name):
-                        desc = (
-                            f" — {skill.description[:100]}" if skill.description else ""
-                        )
-                        lines.append(f"  /{skill.name}{desc}")
+                root = self.api.get_workspace_root(ctx.workspace_id)
+                if root is not None:
+                    skills = list(SkillCatalog.scan_catalog(Path(root)))
             except Exception:
-                pass  # Non-critical; help still shows commands
-
-        if not lines:
-            return "No commands or skills available."
-        return "\n".join(lines)
+                pass  # Help remains available if the skill catalog cannot load.
+        return command_text.format_help(commands, skills)
 
     async def _cmd_memory(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -1152,24 +1102,24 @@ class BuiltinCommandsPlugin(Plugin):
                     "user_id": inbound.user_id,
                 },
             )
-            return "Memory stored."
+            return "✅ Memory stored."
 
-        return "Unknown memory action. Use search, list, or remember."
+        return "⚠️ Unknown memory action. Use search, list, or remember."
 
     @staticmethod
     def _format_memory_refs(results: list[Any]) -> str:
-        return MemoryTools.format_refs(results)
+        return "🧠 " + MemoryTools.format_refs(results)
 
     async def _cmd_agents(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
         orchestrator = self._get_orchestrator()
         if orchestrator is None:
-            return "Subagent service is not available."
+            return "⚠️ Subagent service is not available."
         tasks = await orchestrator.list_tasks(session_id)
         if not tasks:
-            return "No subagent tasks for this session."
-        return "\n".join(self._format_background_task(t) for t in tasks)
+            return "ℹ️ No subagent tasks for this session."
+        return "\n\n".join(command_text.format_task(task) for task in tasks)
 
     async def _cmd_agent_stop(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -1179,11 +1129,11 @@ class BuiltinCommandsPlugin(Plugin):
             return "Usage: /agent_stop <task_id>"
         orchestrator = self._get_orchestrator()
         if orchestrator is None:
-            return "Subagent service is not available."
+            return "⚠️ Subagent service is not available."
         task = await orchestrator.stop_task(session_id, task_id)
         if task is None:
-            return f"Task {task_id} not found or not owned by this session."
-        return f"Stopped: {task.task_id} ({task.status.value})"
+            return f"⚠️ Task {task_id} not found or not owned by this session."
+        return f"⏹️ Stopped: {task.task_id} ({task.status.value})"
 
     async def _cmd_agent_wait(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -1195,23 +1145,23 @@ class BuiltinCommandsPlugin(Plugin):
         timeout = int(parts[1]) if len(parts) > 1 else 60
         orchestrator = self._get_orchestrator()
         if orchestrator is None:
-            return "Subagent service is not available."
+            return "⚠️ Subagent service is not available."
         task = await orchestrator.wait_for_task(
             task_id, timeout_seconds=max(timeout, 1)
         )
         if task is None or task.requester_session_id != session_id:
-            return f"Task {task_id} not found."
-        return self._format_background_task(task)
+            return f"⚠️ Task {task_id} not found."
+        return command_text.format_task(task)
 
     async def _cmd_stop(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
         router = self._get_router()
         if router is None:
-            return "Router not available."
+            return "⚠️ Router not available."
         runner = router._runner
         if runner is None:
-            return "No active session runner."
+            return "ℹ️ No active session runner."
 
         tracker = runner.run_tracker
         # Read tracker state only to choose the reply text. The stop *action*
@@ -1221,10 +1171,10 @@ class BuiltinCommandsPlugin(Plugin):
         # so the stop_event is set before this returns.
         run = tracker.get(session_id)
         if run is None:
-            return "No active agent run for this session."
+            return "ℹ️ No active agent run for this session."
         if run.task.done():
             tracker.finish(session_id)
-            return "Agent already finished."
+            return "✅ Agent already finished."
 
         await self.api.publish_event(
             AgentStopRequested(
@@ -1238,7 +1188,7 @@ class BuiltinCommandsPlugin(Plugin):
             platform=inbound.platform,
             chat_id=inbound.chat_id,
         )
-        return "Agent stopped."
+        return "⏹️ Agent stopped."
 
     async def _cmd_steer(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -1247,8 +1197,9 @@ class BuiltinCommandsPlugin(Plugin):
             return "Usage: /steer <prompt>"
         router = self._get_router()
         if router is None:
-            return "Router not available."
-        return await router.steer_message(args, inbound, session_id)
+            return "⚠️ Router not available."
+        result = await router.steer_message(args, inbound, session_id)
+        return format_text_section("Steering", (result,), icon="➡️")
 
     def _get_router(self) -> Any:
         return getattr(self.api, "message_router", None)

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from nahida_bot.core.context import current_session
+from nahida_bot.plugins.builtin.command_text import format_cron_jobs
 from nahida_bot.plugins.builtin.tools.context import (
     address_from_inbound,
     address_from_session_context,
@@ -95,6 +96,14 @@ _CREATE_PARAMETERS: dict[str, Any] = {
             "type": "string",
             "description": "Optional working directory for the external command.",
         },
+        "timeout_seconds": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": (
+                "Whole-job runtime limit in seconds, including the script and Agent. "
+                "Omit to keep the existing/default limit; null inherits the scheduler default."
+            ),
+        },
         "script_timeout_seconds": {
             "type": "integer",
             "description": "External command timeout in seconds. Default 30.",
@@ -152,6 +161,14 @@ _UPDATE_PARAMETERS: dict[str, Any] = {
             "type": "string",
             "description": "Replacement working directory for the external command.",
         },
+        "timeout_seconds": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": (
+                "Whole-job runtime limit in seconds, including the script and Agent. "
+                "Omit to keep the existing/default limit; null inherits the scheduler default."
+            ),
+        },
         "script_timeout_seconds": {
             "type": "integer",
             "description": "Replacement external command timeout in seconds.",
@@ -175,6 +192,7 @@ class _CreateRequest:
     script_command: str = ""
     script_working_dir: str = ""
     script_timeout_seconds: int = 30
+    timeout_seconds: int | None = None
 
     @classmethod
     def from_arguments(
@@ -190,6 +208,7 @@ class _CreateRequest:
             interval_seconds=arguments.get("interval_seconds"),
             cron_expression=arguments.get("cron_expression"),
             max_runs=arguments.get("max_runs"),
+            timeout_seconds=arguments.get("timeout_seconds"),
             session_mode=str(arguments.get("session_mode", "main")),
             executor_type=str(arguments.get("executor_type", "agent")),
             script_command=str(arguments.get("script_command", "")),
@@ -211,6 +230,7 @@ class _UpdateRequest:
     script_command: str | None = None
     script_working_dir: str | None = None
     script_timeout_seconds: int | None = None
+    timeout_seconds: int | None = None
 
     @classmethod
     def from_arguments(cls, job_id: str, arguments: dict[str, Any]) -> _UpdateRequest:
@@ -222,6 +242,7 @@ class _UpdateRequest:
             interval_seconds=arguments.get("interval_seconds"),
             cron_expression=arguments.get("cron_expression"),
             max_runs=arguments.get("max_runs"),
+            timeout_seconds=arguments.get("timeout_seconds"),
             executor_type=arguments.get("executor_type"),
             script_command=arguments.get("script_command"),
             script_working_dir=arguments.get("script_working_dir"),
@@ -321,6 +342,7 @@ class CronTools:
                 script_command=request.script_command,
                 script_working_dir=request.script_working_dir,
                 script_timeout_seconds=request.script_timeout_seconds,
+                timeout_seconds=request.timeout_seconds,
                 created_by_user_id=context.user_id,
                 created_from_session_id=context.session_id,
                 created_from_chat_address=address.chat_key,
@@ -401,6 +423,11 @@ class CronTools:
                 script_command=request.script_command,
                 script_working_dir=request.script_working_dir,
                 script_timeout_seconds=request.script_timeout_seconds,
+                **(
+                    {"timeout_seconds": request.timeout_seconds}
+                    if "timeout_seconds" in arguments
+                    else {}
+                ),
             )
         except Exception as exc:
             return f"Error updating scheduled task: {exc}"
@@ -421,7 +448,7 @@ class CronTools:
         """Implement the concise /cron list response."""
         scheduler = self.scheduler
         if scheduler is None:
-            return "Scheduler is not available."
+            return "⚠️ Scheduler is not available."
         address = address_from_inbound(inbound)
         jobs = [
             job
@@ -429,7 +456,7 @@ class CronTools:
             if job_visible_to_user(job, address, inbound.user_id)
         ]
         if not jobs:
-            return "No scheduled tasks for this chat."
+            return "ℹ️ No scheduled tasks for this chat."
         return self._format_command_jobs(jobs)
 
     async def cancel_for_inbound(
@@ -446,8 +473,8 @@ class CronTools:
         scheduler, _job = resolved
         cancelled = await scheduler.cancel_job(job_id)
         if cancelled:
-            return f"Cancelled task {job_id}."
-        return f"Task {job_id} is already inactive."
+            return f"✅ Cancelled task {job_id}."
+        return f"ℹ️ Task {job_id} is already inactive."
 
     async def delete_for_inbound(
         self,
@@ -463,8 +490,8 @@ class CronTools:
         scheduler, _job = resolved
         deleted = await scheduler.delete_job(job_id)
         if deleted:
-            return f"Deleted task {job_id}."
-        return f"Task {job_id} was already deleted."
+            return f"✅ Deleted task {job_id}."
+        return f"ℹ️ Task {job_id} was already deleted."
 
     async def _resolve_tool_job(self, job_id: str) -> tuple[Any, Any] | str:
         context = current_session.get()
@@ -626,6 +653,7 @@ class CronTools:
         lines.append(f"  Next fire: {job.next_fire_at}")
         lines.append(f"  Session: {job.session_mode}")
         lines.append(f"  Executor: {job.executor_type}")
+        lines.append(f"  Timeout: {CronTools._timeout_description(job)}")
         if job.executor_type == "script_then_agent":
             command = job.script_command
             lines.append(
@@ -646,6 +674,7 @@ class CronTools:
                 f"{cls._schedule_description(job)} — {preview}"
             )
             lines.append(f"    runs: {job.run_count}, next: {job.next_fire_at}")
+            lines.append(f"    Timeout: {cls._timeout_description(job)}")
             if job.failure_count:
                 lines.append(
                     f"    failures: {job.failure_count}, last error: {job.last_error}"
@@ -665,23 +694,19 @@ class CronTools:
             lines.append(f"  Max runs: {job.max_runs or 'infinite'}")
         lines.append(f"  Next fire: {job.next_fire_at}")
         lines.append(f"  Executor: {job.executor_type}")
+        lines.append(f"  Timeout: {CronTools._timeout_description(job)}")
         prompt = job.prompt
         lines.append(f"  Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
         return "\n".join(lines)
 
     @staticmethod
     def _format_command_jobs(jobs: list[Any]) -> str:
-        lines: list[str] = []
-        for job in jobs:
-            status = "active" if job.is_active else "inactive"
-            next_at = f", next: {job.next_fire_at}" if job.is_active else ""
-            lines.append(
-                f"  {job.job_id}  [{job.mode}/{job.executor_type}] {status}  "
-                f"runs: {job.run_count}{next_at}"
-            )
-            preview = job.prompt[:80] + ("..." if len(job.prompt) > 80 else "")
-            lines.append(f"    {preview}")
-        return "\n".join(lines)
+        return format_cron_jobs(jobs)
+
+    @staticmethod
+    def _timeout_description(job: Any) -> str:
+        timeout = getattr(job, "timeout_seconds", None)
+        return f"{timeout} s" if timeout is not None else "Scheduler default"
 
     @staticmethod
     def _schedule_description(job: Any) -> str:

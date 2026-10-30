@@ -340,6 +340,7 @@ class CronJobResponse(BaseModel):
     script_command: str = ""
     script_working_dir: str = ""
     script_timeout_seconds: int = 30
+    timeout_seconds: int | None = None
 
 
 class CronListResponse(BaseModel):
@@ -360,6 +361,7 @@ class CreateCronRequest(BaseModel):
     script_command: str = ""
     script_working_dir: str = ""
     script_timeout_seconds: int = Field(default=30, ge=1)
+    timeout_seconds: int | None = Field(default=None, ge=1, strict=True)
 
     @model_validator(mode="after")
     def _validate_session(self) -> "CreateCronRequest":
@@ -406,6 +408,7 @@ class UpdateCronRequest(BaseModel):
     script_command: str | None = None
     script_working_dir: str | None = None
     script_timeout_seconds: int | None = Field(default=None, ge=1)
+    timeout_seconds: int | None = Field(default=None, ge=1, strict=True)
 
 
 class CronActionResponse(BaseModel):

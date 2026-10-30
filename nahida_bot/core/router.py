@@ -18,6 +18,7 @@ from nahida_bot.core.chat_address import ChatAddress, SessionKey, classify_sessi
 from nahida_bot.core.chat_address import address_from_inbound as _address_from_inbound
 from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.core.config import PendingMessagesConfig
+from nahida_bot.core.system_text import format_system_text
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.events import (
     AgentResponseRequested,
@@ -869,7 +870,7 @@ class MessageRouter:
     ) -> str:
         """Apply a command to the current chat and stop its in-flight run."""
         if self._mute_service is None:
-            return "会话禁言服务不可用。"
+            return "Error: Chat mute service is unavailable."
         context = current_session.get()
         result = await self._mute_service.command(
             action,
@@ -889,7 +890,11 @@ class MessageRouter:
             await self._send_outbound(
                 inbound,
                 session_id,
-                OutboundMessage(text=self._mute_service.config.notice.online),
+                OutboundMessage(
+                    text=format_system_text(
+                        "Chat", "Unmuted", body=self._mute_service.config.notice.online
+                    )
+                ),
             )
         return status.muted
 
@@ -976,6 +981,13 @@ class MessageRouter:
                     default_reply_to=self._default_reply_to(inbound),
                 )
                 if outbound is not None:
+                    if outbound.text.strip():
+                        outbound = replace(
+                            outbound,
+                            text=format_system_text(
+                                "Command", f"/{entry.name}", body=outbound.text
+                            ),
+                        )
                     address = _address_from_inbound(inbound)
                     active_after_command = self.get_active_session_id(
                         address,
@@ -1196,7 +1208,11 @@ class MessageRouter:
                 await self._send_response(
                     request.inbound,
                     request.session_id,
-                    "An error occurred during agent execution.",
+                    format_system_text(
+                        "Agent",
+                        "Failed",
+                        body="An error occurred during agent execution.",
+                    ),
                     reply_to_override=request.reply_to_override,
                 )
             except Exception:
@@ -1298,9 +1314,13 @@ class MessageRouter:
                 request.inbound,
                 request.session_id,
                 (
-                    "[Service is shutting down; the current response was interrupted.]"
+                    format_system_text(
+                        "Agent",
+                        "Interrupted",
+                        body="Service is shutting down; the current response was interrupted.",
+                    )
                     if self._stopping
-                    else "[Agent stopped.]"
+                    else format_system_text("Agent", "Stopped")
                 ),
                 reply_to_override=request.reply_to_override,
             )

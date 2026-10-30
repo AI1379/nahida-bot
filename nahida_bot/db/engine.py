@@ -535,6 +535,11 @@ _SCHEMA_MIGRATIONS = [
         updated_at REAL NOT NULL
     );
     """,
+    # Migration 030: optional whole-job timeout; NULL inherits the scheduler
+    # default. Installed by the guarded cron-column helper for safe retries.
+    """
+    -- See DatabaseEngine._ensure_cron_executor_columns().
+    """,
 ]
 
 
@@ -747,6 +752,10 @@ class DatabaseEngine:
             ("script_command", "TEXT NOT NULL DEFAULT ''"),
             ("script_working_dir", "TEXT NOT NULL DEFAULT ''"),
             ("script_timeout_seconds", "INTEGER NOT NULL DEFAULT 30"),
+            (
+                "timeout_seconds",
+                "INTEGER CHECK(timeout_seconds IS NULL OR timeout_seconds > 0)",
+            ),
         ]
         async with self.write_lock:
             for name, declaration in additions:

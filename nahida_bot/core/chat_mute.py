@@ -61,9 +61,13 @@ class ChatMuteService:
         actor: str,
     ) -> MuteCommandResult:
         if not self.config.enabled:
-            return MuteCommandResult("会话禁言功能未启用（mute.enabled=false）。")
+            return MuteCommandResult(
+                "Error: Chat mute is disabled (mute.enabled=false)."
+            )
         if not address.is_typed:
-            return MuteCommandResult("无法确定当前聊天入口，未修改禁言状态。")
+            return MuteCommandResult(
+                "Error: Chat target is unavailable; mute state was not changed."
+            )
         raw = args.strip().lower()
         if action == "mute" and raw == "status":
             status = await self.status(address)
@@ -73,23 +77,23 @@ class ChatMuteService:
             return MuteCommandResult(text)
         if self._authorization is None or not self._authorization.is_admin(actor):
             return MuteCommandResult(
-                "只有 authorization.admins 中的管理员可以修改禁言状态。"
+                "Error: Only authorization.admins can change the chat mute state."
             )
         if action == "unmute":
             if raw:
-                return MuteCommandResult("用法：/unmute")
+                return MuteCommandResult("Usage: /unmute")
             changed = await self._repository.clear(address.chat_key)
             if changed:
                 logger.info(
                     "chat_mute.cleared", chat_address=address.chat_key, actor=actor
                 )
             return MuteCommandResult(
-                self.config.notice.online if changed else "当前会话未处于静默状态。"
+                self.config.notice.online if changed else "Chat is not muted."
             )
         duration = self._parse_duration(raw)
         if duration is None:
             return MuteCommandResult(
-                "用法：/mute [30m|2h|1d] 或 /mute status；时长需在 1 秒到 365 天之间。"
+                "Usage: /mute [30m|2h|1d] or /mute status. Duration: 1 second to 365 days."
             )
         now = self._clock()
         await self._repository.set_until(address.chat_key, now + duration, actor, now)
@@ -101,7 +105,7 @@ class ChatMuteService:
             muted_until=now + duration,
         )
         return MuteCommandResult(
-            f"{self.config.notice.offline}（{self._format_duration(duration)}）",
+            f"{self.config.notice.offline}\nDuration: {self._format_duration(duration)}",
             stop_agent=True,
         )
 
@@ -116,9 +120,9 @@ class ChatMuteService:
 
     def describe(self, status: ChatMuteStatus) -> str:
         if not status.muted or status.muted_until is None:
-            return "当前会话未处于静默状态。"
+            return "Chat is not muted."
         remaining = max(1, math.ceil(status.muted_until - self._clock()))
-        return f"当前会话已静默，剩余 {self._format_duration(remaining)}。"
+        return f"Chat is muted.\nRemaining: {self._format_duration(remaining)}"
 
     @staticmethod
     def _format_duration(seconds: int) -> str:

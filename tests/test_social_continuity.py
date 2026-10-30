@@ -136,6 +136,14 @@ async def test_silent_gate_stores_feeling_and_thought_without_extra_llm_call():
     snapshot = await plugin._social.snapshot("test:group:g1", "test:group:g1", "")
     assert "Curious about the cake" in snapshot
     assert "curious" in snapshot
+    status = await plugin._social_status(
+        session_id="test:group:g1", chat_key="test:group:g1"
+    )
+    assert "Mood: curious" in status
+    assert "Curious about the cake" in status
+    assert "Current social snapshot" not in status
+    assert "evidence_ids" not in status
+    assert len(api.llm_calls) == 1
     # Fresh runtime reloads saved state, including unsaid thoughts.
     restored = SocialContinuity(api, plugin._config.inner_thoughts)
     assert "Curious about the cake" in await restored.snapshot(

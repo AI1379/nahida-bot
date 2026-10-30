@@ -277,10 +277,10 @@ class MemeLibraryPlugin(Plugin):
             return result
         catalog = json.loads(result)
         if not catalog["total"]:
-            return "表情包库为空，请导入图片后再试。"
+            return "Meme library is empty. Import images and try again."
         if not catalog["memes"]:
-            return "没有找到匹配的表情包，请换几个关键词。"
-        lines = [f"表情包库：{catalog['total']} 张；发送：/meme send <id>"]
+            return "No matching memes. Try different keywords."
+        lines = [f"Meme library: {catalog['total']} images. Send: /meme send <id>"]
         lines.extend(
             f"{meme['id']}  [{meme['category']}] {meme['title']}"
             for meme in catalog["memes"]

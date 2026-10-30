@@ -286,3 +286,48 @@ async def _dispatch_interval_batch(self, platform, chat_id):
 - **不做工作流引擎** — "先调 A 再调 B"的 DAG 流程靠 LLM 运行时编排，不预定义
 - **不急着做 WebSocket** — 先 REST 够用，流式响应和实时推送是后续需求
 - **不用 markdown 文件存心跳任务** — 结构化数据用数据库，不绕路
+
+
+## Per-job deadlines and system text (2026-10-29)
+
+`CronJob.timeout_seconds` is an optional positive integer for the entire fire,
+including script execution, Agent work and final delivery. `null` inherits
+`scheduler.job_timeout_seconds`. It is independent of `script_timeout_seconds`,
+which only limits the initial command of a script-first job. Existing rows
+migrate to `NULL` without changing their schedule or activation state.
+
+`cron_create`, `cron_update`, `POST /api/cron`, `PATCH /api/cron/{job_id}`, and
+the WebUI Job Timeout field expose this setting. Updates distinguish omission
+(keep the saved override) from explicit `null` (restore the scheduler default).
+For example, `{"timeout_seconds": 1800}` gives a research job 30 minutes;
+`{"timeout_seconds": null}` restores inheritance. A timeout still follows the
+existing failure/retry policy. Updating a disabled job does not reactivate it.
+The setting does not change individual provider/tool/subagent limits, and a
+parent timeout does not currently cancel detached subagents.
+
+Subagent channel notifications now default to disabled through
+`agent.subagent_notifications_enabled`. Completion events and results remain
+available to the parent session with the default `notify=done_only` policy.
+The separate per-task `notify=silent` policy suppresses the parent completion
+event as well, so it is not a substitute for the global channel switch.
+
+User-visible system text uses `core.system_text.format_system_text`: an English
+`[Area] Summary` header, optional `Label: value` fields, and a blank line before
+content. Command replies receive `[Command] /canonical_name` at the router,
+including plugin commands. Empty/media-only and suppressed responses keep
+their behavior; attachment metadata is preserved. Task, scheduler, Agent
+stop/error, and mute-expiry notices use the same renderer. Task notifications
+include task IDs; scheduler failures include the actual deadline, consecutive
+failure count, and whether the job will retry or has been disabled.
+
+System labels and built-in command instructions are English. User content,
+plugin-provided content, model responses, configured notice overrides, and raw
+tool stdout are not translated or rewritten by the renderer. New system
+notifications should use this renderer rather than embedding a whole sentence
+inside brackets. Human-facing command bodies use one light emoji per section
+or salient status, English sentence-case labels, and blank lines between
+sections. /status puts Agent state first, followed by model and session fields;
+/help groups commands by purpose. Quota errors and task failures remain visible.
+The social status view presents scene, mood and thoughts as readable fields;
+the structured snapshot used by the model remains unchanged. Model-facing tool
+results do not receive command decorations.

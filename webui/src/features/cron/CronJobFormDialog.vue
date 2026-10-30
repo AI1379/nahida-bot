@@ -47,8 +47,10 @@ const executorType = ref<"agent" | "script_then_agent">("agent");
 const scriptCommand = ref("");
 const scriptWorkingDir = ref("");
 const scriptTimeoutSeconds = ref("30");
+const timeoutSeconds = ref("");
 const canSubmit = computed(() => (
   !!prompt.value.trim()
+  && (!timeoutSeconds.value.trim() || (Number.isInteger(Number(timeoutSeconds.value)) && Number(timeoutSeconds.value) > 0))
   && (sessionMode.value !== "named" || !!sessionName.value.trim())
   && (
     executorType.value !== "script_then_agent"
@@ -76,6 +78,7 @@ watch(
       scriptCommand.value = props.job.script_command;
       scriptWorkingDir.value = props.job.script_working_dir;
       scriptTimeoutSeconds.value = String(props.job.script_timeout_seconds);
+      timeoutSeconds.value = props.job.timeout_seconds == null ? "" : String(props.job.timeout_seconds);
       target.value = "";
     } else {
       target.value = "";
@@ -91,6 +94,7 @@ watch(
       scriptCommand.value = "";
       scriptWorkingDir.value = "";
       scriptTimeoutSeconds.value = "30";
+      timeoutSeconds.value = "";
     }
   },
 );
@@ -106,6 +110,7 @@ function buildCreatePayload(): CreateCronRequest {
     max_runs: maxRuns.value ? Number(maxRuns.value) : null,
     session_mode: sessionMode.value,
     session_name: sessionMode.value === "named" ? sessionName.value : null,
+    timeout_seconds: timeoutSeconds.value.trim() ? Number(timeoutSeconds.value) : null,
     executor_type: executorType.value,
     script_command: executorType.value === "script_then_agent" ? scriptCommand.value : "",
     script_working_dir: executorType.value === "script_then_agent" ? scriptWorkingDir.value : "",
@@ -125,6 +130,7 @@ function buildUpdatePayload(): UpdateCronRequest {
     max_runs: maxRuns.value ? Number(maxRuns.value) : null,
     session_mode: sessionMode.value,
     session_name: sessionMode.value === "named" ? sessionName.value : null,
+    timeout_seconds: timeoutSeconds.value.trim() ? Number(timeoutSeconds.value) : null,
     executor_type: executorType.value,
     script_command: executorType.value === "script_then_agent" ? scriptCommand.value : "",
     script_working_dir: executorType.value === "script_then_agent" ? scriptWorkingDir.value : "",
@@ -199,6 +205,12 @@ defineExpose({ buildCreatePayload, buildUpdatePayload });
               <option value="named">Named</option>
             </select>
             <span class="field-help">Used by Agent jobs and script failure fallback runs.</span>
+          </div>
+
+          <div class="field">
+            <label class="field-label">Job Timeout (seconds)</label>
+            <Input v-model="timeoutSeconds" type="number" min="1" step="1" placeholder="Scheduler default" />
+            <span class="field-help">Total runtime for the script and Agent. Leave blank to use the scheduler default.</span>
           </div>
 
           <template v-if="executorType === 'script_then_agent'">

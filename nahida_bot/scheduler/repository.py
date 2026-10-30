@@ -55,6 +55,7 @@ def _row_to_job(r: aiosqlite.Row) -> CronJob:
         sender_account_key=(
             r["sender_account_key"] if "sender_account_key" in keys else ""
         ),
+        timeout_seconds=r["timeout_seconds"] if "timeout_seconds" in keys else None,
         executor_type=(r["executor_type"] if "executor_type" in keys else "agent"),
         script_command=(r["script_command"] if "script_command" in keys else ""),
         script_working_dir=(
@@ -85,8 +86,8 @@ class CronRepository:
                     created_by_user_id, created_from_session_id,
                     created_from_chat_address, sender_account_key,
                     executor_type, script_command, script_working_dir,
-                    script_timeout_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    script_timeout_seconds, timeout_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -119,6 +120,7 @@ class CronRepository:
                     job.script_command,
                     job.script_working_dir,
                     job.script_timeout_seconds,
+                    job.timeout_seconds,
                 ),
             )
             await self._engine.db.commit()
@@ -365,6 +367,7 @@ class CronRepository:
         script_command: str,
         script_working_dir: str,
         script_timeout_seconds: int,
+        timeout_seconds: int | None = None,
     ) -> bool:
         """Update an unclaimed job. Returns False if it cannot update."""
         async with self._engine.write_lock:
@@ -384,6 +387,7 @@ class CronRepository:
                     script_command = ?,
                     script_working_dir = ?,
                     script_timeout_seconds = ?,
+                    timeout_seconds = ?,
                     failure_count = 0,
                     last_error = NULL
                 WHERE job_id = ?
@@ -403,6 +407,7 @@ class CronRepository:
                     script_command,
                     script_working_dir,
                     script_timeout_seconds,
+                    timeout_seconds,
                     job_id,
                 ),
             )
@@ -471,8 +476,8 @@ class CronRepository:
                     created_by_user_id, created_from_session_id,
                     created_from_chat_address, sender_account_key,
                     executor_type, script_command, script_working_dir,
-                    script_timeout_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    script_timeout_seconds, timeout_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.job_id,
@@ -505,6 +510,7 @@ class CronRepository:
                     job.script_command,
                     job.script_working_dir,
                     job.script_timeout_seconds,
+                    job.timeout_seconds,
                 ),
             )
             await self._engine.db.commit()

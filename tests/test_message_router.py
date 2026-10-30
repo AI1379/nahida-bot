@@ -380,13 +380,14 @@ class TestChatMuteRouter:
         turns = memory.sessions[session_id]
         assert len(turns) == 1 and turns[0].metadata["observed_only"]
         assert len(channel.sent) == 2
-        assert "下线" in channel.sent[0][1].text
+        assert channel.sent[0][1].text.startswith("[Command] /mute\n")
+        assert "Chat muted." in channel.sent[0][1].text
         assert "30m" in channel.sent[1][1].text
         await _publish_mute_input(bus, "/unmute", group=group)
         await _publish_mute_input(bus, "reply now", group=group)
         await _wait_mute_router_idle(router)
         assert len(agent.calls) == 1
-        assert "上线" in channel.sent[2][1].text
+        assert "Chat unmuted." in channel.sent[2][1].text
         # The muted input remains nearby context on private and group chats.
         history = agent.calls[0]["history_messages"]
         assert any("please reply" in message.content for message in history)
@@ -409,14 +410,16 @@ class TestChatMuteRouter:
         await _publish_mute_input(bus, "next")
         await _wait_mute_router_idle(router)
         assert len(agent.calls) == 2
-        assert sum("恢复上线" in outbound.text for _, outbound in channel.sent) == 1
+        assert (
+            sum("Chat unmuted." in outbound.text for _, outbound in channel.sent) == 1
+        )
 
     async def test_non_admin_cannot_change_state(self, chat_mute_router):
         _, bus, channel, _, _, service, _ = chat_mute_router
         await _publish_mute_input(bus, "/mute", user="other")
         address = ChatAddress(channel="test", target_type="private", target_id="c1")
         assert not (await service.status(address)).muted
-        assert "管理员" in channel.sent[0][1].text
+        assert "authorization.admins" in channel.sent[0][1].text
 
     async def test_untriggered_expiry_and_proactive_join(self, chat_mute_router):
         router, bus, channel, memory, agent, _, clock = chat_mute_router
@@ -453,7 +456,7 @@ class TestChatMuteRouter:
                 payload=MessagePayload(message=inbound, session_id=""), source="test"
             )
         )
-        assert "恢复上线" in channel.sent[-1][1].text
+        assert "Chat unmuted." in channel.sent[-1][1].text
 
     async def test_inflight_reply_and_all_pending_inputs_are_suppressed(
         self, chat_mute_router
@@ -698,7 +701,12 @@ class TestMessageRouterCommandDispatch:
 
         channel = channel_registry.get("test")
         assert isinstance(channel, _StubChannel)
-        assert channel.sent[0][1] is outbound
+        sent = channel.sent[0][1]
+        assert sent.text == "[Command] /report\n\nfile attached"
+        assert sent.attachments == outbound.attachments
+        assert sent.extra == outbound.extra
+        assert sent.reply_to == outbound.reply_to
+        assert outbound.text == "file attached"
 
     async def test_command_returned_managed_temp_attachment_is_cleaned(
         self, tmp_path: Path
@@ -854,7 +862,7 @@ class TestMessageRouterCommandDispatch:
 
         channel = channel_registry.get("test")
         assert isinstance(channel, _StubChannel)
-        assert channel.sent[0][1].text == "too slow"
+        assert channel.sent[0][1].text == "[Command] /slow\n\ntoo slow"
 
 
 class TestMessageRouterAgentDispatch:

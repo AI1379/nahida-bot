@@ -94,7 +94,7 @@ class OrchestrationConfig:
     subagent_timeout_seconds: int = 900
     subagent_concurrency: int = 4
     delivery_claim_ttl_seconds: int = 300
-    subagent_notifications_enabled: bool = True
+    subagent_notifications_enabled: bool = False
     system_prompt: str = "You are a focused subagent. Complete the delegated task and return a concise result summary."
 
 

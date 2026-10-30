@@ -16,18 +16,22 @@ from .helpers import StubChannelService
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("notifications_enabled", [True, False])
+@pytest.mark.parametrize("notifications_enabled", [True, False, None])
 @pytest.mark.parametrize("notify_policy", ["done_only", "silent"])
 async def test_yaml_notification_switch_controls_channel_delivery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    notifications_enabled: bool,
+    notifications_enabled: bool | None,
     notify_policy: Literal["done_only", "silent"],
 ) -> None:
     config_path = tmp_path / "config-run.yaml"
     config_path.write_text(
-        "agent:\n"
-        f"  subagent_notifications_enabled: {str(notifications_enabled).lower()}\n",
+        (
+            "{}\n"
+            if notifications_enabled is None
+            else "agent:\n"
+            f"  subagent_notifications_enabled: {str(notifications_enabled).lower()}\n"
+        ),
         encoding="utf-8",
     )
     settings = load_settings(
@@ -83,7 +87,7 @@ async def test_yaml_notification_switch_controls_channel_delivery(
         assert completed.status == AgentRunStatus.SUCCEEDED
         assert completed.summary == "child result"
         assert send_message.await_count == int(
-            notifications_enabled and notify_policy == "done_only"
+            bool(notifications_enabled) and notify_policy == "done_only"
         )
         records = await app.memory_store.get_recent(session_id)
         assert any(

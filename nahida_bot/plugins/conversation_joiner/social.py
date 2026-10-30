@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
+from nahida_bot.core.system_text import compact_label, format_text_section
 
 from nahida_bot.core.message_context import (
     MESSAGE_CONTEXT_INSTRUCTION,
@@ -305,6 +306,39 @@ class SocialContinuity:
             state = await self._load(key, chat_key, session_id, persona)
             selected_id = self._pending.get(key, ("", ""))[1]
             return self._render(state, selected_id=selected_id) if self.active else ""
+
+    async def status(self, chat_key: str, session_id: str, persona: str) -> str:
+        """Present local state for /status without exposing the model prompt."""
+        key = self._key(chat_key, session_id)
+        async with self._lock(key):
+            state = await self._load(key, chat_key, session_id, persona)
+            if not self.active:
+                return ""
+            data = state.snapshot(time.time(), self.config)
+            lines = []
+            scene = data["scene"]
+            if isinstance(scene, dict):
+                lines.append(f"Scene: {compact_label(scene['text'], limit=280)}")
+            if state.task_focused:
+                lines.append("Mode: Task focused (social expression paused)")
+            else:
+                feeling = data["feeling"]
+                if isinstance(feeling, dict):
+                    lines.append(
+                        f"Mood: {feeling['label']} | Intensity: {feeling['intensity']:.2f}"
+                    )
+                    lines.append(
+                        f"Feeling: {compact_label(feeling['text'], limit=280)}"
+                    )
+                if state.thoughts:
+                    lines.append(f"Thoughts: {len(state.thoughts)}")
+                    lines.extend(
+                        f"- {compact_label(thought.text, limit=280)}"
+                        for thought in state.thoughts
+                    )
+            return format_text_section(
+                "Social continuity", lines or ["No active social state."], icon="🌿"
+            )
 
     def _render(self, state: SocialState, *, selected_id: str = "") -> str:
         data: dict[str, Any] = state.snapshot(time.time(), self.config)

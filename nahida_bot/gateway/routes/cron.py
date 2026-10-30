@@ -108,6 +108,7 @@ async def create_cron_job(
             script_command=body.script_command,
             script_working_dir=body.script_working_dir,
             script_timeout_seconds=body.script_timeout_seconds,
+            timeout_seconds=body.timeout_seconds,
             created_by_user_id="webapi",
             created_from_session_id=created_from_session_id,
             created_from_chat_address=address.chat_key,
@@ -151,6 +152,11 @@ async def update_cron_job(
             script_command=body.script_command,
             script_working_dir=body.script_working_dir,
             script_timeout_seconds=body.script_timeout_seconds,
+            **(
+                {"timeout_seconds": body.timeout_seconds}
+                if "timeout_seconds" in body.model_fields_set
+                else {}
+            ),
         )
     except ValueError as exc:
         raise HTTPException(
@@ -266,6 +272,7 @@ def _job_to_response(job: CronJob) -> CronJobResponse:
         script_command=job.script_command,
         script_working_dir=job.script_working_dir,
         script_timeout_seconds=job.script_timeout_seconds,
+        timeout_seconds=job.timeout_seconds,
     )
 
 

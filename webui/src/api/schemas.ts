@@ -127,6 +127,7 @@ export interface CronJob {
   script_command: string;
   script_working_dir: string;
   script_timeout_seconds: number;
+  timeout_seconds: number | null;
 }
 
 export interface CronListResponse {
@@ -567,6 +568,7 @@ export interface CreateCronRequest {
   script_command?: string;
   script_working_dir?: string;
   script_timeout_seconds?: number;
+  timeout_seconds?: number | null;
 }
 
 export interface CreateCronResponse {
@@ -587,6 +589,7 @@ export interface UpdateCronRequest {
   script_command?: string | null;
   script_working_dir?: string | null;
   script_timeout_seconds?: number | null;
+  timeout_seconds?: number | null;
 }
 
 export interface CronActionResponse {

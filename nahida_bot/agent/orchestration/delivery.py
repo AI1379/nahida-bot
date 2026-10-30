@@ -15,6 +15,7 @@ import structlog
 
 from nahida_bot.agent.orchestration.models import AgentRunStatus, BackgroundTask
 from nahida_bot.core.outbound import outbound_payload, send_channel_message
+from nahida_bot.core.system_text import format_system_text
 
 if TYPE_CHECKING:
     from nahida_bot.core.channel_registry import ChannelRegistry
@@ -33,20 +34,25 @@ def _format_notification(
 ) -> str:
     title = task.title or task.task_id
     if status == AgentRunStatus.SUCCEEDED:
-        headline = f"✅ Background task done: {title}"
+        headline = "Completed"
         body = summary.strip()
     elif status == AgentRunStatus.CANCELLED:
-        headline = f"⏹ Background task cancelled: {title}"
+        headline = "Cancelled"
         body = error.strip()
     elif status == AgentRunStatus.TIMED_OUT:
-        headline = f"⏱ Background task timed out: {title}"
+        headline = "Timed out"
         body = error.strip()
     else:
-        headline = f"⚠️ Background task failed: {title}"
+        headline = "Failed"
         body = (error or summary).strip()
     if body and len(body) > _MAX_DELIVERED_SUMMARY_CHARS:
         body = body[: _MAX_DELIVERED_SUMMARY_CHARS - 1].rstrip() + "…"
-    return headline if not body else f"{headline}\n\n{body}"
+    return format_system_text(
+        "Task",
+        headline,
+        fields=(("Task", task.task_id), ("Name", title)),
+        body=body,
+    )
 
 
 class ChannelCompletionDeliverer:

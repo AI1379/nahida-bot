@@ -35,7 +35,7 @@ async def test_cancelled_response_distinguishes_service_shutdown(shutdown):
         assert "Service is shutting down" in text
         assert "Agent stopped" not in text
     else:
-        assert text == "[Agent stopped.]"
+        assert text == "[Agent] Stopped"
 
 
 async def test_memory_limit_has_actionable_tool_result(tmp_path):

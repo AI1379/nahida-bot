@@ -2388,3 +2388,37 @@ providers:
             json={"expected_checksum": current.json()["checksum"]},
         )
     assert stale.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{"prompt": "edit"}, {"timeout_seconds": 1800}, {"timeout_seconds": None}],
+)
+async def test_cron_api_preserves_omitted_timeout_and_accepts_reset(
+    client_no_auth, payload
+):
+    from dataclasses import replace
+    from tests.test_scheduler import _job
+
+    app = client_no_auth._transport.app.state.application
+    scheduler = AsyncMock()
+    scheduler.update_job.return_value = replace(
+        _job(), timeout_seconds=payload.get("timeout_seconds", 600)
+    )
+    app.scheduler_service = scheduler
+    response = await client_no_auth.patch("/api/cron/job1", json=payload)
+    assert response.status_code == 200
+    kwargs = scheduler.update_job.await_args.kwargs
+    if "timeout_seconds" in payload:
+        assert kwargs["timeout_seconds"] == payload["timeout_seconds"]
+    else:
+        assert "timeout_seconds" not in kwargs
+    assert response.json()["timeout_seconds"] == payload.get("timeout_seconds", 600)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "600", 1.5])
+async def test_cron_api_rejects_invalid_timeout(client_no_auth, value):
+    response = await client_no_auth.patch(
+        "/api/cron/job1", json={"timeout_seconds": value}
+    )
+    assert response.status_code == 422

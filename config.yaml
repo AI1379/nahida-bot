@@ -506,7 +506,7 @@ telegram:
 #   tool_retry_attempts: 1              # 工具执行重试次数
 #   tool_retry_backoff_seconds: 0.1     # 工具重试退避间隔（秒）
 #   max_tool_log_chars: 400             # 工具日志截断长度
-#   subagent_notifications_enabled: true  # 子任务结束后向来源聊天发通知；false 全局关闭
+#   subagent_notifications_enabled: false  # 默认仅回传主任务；true 才向来源聊天推送通知
 #   # tool_use_system_prompt: "..."     # 注入的工具使用提示
 #   # provider_error_template: "..."    # Provider 错误消息模板
 
@@ -646,8 +646,8 @@ agent_runtime:
 #   enabled: false
 #   default_duration_seconds: 3600
 #   notice:
-#     offline: "虚空系统已下线"
-#     online: "虚空系统已恢复上线"
+#     offline: "Chat muted."
+#     online: "Chat unmuted."
 #
 # 控制消息路由行为。system_prompt 使用顶层 system_prompt 字段。
 # 以下均为默认值，不写则使用默认值。

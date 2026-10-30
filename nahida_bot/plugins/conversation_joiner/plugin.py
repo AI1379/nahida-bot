@@ -220,7 +220,7 @@ class ConversationJoinerPlugin(Plugin):
         cfg = effective_group_config(self._config, chat_key)
         persona = await self._load_persona_context(cfg)
         return (
-            await self._social.snapshot(chat_key, session_id, persona)
+            await self._social.status(chat_key, session_id, persona)
             or "No active social state."
         )
 
@@ -1990,14 +1990,16 @@ class ConversationJoinerPlugin(Plugin):
         if not cfg.engagement.enabled:
             return None
         sm.decay_engagement_score(chat_key, time.monotonic(), cfg.engagement)
-        lines = [f"Engagement: {state.state}"]
+        lines = ["💬 Engagement", f"State: {state.state}"]
         if state.state not in ("observing",):
-            lines.append(f"  Score: {state.engagement_score:.2f}")
-            lines.append(f"  Low-value strikes: {state.low_value_strikes}")
+            lines.append(f"Score: {state.engagement_score:.2f}")
+            lines.append(f"Low-value strikes: {state.low_value_strikes}")
             batch = sm.get_batch(chat_key)
             batch_count = len(batch.messages) if batch else 0
-            lines.append(f"  Batch messages: {batch_count}")
-            lines.append(f"  Pending request: {chat_key in self._pending_requests}")
+            lines.append(f"Batch messages: {batch_count}")
+            lines.append(
+                f"Pending request: {'yes' if chat_key in self._pending_requests else 'no'}"
+            )
         return "\n".join(lines)
 
 
