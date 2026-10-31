@@ -338,6 +338,41 @@ class BotAPI(Protocol):
         """
         ...
 
+    @property
+    def actor_account_key(self) -> str:
+        """Authenticated account of the current command or agent turn."""
+        ...
+
+    def register_plugin_service(
+        self,
+        name: str,
+        handler: Any,
+        *,
+        desktop: bool = False,
+    ) -> None:
+        """Expose a versioned service as <plugin_id>:<name>; removed on disable."""
+        ...
+
+    async def call_plugin_service(
+        self,
+        service: str,
+        operation: str,
+        arguments: dict[str, Any],
+        *,
+        actor_account_key: str = "",
+    ) -> dict[str, Any]:
+        """Call an enabled service. Background callers supply their configured owner."""
+        ...
+
+    async def plugin_data_compare_and_set(
+        self,
+        key: str,
+        expected: Any,
+        value: Any,
+    ) -> bool:
+        """Atomically replace a JSON value; expected=None requires an absent key."""
+        ...
+
     # ── Service Registration ──────────────────────────
 
     def register_channel(self, channel: ChannelService) -> None:

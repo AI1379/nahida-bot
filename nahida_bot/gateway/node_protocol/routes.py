@@ -242,6 +242,13 @@ async def node_websocket(websocket: WebSocket) -> None:
         auth_principal_node_id=principal.node_id,
     )
 
+    from nahida_bot.gateway.node_protocol.plugin_handlers import (
+        register_plugin_handlers,
+    )
+
+    manager = getattr(getattr(app.state, "application", None), "plugin_manager", None)
+    register_plugin_handlers(dispatcher, getattr(manager, "service_registry", None))
+
     heartbeat_task = asyncio.create_task(
         _heartbeat_loop(
             websocket,

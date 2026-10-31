@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import psutil
 import structlog
 
 from nahida_bot_sdk.commands import CommandArgument, CompletionChoice, CompletionQuery
@@ -110,8 +111,15 @@ class BuiltinCommandsPlugin(Plugin):
         self.api.register_command(
             "status",
             self._cmd_status,
-            description="Show session and model info",
+            description="Show model, agent and server memory (/status full for details)",
             aliases=["info"],
+            arguments=[
+                CommandArgument(
+                    name="detail",
+                    description="Include session, reasoning and plugin status",
+                    choices=("full",),
+                )
+            ],
         )
         self.api.register_command(
             "mute",
@@ -634,17 +642,30 @@ class BuiltinCommandsPlugin(Plugin):
     async def _cmd_status(
         self, *, args: str, inbound: InboundMessage, session_id: str
     ) -> str:
+        detail = args.strip().lower()
+        if detail not in {"", "full"}:
+            return "Usage: /status [full]"
+
         info = await self.api.get_session_info(session_id)
         provider_id = info.get("provider_id", "(default)")
         model = info.get("model", "(default)")
+        run_status = self.api.get_session_run_status(session_id)
+        agent_line = self._format_agent_status(
+            run_status, include_error=detail == "full"
+        )
+        agent_section = f"{command_text.state_icon(run_status.get('state', 'idle'))} Agent: {agent_line}"
+        memory_line = self._format_server_memory()
+        if not detail:
+            return "\n".join(
+                [f"🤖 Model: {model} ({provider_id})", agent_section, memory_line]
+            )
+
         runtime = runtime_settings_from_meta(info)
         reasoning_display = self._format_optional_bool(runtime.reasoning.show)
         reasoning_effort = runtime.reasoning.effort or "default"
-
-        run_status = self.api.get_session_run_status(session_id)
-        agent_line = self._format_agent_status(run_status)
         sections = [
-            f"{command_text.state_icon(run_status.get('state', 'idle'))} Agent: {agent_line}",
+            agent_section,
+            memory_line,
             format_text_section(
                 "Model",
                 [
@@ -676,6 +697,21 @@ class BuiltinCommandsPlugin(Plugin):
         )
         sections.extend(provider_blocks)
         return "\n\n".join(sections)
+
+    @staticmethod
+    def _format_server_memory() -> str:
+        try:
+            memory = psutil.virtual_memory()
+        except (OSError, psutil.Error) as exc:
+            _logger.warning("cmd.status.memory_unavailable", error=str(exc))
+            return "🖥️ Server memory: unavailable"
+        gib = 1024**3
+        # Match psutil's utilization percentage, excluding reclaimable caches.
+        used = memory.total - memory.available
+        return (
+            f"🖥️ Server memory: {used / gib:.2f}/{memory.total / gib:.2f} GiB used "
+            f"({memory.percent:.1f}%), {memory.available / gib:.2f} GiB available"
+        )
 
     async def _cmd_quota(
         self, *, args: str, inbound: InboundMessage, session_id: str
@@ -801,7 +837,7 @@ class BuiltinCommandsPlugin(Plugin):
         )
 
     @staticmethod
-    def _format_agent_status(status: dict) -> str:
+    def _format_agent_status(status: dict, *, include_error: bool = True) -> str:
         state = status.get("state", "idle")
         if state == "idle":
             parts = ["idle"]
@@ -813,6 +849,8 @@ class BuiltinCommandsPlugin(Plugin):
             elapsed = status.get("elapsed_seconds", 0)
             return f"running ({elapsed:.1f}s)"
         if state == "crashed":
+            if not include_error:
+                return "crashed"
             error = status.get("error", "unknown")
             return f"crashed — {error}"
         if state == "cancelled":

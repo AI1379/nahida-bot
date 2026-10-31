@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import NotificationQuietToggle from "@/components/NotificationQuietToggle.vue";
 import type { PerformanceMode, PetWindowEdge } from "@/domain/config";
 import { useDesktopStore } from "@/stores/desktop";
 
@@ -37,6 +38,7 @@ function updateNumber(
       <span>位置、尺寸与性能</span>
     </header>
 
+    <NotificationQuietToggle />
     <div class="desktop-pet-settings__body">
       <label class="desktop-pet-settings__field desktop-pet-settings__field--wide">
         <span>Live2D 模型</span>

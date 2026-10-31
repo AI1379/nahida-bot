@@ -1,3 +1,4 @@
+import { useReadingNotifications } from "@/runtime/readingNotificationController";
 import {
   computed,
   nextTick,
@@ -76,6 +77,8 @@ export function useDesktopRuntimeController(
   initialEventSource?: DesktopEventSource,
 ): DesktopRuntimeActions {
   const runtimeSnapshot = computed<DesktopRuntimeSnapshot>(() => ({
+    readingBubble: store.readingBubble,
+    readingInbox: store.readingInbox,
     connected: store.connected,
     sessionId: store.sessionId,
     activePlan: store.activePlan,
@@ -90,6 +93,8 @@ export function useDesktopRuntimeController(
     pluginSurfaces: store.pluginSurfaces,
     pluginSurfaceRevision: store.pluginSurfaceRevision,
   }));
+
+  const receiveReadingNotification = useReadingNotifications(store);
 
   let transitionTimer: ReturnType<typeof setTimeout> | null = null;
   let autoRetreatTimer: ReturnType<typeof setTimeout> | null = null;
@@ -250,6 +255,10 @@ export function useDesktopRuntimeController(
       return desktopPlugins.reconcile(event.snapshot);
     }
     if (event.type === "capability.invoked") {
+      if (event.capability === "desktop.notification.deliver") {
+        return receiveReadingNotification(event.arguments);
+      }
+
       const pluginResult = desktopPlugins.executeCapability(
         event.capability,
         event.arguments,
@@ -518,6 +527,8 @@ export function useDesktopRuntimeController(
       return;
     }
 
+    if (store.readingBubble && (status === "emerged" || status === "chat")) return;
+
     if (status === "emerged") {
       autoRetreatTimer = setTimeout(
         () => store.requestPetRetreat(),
@@ -544,6 +555,13 @@ export function useDesktopRuntimeController(
 
   function handlePetCommand(command: PetWindowCommand) {
     switch (command.type) {
+      case "open_reading":
+        store.openReadingBubble(command.notification);
+        break;
+      case "close_reading":
+        store.closeReadingBubble();
+        schedulePetState(store.petRuntime.status);
+        break;
       case "motion_ready":
         segmentMotionSync.acknowledge(command.requestId);
         break;
@@ -607,6 +625,7 @@ export function useDesktopRuntimeController(
       [
         store.petRuntime.status,
         store.petRuntime.lastEventAt,
+      store.readingBubble?.id,
         store.localConfig.petTriggers,
       ] as const,
     ([status]) => schedulePetState(status),

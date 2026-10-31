@@ -63,6 +63,9 @@ class NodeSession:
     send: SendCallable | None = None
     close: CloseCallable | None = None
 
+    context_state: dict[str, object] = field(default_factory=dict)
+    context_received_at: float = 0.0
+
     @property
     def capability_names(self) -> set[str]:
         return {cap.name for cap in self.capabilities}

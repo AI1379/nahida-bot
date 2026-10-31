@@ -248,10 +248,10 @@ export class TauriGatewayNodeEventSource implements DesktopEventSource {
     }
   }
 
-  private executeCapability(event: Extract<DesktopEvent, { type: "capability.invoked" }>) {
+  private async executeCapability(event: Extract<DesktopEvent, { type: "capability.invoked" }>) {
     let execution: CapabilityExecutionResult;
     try {
-      const reported = this.handler?.(event);
+      const reported = await this.handler?.(event);
       execution = isCapabilityExecutionResult(reported)
         ? reported
         : {

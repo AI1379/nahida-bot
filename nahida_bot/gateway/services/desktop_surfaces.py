@@ -62,6 +62,7 @@ class DesktopSurfaceService:
 
         context = DesktopSurfaceContext(
             node_id=session.node_id,
+            actor_account_key=getattr(session, "actor_account_key", ""),
             display_name=session.display_name,
             node_type=session.node_type,
             metadata=dict(session.metadata),

@@ -180,6 +180,7 @@ describe("TauriGatewayNodeEventSource", () => {
       },
     });
 
+    await Promise.resolve();
     expect(mocks.invoke).toHaveBeenCalledWith(
       "gateway_node_complete_capability",
       {
@@ -220,6 +221,7 @@ describe("TauriGatewayNodeEventSource", () => {
       },
     });
 
+    await Promise.resolve();
     expect(mocks.invoke).toHaveBeenCalledWith(
       "gateway_node_complete_capability",
       {

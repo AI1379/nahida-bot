@@ -1,3 +1,4 @@
+mod desktop_context;
 mod computer_use;
 mod gateway_node;
 mod motion_dataset;
@@ -142,9 +143,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .manage(desktop_context::DesktopContext::default())
         .manage(gateway_node::GatewayNodeManager::default())
         .invoke_handler(tauri::generate_handler![
             runtime_mode,
+            desktop_context::desktop_context_read,
+            desktop_context::desktop_context_set_quiet,
+            gateway_node::gateway_node_plugin_call,
             polish_pet_window,
             gateway_node::gateway_node_connect,
             gateway_node::gateway_node_disconnect,
@@ -161,6 +166,7 @@ pub fn run() {
             secure_storage::secure_tokens_write,
         ])
         .setup(|app| {
+            desktop_context::restore(app.handle()).map_err(std::io::Error::other)?;
             let remote_control = remote_control::RemoteControlManager::load(app.handle())
                 .map_err(std::io::Error::other)?;
             app.manage(remote_control);

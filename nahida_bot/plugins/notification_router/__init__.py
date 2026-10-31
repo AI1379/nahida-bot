@@ -1,0 +1,1 @@
+"""Personal notification routing plugin."""

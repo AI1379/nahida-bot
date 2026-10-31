@@ -209,6 +209,14 @@ pub fn protocol_error(code: &str, message: impl Into<String>, retryable: bool) -
 pub fn desktop_capabilities() -> Vec<NodeCapability> {
     vec![
         NodeCapability {
+            name: "desktop.notification.deliver".to_string(),
+            version: PROTOCOL_VERSION.to_string(),
+            direction: CapabilityDirection::GatewayToNode,
+            risk: CapabilityRisk::Low,
+            description: "Persist a deduplicated text notification for a silent pet reading bubble".to_string(),
+            requires_user_approval: false,
+        },
+        NodeCapability {
             name: "desktop.live2d.set_expression".to_string(),
             version: PROTOCOL_VERSION.to_string(),
             direction: CapabilityDirection::GatewayToNode,

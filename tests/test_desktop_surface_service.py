@@ -105,9 +105,11 @@ async def test_sync_node_sends_owner_stamped_snapshot() -> None:
                             "text": "整理插件协议",
                             "detail": "上午",
                             "completed": False,
+                            "action": None,
                         }
                     ],
                     "tone": "neutral",
+                    "body": "",
                 },
             }
         ],

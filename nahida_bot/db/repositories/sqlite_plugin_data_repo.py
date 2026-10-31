@@ -87,6 +87,37 @@ class SQLitePluginDataRepository:
             )
             await self._engine.db.commit()
 
+    async def compare_and_set(
+        self,
+        plugin_id: str,
+        key: str,
+        expected: Any,
+        value: Any,
+    ) -> bool:
+        """Single-process host CAS under the database's shared write lock."""
+        if value is None:
+            raise ValueError("CAS values cannot be null")
+        encoded = json.dumps(value, ensure_ascii=False)
+        async with self._engine.write_lock:
+            row = await self._engine.fetch_one(
+                "SELECT value_json FROM plugin_data WHERE plugin_id = ? AND key = ?",
+                (plugin_id, key),
+            )
+            if expected is None:
+                if row is not None:
+                    return False
+            elif row is None or json.loads(str(row["value_json"])) != expected:
+                return False
+            now = _utc_now_iso()
+            await self._engine.execute(
+                "INSERT INTO plugin_data (plugin_id, key, value_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(plugin_id, key) DO UPDATE SET "
+                "value_json=excluded.value_json, updated_at=excluded.updated_at",
+                (plugin_id, key, encoded, now, now),
+            )
+            await self._engine.db.commit()
+            return True
+
     async def delete(self, plugin_id: str, key: str) -> bool:
         """Hard-delete one key. Returns ``True`` if a row was removed."""
         async with self._engine.write_lock:
