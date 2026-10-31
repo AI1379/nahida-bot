@@ -52,7 +52,13 @@ config:
     ignore_commands: true
     ignore_mentions: true
     min_text_chars: 4
-    keyword_hints: []
+    keyword_hints:
+      - "雀儿"
+      - "@1801542459"
+      - "1801542459"
+      - "青雀"
+      - "罗浮"
+      - "天舶"
     sample_rate: 0.15
     keyword_sample_rate: 1.0
     enable_poke: false
@@ -93,4 +99,28 @@ config:
       low_value_strikes: 3
       min_messages_per_window: 1
       activity_window_seconds: 120
-  groups: {}
+  groups:
+    "onebot:group:811583606":
+      enabled: true
+      threshold: 0.65
+      cooldown_seconds: 180
+      max_triggers_per_hour: 8
+      debounce_seconds: 12
+      engagement:
+        enabled: true
+        response_cooldown_seconds: 30
+        idle_exit_seconds: 240
+        max_engaged_seconds: 2400
+        batching:
+          window_seconds: 6
+        continue_gate:
+          threshold: 0.50
+        presence:
+          comfortable_bot_share: 0.30
+      users:
+        "onebot:user:3883619389":  # 云欣儿 — 几乎必接
+          sample_rate: 0.80
+          keyword_sample_rate: 1.0
+          threshold: 0.40
+          cooldown_seconds: 60
+          response_cooldown_seconds: 15

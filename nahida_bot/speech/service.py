@@ -17,6 +17,7 @@ import httpx
 from nahida_bot.speech.base import SpeechArtifact, SpeechRequest, TtsError, TtsProvider
 from nahida_bot.speech.config import TtsConfig
 from nahida_bot.speech.providers.gpt_sovits import GPTSoVITSProvider
+from nahida_bot.speech.providers.indextts import IndexTTSProvider
 from nahida_bot.speech.providers.minimax import MiniMaxTtsProvider
 from nahida_bot.speech.streaming import (
     OpenedSpeechStream,
@@ -29,6 +30,7 @@ from nahida_bot.speech.streaming import (
 # constructor seam so registry instantiation remains type-safe for pyright.
 _BUILTIN_PROVIDERS: dict[str, type[TtsProvider]] = {
     GPTSoVITSProvider.type: GPTSoVITSProvider,
+    IndexTTSProvider.type: IndexTTSProvider,
     MiniMaxTtsProvider.type: MiniMaxTtsProvider,
 }
 

@@ -1,5 +1,7 @@
 # Nahida Bot 配置文件
 # 参见 nahida_bot.core.config.Settings 了解所有可用字段
+#
+# ⚠️ 本文件含明文 API Key，请勿提交到 git / 分享给他人。
 
 # ── 应用 ──────────────────────────────────────────────
 app_name: "Nahida Bot"
@@ -27,35 +29,86 @@ dependency_log_level: "WARNING"       # 三方库默认日志级别；避免 DEB
 host: "127.0.0.1"
 port: 6185
 
-# Desktop 通过 Gateway 使用 MiniMax TTS（可选）。启用后请确保
-# MINIMAX_LLM_API_KEY 是 MiniMax Token Plan Key 或按量付费 API Key。
-# webapi:
-#   enabled: true
-#   auth_token: "${WEBAPI_AUTH_TOKEN:}"
-#   speech:
-#     enabled: true
-#     default_backend: "minimax"
-#     backends:
-#       minimax:
-#         type: "minimax-t2a-v2"
-#         api_key: "${MINIMAX_LLM_API_KEY:}"
-#         model: "speech-2.8-hd"
-#         audio_format: "mp3"
-#         language_boost: "Chinese"
-#     voices:
-#       nahida:
-#         backend: "minimax"
-#         voice_id: "your-activated-minimax-voice-id"
-#     default_voice: "nahida"
-#   # 通用文本生成（POST /api/generate/text，番茄钟动态文案走这里）：
-#   # Desktop 端设置里可指定生成模型（随请求发送）；下面的 model 仅作为
-#   # 请求未指定时的服务器端默认（tag 或固定模型均可），
-#   # 再往下兜底 primary tag → default_provider。人设前缀（SOUL.md 等）
-#   # 由服务端从 workspace 注入，无需在此配置。
-#   # generate:
-#   #   model: "primary"
+# ★ webapi 端口原为 6185，与主服务冲突；改为 6186
+# ★ auth_token 留空 + cors ["*"] 会导致任意网页无认证调用 API，生产环境请填 token 并收窄 cors
+onebot:
+  enabled: true
+  ws_url: "ws://127.0.0.1:3001"
+  ws_access_token: ""
+  allowed_friends:
+    - "3793157982"
+  allowed_groups:
+    - "529674493"
+    - "1102856233"
+    # ★ 删除了原文件里混入的中文全角引号行 「- ”“」，YAML 不认会污染配置
+  group_context_capture: true        # 让未触发的群消息进入上下文,可被 joiner 使用
+  soft_mention_keywords:
+    - "雀"
+    - "雀儿"
+    - "浅色阴影风"
+    - "浅色"
+    - "浅影风"
 
 # ── 数据库 ────────────────────────────────────────────
+webapi:
+  enabled: true
+  auth_token: ""                       # ★ 建议改成 "${WEBAPI_AUTH_TOKEN:}" 并在 .env 填值
+  cors_origins: ["*"]                  # ★ 建议收窄，如 ["http://127.0.0.1:5173"]
+  host: "127.0.0.1"
+  port: 6186                           # ★ 与主服务 6185 分开
+  # GPT-SoVITS 角色音色服务（9882，接口与 IndexTTS 9881 相同）；
+  # &tts 锚点供下方 tts 插件复用。要切回 IndexTTS：把 base_url 改回 9881。
+  speech: &tts
+    enabled: true
+    default_backend: gsv
+    default_voice: '三月七'
+    max_text_length: 300
+    max_concurrency: 1
+    backends:
+      gsv:
+        type: indextts-v2            # 复用同一套 HTTP 适配器，协议一致
+        base_url: 'http://127.0.0.1:9882'
+        timeout_seconds: 300
+        lang: 'ZH'
+        diffusion_steps: 20
+        num_beams: 1
+        duration_factor: 1.0
+        peak_limit: 0.95
+      minimax:
+        type: minimax-t2a-v2         # 云端音色；api_key 走 .env 的 MINIMAX_TTS_API_KEY
+        api_key: "${MINIMAX_TTS_API_KEY}"
+        model: speech-2.8-hd
+        timeout_seconds: 120
+        audio_format: wav
+        sample_rate: 32000
+        channel: 1
+    voices:
+      # 云端青雀：MiniMax 系统音色（克隆/声音设计被当前套餐限制，返回 2061）
+      '青雀·云端':
+        backend: minimax
+        voice_id: 'Chinese (Mandarin)_Gentle_Senior'
+        speed: 1.0
+        volume: 1.0
+        pitch: 0
+      '三月七':
+        ref_audio: 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【中立】真可惜！好不容易能来一次不带包袱的旅行…….wav'
+        emotions:
+          '中立': 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【中立】真可惜！好不容易能来一次不带包袱的旅行…….wav'
+          '厌恶': 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【厌恶】那个，请问，你…不是，您难道是…….wav'
+          '吃惊': 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【吃惊】呃…倒是没必要闹得那么僵啦，托帕小姐看上去也不是那么不讲理的人。.wav'
+          '开心': 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【开心】你看你看，小家伙有反应了！看来它也很喜欢这个名字～.wav'
+          '恐惧': 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【恐惧】怎么办…符玄小姐不在，突然觉得有点瘆得慌…….wav'
+          '生气': 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【生气】哈？又是你们，自顾自地说什么呢！明明是你们到处抢别人的以太灵！.wav'
+          '难过': 'D:\vc\models\gsv\v2ProPlus\三月七\reference_audios\中文\emotions\【难过】剩下的礼物，该送去哪儿呢……？.wav'
+      '青雀':
+        ref_audio: 'D:\vc\models\gsv\v2ProPlus\青雀\reference_audios\中文\emotions\【中立】我甚至找不出一张完整的参赛选手名单，更没找到伊戈尔的名字。.wav'
+        emotions:
+          '中立': 'D:\vc\models\gsv\v2ProPlus\青雀\reference_audios\中文\emotions\【中立】我甚至找不出一张完整的参赛选手名单，更没找到伊戈尔的名字。.wav'
+          '吃惊': 'D:\vc\models\gsv\v2ProPlus\青雀\reference_audios\中文\emotions\【吃惊】我一看，这不是玉兆嘛…还是好几百年前的旧型号。出于好奇心，我就包揽了复原数据的活儿。.wav'
+          '开心': 'D:\vc\models\gsv\v2ProPlus\青雀\reference_audios\中文\emotions\【开心】我们说好啦，你随时回来，我随时教你打牌。.wav'
+          '生气': 'D:\vc\models\gsv\v2ProPlus\青雀\reference_audios\中文\emotions\【生气】斯科特必须向我这样的平凡人道歉。.wav'
+          '难过': 'D:\vc\models\gsv\v2ProPlus\青雀\reference_audios\中文\emotions\【难过】早知道，我就该留在那儿继续打牌…….wav'
+
 db_path: "./data/nahida.db"
 
 # ── Workspace ─────────────────────────────────────────
@@ -78,32 +131,47 @@ system_prompt: "You are a helpful assistant."
 # 也可以是 {name, tags, capabilities} 对象。通过 /model 命令可在聊天中切换模型。
 #
 # 没有配置 api_key 的 provider 会在启动时被跳过；因此可以只填写实际使用的后端。
+
+authorization:
+  mode: standard
+  # ★ 把你自己的账号设为 admin，standard 模式下也能用全部工具
+  admins:
+    - "onebot:user:3793157982"          # 你的私聊账号
+  # ★ 如果想让整个群都放宽，用这条（按需选择）
+  chats:
+    "onebot:group:529674493": relaxed   # 该群内可用 exec/脚本，但有审查模型过一遍
+  review:
+    model: minimax/MiniMax-M2.5         # relaxed 模式下对 exec/脚本做风险审查的模型
+    timeout_seconds: 20
+    max_input_chars: 60000
+
 providers:
   deepseek-main:
     type: deepseek
-    api_key: "${DEEPSEEK_LLM_API_KEY:}"
+    api_key: "sk-1441253510984cff9ec3ec10108fc53b"          # ★ 已填回明文
     base_url: "${DEEPSEEK_LLM_BASE_URL:https://api.deepseek.com}"
     # 内部使用 SSE 接收并聚合，可避免长推理期间普通读超时误判。
     stream_responses: true
     # thinking_enabled: false   # 关闭 DeepSeek thinking mode
     models:
+      # ★ 若启动后调用报 model not found / 404，请改为平台真实模型名（如 deepseek-chat / deepseek-reasoner）
       - name: "deepseek-v4-pro"
         tags: [primary]
       - name: "deepseek-v4-flash"
-        tags: [cheap, memory]
 
   siliconflow:
     type: "openai-compatible"
-    api_key: "${SILICONFLOW_LLM_API_KEY:}"
+    api_key: "sk-cbgtsbrooofoajsoarjavhygdvwcgapvmqlgwrjaizyfibmw"   # ★ 已填回明文
     base_url: "${SILICONFLOW_LLM_BASE_URL:https://api.siliconflow.cn/v1}"
     merge_system_messages: true
     stream_responses: true
     models:
       - name: "Qwen/Qwen3-Embedding-8B"
         tags: [embedding]
+      # ★ 模型 ID 请用 curl 核实：curl https://api.siliconflow.cn/v1/models -H "Authorization: Bearer $KEY"
       - name: "Pro/zai-org/GLM-5"
         tags: [vision]
-      - name: "Qwen/Qwen3.6-35B-A3B"
+      - name: "Qwen/Qwen3-VL-8B-Instruct"
         tags: [vision]
         capabilities:
           image_input: true
@@ -112,76 +180,18 @@ providers:
 
   minimax:
     type: minimax
-    api_key: "${MINIMAX_LLM_API_KEY:}"
+    api_key: "sk-cp-p6T-GrQIef4STPYiL-92A8hIFs2usCrNKjeK3CtTAbOTAd-PotNl_YDxH7YGXV2JX90DYglOY8UAEMYzqbqnG4-_y-V9KiNkyseeEP7Z9CnSD3UoxfDl8nU"   # ★ 已填回明文
     base_url: "https://api.minimaxi.com/anthropic"
-    # Provider-owned Coding Plan quota query; this is separate from the
-    # Anthropic-compatible chat endpoint above.
-    quota:
-      adapter: minimax-coding-plan
     max_tokens: 16000
     stream_responses: true
     models:
-      - name: "MiniMax-M2.5"
-        tags: [cheap]
-      - name: "MiniMax-M2.7"
+      # ★ 模型 ID 请核实（如 MiniMax-Text-01 等）
       - name: "MiniMax-M3"
+      - name: "MiniMax-M2.5"
+        tags: [cheap, memory]
+      - name: "MiniMax-M2.7"
 
-  # OpenAI Responses API（可选）
-  # 使用 /responses 端点，支持内置工具（web_search、image_generation 等）
-  # 和有状态对话链（previous_response_id）。Reasoning 摘要可通过
-  # reasoning_effort 参数控制深度。
-  # stream_responses=true 时同样在 provider 内部流式接收并聚合返回。
-  openai:
-    type: "openai-responses"
-    api_key: "${OPENAI_API_KEY:}"
-    base_url: "${OPENAI_API_BASE_URL:https://api.openai.com/v1}"
-    store_responses: true
-    use_previous_response_id: false
-    stream_responses: true
-    reasoning_effort: "medium"
-    # built_in_tools: ["web_search", "image_generation"]
-    models:
-      - name: "gpt-5.4"
-        capabilities:
-          image_input: true
-          image_generation: true
-          web_search: true
-          tool_calling: true
-          reasoning: true
-
-  # ChatGPT Codex（可选）— 通过 ChatGPT Plus/Pro 订阅使用 Codex 模型。
-  # 无需 api_key：运行 `nahida-bot auth login codex` 完成 OAuth 设备码登录后，
-  # refresh token 会写入 SQLite，bot 启动时会自动加载并按需刷新。
-  # 非官方用法，仅面向 Plus/Pro 订阅者；账号有被 OpenAI 风控的风险。
-  # 高级覆盖项（均为可选环境变量）：
-  #   NAHIDA_OPENAI_ORIGINATOR  归因字符串（默认 "nahida-bot"，诚实标识）
-  #   NAHIDA_OPENAI_CLIENT_ID   OAuth client id（默认内置，仅作逃生阀）
-  # codex:
-  #   type: codex
-  #   stream_responses: true
-  #   websocket_responses: true  # 当前 Codex 协议；握手失败时自动回退 SSE
-  #   websocket_fallback: true
-  #   reasoning_effort: "medium"
-  #   models:
-  #     - name: "gpt-5.5"
-  #     - name: "gpt-5.4-mini"
-
-  # A relay may speak Anthropic while its quota belongs to another backend.
-  # Configure that ownership explicitly instead of inferring it from base_url:
-  # relay:
-  #   type: anthropic
-  #   api_key: "${RELAY_API_KEY:}"
-  #   base_url: "https://relay.example/anthropic"
-  #   quota:
-  #     adapter: json-v1
-  #     url: "https://relay.example/quota"
-  #     windows:
-  #       - name: "5h"
-  #         used_path: [data, five_hour, used]
-  #         limit_path: [data, five_hour, limit]
-  #         reset_path: [data, five_hour, reset_at]
-
-default_provider: deepseek-main   # 可选，默认使用 providers 中的第一个 key
+default_provider: minimax   # 可选，默认使用 providers 中的第一个 key
 
 # ── 多模态 / 图片理解 ─────────────────────────────────
 # image_fallback_mode:
@@ -195,14 +205,17 @@ default_provider: deepseek-main   # 可选，默认使用 providers 中的第一
 multimodal:
   image_fallback_mode: "auto"
   media_context_policy: "cache_aware"
-  image_fallback_model: "siliconflow/Qwen/Qwen3.6-35B-A3B"
+  # ★ 删除了 image_fallback_provider 字段，新版本 Settings 对 multimodal 采用
+  #   extra="forbid"，该 Legacy 字段会导致 ValidationError 启动失败。
+  #   provider 信息已包含在 image_fallback_model 前缀（siliconflow/...）里。
+  image_fallback_model: "siliconflow/Qwen/Qwen3-VL-8B-Instruct"
   max_images_per_turn: 4
-  max_image_bytes: 10485760
+  max_image_bytes: 5242880
   media_cache_ttl_seconds: 3600
 
 # ── 插件配置 ──────────────────────────────────────────
 # Settings 的 extra="allow" 机制：顶层 key 如果不是已知字段，
-# 且值为 dict，则按 plugin id 匹配。enabled 由框架消费，其余字段注入插件配置。
+# 且值为 dict，则按 plugin id 匹配并注入到对应插件的 manifest.config 中。
 
 builtin-commands:
   # send_local_attachment 默认只允许发送 active workspace 内的相对路径。
@@ -212,6 +225,21 @@ builtin-commands:
   # external_attachment_roots:
   #   - "<absolute-directory>"
   external_attachment_roots: []
+
+# ---- MCP servers ----
+# Built-in MCP plugin (id=mcp) reads this section from manifest.config.
+# servers = static definitions (take priority over the dynamic ones in plugin_data).
+# allowed_dynamic_stdio_commands = allowlist for dynamic stdio servers.
+mcp:
+  servers:
+    mihoyo:
+      transport: stdio
+      command: 'D:\nahida-bot-v2\nahida-bot-2\data\workspace\workspaces\default\mihoyo-mcp\.venv\Scripts\python.exe'
+      args: ["-m", "mihoyo_mcp.server"]
+      namespace: mihoyo
+      enabled: true
+  allowed_dynamic_stdio_commands:
+    - 'D:\nahida-bot-v2\nahida-bot-2\data\workspace\workspaces\default\mihoyo-mcp\.venv\Scripts\python.exe'
 
 # OpenAI-compatible 图片生成（可选）
 # 启用后注册 /draw、/生图 命令和 image_generate tool。
@@ -228,23 +256,6 @@ builtin-commands:
 #       download_timeout_seconds: 120
 #       trust_env: false
 #       force_close_connections: true
-#   output_dir: "generated/images"
-
-# ChatGPT Codex 订阅图片生成（可选）— 复用上面 codex provider 的 OAuth token，
-# 调用 chatgpt.com/backend-api/codex/images/generations 走 Plus/Pro 订阅额度。
-# 内置 image_gen 工具机制（model 默认 gpt-image-2，size/quality 默认 auto）。
-# image_generation:
-#   enabled: true
-#   provider: codex
-#   backends:
-#     codex:
-#       type: codex-images
-#       provider_id: codex          # 必须匹配 providers 中 type: codex 的那个 key
-#       model: "gpt-image-2"
-#       size: "auto"
-#       quality: "auto"
-#       background: "auto"
-#       timeout_seconds: 180
 #   output_dir: "generated/images"
 #   auto_send: true
 #   max_images_per_24h: 20
@@ -302,15 +313,15 @@ github-notifier:
 conversation_joiner:
   # 主动入话题默认关闭。开启前需要对应群频道启用 group_context_capture，
   # 让未触发消息先进入 MessageObserved。
-  enabled: false
-  model: cheap                         # model spec；没有 cheap tag 时可改成 provider/model，或留空使用默认模型
+  enabled: true
+  model: minimax/MiniMax-M2.5           # 显式锁定秘书模型，避免 cheap tag 命中 deepseek-v4-flash
   threshold: 0.75
   max_context_messages: 12
   max_context_chars: 3000
   cooldown_seconds: 300
-  max_triggers_per_hour: 3
+  max_triggers_per_hour: 600
   debounce_seconds: 20
-  decision_timeout_seconds: 8
+  decision_timeout_seconds: 60
   persona_context:
     enabled: true                   # 启用后秘书模型会读取 workspace 中的人设文件辅助判断是否自然入话题
     files:
@@ -321,17 +332,19 @@ conversation_joiner:
     ignore_commands: true
     ignore_mentions: true
     min_text_chars: 4
-    keyword_hints: []
-    sample_rate: 0.15                # 普通候选消息进入秘书模型的采样概率
+    keyword_hints: ["雀", "雀儿"]
+    sample_rate: 0.8                # 普通候选消息进入秘书模型的采样概率
     keyword_sample_rate: 1.0         # 命中 keyword_hints 后进入秘书模型的采样概率
-  groups: {}
+  groups:
+    "onebot:group:529674493":
+      enabled: true
   # groups:
   #   milky:group:123456789:
   #     enabled: true
   #     threshold: 0.78
   #     cooldown_seconds: 300
   engagement:
-    enabled: false                  # 打开后进入 observing/joining/engaged/cooling 状态机
+    enabled: true                  # 打开后进入 observing/joining/engaged/cooling 状态机
     join_state_ttl_seconds: 600
     idle_exit_seconds: 180
     max_engaged_seconds: 1800
@@ -341,33 +354,26 @@ conversation_joiner:
     score_decay_half_life_seconds: 600
     score_decay_floor: 0.0
     batching:
-      window_seconds: 8             # 安静窗口；每条新消息都会重新计时，避免打断连续发言
+      window_seconds: 8             # 后续群消息进入 batch 的短窗口
       max_messages: 6               # 窗口内消息过多时提前 flush
       max_chars: 2000
-      max_batch_age_seconds: 120     # 超过此年龄的 batch 直接丢弃，避免回应过时话题
       flush_on_mention: true
     continue_gate:
       enabled: true                 # 每个 flushed batch 交给秘书模型判断是否继续接话
-      model: cheap
+      model: minimax/MiniMax-M2.5   # ★ 原来是 cheap，会命中 deepseek-v4-flash；显式锁定
       threshold: 0.55
       min_messages: 1
-      evaluate_interval_seconds: 8
-      max_failures: 3               # gate 连续失败达到上限后放弃当前 batch
-      max_retry_seconds: 60         # 指数退避的最大间隔
-    presence:
-      enabled: true                 # 最近说得越多，继续发言所需置信度越高
-      window_seconds: 300
-      comfortable_bot_share: 0.25
-      max_threshold_penalty: 0.2
+      evaluate_interval_seconds: 12
     exit_gate:
       enabled: true
       low_value_threshold: 0.35
-      low_value_strikes: 3
+      low_value_strikes: 22
       min_messages_per_window: 1
       activity_window_seconds: 120
 
+# ★ Telegram 未配置 token 会在 on_load 抛 RuntimeError；显式关闭
 telegram:
-  enabled: true
+  enabled: false
   bot_token: "${TELEGRAM_BOT_TOKEN:}"
   # group_trigger_mode: "always"      # none / mention / command / always
   # group_context_capture: false      # mention/command 模式下，是否记录未触发群消息作为上下文
@@ -392,7 +398,9 @@ telegram:
 #   group_context_capture: false   # true 时，未触发群消息只记录为上下文，可供 conversation_joiner 判断
 #   reply_to_inbound: null         # true/false 覆盖 router.reply_to_inbound；null/省略表示跟随全局
 #   allowed_friends: []            # QQ 号白名单；空列表表示不限制
-#   allowed_groups: []             # 群号白名单；空列表表示不限制
+#   allowed_groups:
+#     - "529674493"
+#     - "1102856233"             # 群号白名单；空列表表示不限制
 #   connect_timeout: 10.0
 #   heartbeat_timeout: 30.0
 #   reconnect_initial_delay: 1.0
@@ -509,6 +517,22 @@ telegram:
 #   subagent_notifications_enabled: false  # 默认仅回传主任务；true 才向来源聊天推送通知
 #   # tool_use_system_prompt: "..."     # 注入的工具使用提示
 #   # provider_error_template: "..."    # Provider 错误消息模板
+
+# ── Agent Runtime（canonical ledger，修复 #24 地基）─────────
+# Phase 1：best-effort 把每个 run 的 canonical 事件流与执行回执落库（附加双写，
+# 不改对外行为）。reading/重放端属 Phase 5。默认代码里为 false；这里置 true 以采集数据。
+
+agent:
+  max_steps: 240                        # ★ 注意：默认 8，这里很大；非长任务建议先降到 20–40
+  provider_timeout_seconds: 120.0       # 单次 LLM 调用超时（秒）
+  retry_attempts: 2                     # LLM 调用重试次数
+  retry_backoff_seconds: 0.2            # 重试退避间隔（秒）
+  tool_timeout_seconds: 135.0           # 工具执行超时（秒）
+  tool_retry_attempts: 1                # 工具执行重试次数
+  tool_retry_backoff_seconds: 0.1       # 工具重试退避间隔（秒）
+  max_tool_log_chars: 400               # 工具日志截断长度
+  # tool_use_system_prompt: "..."       # 注入的工具使用提示
+  # provider_error_template: "..."      # Provider 错误消息模板
 
 # ── Agent Runtime（canonical ledger，修复 #24 地基）─────────
 # Phase 1：best-effort 把每个 run 的 canonical 事件流与执行回执落库（附加双写，
@@ -638,6 +662,7 @@ agent_runtime:
 #   memory_dreaming_initial_delay_seconds: 300   # 启动后首次 dreaming 延迟
 #   memory_dreaming_session_limit: 20            # 单次最多扫描会话数
 #   memory_dreaming_recent_turn_limit: 40        # 单会话最多读取 turns 数
+#   memory_dreaming_provider_id: ""     # Legacy；建议改用 memory_dreaming_model
 #   memory_dreaming_model: ""           # model spec；空则默认找 memory tag，失败后走会话模型
 
 # ── Router ─────────────────────────────────────────────
@@ -670,8 +695,6 @@ agent_runtime:
 #     max_messages: 20                  # 最多注入最近多少条未触发群消息
 #     ttl_seconds: 900                  # 只注入最近 N 秒内的群上下文；0 表示不按时间过滤
 #     max_chars: 4000                   # 群上下文注入块最大字符数
-#     topic_gap_seconds: 300            # 群消息静默超过此值视为新话题；0 关闭
-#     continuity_gap_seconds: 1800      # 对话连续性判定（秒）：当前触发与上次对话 turn 间隔超过此值则视为新对话，丢弃旧 history；0 关闭
 
 # ── Model Tags / Specs ─────────────────────────────────
 # providers 的 models 中用 tags 字段标记模型角色：
@@ -700,3 +723,17 @@ agent_runtime:
 #     embed_after_consolidation: true
 #   consolidation:
 #     rule_based_enabled: true     # 是否启用每轮对话后的规则抽取；false 时只保留 dreaming/显式写入
+
+
+# ── TTS 插件（Channel 指令 /speak 与 speak 工具）──────────────────────────
+# 复用上面 webapi.speech 的 &tts 锚点，保证两边用同一套后端与音色配置。
+tts:
+  <<: *tts
+  enabled: true
+  output_dir: "generated/audio"
+  auto_send: true
+  command_names:
+    - speak
+    - 说话
+  attachment_type: "voice"
+  max_calls_per_24h: 0

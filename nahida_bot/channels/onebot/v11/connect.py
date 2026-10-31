@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import inspect
 import json
@@ -157,16 +158,43 @@ class OneBotV11Connection:
         async with connection as websocket:
             self._websocket = websocket
             logger.info("onebot.ws_connected", url=_redact_token(url))
-            async for raw_message in websocket:
-                parsed = self._parse_message(raw_message)
-                if parsed is None:
-                    continue
+            event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            worker = asyncio.create_task(self._event_worker(event_queue))
+            try:
+                async for raw_message in websocket:
+                    parsed = self._parse_message(raw_message)
+                    if parsed is None:
+                        continue
 
-                if is_v11_api_response(parsed):
-                    self._dispatch_response(parsed)
-                else:
-                    self._update_self_id(parsed)
-                    await self._on_event(parsed)
+                    if is_v11_api_response(parsed):
+                        self._dispatch_response(parsed)
+                    else:
+                        self._update_self_id(parsed)
+                        await event_queue.put(parsed)
+            finally:
+                worker.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker
+
+    async def _event_worker(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        """Drain inbound events serially, off the WebSocket read loop.
+
+        The v11 transport multiplexes events and API responses on one socket.
+        Awaiting an event handler inline in the read loop blocks the very
+        frames that complete pending ``call_action`` futures, so a handler
+        that replies to the message that triggered it would wait forever for
+        its own response. Events are therefore queued and drained by this
+        worker, which preserves ordering while leaving the read loop free to
+        dispatch action responses.
+        """
+        while True:
+            parsed = await queue.get()
+            try:
+                await self._on_event(parsed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("onebot.event_handler_failed")
 
     def _open_connection(self, url: str) -> Any:
         if self._connector is not None:

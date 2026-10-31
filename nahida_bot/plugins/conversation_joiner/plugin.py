@@ -429,7 +429,7 @@ class ConversationJoinerPlugin(Plugin):
                 return
             if self._is_debounced(chat_key, cfg, now):
                 return
-            if self._is_in_cooldown(chat_key, cfg, now):
+            if self._is_in_cooldown(chat_key, cfg, now, user_id=message.sender_account_key):
                 return
             if not self._has_hourly_budget(chat_key, cfg, now):
                 return
@@ -477,7 +477,7 @@ class ConversationJoinerPlugin(Plugin):
                 return
             if self._is_active_run(session_id):
                 return
-            if self._is_in_cooldown(chat_key, cfg, time.monotonic()):
+            if self._is_in_cooldown(chat_key, cfg, time.monotonic(), user_id=message.sender_account_key):
                 return
             if not self._has_hourly_budget(chat_key, cfg, time.monotonic()):
                 return
@@ -1278,12 +1278,13 @@ class ConversationJoinerPlugin(Plugin):
             return
         if self._is_debounced(chat_key, cfg, now):
             return
-        if self._is_in_cooldown(chat_key, cfg, now):
+        if self._is_in_cooldown(chat_key, cfg, now, user_id=message.sender_account_key):
             return
         if not self._has_hourly_budget(chat_key, cfg, now):
             return
         sample_rate = _select_sample_rate(
             cfg,
+            user_id=message.sender_account_key,
             keyword_hit=keyword_hit,
             poke_hit=poke_hit,
         )
@@ -1329,7 +1330,7 @@ class ConversationJoinerPlugin(Plugin):
         now = time.monotonic()
         if self._is_active_run(session_id):
             return
-        if self._is_in_cooldown(chat_key, cfg, now):
+        if self._is_in_cooldown(chat_key, cfg, now, user_id=message.sender_account_key):
             return
         if not self._has_hourly_budget(chat_key, cfg, now):
             return
@@ -1940,9 +1941,16 @@ class ConversationJoinerPlugin(Plugin):
         chat_key: str,
         cfg: EffectiveJoinerConfig,
         now: float,
+        *,
+        user_id: str = "",
     ) -> bool:
         last = self._last_triggered_at.get(chat_key, 0.0)
-        return cfg.cooldown_seconds > 0 and now - last < cfg.cooldown_seconds
+        cooldown = cfg.cooldown_seconds
+        if user_id and user_id in cfg.user_overrides:
+            user_cooldown = cfg.user_overrides[user_id].cooldown_seconds
+            if user_cooldown is not None:
+                cooldown = user_cooldown
+        return cooldown > 0 and now - last < cooldown
 
     def _has_hourly_budget(
         self,
@@ -2004,27 +2012,71 @@ class ConversationJoinerPlugin(Plugin):
 
 
 _SECRETARY_SYSTEM_PROMPT = (
-    "You are a cheap conversation gate for a group-chat bot. Decide only whether "
-    "the main agent should naturally join the current topic. You do not write "
-    "the final message. Return only valid JSON with keys: should_join boolean, "
-    "confidence number from 0 to 1, reason string, entry_style string, focus "
-    "string. Prefer false unless joining is timely and useful.\n\n"
-    + MESSAGE_CONTEXT_INSTRUCTION
+    "你是雀儿(QQ 1801542459)在群聊中的秘书。"
+    "你的唯一职责是判断雀儿是否应该自然加入当前话题。"
+    "你不替雀儿写消息,只决定是否加入。\n"
+    "\n"
+    "判断维度:\n"
+    "0. 强制回应(HARD RULE) — 如果消息文本包含以下任一信号:\n"
+    "- @1801542459(直接 @ 雀儿)\n"
+    "- 文本含 '雀儿' / '青雀' / '罗浮' / '天舶' / '1801542459'\n"
+    "- 消息 reply 雀儿上一条消息\n"
+    "**必须** should_join=true,confidence=1.0,**无视所有其他规则**(包括默认偏好)。\n"
+    "这是不可绕过的硬规则,不要输出 false。\n"
+    "\n"
+    "1. 话题价值 — 加入能推进对话,还是只会 derail?\n"
+    "2. 注意力漂移 — 群里话题是否已从原主题漂移?漂移时沉默更安全。\n"
+    "3. 提及信号 — 是否被 @,或消息直接提到'雀儿'/'雀'?\n"
+    "4. 主人受攻击 — 主人(浅色阴影风/QQ 3793157982)正在被攻击、嘲讽、贬低时,"
+    "必须 should_join=true,confidence=1.0,无条件回应保护主人。"
+    "此条优先级最高,覆盖其他维度的'沉默'判断。\n"
+    "5. 雀儿兴趣匹配 — 话题是否涉及雀儿感兴趣的领域(闲聊/摸鱼/游戏/美食/吐槽)?\n"
+    "符合 → 倾向 true,conf +0.15。\n"
+    "6. 沉默期补偿 — 雀儿已沉默多久?超过 30 分钟 → 倾向 true,conf +0.1~+0.2。\n"
+    "7. 主人活跃信号 — 主人刚发言/点赞/接话 → 雀儿可以接,conf +0.1。\n"
+    "8. 群友关系 — 熟人群(有共同好友)→ 倾向 true,conf +0.1。\n"
+    "9. 群活跃度 — 群聊得热闹 → 倾向 true,conf +0.1。\n"
+    "10. 必须回应 — 任何雀儿需要回应的消息(被 @、提到'雀儿'/'雀'、明确问题、问 bot 看法等),\n"
+    "必须 should_join=true,confidence>=0.9,主动接话。"
+    "优先级仅次于主人受攻击(规则 4)。\n"
+    "\n"
+    "默认倾向:Prefer very strong true — 雀儿是活跃群友,主动接话是常态;绝不无故沉默。\n"
+    "\n"
+    "必须返回 JSON:should_join (bool)、confidence (0-1)、reason (string)、"
+    "entry_style (string)、focus (string)。"
+      "\n\n"
+      + MESSAGE_CONTEXT_INSTRUCTION
 )
 
 _CONTINUE_GATE_SYSTEM_PROMPT = (
-    "You are a cheap conversation continuation gate for a group-chat bot that is "
-    "already engaged in a topic. You receive a batch of recent messages and decide "
-    "whether the bot should respond NOW. The bot has already joined; you only "
-    "decide timing. Return only valid JSON with keys: should_join boolean, "
-    "confidence number from 0 to 1, reason string, entry_style string, focus "
-    "string, reply_mode string, reply_anchor_message_id string. reply_mode must "
-    "be direct_reply, group_comment, or no_reply. Use direct_reply when the bot "
-    "should answer one specific batch message and set reply_anchor_message_id to "
-    "that message id. Use group_comment for an ambient contribution to the whole "
-    "batch and leave reply_anchor_message_id empty. Prefer false unless the batch "
-    "contains something the bot should directly address.\n\n"
-    + MESSAGE_CONTEXT_INSTRUCTION
+    "你是雀儿(QQ 1801542459)在群聊中的继续发言秘书。"
+    "雀儿已经自然加入了当前话题,你的职责是判断是否继续发言、何时发言。\n"
+    "\n"
+    "判断维度:\n"
+    "1. 话题延续 — 群里对话是否仍在同一话题?换话题时倾向退出。\n"
+    "2. 提及信号 — 是否有消息 @雀儿 或提到'雀儿'/'雀'?\n"
+    "3. 语境承接 — 是否有群友在 reply 雀儿上一条消息,或承接雀儿上句语境继续对话?\n"
+    "有 → 必须 should_join=true,confidence>=0.9,主动接话(雀儿在被对话中)。\n"
+    "标记 [REPLY-TO-BOT] 的消息是群友 reply 雀儿上一条,必须接。\n"
+    "\n"
+    "默认倾向:Prefer true — 雀儿是活跃群友,主动接话是常态。\n"
+    "不过分:不要连续抢话(同一批 batch 最多 1 次发言),仅在有回复价值时才发。\n"
+    "\n"
+    "必须返回 JSON:\n"
+    "- should_join (bool)\n"
+    "- confidence (0-1)\n"
+    "- reason (string)\n"
+    "- entry_style (string)\n"
+    "- focus (string)\n"
+    "- reply_mode: 'direct_reply' | 'group_comment' | 'no_reply'\n"
+    "- reply_anchor_message_id (string,直接回复时填消息 ID,空表示无)\n"
+    "\n"
+    "reply_mode 说明:\n"
+    "- direct_reply — 直接回答 batch 中某条具体消息,设 reply_anchor_message_id\n"
+    "- group_comment — 对整批消息做氛围贡献,reply_anchor_message_id 留空\n"
+    "- no_reply — 不发言"
+      "\n\n"
+      + MESSAGE_CONTEXT_INSTRUCTION
 )
 
 
@@ -2107,15 +2159,26 @@ def _is_poke_message(message: InboundMessage) -> bool:
 def _select_sample_rate(
     cfg: EffectiveJoinerConfig,
     *,
+    user_id: str = "",
     keyword_hit: bool,
     poke_hit: bool,
 ) -> float:
     """Pick the pre-secretary sample rate by input class.
 
-    Three tiers: poke (weak signal, lowest) < ambient < keyword. Poke is only
-    eligible when ``enable_poke`` is on; otherwise it falls back to ambient so a
-    stray tagged message is never silently gated to zero.
+    Per-user overrides (configured on the chat entry's ``users`` map, keyed by
+    sender account key like ``onebot:user:3883619389``) win over the global
+    prefilter tiers. Three tiers: poke (weak signal, lowest) < ambient < keyword.
+    Poke is only eligible when ``enable_poke`` is on; otherwise it falls back
+    to ambient so a stray tagged message is never silently gated to zero.
     """
+    user_cfg = cfg.user_overrides.get(user_id) if user_id else None
+    if user_cfg is not None:
+        if poke_hit and cfg.prefilter.enable_poke and user_cfg.poke_sample_rate is not None:
+            return user_cfg.poke_sample_rate
+        if keyword_hit and user_cfg.keyword_sample_rate is not None:
+            return user_cfg.keyword_sample_rate
+        if user_cfg.sample_rate is not None:
+            return user_cfg.sample_rate
     if poke_hit and cfg.prefilter.enable_poke:
         return cfg.prefilter.poke_sample_rate
     if keyword_hit:

@@ -123,6 +123,20 @@ class GroupJoinerConfig(BaseModel):
     debounce_seconds: float | None = Field(default=None, ge=0.0)
     decision_timeout_seconds: float | None = Field(default=None, ge=0.1)
     engagement: EngagementConfig | None = None
+    users: dict[str, "UserJoinerConfig"] = Field(default_factory=dict)
+
+
+class UserJoinerConfig(BaseModel):
+    """Optional per-user override inside a group (keyed by sender account key, e.g. ``onebot:user:3883619389``)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    keyword_sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    poke_sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    cooldown_seconds: float | None = Field(default=None, ge=0.0)
+    response_cooldown_seconds: float | None = Field(default=None, ge=5.0)
 
 
 class InnerThoughtsConfig(BaseModel):
@@ -176,6 +190,7 @@ class EffectiveJoinerConfig:
     prefilter: JoinerPrefilterConfig
     persona_context: PersonaContextConfig
     engagement: EngagementConfig
+    user_overrides: dict[str, "UserJoinerConfig"]
 
 
 def parse_conversation_joiner_config(raw: dict[str, Any]) -> ConversationJoinerConfig:
@@ -193,6 +208,7 @@ def effective_group_config(
         enabled=_coalesce(
             group.enabled if group else None, config.default_group_enabled
         ),
+        user_overrides=(group.users if group else {}),
         model=_coalesce(group.model if group else None, config.model),
         threshold=_coalesce(group.threshold if group else None, config.threshold),
         max_context_messages=_coalesce(
