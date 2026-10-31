@@ -1012,6 +1012,9 @@ class Application:
             "nahida_bot.plugins.meme_library",
             "nahida_bot.plugins.knowledge_base",
             "nahida_bot.plugins.pomodoro",
+            "nahida_bot.plugins.todo",
+            "nahida_bot.plugins.notification_router",
+            "nahida_bot.plugins.daily_brief",
             "nahida_bot.plugins.tts",
         )
         for module_name in builtin_plugin_modules:

@@ -3,8 +3,11 @@ import { computed, onUnmounted, ref } from "vue";
 
 import type {
   PluginSurfaceContribution,
+  PluginSurfaceAction,
   PluginSurfaceTarget,
 } from "@/domain/pluginSurface";
+import { callPluginService } from "@/services/pluginServiceClient";
+import { sendPetWindowCommand } from "@/services/desktopWindowBridge";
 import { selectPluginSurfaces } from "@/domain/pluginSurface";
 
 const props = defineProps<{
@@ -15,6 +18,27 @@ const props = defineProps<{
 const visibleSurfaces = computed(() =>
   selectPluginSurfaces(props.surfaces, props.target),
 );
+
+const pending = ref(new Set<string>());
+const actionError = ref("");
+async function runAction(surface: PluginSurfaceContribution, action: PluginSurfaceAction, index: number) {
+  const key = `${surface.ownerPluginId}:${surface.id}:${index}`;
+  if (pending.value.has(key)) return;
+  pending.value.add(key);
+  actionError.value = "";
+  try {
+    await callPluginService(`${surface.ownerPluginId}:${action.service}`, action.operation,
+      { ...action.arguments, operation_id: crypto.randomUUID() });
+  } catch (error) { actionError.value = String(error); }
+  finally { pending.value.delete(key); }
+}
+function openBody(surface: PluginSurfaceContribution) {
+  if (!surface.view.body) return;
+  void sendPetWindowCommand({ type: "open_reading", notification: {
+    id: `${surface.ownerPluginId}:${surface.id}:${surface.view.status}`,
+    title: surface.view.title, body: surface.view.body,
+  } });
+}
 
 const nowMs = ref(Date.now());
 const ticker = setInterval(() => {
@@ -40,6 +64,7 @@ function countdownLabel(surface: PluginSurfaceContribution): string {
     class="plugin-surface-host"
     :data-target="target"
   >
+    <p v-if="actionError" role="alert">{{ actionError }}</p>
     <article
       v-for="surface in visibleSurfaces"
       :key="`${surface.ownerPluginId}:${surface.id}`"
@@ -57,6 +82,7 @@ function countdownLabel(surface: PluginSurfaceContribution): string {
           {{ surface.view.status }}
         </span>
         <p v-if="surface.view.text">{{ surface.view.text }}</p>
+        <button v-if="surface.view.body" type="button" @click="openBody(surface)">在桌宠气泡中阅读</button>
         <ul v-if="surface.view.items.length" class="plugin-surface__items">
           <li
             v-for="(item, index) in surface.view.items"
@@ -65,6 +91,9 @@ function countdownLabel(surface: PluginSurfaceContribution): string {
           >
             <span>{{ item.text }}</span>
             <small v-if="item.detail">{{ item.detail }}</small>
+            <button v-if="item.action" type="button"
+              :disabled="pending.has(`${surface.ownerPluginId}:${surface.id}:${index}`)"
+              @click="runAction(surface, item.action!, index)">{{ item.action.label }}</button>
           </li>
         </ul>
         <div

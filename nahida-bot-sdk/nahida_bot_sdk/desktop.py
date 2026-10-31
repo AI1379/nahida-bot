@@ -24,6 +24,16 @@ DesktopSurfaceKind = Literal[
 DesktopSurfaceTone = Literal["neutral", "info", "success", "warning", "danger"]
 
 
+class DesktopSurfaceAction(BaseModel):
+    """A button calls a versioned service owned by this surface's plugin."""
+
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=40)
+    service: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    operation: str = Field(min_length=1, max_length=64)
+    arguments: dict[str, object] = Field(default_factory=dict)
+
+
 class DesktopSurfaceItem(BaseModel):
     """One host-rendered row in a list or card surface."""
 
@@ -32,6 +42,7 @@ class DesktopSurfaceItem(BaseModel):
     text: str = Field(min_length=1, max_length=200)
     detail: str = Field(default="", max_length=120)
     completed: bool = False
+    action: DesktopSurfaceAction | None = None
 
 
 class DesktopSurfaceView(BaseModel):
@@ -47,6 +58,7 @@ class DesktopSurfaceView(BaseModel):
     progress: float | None = Field(default=None, ge=0.0, le=1.0)
     items: list[DesktopSurfaceItem] = Field(default_factory=list, max_length=20)
     tone: DesktopSurfaceTone = "neutral"
+    body: str = Field(default="", max_length=12000)
 
 
 class DesktopSurfaceContext(BaseModel):
@@ -55,6 +67,7 @@ class DesktopSurfaceContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     node_id: str
+    actor_account_key: str = ""
     display_name: str = ""
     node_type: str = "desktop"
     metadata: dict[str, object] = Field(default_factory=dict)

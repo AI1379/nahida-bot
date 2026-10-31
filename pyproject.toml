@@ -40,6 +40,7 @@ dependencies = [
     "pywin32>=311; sys_platform == 'win32'",
     # SDK (workspace member)
     "nahida-bot-sdk",
+    "tzdata",
 ]
 
 [dependency-groups]

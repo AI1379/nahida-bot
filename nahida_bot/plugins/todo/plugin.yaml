@@ -1,0 +1,14 @@
+id: todo
+name: "Personal TODO"
+version: "0.1.0"
+description: "Server-owned personal tasks and live Desktop lists"
+entrypoint: "nahida_bot.plugins.todo.plugin:TodoPlugin"
+enabled: false
+permissions:
+  plugin_data: {read: true, write: true}
+contributes:
+  desktop_surfaces:
+    - {id: today, target: desktop.home, kind: list, priority: 60}
+    - {id: drawer, target: pet.drawer, kind: list, priority: 60}
+config:
+  timezone: Asia/Shanghai

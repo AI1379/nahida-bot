@@ -1,0 +1,10 @@
+id: notification-router
+name: "Personal Notification Router"
+version: "0.1.0"
+description: "Durable personal notifications with Desktop state routing and private fallback"
+entrypoint: "nahida_bot.plugins.notification_router.plugin:NotificationRouterPlugin"
+enabled: false
+permissions:
+  plugin_data: {read: true, write: true}
+  network:
+    outbound: ['*']

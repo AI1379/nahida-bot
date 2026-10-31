@@ -45,6 +45,8 @@ from nahida_bot.plugins.commands import (
 )
 from nahida_bot.plugins.permissions import PermissionChecker
 from nahida_bot.plugins.registry import HandlerEntry, PromptSupplementEntry, ToolEntry
+from nahida_bot.plugins.service_api import PluginServiceAPI
+from nahida_bot.plugins.services import PluginServiceRegistry
 from nahida_bot.plugins.runtime_services import (
     RUNTIME_SERVICE_UNSET,
     RuntimeServiceUnset,
@@ -144,7 +146,7 @@ class _PluginLogger:
         self._logger.exception(msg, plugin_id=self._plugin_id, **kwargs)
 
 
-class RealBotAPI:
+class RealBotAPI(PluginServiceAPI):
     """Concrete BotAPI implementation injected into each plugin instance.
 
     Every method first runs through PermissionChecker, then delegates
@@ -182,7 +184,10 @@ class RealBotAPI:
         speech_service: Any | None = None,  # SpeechService (shared)
         desktop_surface_registry: Any | None = None,
         exec_runner: Any | None = None,
+        service_registry: PluginServiceRegistry | None = None,
     ) -> None:
+        self._service_registry = service_registry
+        self._registered_services = {}
         self._plugin_id = plugin_id
         self._manifest = manifest
         self._event_bus = event_bus
@@ -2066,6 +2071,9 @@ class RealBotAPI:
     def activate_registrations(self) -> None:
         """Activate all remembered registrations for an enabled plugin."""
         self._registrations_active = True
+        if self._service_registry is not None:
+            for entry in self._registered_services.values():
+                self._service_registry.register(entry)
         for name in self._registered_commands:
             self._activate_command(name)
         for name in self._registered_tools:
@@ -2087,6 +2095,8 @@ class RealBotAPI:
 
     def deactivate_registrations(self) -> None:
         """Deactivate all active registrations without forgetting them."""
+        if self._service_registry is not None:
+            self._service_registry.unregister_owner(self._plugin_id)
         for name in list(self._active_commands):
             self._command_registry.unregister(name)
             self._active_commands.discard(name)
@@ -2131,6 +2141,7 @@ class RealBotAPI:
         self._registered_provider_types.clear()
         self._registered_supplements.clear()
         self._registered_status_providers.clear()
+        self._registered_services.clear()
         self._registered_desktop_surface_providers.clear()
         self._page_handlers.clear()
         self._decorated_registrations_added = False

@@ -1,3 +1,4 @@
+import type { ReadingNotification } from "@/services/readingNotifications";
 import { defineStore } from "pinia";
 
 import type {
@@ -543,7 +544,17 @@ export const useDesktopStore = defineStore("desktop", {
       });
       this.motionMapVersion += 1;
     },
+    openReadingBubble(notification: ReadingNotification) {
+      this.readingBubble = notification;
+      this.readingInbox = [...this.readingInbox.filter((item) => item.id !== notification.id), notification].slice(-200);
+      this.enterPetChat();
+    },
+    closeReadingBubble() {
+      this.readingBubble = null;
+    },
     applyRuntimeSnapshot(snapshot: DesktopRuntimeSnapshot) {
+      this.readingBubble = snapshot.readingBubble ?? null;
+      this.readingInbox = snapshot.readingInbox ?? [];
       this.connected = snapshot.connected;
       this.sessionId = snapshot.sessionId;
       this.activePlan = snapshot.activePlan;

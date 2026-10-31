@@ -1450,6 +1450,7 @@ dependencies = [
     { name = "sse-starlette" },
     { name = "structlog" },
     { name = "typer" },
+    { name = "tzdata" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -1520,6 +1521,7 @@ requires-dist = [
     { name = "sse-starlette", specifier = ">=2.0.0" },
     { name = "structlog", specifier = ">=24.0.0" },
     { name = "typer", specifier = ">=0.15.0" },
+    { name = "tzdata" },
     { name = "uvicorn", specifier = ">=0.27.0" },
     { name = "websockets", specifier = ">=12.0" },
 ]

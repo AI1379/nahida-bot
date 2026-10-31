@@ -1,0 +1,14 @@
+id: daily-brief
+name: "Daily Brief"
+version: "0.1.0"
+description: "Fixed local-time personal briefs with bounded catch-up and Desktop reading"
+entrypoint: "nahida_bot.plugins.daily_brief.plugin:DailyBriefPlugin"
+enabled: false
+permissions:
+  plugin_data: {read: true, write: true}
+contributes:
+  desktop_surfaces:
+    - {id: brief, target: desktop.home, kind: card, priority: 50}
+    - {id: drawer, target: pet.drawer, kind: card, priority: 50}
+config:
+  sources: ["todo:tasks.v1"]

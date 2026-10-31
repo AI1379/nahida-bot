@@ -172,6 +172,13 @@ class WebAPIApp:
         )
         if self.plugin_runtime_service is not None:
             self.plugin_runtime_service.start()
+        from nahida_bot.gateway.services.desktop_delivery import (
+            register_desktop_transport,
+        )
+
+        register_desktop_transport(
+            plugin_manager, self.node_registry, self.node_invoker
+        )
         application.desktop_announcement_service = self.desktop_announcement_service
         application.desktop_control_service = self.desktop_control_service
         application.desktop_surface_service = self.desktop_surface_service

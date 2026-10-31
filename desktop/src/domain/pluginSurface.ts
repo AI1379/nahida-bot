@@ -19,14 +19,23 @@ export type PluginSurfaceTone =
   | "warning"
   | "danger";
 
+export interface PluginSurfaceAction {
+  label: string;
+  service: string;
+  operation: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface PluginSurfaceItem {
   text: string;
   detail: string;
   completed: boolean;
+  action?: PluginSurfaceAction;
 }
 
 export interface PluginSurfaceView {
   title: string;
+  body?: string;
   text: string;
   status: string;
   detail: string;
@@ -177,8 +186,12 @@ function parseView(value: unknown): PluginSurfaceView | null {
     const detail = readString(rawItem.detail ?? "", 120, true);
     const completed = rawItem.completed ?? false;
     if (!text || detail === null || typeof completed !== "boolean") return null;
-    items.push({ text, detail, completed });
+    const action = rawItem.action == null ? undefined : parseAction(rawItem.action);
+    if (action === null) return null;
+    items.push({ text, detail, completed, ...(action ? { action } : {}) });
   }
+  const body = readString(value.body ?? "", 12000, true);
+  if (body === null) return null;
   const title = readString(value.title ?? "", 80, true);
   const text = readString(value.text ?? "", 400, true);
   const status = readString(value.status ?? "", 80, true);
@@ -188,6 +201,7 @@ function parseView(value: unknown): PluginSurfaceView | null {
     return null;
   }
   return {
+    ...(body ? { body } : {}),
     title: title ?? "",
     text: text ?? "",
     status: status ?? "",
@@ -211,4 +225,14 @@ function readString(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseAction(value: unknown): PluginSurfaceAction | null {
+  if (!isRecord(value) || !isRecord(value.arguments)) return null;
+  const label = readString(value.label, 40);
+  const service = readString(value.service, 64);
+  const operation = readString(value.operation, 64);
+  if (!label || !service || !/^[A-Za-z0-9_.-]+$/.test(service) || !operation ||
+      JSON.stringify(value.arguments).length > 8192) return null;
+  return { label, service, operation, arguments: value.arguments };
 }

@@ -27,3 +27,26 @@ async def test_prefix_matching_treats_like_wildcards_as_literals() -> None:
         assert underscore_matches == {"server:_literal": {"value": 3}}
     finally:
         await engine.close()
+
+
+async def test_compare_and_set_requires_absence_and_rejects_stale_values() -> None:
+    import asyncio
+
+    engine = DatabaseEngine(":memory:")
+    await engine.initialize()
+    repo = SQLitePluginDataRepository(engine)
+    try:
+        results = await asyncio.gather(
+            repo.compare_and_set("plugin", "record", None, {"revision": 1}),
+            repo.compare_and_set("plugin", "record", None, {"revision": 2}),
+        )
+        assert results.count(True) == 1
+        current = await repo.get("plugin", "record")
+        assert not await repo.compare_and_set("plugin", "record", {}, {"revision": 3})
+        assert await repo.compare_and_set("plugin", "record", current, {"revision": 3})
+        await repo.set("plugin", "null-value", None)
+        assert not await repo.compare_and_set(
+            "plugin", "null-value", None, {"revision": 1}
+        )
+    finally:
+        await engine.close()

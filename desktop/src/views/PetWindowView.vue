@@ -4,6 +4,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import Live2DStage from "@/components/Live2DStage.vue";
 import MotionFeedbackPanel from "@/components/MotionFeedbackPanel.vue";
+import ReadingBubble from "@/components/ReadingBubble.vue";
 import PluginSurfaceHost from "@/components/PluginSurfaceHost.vue";
 import type { ProximityIntent } from "@/domain/petProximity";
 import type { MotionPlaybackSummary } from "@/domain/motionTelemetry";
@@ -183,6 +184,17 @@ onBeforeUnmount(() => {
       @motion-ready="sendPetWindowCommand({ type: 'motion_ready', requestId: $event })"
     />
 
+    <ReadingBubble
+      v-if="store.readingBubble"
+      :notification="store.readingBubble"
+      @close="sendPetWindowCommand({ type: 'close_reading' })"
+    />
+    <button
+      v-if="interactive && store.readingInbox.length && !store.readingBubble"
+      class="pet-window__reading-toggle" type="button"
+      @click="sendPetWindowCommand({ type: 'open_reading', notification: store.readingInbox[store.readingInbox.length - 1]! })"
+    >重新打开最近通知</button>
+
     <PluginSurfaceHost
       class="pet-window__plugin-surfaces"
       :surfaces="store.pluginSurfaces"
@@ -263,3 +275,7 @@ onBeforeUnmount(() => {
     </form>
   </main>
 </template>
+
+<style scoped>
+.pet-window__reading-toggle { position: absolute; top: 12px; left: 12px; z-index: 25; border-radius: 10px; padding: 8px 12px; background: #f8fcf7; color: #233e30; border: 1px solid #b7cbb5; pointer-events: auto; }
+</style>

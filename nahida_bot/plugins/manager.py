@@ -23,6 +23,7 @@ from nahida_bot.plugins.registry import (
     StatusProviderRegistry,
     ToolRegistry,
 )
+from nahida_bot.plugins.services import PluginServiceRegistry
 from nahida_bot.plugins.runtime_services import (
     RUNTIME_SERVICE_UNSET,
     RuntimeServiceUnset,
@@ -135,6 +136,7 @@ class PluginManager:
         self._supplement_registry = PromptSupplementRegistry()
         self._status_provider_registry = StatusProviderRegistry()
         self._desktop_surface_registry = DesktopSurfaceRegistry()
+        self.service_registry = PluginServiceRegistry()
         self._records: dict[str, PluginRecord] = {}
 
     def set_runtime_services(
@@ -384,6 +386,7 @@ class PluginManager:
             supplement_registry=self._supplement_registry,
             status_provider_registry=self._status_provider_registry,
             desktop_surface_registry=self._desktop_surface_registry,
+            service_registry=self.service_registry,
             webhost_service=self._webhost_service,
             channel_registry=self._channel_registry,
             provider_manager=self._provider_manager,

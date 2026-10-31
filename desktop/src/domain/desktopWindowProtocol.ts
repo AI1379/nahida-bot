@@ -1,3 +1,4 @@
+import type { ReadingNotification } from "@/services/readingNotifications";
 import type { LocalDesktopConfig } from "./config";
 import type { DisplayPlan } from "./displayPlan";
 import type { PetRuntimeState, PresentationPlan } from "./runtime";
@@ -5,6 +6,8 @@ import type { TurnRecord } from "./conversation";
 import type { PluginSurfaceContribution } from "./pluginSurface";
 
 export interface DesktopRuntimeSnapshot {
+  readingBubble?: ReadingNotification | null;
+  readingInbox?: ReadingNotification[];
   connected: boolean;
   sessionId: string;
   activePlan: DisplayPlan | null;
@@ -21,6 +24,8 @@ export interface DesktopRuntimeSnapshot {
 }
 
 export type PetWindowCommand =
+  | { type: "open_reading"; notification: ReadingNotification }
+  | { type: "close_reading" }
   | { type: "motion_ready"; requestId: string }
   | { type: "request_state" }
   | { type: "peek" }

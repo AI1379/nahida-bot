@@ -1,3 +1,4 @@
+import type { ReadingNotification } from "@/services/readingNotifications";
 import {
   createDefaultLocalDesktopConfig,
 } from "@/domain/config";
@@ -79,6 +80,8 @@ export function createDesktopState() {
     sanitizeGatewayConnectionSettings(readPersistedGatewayConnection());
 
   return {
+    readingBubble: null as ReadingNotification | null,
+    readingInbox: [] as ReadingNotification[],
     connected: false,
     gatewayUrl: mockDesktopDefaults.gatewayUrl,
     sessionId: mockDesktopDefaults.sessionId,

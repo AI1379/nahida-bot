@@ -139,6 +139,10 @@ enum ClientCommand {
         text: String,
         respond_to: oneshot::Sender<Result<NodeEnvelope, String>>,
     },
+    PluginCall {
+        payload: Value,
+        respond_to: oneshot::Sender<Result<NodeEnvelope, String>>,
+    },
     Stop,
 }
 
@@ -265,6 +269,20 @@ impl GatewayNodeManager {
             .map_err(|_| "node.input.submit response channel closed".to_string())?
     }
 
+    async fn plugin_call(&self, payload: Value) -> Result<NodeEnvelope, String> {
+        if !self.status.lock().await.registered {
+            return Err("gateway node is not registered".to_string());
+        }
+        let tx = self.inner.lock().await.tx.clone()
+            .ok_or_else(|| "gateway node is not running".to_string())?;
+        let (respond_to, response) = oneshot::channel();
+        tx.send(ClientCommand::PluginCall { payload, respond_to }).await
+            .map_err(|_| "gateway node command loop closed".to_string())?;
+        timeout(Duration::from_secs(20), response).await
+            .map_err(|_| "plugin call timed out; refresh before retrying".to_string())?
+            .map_err(|_| "plugin response channel closed".to_string())?
+    }
+
     async fn complete_capability(&self, result: CapabilityExecutionResult) -> Result<(), String> {
         let invoke_id = result.invoke_id.clone();
         let waiter = self.capability_waiters.lock().await.remove(&invoke_id);
@@ -317,6 +335,13 @@ pub async fn gateway_node_complete_capability(
     state.complete_capability(result).await
 }
 
+#[tauri::command]
+pub async fn gateway_node_plugin_call(
+    state: State<'_, GatewayNodeManager>, payload: Value,
+) -> Result<NodeEnvelope, String> {
+    state.plugin_call(payload).await
+}
+
 async fn client_loop(
     app: AppHandle,
     config: ResolvedConnectConfig,
@@ -357,7 +382,8 @@ async fn client_loop(
             command = rx.recv() => {
                 match command {
                     Some(ClientCommand::Stop) | None => break,
-                    Some(ClientCommand::SubmitInput { respond_to, .. }) => {
+                    Some(ClientCommand::SubmitInput { respond_to, .. })
+                    | Some(ClientCommand::PluginCall { respond_to, .. }) => {
                         let _ = respond_to.send(Err("gateway node is reconnecting".to_string()));
                     }
                 }
@@ -434,6 +460,9 @@ async fn run_once(
     );
     let mut heartbeat = interval(heartbeat_interval);
     let mut last_seen = Instant::now();
+    let mut context_sequence = 0u64;
+    let mut context_poll = interval(Duration::from_secs(2));
+    let mut previous_context = Value::Null;
     let mut pending: HashMap<String, oneshot::Sender<Result<NodeEnvelope, String>>> =
         HashMap::new();
     let (capability_response_tx, mut capability_response_rx) = mpsc::channel(32);
@@ -471,6 +500,17 @@ async fn run_once(
                         let _ = write.close().await;
                         return Ok(RunExit::Stopped);
                     }
+                    Some(ClientCommand::PluginCall { payload, respond_to }) => {
+                        let request_id = next_request_id("plugin");
+                        let request = build_request("plugin.service.call", request_id.clone(), Some(payload));
+                        pending.insert(request_id.clone(), respond_to);
+                        if let Err(error) = send_envelope(&mut write, &request).await {
+                            if let Some(respond_to) = pending.remove(&request_id) {
+                                let _ = respond_to.send(Err(error.clone()));
+                            }
+                            return Err(error);
+                        }
+                    }
                     Some(ClientCommand::SubmitInput { session_id, text, respond_to }) => {
                         let request_id = next_request_id("input");
                         let request = build_request(
@@ -493,7 +533,22 @@ async fn run_once(
                     send_envelope(&mut write, &response).await?;
                 }
             }
+            _ = context_poll.tick() => {
+                let mut context = crate::desktop_context::snapshot(app, 0);
+                if context != previous_context {
+                    previous_context = context.clone();
+                    context_sequence += 1;
+                    context["sequence"] = json!(context_sequence);
+                    send_envelope(&mut write, &build_request("node.context.update",
+                        next_request_id("context"), Some(context))).await?;
+                }
+            }
             _ = heartbeat.tick() => {
+                pending.retain(|_, sender| !sender.is_closed());
+                context_sequence += 1;
+                let context = crate::desktop_context::snapshot(app, context_sequence);
+                send_envelope(&mut write, &build_request("node.context.update",
+                    next_request_id("context"), Some(context))).await?;
                 if last_seen.elapsed() > heartbeat_timeout {
                     return Err("gateway heartbeat timed out".to_string());
                 }
@@ -527,7 +582,8 @@ async fn wait_for_register_response(
                         let _ = write.close().await;
                         return Err("gateway node stopped before registration completed".to_string());
                     }
-                    Some(ClientCommand::SubmitInput { respond_to, .. }) => {
+                    Some(ClientCommand::SubmitInput { respond_to, .. })
+                    | Some(ClientCommand::PluginCall { respond_to, .. }) => {
                         let _ = respond_to.send(Err("gateway node is not registered".to_string()));
                     }
                 }
