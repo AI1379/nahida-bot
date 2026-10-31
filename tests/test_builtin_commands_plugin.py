@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1426,7 +1427,7 @@ async def test_reset_status_model_and_help_commands() -> None:
     assert await plugin._cmd_reset(args="", inbound=_inbound(), session_id="s1") == (
         "✅ Session cleared. 2 message(s) removed."
     )
-    status = await plugin._cmd_status(args="", inbound=_inbound(), session_id="s1")
+    status = await plugin._cmd_status(args="full", inbound=_inbound(), session_id="s1")
     assert "Provider: p1" in status
     assert "Model: model-a" in status
     assert "Reasoning display: default" in status
@@ -1522,21 +1523,107 @@ async def test_model_and_status_show_default_for_new_session() -> None:
 
     # /status should show the default model name, not "(default)"
     status = await plugin._cmd_status(args="", inbound=_inbound(), session_id="s1")
-    assert "Provider: p1" in status
-    assert "Model: model-a" in status
+    assert "Model: model-a (p1)" in status
     assert "(default)" not in status
+    assert "Agent: idle" in status
+    assert "Server memory:" in status
+    assert len(status.splitlines()) == 3
 
 
 @pytest.mark.asyncio
-async def test_status_shows_session_key_kind() -> None:
+@pytest.mark.parametrize(
+    ("run_status", "agent_text"),
+    [
+        ({"state": "running", "elapsed_seconds": 12.3}, "⏳ Agent: running (12.3s)"),
+        ({"state": "crashed", "error": "failure\n" * 100}, "⚠️ Agent: crashed"),
+        ({"state": "idle", "pending_messages": 2}, "🟢 Agent: idle (2 queued)"),
+    ],
+)
+async def test_status_is_compact_and_skips_plugin_status(
+    monkeypatch: pytest.MonkeyPatch, run_status: dict[str, Any], agent_text: str
+) -> None:
+    api = _FakeAPI()
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    collect = AsyncMock(return_value=["Plugin status\n" * 100])
+    monkeypatch.setattr(api, "collect_status_providers", collect)
+    monkeypatch.setattr(api, "get_session_run_status", lambda _: run_status)
+    monkeypatch.setattr(
+        "nahida_bot.plugins.builtin.commands.psutil.virtual_memory",
+        lambda: SimpleNamespace(total=8 * 1024**3, available=3 * 1024**3, percent=62.5),
+    )
+
+    status = await plugin._cmd_status(args="", inbound=_inbound(), session_id="s1")
+
+    assert status.splitlines() == [
+        "🤖 Model: model-a (p1)",
+        agent_text,
+        "🖥️ Server memory: 5.00/8.00 GiB used (62.5%), 3.00 GiB available",
+    ]
+    collect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_full_status_preserves_details_and_plugin_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeAPI()
+    api.session_meta = {"runtime": {"reasoning": {"show": True, "effort": "high"}}}
+    plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
+    collect = AsyncMock(return_value=["Plugin status\nDetails"])
+    monkeypatch.setattr(api, "collect_status_providers", collect)
+    monkeypatch.setattr(
+        api,
+        "get_session_run_status",
+        lambda _: {"state": "crashed", "error": "failure"},
+    )
+
+    status = await plugin._cmd_status(
+        args=" FULL ", inbound=_inbound(), session_id="telegram:private:c1:abc12345"
+    )
+
+    assert "Agent: crashed — failure" in status
+    assert "Provider: p1" in status
+    assert "Model: model-a" in status
+    assert "Server memory:" in status
+    assert "Reasoning display: on" in status
+    assert "Reasoning effort: high" in status
+    assert "Session: telegram:private:c1:abc12345" in status
+    assert "Plugin status\nDetails" in status
+    collect.assert_awaited_once_with(
+        session_id="telegram:private:c1:abc12345", chat_key="telegram:private:c1"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", ["", "full"])
+async def test_status_handles_unavailable_server_memory(
+    monkeypatch: pytest.MonkeyPatch, args: str
+) -> None:
+    def unavailable() -> None:
+        raise OSError("memory statistics unavailable")
+
+    monkeypatch.setattr(
+        "nahida_bot.plugins.builtin.commands.psutil.virtual_memory", unavailable
+    )
+    plugin = BuiltinCommandsPlugin(api=_FakeAPI(), manifest=_manifest())
+
+    status = await plugin._cmd_status(args=args, inbound=_inbound(), session_id="s1")
+
+    assert "Server memory: unavailable" in status
+    assert "Model: model-a" in status
+    assert "Agent: idle" in status
+
+
+@pytest.mark.asyncio
+async def test_full_status_shows_session_key_kind() -> None:
     api = _FakeAPI()
     plugin = BuiltinCommandsPlugin(api=api, manifest=_manifest())
 
     typed = await plugin._cmd_status(
-        args="", inbound=_inbound(), session_id="telegram:private:c1"
+        args="full", inbound=_inbound(), session_id="telegram:private:c1"
     )
     legacy = await plugin._cmd_status(
-        args="", inbound=_inbound(), session_id="telegram:c1:abc12345"
+        args="full", inbound=_inbound(), session_id="telegram:c1:abc12345"
     )
 
     assert "Session key: typed" in typed

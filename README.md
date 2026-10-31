@@ -61,6 +61,7 @@
 - [x] 会话级别推理设置：`/reasoning on|off|effort <level>|reset`
 - [x] 群聊上下文注入：observed-only 消息记录 + 触发时注入最近群上下文
 - [x] 内置命令 12 个：`/reset`、`/new`、`/status`、`/model`、`/reasoning`、`/help`、`/memory`、`/agents`、`/agent_stop`、`/agent_wait`、`/cron`、`/stop`
+  - `/status` 仅显示当前模型、当前会话的 Agent 运行状态和服务器内存；`/status full` 查看完整会话、推理设置和插件状态。
 - [x] 内置工具 16+：`workspace_read/write`、`send_local_attachment`、`memory_read/write`、`exec`、`web_fetch`、`plan`、`cron_*`、`agent_*`、`image_understand`，外加知识库检索、生图等插件工具
 - [x] Gateway REST API：`/api/health`、`/api/status`、`/api/send`、`/api/sessions`、`/api/cron`（全局管理）、`/api/config`（读写/校验/备份）、`/api/files`（workspace 文件管理）、`/api/kb`（知识库导入与检索）、`/api/plugins`、`/api/skills`、`/api/processes`（sidecar 进程监管）、`/api/tokens`（用量）、`/api/messages`、`/api/auth`（登录/登出/session）、`/api/events/stream`（SSE）
 - [x] WebUI 运维面板：Vue 3 + Vite + shadcn-vue + Reka UI，首页状态总览、配置页（YAML 编辑/校验/保存/备份）、CRON 管理、Session 分组浏览、文件管理、知识库导入、插件管理、Skills、用量统计、系统日志、关于页

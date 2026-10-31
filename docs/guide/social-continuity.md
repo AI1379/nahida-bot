@@ -22,7 +22,7 @@ conversation_joiner:
 ```
 
 群聊沿用 `default_group_enabled` / `groups.<chat_key>.enabled` 范围。私聊需要单独开启
-`private_enabled`；`/status` 可查看当前聊天的 Social Continuity。配置通过正常插件加载生效。
+`private_enabled`；`/status full` 可查看当前聊天的 Social Continuity。配置通过正常插件加载生效。
 关闭 `inner_thoughts.enabled` 可恢复原有 gate 路径；停用整个插件后，注册的上下文提供器也会移除。
 
 ## 状态与成本
