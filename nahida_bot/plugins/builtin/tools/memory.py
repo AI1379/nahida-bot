@@ -20,6 +20,7 @@ _logger = structlog.get_logger(__name__)
 
 _KINDS = [
     "fact",
+    "impression",
     "preference",
     "task",
     "decision",
@@ -35,6 +36,10 @@ _VALID_SCOPE_TYPES = frozenset({"chat", "person", "account"})
 _READ_PARAMETERS: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "subject_account_key": {
+            "type": "string",
+            "description": "Optional exact channel:user:id when browsing a particular person's impressions or relationships. Does not expand visibility.",
+        },
         "query": {
             "type": "string",
             "description": "Optional text to search for in memory lines.",
@@ -42,6 +47,11 @@ _READ_PARAMETERS: dict[str, Any] = {
         "max_length": {
             "type": "integer",
             "description": "Maximum characters to return. Default 10000.",
+        },
+        "category": {
+            "type": "string",
+            "enum": ["bot", "environment", "person", "chat", "relationship", "unknown"],
+            "description": "Browse memory about the bot, environment, current person, chat, or relationships. Omit for semantic search.",
         },
     },
     "required": [],
@@ -53,12 +63,26 @@ _WRITE_PARAMETERS: dict[str, Any] = {
     "properties": {
         "subject": {
             "type": "string",
-            "enum": ["current_sender", "chat", "unknown"],
-            "description": "Whose fact this is. Choose current_sender only for their own facts, chat for shared context. Unknown is never assumed to be the current user.",
+            "enum": [
+                "bot",
+                "environment",
+                "current_sender",
+                "chat",
+                "relationship",
+                "unknown",
+            ],
+            "description": "What the memory is about: bot self-knowledge, environment, current_sender's own facts/impressions, shared chat context, or an evidenced relationship. Unknown is never assumed to be the current user. Use kind=impression for qualified interpretations.",
         },
         "subject_account_key": {
             "type": "string",
             "description": "For a third party, their verified channel:user:id from cited conversation evidence; never infer from a display name.",
+        },
+        "relationship_accounts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 2,
+            "maxItems": 4,
+            "description": "Exact account keys of relationship participants. Requires original evidence_turn_ids identifying each participant; impressions must remain qualified, not facts about inner lives.",
         },
         "evidence_turn_ids": {
             "type": "array",
@@ -281,10 +305,24 @@ class MemoryTools:
             handler=self.update,
         )
 
-    async def read(self, query: str = "", max_length: int = 10000) -> str:
+    async def read(
+        self,
+        query: str = "",
+        max_length: int = 10000,
+        category: str = "",
+        subject_account_key: str = "",
+    ) -> str:
         """Read attributed durable memory through the shared retrieval policy."""
         _logger.debug("tool.memory_read", query=query)
-        structured = await self._api.memory_search(query, limit=20)
+        if subject_account_key and not category:
+            category = "person"
+        structured = (
+            await self._api.memory_browse(
+                category, query, limit=20, account_key=subject_account_key
+            )
+            if category
+            else await self._api.memory_search(query, limit=20)
+        )
         max_chars = min(max(max_length, 1), MAX_TOOL_READ_CHARS)
         from nahida_bot.agent.memory.rendering import format_memory_items, item_from_ref
 
@@ -303,6 +341,7 @@ class MemoryTools:
         subject: str = "unknown",
         subject_account_key: str = "",
         evidence_turn_ids: list[int] | None = None,
+        relationship_accounts: list[str] | None = None,
     ) -> str:
         """Create one durable-memory item after policy validation."""
         _logger.debug(
@@ -336,6 +375,7 @@ class MemoryTools:
                     "subject": subject,
                     "subject_account_key": subject_account_key,
                     "evidence_turn_ids": evidence_turn_ids,
+                    "relationship_accounts": relationship_accounts,
                 },
             )
         except Exception as exc:

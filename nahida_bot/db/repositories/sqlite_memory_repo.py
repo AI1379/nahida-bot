@@ -60,21 +60,34 @@ class SQLiteMemoryRepository:
         public_only: bool = False,
         portable_only: bool = False,
         attributed_only: bool = False,
+        exclude_secret_like: bool = False,
+        category: str = "",
     ) -> list[dict[str, Any]]:
         conditions = [
             "status = 'active'",
             "(instr(lower(content), lower(?)) > 0 OR instr(lower(title), lower(?)) > 0)",
         ]
         params: list[Any] = [query, query]
+        if category:
+            subject_kind = "COALESCE(json_extract(metadata_json,'$.attribution.subject.kind'),'unknown')"
+            conditions.append(
+                f"{subject_kind} IN ('account','person')"
+                if category == "person"
+                else f"{subject_kind}=?"
+            )
+            if category != "person":
+                params.append(category)
         for name, value in (("scope_type", scope_type), ("scope_id", scope_id)):
             if value is not None:
                 conditions.append(f"{name} = ?")
                 params.append(value)
         if public_only:
             conditions.append("sensitivity = 'public'")
+        if exclude_secret_like:
+            conditions.append("sensitivity != 'secret_like'")
         if attributed_only:
             conditions.append(
-                "json_extract(metadata_json, '$.attribution.subject.kind') IN ('account','person','chat')"
+                "json_extract(metadata_json, '$.attribution.subject.kind') IN ('bot','environment','account','person','chat','relationship')"
             )
         if portable_only:
             conditions.append(
@@ -667,10 +680,18 @@ class SQLiteMemoryRepository:
         scope_type: str | None,
         scope_id: str | None,
         limit: int = 10,
+        shared_account: bool = False,
     ) -> list[dict[str, Any]]:
         """Search durable items, optionally filtering scope type and/or id."""
         filters = ["memory_item_fts MATCH ?", "mi.status = 'active'"]
         params: list[Any] = [fts_query]
+        if shared_account:
+            filters.extend(
+                [
+                    "mi.sensitivity != 'secret_like'",
+                    "COALESCE(json_extract(mi.metadata_json,'$.portable'),1) != 0",
+                ]
+            )
         if scope_type is not None:
             filters.append("mi.scope_type = ?")
             params.append(scope_type)
@@ -797,7 +818,7 @@ class SQLiteMemoryRepository:
             "AND mi.status = 'active' "
             "AND mi.sensitivity = 'public' "
             "AND COALESCE(json_extract(mi.metadata_json, '$.portable'), 1) != 0 "
-            "AND (? = 0 OR json_extract(mi.metadata_json, '$.attribution.subject.kind') IN ('account','person','chat')) "
+            "AND (? = 0 OR json_extract(mi.metadata_json, '$.attribution.subject.kind') IN ('bot','environment','account','person','chat','relationship')) "
             "ORDER BY score ASC, mi.importance DESC, mi.updated_at DESC "
             "LIMIT ?",
             (fts_query, int(attributed_only), limit),
@@ -823,7 +844,7 @@ class SQLiteMemoryRepository:
             "FROM memory_items "
             "WHERE status = 'active' AND sensitivity = 'public' "
             "AND COALESCE(json_extract(metadata_json, '$.portable'), 1) != 0 "
-            "AND (? = 0 OR json_extract(mi.metadata_json, '$.attribution.subject.kind') IN ('account','person','chat')) "
+            "AND (? = 0 OR json_extract(mi.metadata_json, '$.attribution.subject.kind') IN ('bot','environment','account','person','chat','relationship')) "
             "ORDER BY importance DESC, updated_at DESC LIMIT ?",
             (int(attributed_only), limit),
         )

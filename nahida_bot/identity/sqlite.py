@@ -24,6 +24,20 @@ class SQLiteIdentityStore:
 
     def __init__(self, engine: DatabaseEngine) -> None:
         self._repo = SQLiteIdentityRepository(engine)
+        from nahida_bot.db.repositories.sqlite_identity_mutations import (
+            SQLiteIdentityMutations,
+        )
+
+        self.mutations = SQLiteIdentityMutations(engine)
+
+    async def save_person_audited(self, person: Person, actor: str) -> None:
+        await self.mutations.person(person.person_id, person.display_name, actor)
+
+    async def link_account_audited(self, link: AccountLink, actor: str) -> None:
+        await self.mutations.link(link.account_key, link.person_id, actor, link.label)
+
+    async def unlink_account_audited(self, account_key: str, actor: str) -> bool:
+        return await self.mutations.unlink(account_key, actor)
 
     async def resolve_account(self, account_key: str) -> tuple[str | None, str]:
         return await self._repo.resolve_account(account_key)

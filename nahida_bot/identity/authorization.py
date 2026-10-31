@@ -79,6 +79,7 @@ _REVIEW_EXEMPT_TOOLS = frozenset(
         "memory_write",
         "memory_update",
         "memory_archive",
+        "identity_claim",
         "read_chat_history",
         "search_chat_history",
         "find_chat",

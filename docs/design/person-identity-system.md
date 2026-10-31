@@ -1,5 +1,9 @@
 # 人员身份与账号映射系统设计
 
+> 2026-10-31 后续实现见 [结构化社交记忆](social-memory.md)：仅跨 channel 关联；
+> 用户自述形成候选，由另一账号明确确认后共享人物记忆。以下早期“不做 self-link”与
+> “仅管理员声明”的决策已被该流程取代；动作授权仍独立于记忆身份。
+
 > 记录时间：2026-06-07
 > 最近修订：2026-07-13（保持“动作授权与记忆身份解耦”，同时拆开记忆主体与披露场景：群聊不再因 Person 到场自动展开个人 scope；群内人物事实使用 chat scope + subject metadata + `portable=false`）
 > 状态：Phase 0-4、Phase A、Phase B 与 Phase 5 inspect/apply 已实现并验证；后台 account→person compaction 仍待实现。

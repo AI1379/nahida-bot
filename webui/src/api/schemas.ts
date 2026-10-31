@@ -233,6 +233,8 @@ export interface MemoryItem {
   scope_type: string;
   scope_id: string;
   kind: string;
+  category?: string;
+  subject_label?: string;
   title: string;
   content: string;
   status: string;

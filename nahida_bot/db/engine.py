@@ -540,6 +540,35 @@ _SCHEMA_MIGRATIONS = [
     """
     -- See DatabaseEngine._ensure_cron_executor_columns().
     """,
+    # Migration 031: pending cross-channel claims never participate in resolution.
+    """
+    CREATE TABLE IF NOT EXISTS identity_link_candidates (
+        candidate_id TEXT PRIMARY KEY,
+        requester_account TEXT NOT NULL,
+        target_account TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        evidence_json TEXT NOT NULL,
+        identity_snapshot_json TEXT NOT NULL,
+        person_id TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        resolved_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_pending_pair
+        ON identity_link_candidates(requester_account, target_account) WHERE status='pending';
+    CREATE INDEX IF NOT EXISTS idx_memory_subject
+        ON memory_items(json_extract(metadata_json,'$.attribution.subject.kind'), status);
+    CREATE TRIGGER IF NOT EXISTS identity_cross_channel_insert
+    BEFORE INSERT ON person_accounts
+    WHEN NEW.status='active'
+      AND NOT EXISTS (SELECT 1 FROM person_accounts WHERE account_key=NEW.account_key AND person_id=NEW.person_id AND status='active')
+      AND EXISTS (SELECT 1 FROM person_accounts WHERE person_id=NEW.person_id AND channel=NEW.channel AND account_key!=NEW.account_key AND status='active')
+    BEGIN SELECT RAISE(ABORT, 'a Person may only link different channels'); END;
+    CREATE TRIGGER IF NOT EXISTS identity_cross_channel_update
+    BEFORE UPDATE ON person_accounts
+    WHEN NEW.status='active' AND (OLD.person_id!=NEW.person_id OR OLD.status!='active' OR OLD.channel!=NEW.channel)
+      AND EXISTS (SELECT 1 FROM person_accounts WHERE person_id=NEW.person_id AND channel=NEW.channel AND account_key!=NEW.account_key AND status='active')
+    BEGIN SELECT RAISE(ABORT, 'a Person may only link different channels'); END;
+    """,
 ]
 
 

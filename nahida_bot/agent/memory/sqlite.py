@@ -178,6 +178,83 @@ class SQLiteMemoryStore(MemoryStore):
 
     def __init__(self, engine: DatabaseEngine) -> None:
         self._repo = SQLiteMemoryRepository(engine)
+        self._engine = engine
+
+    async def catalog_items(self, **kwargs: Any) -> list[MemoryItem]:
+        from nahida_bot.db.repositories.sqlite_memory_catalog import SQLiteMemoryCatalog
+
+        return [
+            _row_to_item(row)
+            for row in await SQLiteMemoryCatalog(self._engine).select(**kwargs)
+        ]
+
+    async def list_category_items(
+        self,
+        query: str,
+        *,
+        category: str,
+        scope_type: str | None,
+        scope_id: str | None,
+        limit: int,
+    ) -> list[MemoryItem]:
+        rows = await self._repo.search_memory_literal(
+            query,
+            category=category,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            limit=limit,
+        )
+        return [_row_to_item(row) for row in rows]
+
+    async def search_items_shared_account(
+        self, query: str, *, account_key: str, limit: int
+    ) -> list[MemoryItem]:
+        """Confirmed links share portable private memories, never secret-like ones."""
+        fts_query = build_fts_query(query)
+        rows = (
+            await self._repo.search_memory_items(
+                fts_query,
+                scope_type="account",
+                scope_id=account_key,
+                limit=limit,
+                shared_account=True,
+            )
+            if fts_query
+            else []
+        )
+        if not rows:
+            rows = await self._repo.search_memory_literal(
+                query,
+                scope_type="account",
+                scope_id=account_key,
+                limit=limit,
+                portable_only=True,
+                exclude_secret_like=True,
+            )
+        return [_row_to_item(row) for row in rows]
+
+    async def memory_identity(self, account_key: str) -> tuple[str | None, list[str]]:
+        """Only committed links expand personal recall; candidates never do."""
+        async with self._engine.write_lock:
+            row = await self._engine.fetch_one(
+                "SELECT pa.person_id FROM person_accounts pa JOIN persons p USING(person_id) "
+                "WHERE pa.account_key=? AND pa.status='active' AND p.status='active'",
+                (account_key,),
+            )
+            if row is None:
+                return None, [account_key]
+            rows = await self._engine.fetch_all(
+                "SELECT account_key FROM person_accounts WHERE person_id=? AND status='active' ORDER BY account_key",
+                (row["person_id"],),
+            )
+            channel = account_key.partition(":user:")[0]
+            keys = [
+                str(r["account_key"])
+                for r in rows
+                if str(r["account_key"]) == account_key
+                or str(r["account_key"]).partition(":user:")[0] != channel
+            ]
+            return str(row["person_id"]), keys
 
     async def ensure_session(
         self, session_id: str, workspace_id: str | None = None

@@ -57,6 +57,7 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s+|\n+")
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _VALID_KINDS = {
     "fact",
+    "impression",
     "preference",
     "decision",
     "task",
@@ -131,7 +132,7 @@ Your job is to convert recent conversation into durable memory changes.
 Return ONLY valid JSON. Do not include markdown.
 
 Rules:
-- Add only stable user preferences, project facts, decisions, procedures, warnings, or follow-up tasks.
+- Add only stable user preferences, qualified impressions, project facts, decisions, procedures, warnings, or follow-up tasks. Use kind=impression for revisable interpretations of a person or relationship; keep uncertainty explicit and cite specific evidence.
 - If the conversation contains no stable durable change, return empty add/archive arrays. Do not create a memory merely to summarize that nothing happened.
 - Never store routine chat recaps, transient reactions, image-only exchanges, greetings, or "recent conversation" summaries.
 - Do not store secrets, credentials, tokens, cookies, private keys, signed URLs, base64, or raw event dumps.
@@ -139,19 +140,20 @@ Rules:
 - Input message records include trusted turn IDs, authors and source chats. Preserve who said what; never merge different people into "the user".
 - For each addition and archive, return evidence_turn_ids from these records. Assistant replies, quotations, forwards and existing memories are not independent user assertions.
 - Each addition must include subject: {"kind": "account", "id": "channel:user:id"} for a known participant, {"kind": "chat", "id": "source chat key"} for shared context, or {"kind": "unknown", "id": ""} when unresolved. The speaker is not necessarily the subject. Unknown personal claims will be held for review.
+- Additional subjects: {"kind":"bot","id":"self"} for stable self-knowledge, {"kind":"environment","id":"runtime"} for environment knowledge, or {"kind":"relationship","members":[{"kind":"account","id":"channel:user:A"},{"kind":"account","id":"channel:user:B"}]} for a relationship. Every participant must be identified in the evidence. An impression is qualified, revisable interpretation, never proof of someone's inner life. Do not persist transient social moods.
 - Never infer Person links or treat matching display names as identity. Preserve uncertainty and distinguish reports about others from their own statements.
 - Content that reached this conversation via knowledge-base recall (auto-recalled snippets or kb_search/context_read results, including dream-promoted nodes) is existing knowledge, not new evidence: never create a memory entry that merely restates it.
 - Prefer the language and terminology the user normally uses in the conversation.
 - Archive an existing memory only when the new conversation clearly makes it obsolete or contradictory.
 - Audience is independent from kind. Use "current" unless the item is intentionally applicable across every chat and user of this bot.
-- "global" is exceptional: only cross-chat bot-wide decisions, procedures, or warnings qualify. Personal information, project/session state, cron-specific instructions, and every summary must use "current".
+- "global" is exceptional: only public bot/environment self-knowledge or cross-chat bot-wide decisions, procedures, or warnings qualify. Personal information, project/session state, cron-specific instructions, and every summary must use "current".
 - A group-local nickname for the current sender is a contextual alias: set relation="alias", subject to the identified account, alias to the nickname, and portable=false. Do not infer aliases for third parties or use an alias as proof that two accounts are the same Person.
 
 Schema:
 {
   "add": [
     {
-      "kind": "fact|preference|decision|task|procedure|warning|summary",
+      "kind": "fact|impression|preference|decision|task|procedure|warning|summary",
       "audience": "current|global",
       "title": "short title",
       "content": "one concise durable memory",
@@ -159,7 +161,7 @@ Schema:
       "importance": 0.0,
       "evidence": "short quote or reason",
       "relation": "alias or omit",
-      "subject": {"kind": "account|chat|unknown", "id": "verified ID or empty"},
+      "subject": {"kind": "bot|environment|account|chat|relationship|unknown", "id": "verified ID or empty", "members": []},
       "evidence_turn_ids": [1],
       "alias": "group-local nickname or omit",
       "portable": true

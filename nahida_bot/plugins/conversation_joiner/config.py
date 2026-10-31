@@ -137,6 +137,9 @@ class InnerThoughtsConfig(BaseModel):
     thought_ttl_seconds: float = Field(default=600, ge=10, le=3600)
     direct_update_interval_seconds: float = Field(default=20, ge=0, le=300)
     max_context_chars: int = Field(default=1800, ge=900, le=3500)
+    memory_enabled: bool = True
+    max_memory_items: int = Field(default=6, ge=0, le=12)
+    max_memory_chars: int = Field(default=2400, ge=500, le=6000)
 
 
 class ConversationJoinerConfig(BaseModel):

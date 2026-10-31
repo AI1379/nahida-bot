@@ -131,11 +131,14 @@ class SQLiteIdentityRepository:
 
         ``(None, "none")`` when the account has no active person binding.
         """
-        rows = await self._engine.fetch_all(
-            "SELECT person_id, verification FROM person_accounts "
-            "WHERE account_key = ? AND status = 'active' LIMIT 1",
-            (account_key,),
-        )
+        # This engine shares one connection. Wait for an in-progress claim
+        # transaction so a rolled-back confirmation cannot leak into a turn.
+        async with self._engine.write_lock:
+            rows = await self._engine.fetch_all(
+                "SELECT pa.person_id, pa.verification FROM person_accounts pa JOIN persons p USING(person_id) "
+                "WHERE pa.account_key = ? AND pa.status = 'active' AND p.status='active' LIMIT 1",
+                (account_key,),
+            )
         if not rows:
             return None, "none"
         row = rows[0]

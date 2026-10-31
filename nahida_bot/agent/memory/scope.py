@@ -36,7 +36,7 @@ SCOPE_TYPE_COLLECTION = "collection"
 SCOPE_TYPE_WORKSPACE = "workspace"
 SCOPE_ID_GLOBAL = "__global__"
 
-CHAT_SCOPED_KINDS = frozenset({"preference", "fact", "task"})
+CHAT_SCOPED_KINDS = frozenset({"preference", "fact", "task", "impression"})
 GLOBAL_SCOPED_KINDS = frozenset({"decision", "procedure", "warning", "summary"})
 MEMORY_KINDS = CHAT_SCOPED_KINDS | GLOBAL_SCOPED_KINDS
 

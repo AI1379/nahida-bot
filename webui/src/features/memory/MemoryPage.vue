@@ -36,6 +36,15 @@ const activeTab = ref<MemoryTab>("items");
 const scopeType = ref("");
 const scopeId = ref("");
 const itemSearch = ref("");
+const category = ref("");
+const categories = [
+  { value: "bot", label: "Bot" },
+  { value: "environment", label: "Environment" },
+  { value: "person", label: "People" },
+  { value: "chat", label: "Chats" },
+  { value: "relationship", label: "Relationships" },
+  { value: "unknown", label: "Unattributed" },
+];
 const candidateStatus = ref("");
 
 const turnSearch = ref("");
@@ -44,6 +53,7 @@ const turnSource = ref("");
 const turnRole = ref("");
 
 const itemParams = computed(() => ({
+  category: category.value,
   q: itemSearch.value.trim(),
   scope_type: scopeType.value.trim(),
   scope_id: scopeId.value.trim(),
@@ -288,6 +298,10 @@ function formatJson(value: Record<string, unknown>) {
       </div>
 
       <div class="scope-controls">
+        <select v-if="activeTab === 'items'" v-model="category" class="select-control" aria-label="Memory category">
+          <option value="">All memories</option>
+          <option v-for="option in categories" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
         <select v-model="scopeType" class="select-control">
           <option value="">all types</option>
           <option value="global">global</option>
@@ -354,6 +368,7 @@ function formatJson(value: Record<string, unknown>) {
             </div>
             <div class="item-row-meta">
               <Badge variant="outline">{{ item.kind }}</Badge>
+              <Badge variant="secondary">{{ item.category || 'unknown' }}</Badge>
               <code>{{ scopeLabel(item) }}</code>
               <span>{{ percent(item.importance) }} importance</span>
               <span :title="formatDateTime(itemTime(item))">{{ relativeTime(itemTime(item)) }}</span>
@@ -377,6 +392,7 @@ function formatJson(value: Record<string, unknown>) {
                 </Badge>
                 <Badge variant="outline">{{ selectedItem.sensitivity_source }}</Badge>
                 <Badge variant="secondary">{{ selectedItem.kind }}</Badge>
+                <Badge variant="outline">{{ selectedItem.subject_label || 'unknown' }}</Badge>
                 <Badge variant="outline">{{ selectedItem.source }}</Badge>
               </div>
             </div>

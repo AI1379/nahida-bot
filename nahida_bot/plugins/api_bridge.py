@@ -261,6 +261,71 @@ class RealBotAPI(PluginServiceAPI):
 
     # ── Messaging ──────────────────────────────────────
 
+    async def identity_claim(
+        self, action: str, *, account_key: str = "", candidate_id: str = ""
+    ) -> dict[str, Any]:
+        """Self-service claims. The counterparty confirms with a literal command."""
+        from nahida_bot.core.context import current_session, current_agent_run
+        from nahida_bot.identity.models import AccountKey
+
+        self._permissions.check_memory_write()
+        ctx = current_session.get()
+        run = current_agent_run.get()
+        if (
+            ctx is None
+            or not ctx.actor_account_key
+            or ctx.origin in {"cron_trigger", "proactive_join"}
+            or (run is not None and run.depth > 0)
+        ):
+            raise ValueError("identity claims require a direct authenticated user turn")
+        actor = str(AccountKey.parse(ctx.actor_account_key))
+        app = self._event_bus.context.app
+        resolver = getattr(app, "_identity_resolver", None)
+        store = getattr(app, "_identity_store", None)
+        if store is None or resolver is None or not resolver.enabled:
+            raise ValueError("identity resolution is disabled")
+        mutations = store.mutations
+        if action == "list":
+            return {"candidates": await mutations.candidates(actor)}
+        if action == "propose":
+            inbound = ctx.inbound_message
+            if inbound is None or not inbound.text.strip():
+                raise ValueError("a user statement is required")
+            result = await mutations.propose(
+                actor,
+                account_key,
+                {
+                    "message_id": inbound.message_id,
+                    "session_id": ctx.session_id,
+                    "statement": inbound.text[:2000],
+                },
+            )
+            result["confirmation"] = (
+                f"From {result['target_account']}, send /identity confirm {result['candidate_id']}"
+            )
+            return result
+        if action in {"confirm", "revoke"}:
+            expected = ["/identity", action] + (
+                [candidate_id] if action == "confirm" else []
+            )
+            actual = (
+                ctx.inbound_message.text.strip().split() if ctx.inbound_message else []
+            )
+            if actual != expected:
+                raise ValueError(
+                    "confirmation/revocation requires the exact /identity command from the account owner"
+                )
+        if action in {"confirm", "reject"}:
+            return await mutations.resolve(
+                candidate_id, actor, confirm=action == "confirm"
+            )
+        if action == "revoke":
+            return {
+                "account_key": actor,
+                "unlinked": await mutations.unlink(actor, actor),
+            }
+        raise ValueError("unknown identity claim action")
+
     async def identity_manage(
         self,
         action: str,
@@ -985,6 +1050,98 @@ class RealBotAPI(PluginServiceAPI):
                 soft_scope=self._memory_soft_scope,
             )
         return self._memory_service_cache
+
+    async def memory_browse(
+        self, category: str, query: str = "", *, limit: int = 10, account_key: str = ""
+    ) -> list[MemoryRef]:
+        from nahida_bot.core.context import current_session
+        from nahida_bot.agent.memory.subjects import MEMORY_CATEGORIES
+        from nahida_bot.agent.memory.rendering import memory_ref_metadata
+        from nahida_bot.identity.models import AccountKey
+
+        self._permissions.check_memory_read()
+        service, ctx = self._memory_service(), current_session.get()
+        if category not in MEMORY_CATEGORIES:
+            raise ValueError("unknown memory category")
+        if service is None or ctx is None:
+            return []
+        sections = await service.context_items(
+            ctx=ctx,
+            participants=[str(AccountKey.parse(account_key))] if account_key else None,
+            category=category,
+            query=query,
+            limit_per_category=min(max(limit, 0), 50),
+        )
+        return [
+            MemoryRef(
+                key=item.item_id,
+                content=item.content,
+                score=item.score,
+                metadata=memory_ref_metadata(item),
+            )
+            for item in sections.get(category, [])
+        ]
+
+    async def memory_context(
+        self, messages: tuple[InboundMessage, ...], *, session_id: str = ""
+    ) -> dict[str, list[MemoryRef]]:
+        """Plugin-only observed-event read, including passive turns without a live session."""
+        from nahida_bot.core.context import SessionContext
+        from nahida_bot.core.message_context import context_from_inbound
+        from nahida_bot.core.chat_address import ChatAddress
+        from nahida_bot.agent.memory.rendering import memory_ref_metadata
+
+        self._permissions.check_memory_read()
+        service = self._memory_service()
+        if service is None or not messages:
+            return {}
+        event = context_from_inbound(messages[-1])
+        if (
+            not event.channel
+            or not event.chat_id
+            or event.chat_type not in {"private", "group"}
+        ):
+            return {}
+        address = ChatAddress.from_inbound(
+            event.channel, event.chat_id, chat_type=event.chat_type
+        )
+        actor = f"{event.channel}:user:{event.sender_id}" if event.sender_id else ""
+        app = self._event_bus.context.app
+        store = getattr(app, "_identity_store", None)
+        resolver = getattr(app, "_identity_resolver", None)
+        person_id = None
+        if actor and store is not None and resolver is not None and resolver.enabled:
+            person_id, _ = await store.resolve_account(actor)
+        ctx = SessionContext(
+            platform=event.channel,
+            chat_id=event.chat_id,
+            session_id=session_id or address.chat_key,
+            chat_address=address,
+            sender_account_key=actor,
+            person_id=person_id,
+        )
+        participants = []
+        for message in messages[-24:]:
+            participant = context_from_inbound(message)
+            if (participant.channel, participant.chat_id, participant.chat_type) == (
+                event.channel,
+                event.chat_id,
+                event.chat_type,
+            ) and participant.sender_id:
+                participants.append(f"{event.channel}:user:{participant.sender_id}")
+        sections = await service.context_items(ctx=ctx, participants=participants)
+        return {
+            name: [
+                MemoryRef(
+                    key=item.item_id,
+                    content=item.content,
+                    score=item.score,
+                    metadata=memory_ref_metadata(item),
+                )
+                for item in items
+            ]
+            for name, items in sections.items()
+        }
 
     async def memory_search(self, query: str, *, limit: int = 5) -> list[MemoryRef]:
         self._permissions.check_memory_read()

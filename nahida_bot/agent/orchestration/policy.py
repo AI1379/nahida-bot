@@ -33,6 +33,7 @@ SYSTEM_CHILD_TOOL_DENYLIST: frozenset[str] = frozenset(
         # authz module's non-delegable rule; mirror it here so the child tool
         # surface never includes the tool).
         "identity_manage",
+        "identity_claim",
     }
 )
 

@@ -2,36 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from typing import Any, Literal, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from nahida_bot.agent.memory.models import MemoryItem, MemoryRecord
 from nahida_bot.agent.memory.scope import resolve_scope_from_session
+from nahida_bot.agent.memory.subjects import MemorySubject
 
 if TYPE_CHECKING:
     from nahida_bot.core.context import SessionContext
-
-
-@dataclass(frozen=True, slots=True)
-class MemorySubject:
-    kind: Literal["account", "person", "chat", "unknown"] = "unknown"
-    id: str = ""
-
-    @classmethod
-    def parse(cls, value: object) -> MemorySubject:
-        if not isinstance(value, dict):
-            return cls()
-        kind, identity = value.get("kind"), value.get("id")
-        if not isinstance(identity, str) or not identity.strip():
-            return cls()
-        if kind == "account":
-            return cls("account", identity)
-        if kind == "person":
-            return cls("person", identity)
-        if kind == "chat":
-            return cls("chat", identity)
-        return cls()
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +127,11 @@ def attribution_for_candidate(
     ):
         raise ValueError("assistant output alone cannot establish a durable fact")
     subject = MemorySubject.parse(metadata.get("subject"))
+    if subject.kind == "relationship":
+        for member in subject.members:
+            attribution_for_candidate(
+                {"evidence_turn_ids": ids, "subject": asdict(member)}, records
+            )
     if subject.kind == "account" and subject.id not in {
         EvidenceRef.from_record(record).account_key for record in records
     }:
@@ -187,13 +172,14 @@ def attribution_for_candidate(
 
 def item_subject(item: MemoryItem) -> MemorySubject:
     """Unknown legacy subjects stay unknown, even in person/account scopes."""
-    attribution = MemoryAttribution.parse(item.metadata)
+    metadata = getattr(item, "metadata", None) or {}
+    attribution = MemoryAttribution.parse(metadata)
     if attribution.subject.kind != "unknown":
         return attribution.subject
-    if item.metadata.get("relation") == "alias":
-        if identity := item.metadata.get("subject_person_id"):
+    if metadata.get("relation") == "alias":
+        if identity := metadata.get("subject_person_id"):
             return MemorySubject("person", str(identity))
-        if identity := item.metadata.get("subject_account_key"):
+        if identity := metadata.get("subject_account_key"):
             return MemorySubject("account", str(identity))
     return MemorySubject()
 
@@ -201,3 +187,35 @@ def item_subject(item: MemoryItem) -> MemorySubject:
 def allows_automatic_cross_recall(item: MemoryItem) -> bool:
     """Unattributed personal claims need an explicit, qualified lookup."""
     return item_subject(item).kind != "unknown"
+
+
+def secret_visible_in_chat(item: MemoryItem, chat_key: str) -> bool:
+    """Old Person-scoped secret-like rows need actual originating-chat evidence."""
+    if getattr(item, "sensitivity", "public") != "secret_like":
+        return True
+    if item.scope_type == "chat":
+        return item.scope_id == chat_key
+    origins = {
+        e.chat_id for e in MemoryAttribution.parse(item.metadata).evidence if e.chat_id
+    }
+    return bool(chat_key) and origins == {chat_key}
+
+
+def with_present_accounts(
+    item: MemoryItem, matches: dict[tuple[str, str], list[str]]
+) -> MemoryItem:
+    """Explain verified cross-channel correspondence without rewriting the source subject."""
+    if not isinstance(item, MemoryItem):
+        return item
+    subject = item_subject(item)
+    members = subject.members if subject.kind == "relationship" else (subject,)
+    correspondence = {
+        member.label(): matches[(member.kind, member.id)]
+        for member in members
+        if (member.kind, member.id) in matches
+    }
+    if not correspondence:
+        return item
+    return replace(
+        item, metadata={**item.metadata, "present_subject_accounts": correspondence}
+    )

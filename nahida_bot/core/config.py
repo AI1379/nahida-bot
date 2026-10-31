@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nahida_bot.core.authorization_config import AuthorizationConfig
 
@@ -383,6 +383,13 @@ class IdentityPersonSeed(BaseModel):
     person_id: str
     display_name: str = ""
     accounts: list[IdentityAccountSeed] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def cross_channel_accounts(self) -> "IdentityPersonSeed":
+        channels = [account.channel for account in self.accounts]
+        if len(channels) != len(set(channels)):
+            raise ValueError("a Person may only link one account per channel")
+        return self
 
 
 class IdentityConfig(BaseModel):

@@ -21,6 +21,8 @@ def memory_ref_metadata(item: MemoryItem) -> dict[str, Any]:
         "created_at": item.created_at.isoformat()
         if getattr(item, "created_at", None)
         else "",
+        "category": item_subject(item).category,
+        "confidence": getattr(item, "confidence", 1.0),
     }
 
 
@@ -35,6 +37,7 @@ def item_from_ref(ref: Any) -> MemoryItem:
         scope_id=str(metadata.get("scope_id", "")),
         metadata=metadata,
         evidence=metadata.get("evidence") or {},
+        confidence=float(metadata.get("confidence", 1.0)),
     )
 
 
@@ -74,10 +77,15 @@ def format_memory_items(
         )
         header = (
             f"- [{item.kind} {item.item_id}] {item.title}\n"
-            f"  Subject: {subject.kind}:{subject.id or 'unknown'}; Source: {origin}; Time: {time}\n"
+            f"  Category: {subject.category}; Subject: {subject.label()}; Source: {origin}; Time: {time}\n"
             f"  {authors_label}: {', '.join(authors) or 'unavailable'}\n"
             f"  Evidence turns: {', '.join(evidence_ids) or 'unavailable'}\n  "
         )
+        if correspondence := item.metadata.get("present_subject_accounts"):
+            header = (
+                header.rstrip()
+                + f"\n  Confirmed subject correspondence to this chat: {correspondence}\n  "
+            )
         # Never retain a body after dropping its attribution header.
         allowance = remaining - len(header) - 1
         if allowance <= 3:

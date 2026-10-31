@@ -182,6 +182,7 @@ export function useMemoryItems(
     scope_type: string;
     scope_id: string;
     limit: number;
+    category?: string;
   }>,
 ) {
   return useQuery<MemoryItemListResponse>({
@@ -189,6 +190,7 @@ export function useMemoryItems(
     queryFn: () => {
       const p = new URLSearchParams();
       if (params.value.q) p.set("q", params.value.q);
+      if (params.value.category) p.set("category", params.value.category);
       p.set("scope_type", params.value.scope_type);
       p.set("scope_id", params.value.scope_id);
       p.set("limit", String(params.value.limit || 100));

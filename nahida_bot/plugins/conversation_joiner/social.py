@@ -9,7 +9,7 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 from nahida_bot.core.system_text import compact_label, format_text_section
@@ -156,9 +156,12 @@ class SocialContinuity:
             if not self.active:
                 return ""
             state.last_attempt = now
+            state.memory_basis = await self._memory_basis(turn)
+            state.prune(now, self.config)
             continuity = {
                 "state": state.snapshot(now, self.config),
                 "evidence": [e.model_dump() for e in state.evidence],
+                "durable_memories": [m.model_dump() for m in state.memory_basis],
             }
             response = await self.api.llm_chat(
                 [
@@ -190,6 +193,33 @@ class SocialContinuity:
             if self.active and generation == self._generation:
                 await self._accept(key, state, content, trigger_id, now)
             return content
+
+    async def _memory_basis(self, turn: SocialTurn):
+        from nahida_bot.plugins.conversation_joiner.social_memory import (
+            appraisal_memories,
+        )
+
+        reader = getattr(self.api, "memory_context", None)
+        if (
+            not self.config.memory_enabled
+            or not self.config.max_memory_items
+            or not callable(reader)
+        ):
+            return []
+        try:
+            sections = await cast(Any, reader)(
+                turn.messages, session_id=turn.session_id
+            )
+            return appraisal_memories(
+                sections,
+                max_items=self.config.max_memory_items,
+                max_chars=self.config.max_memory_chars,
+            )
+        except Exception:
+            self.api.logger.warning(
+                "conversation_joiner.memory_context_failed", chat_key=turn.chat_key
+            )
+            return []
 
     def accepts(self, request: AgentContextRequest) -> bool:
         ctx = request.message_context
@@ -377,6 +407,10 @@ class SocialContinuity:
             }
             for e in state.evidence
             if e.message_id in ids
+        ]
+        memory_ids = {i for note in notes if note for i in note.get("memory_ids", [])}
+        data["memory_basis"] = [
+            m.model_dump() for m in state.memory_basis if m.memory_id in memory_ids
         ]
         data["selected_thought_id"] = (
             selected_id

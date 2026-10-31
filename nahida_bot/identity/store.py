@@ -20,6 +20,12 @@ from nahida_bot.identity.models import (
 class IdentityStore(Protocol):
     """Read/write access to persons, account links, and observations."""
 
+    async def save_person_audited(self, person: Person, actor: str) -> None: ...
+
+    async def link_account_audited(self, link: AccountLink, actor: str) -> None: ...
+
+    async def unlink_account_audited(self, account_key: str, actor: str) -> bool: ...
+
     async def resolve_account(self, account_key: str) -> tuple[str | None, str]:
         """Return ``(person_id, verification_source)`` for an active link.
 

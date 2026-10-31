@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from nahida_bot_sdk.chat_address import chat_key_from_session_id
 
-from nahida_bot.agent.memory.portability import item_is_portable
+from nahida_bot.agent.memory.portability import item_is_portable, normalize_portable
 from nahida_bot.agent.memory.scope import (
     SCOPE_ID_GLOBAL,
     SCOPE_TYPE_CHAT,
@@ -205,6 +205,8 @@ class MemoryStoreRetrievalAdapter:
         soft_scope: bool = False,
         automatic: bool = False,
         allow_empty_query: bool = False,
+        account_owner: str = "",
+        chat_owner: str = "",
     ) -> None:
         self._memory_store = memory_store
         self._embedding_provider = embedding_provider
@@ -212,6 +214,8 @@ class MemoryStoreRetrievalAdapter:
         self._soft_scope = soft_scope
         self._automatic = automatic
         self._allow_empty_query = allow_empty_query
+        self._account_owner = account_owner
+        self._chat_owner = chat_owner
 
     async def retrieve(self, request: RetrievalRequest) -> list[RetrievalResult]:
         """Search memory, cascading across the request's scopes in priority order.
@@ -368,6 +372,25 @@ class MemoryStoreRetrievalAdapter:
         *,
         mode: RetrievalMode,
     ) -> list[RetrievalResult]:
+        if (
+            self._account_owner
+            and scope.scope_type == "account"
+            and scope.scope_id != self._account_owner
+        ):
+            search_shared = getattr(
+                self._memory_store, "search_items_shared_account", None
+            )
+            if not callable(search_shared):
+                return []
+            items = await cast(Any, search_shared)(
+                query, account_key=scope.scope_id, limit=limit
+            )
+            return [
+                _memory_item_to_retrieval(item, mode="fts")
+                for item in items
+                if item.sensitivity != "secret_like"
+                and normalize_portable(item.metadata.get("portable"), default=True)
+            ]
         if mode == "hybrid":
             search_items = getattr(self._memory_store, "search_items_hybrid", None)
             if not callable(search_items):
@@ -415,6 +438,12 @@ class MemoryStoreRetrievalAdapter:
                 item
                 for item in items
                 if str(getattr(item, "sensitivity", "public")) == "public"
+            ]
+        if self._chat_owner:
+            from nahida_bot.agent.memory.attribution import secret_visible_in_chat
+
+            items = [
+                item for item in items if secret_visible_in_chat(item, self._chat_owner)
             ]
         return [_memory_item_to_retrieval(item, mode=mode) for item in list(items)]
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from nahida_bot.agent.memory.attribution import (
     MemoryAttribution,
-    MemorySubject,
     EvidenceRef,
 )
 from nahida_bot.agent.memory.models import (
@@ -105,11 +104,13 @@ def _write_attribution(
     attribution = MemoryAttribution.parse(values)
     selector = values.pop("subject", "unknown")
     if "attribution" not in values:
-        subject = MemorySubject()
-        if selector == "current_sender" and request.sender_account_key:
-            subject = MemorySubject("account", request.sender_account_key)
-        elif selector == "chat" and request.chat_scope_id:
-            subject = MemorySubject("chat", request.chat_scope_id)
+        from nahida_bot.agent.memory.subjects import tool_subject
+
+        subject = tool_subject(
+            selector,
+            current_account=request.sender_account_key,
+            chat_key=request.chat_scope_id,
+        )
         attribution = MemoryAttribution(
             subject, (EvidenceRef.from_context(ctx),) if ctx else ()
         )
@@ -137,14 +138,27 @@ def _resolve_scope(
     subject_request = MemoryWriteRequest(
         chat_scope_id=request.chat_scope_id,
         person_id=request.person_id if own_subject else None,
-        sender_account_key=subject.id if subject.kind == "account" else "",
+        sender_account_key=subject.id if own_subject else "",
     )
     scope_type = values.get("scope_type")
     scope_id = values.get("scope_id")
-    if not portable:
+    if not portable or sensitivity == "secret_like":
         if not request.chat_scope_id:
-            raise ValueError("non-portable memory requires a typed current chat")
+            if (
+                sensitivity == "secret_like"
+                and scope_type == SCOPE_TYPE_CHAT
+                and scope_id
+            ):
+                return str(scope_type), str(scope_id)
+            raise ValueError("context-bound memory requires a typed current chat")
         scope_type, scope_id = SCOPE_TYPE_CHAT, request.chat_scope_id
+    elif (
+        subject.kind in {"bot", "environment"}
+        and audience == "global"
+        and sensitivity == "public"
+        and kind != "summary"
+    ):
+        scope_type, scope_id = SCOPE_TYPE_GLOBAL, "__global__"
     elif (
         scope_type is None
         or scope_id is None

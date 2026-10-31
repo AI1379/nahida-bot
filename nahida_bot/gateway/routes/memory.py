@@ -36,6 +36,8 @@ class MemoryItemResponse(BaseModel):
     scope_type: str
     scope_id: str
     kind: str
+    category: str = "unknown"
+    subject_label: str = "unknown"
     title: str
     content: str
     status: str = "active"
@@ -188,11 +190,16 @@ def _memory_service(app: Any) -> MemoryService:
 
 
 def _item_response(item: MemoryItem) -> MemoryItemResponse:
+    from nahida_bot.agent.memory.attribution import item_subject
+
+    subject = item_subject(item)
     return MemoryItemResponse(
         item_id=item.item_id,
         scope_type=item.scope_type,
         scope_id=item.scope_id,
         kind=item.kind,
+        category=subject.category,
+        subject_label=subject.label(),
         title=item.title,
         content=item.content,
         status=item.status,
@@ -300,6 +307,9 @@ async def list_memory_items(
     scope_type: str = Query(default=SCOPE_TYPE_GLOBAL),
     scope_id: str = Query(default=SCOPE_ID_GLOBAL),
     limit: int = Query(default=100, ge=1, le=500),
+    category: Literal[
+        "", "bot", "environment", "person", "chat", "relationship", "unknown"
+    ] = Query(default=""),
     app=Depends(get_application),
 ) -> MemoryItemListResponse:
     service = _memory_service(app)
@@ -310,6 +320,7 @@ async def list_memory_items(
         scope_type=scope_type_filter,
         scope_id=scope_id_filter,
         limit=limit,
+        category=category,
     )
     return MemoryItemListResponse(
         items=[_item_response(item) for item in items],

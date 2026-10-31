@@ -51,7 +51,14 @@ class AccountKey:
         Raises ``ValueError`` on malformed input.
         """
         prefix, sep, rest = value.partition(":user:")
-        if not sep or not prefix or not rest:
+        if (
+            not sep
+            or not prefix
+            or not rest
+            or ":" in prefix
+            or ":" in rest
+            or any(c.isspace() for c in value)
+        ):
             raise ValueError(f"invalid account key: {value!r}")
         return cls(channel=prefix, platform_user_id=rest)
 

@@ -267,6 +267,21 @@ class MockBotAPI:
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
         return []
 
+    async def identity_claim(
+        self, action: str, *, account_key: str = "", candidate_id: str = ""
+    ) -> dict[str, Any]:
+        return {"action": action}
+
+    async def memory_context(
+        self, messages: tuple[InboundMessage, ...], *, session_id: str = ""
+    ) -> dict[str, list[Any]]:
+        return {}
+
+    async def memory_browse(
+        self, category: str, query: str = "", *, limit: int = 10, account_key: str = ""
+    ) -> list[Any]:
+        return []
+
     async def identity_manage(
         self,
         action: str,
@@ -982,6 +997,21 @@ class ConsoleMockBotAPI:
     # ── Memory ─────────────────────────────────────────
 
     async def memory_search(self, query: str, *, limit: int = 5) -> list[Any]:
+        return []
+
+    async def identity_claim(
+        self, action: str, *, account_key: str = "", candidate_id: str = ""
+    ) -> dict[str, Any]:
+        return {"action": action}
+
+    async def memory_context(
+        self, messages: tuple[InboundMessage, ...], *, session_id: str = ""
+    ) -> dict[str, list[Any]]:
+        return {}
+
+    async def memory_browse(
+        self, category: str, query: str = "", *, limit: int = 10, account_key: str = ""
+    ) -> list[Any]:
         return []
 
     async def identity_manage(

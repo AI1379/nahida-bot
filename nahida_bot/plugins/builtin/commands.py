@@ -233,10 +233,15 @@ class BuiltinCommandsPlugin(Plugin):
         self.api.register_command(
             "identity",
             self._cmd_identity,
-            description="Show your resolved identity (/identity whoami)",
+            description="Show identity or confirm/revoke a cross-channel memory link",
             arguments=[
                 CommandArgument(
-                    name="action", description="whoami", choices=("whoami",)
+                    name="action",
+                    description="Identity action",
+                    choices=("whoami", "pending", "confirm", "reject", "revoke"),
+                ),
+                CommandArgument(
+                    name="candidate_id", description="Candidate id for confirm/reject"
                 ),
                 CommandArgument(
                     name="args", description="Action arguments (create/link/remove)"
@@ -742,6 +747,10 @@ class BuiltinCommandsPlugin(Plugin):
             "create",
             "link",
             "unlink",
+            "pending",
+            "confirm",
+            "reject",
+            "revoke",
         }:
             return self._identity_usage()
         ctx = current_session.get()
@@ -767,6 +776,16 @@ class BuiltinCommandsPlugin(Plugin):
         return "\n".join(lines)
 
     async def _run_identity_management(self, action: str, args: list[str]) -> str:
+        if action in {"pending", "confirm", "reject", "revoke"}:
+            import json
+
+            if action in {"confirm", "reject"} and len(args) != 1:
+                return f"Usage: /identity {action} <candidate_id>"
+            result = await self.api.identity_claim(
+                "list" if action == "pending" else action,
+                candidate_id=args[0] if args else "",
+            )
+            return json.dumps(result, ensure_ascii=False)
         if action == "people":
             result = await self.api.identity_manage("list")
             people = result.get("people", [])
@@ -829,6 +848,10 @@ class BuiltinCommandsPlugin(Plugin):
         return (
             "Usage:\n"
             "  /identity whoami\n"
+            "  /identity pending\n"
+            "  /identity confirm <candidate_id> (from the other account)\n"
+            "  /identity reject <candidate_id>\n"
+            "  /identity revoke (unlink your current account)\n"
             "  /identity people\n"
             "  /identity observations [account_key]\n"
             "  /identity create <person_id> [display name]\n"
@@ -1246,6 +1269,27 @@ class BuiltinCommandsPlugin(Plugin):
 
     def _register_identity_tool(self) -> None:
         self.api.register_tool(
+            "identity_claim",
+            "When the current user explicitly identifies their account on ANOTHER channel, propose a same-person link. Same-channel accounts cannot be merged. A pending claim grants no memory access or permissions. Show the returned confirmation command for the OTHER account's owner to send. Never infer identity from matching names. list/reject only access this user's own candidates.",
+            {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["propose", "list", "reject"]},
+                    "account_key": {
+                        "type": "string",
+                        "description": "Exact other-channel account, channel:user:id; required to propose.",
+                    },
+                    "candidate_id": {
+                        "type": "string",
+                        "description": "Candidate to reject.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+            self._tool_identity_claim,
+        )
+        self.api.register_tool(
             "identity_manage",
             (
                 "Manage person/account identity records. Use this to create "
@@ -1292,6 +1336,20 @@ class BuiltinCommandsPlugin(Plugin):
             },
             self._tool_identity_manage,
             requires_admin=True,
+        )
+
+    async def _tool_identity_claim(
+        self, action: str, account_key: str = "", candidate_id: str = ""
+    ) -> str:
+        import json
+
+        if action not in {"propose", "list", "reject"}:
+            return "Use /identity confirm from the other account to confirm a claim."
+        return json.dumps(
+            await self.api.identity_claim(
+                action, account_key=account_key, candidate_id=candidate_id
+            ),
+            ensure_ascii=False,
         )
 
     async def _tool_identity_manage(

@@ -214,6 +214,24 @@ class BotAPI(Protocol):
         """Send a message to an external target. Returns platform message ID."""
         ...
 
+    async def identity_claim(
+        self, action: str, *, account_key: str = "", candidate_id: str = ""
+    ) -> dict[str, Any]:
+        """Propose/list/reject own cross-channel claims; confirmation is an owner command."""
+        ...
+
+    async def memory_context(
+        self, messages: tuple[InboundMessage, ...], *, session_id: str = ""
+    ) -> dict[str, list[MemoryRef]]:
+        """Read bounded, audience-safe memory about an observed chat and its participants."""
+        ...
+
+    async def memory_browse(
+        self, category: str, query: str = "", *, limit: int = 10, account_key: str = ""
+    ) -> list[MemoryRef]:
+        """Browse a category in the current conversation; subject scope is server-resolved."""
+        ...
+
     async def identity_manage(
         self,
         action: str,

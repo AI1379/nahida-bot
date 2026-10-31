@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from nahida_bot.plugins.conversation_joiner.config import InnerThoughtsConfig
+from nahida_bot.plugins.conversation_joiner.social_memory import MemoryBasis
 
 
 class Evidence(BaseModel):
@@ -24,6 +25,7 @@ class Note(BaseModel):
     text: str = Field(min_length=1, max_length=280)
     subject_id: str = Field(default="", max_length=128)
     evidence_ids: list[str] = Field(min_length=1, max_length=4)
+    memory_ids: list[str] = Field(default_factory=list, max_length=6)
 
 
 class Feeling(Note):
@@ -66,6 +68,7 @@ class SocialState(BaseModel):
     feeling: Feeling | None = None
     thoughts: list[Thought] = Field(default_factory=list, max_length=3)
     evidence: list[Evidence] = Field(default_factory=list, max_length=40)
+    memory_basis: list[MemoryBasis] = Field(default_factory=list, max_length=12)
     consumed: list[str] = Field(default_factory=list, max_length=12)
     last_update: float = 0
     last_attempt: float = 0
@@ -82,6 +85,8 @@ class SocialState(BaseModel):
     def grounded(self, note: Note) -> bool:
         by_id = {item.message_id: item for item in self.evidence}
         if not all(i in by_id for i in note.evidence_ids):
+            return False
+        if not set(note.memory_ids).issubset({m.memory_id for m in self.memory_basis}):
             return False
         # Model-generated names cannot become account identities.
         return (

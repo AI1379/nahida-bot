@@ -1,5 +1,8 @@
 # Nahida Bot 记忆系统设计草案
 
+> 2026-10-31：[结构化社交记忆](social-memory.md) 增加 bot／环境／人物／群聊／关系分类、
+> 跨 channel 身份候选与确认、情绪读取长期记忆。主体分类与读取范围保持独立。
+
 > 2026-10-30 实现更新：动态记忆统一从数据库读取并携带人物与来源，后台整理按完整消息批次提交。
 > `MEMORY.md` / `memory_summary.md` 已退出自动提示和 `memory_read` 回退路径，保留显式导出用途。
 > 下文的早期 Markdown 自动注入设计属于历史记录；当前行为见 [归属重构](memory-attribution-refactor.md)。
