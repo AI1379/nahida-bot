@@ -64,6 +64,7 @@ class WorkspaceTools:
                 ),
                 parameters=_READ_PARAMETERS,
                 handler=self.read,
+                parallel_safe=True,
             ),
             PluginToolDefinition(
                 name="workspace_write",

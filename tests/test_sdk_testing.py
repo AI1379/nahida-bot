@@ -68,6 +68,18 @@ def _manifest() -> PluginManifest:
     )
 
 
+async def test_decorator_preserves_explicit_parallel_policy():
+    class ReadPlugin(Plugin):
+        @register_tool("read", parallel_safe=True)
+        async def read(self):
+            return "ok"
+
+    api = RecordingMockBotAPI()
+    plugin = ReadPlugin(api, _manifest())
+    await load_plugin_for_test(plugin)
+    assert api.registered_tools["read"]["parallel_safe"] is True
+
+
 async def _noop_task() -> None:
     pass
 

@@ -30,6 +30,15 @@ class ScriptExecutionResult:
     peak_rss_bytes: int = 0
     error: str = ""
     truncated: bool = False
+    started: bool | None = None
+    queue_wait_seconds: float = 0.0
+    execution_timeout_seconds: float | None = None
+
+    @property
+    def admission_deferred(self) -> bool:
+        return self.termination_reason in {"busy", "queue_full", "queue_timeout"} or (
+            self.termination_reason == "host_memory_pressure" and self.started is False
+        )
 
     @property
     def succeeded(self) -> bool:
@@ -55,6 +64,8 @@ async def execute_script(
             timeout=job.script_timeout_seconds,
             cwd=job.script_working_dir or None,
             env=build_exec_env(),
+            owner=job.sender_account_key or job.session_key,
+            service_class="background",
         )
     except asyncio.CancelledError:
         raise
@@ -79,6 +90,9 @@ async def execute_script(
         termination_reason=result.termination_reason,
         peak_rss_bytes=result.peak_rss_bytes,
         error=result.error,
+        started=result.started,
+        queue_wait_seconds=result.queue_wait_seconds,
+        execution_timeout_seconds=result.execution_timeout_seconds,
         truncated=result.truncated
         or max(len(result.stdout), len(result.stderr)) > _OUTPUT_LIMIT_CHARS,
     )
@@ -95,6 +109,9 @@ def render_fallback_context(job: CronJob, result: ScriptExecutionResult) -> str:
         "duration_seconds": round(result.duration_seconds, 3),
         "spawn_error": result.spawn_error,
         "termination_reason": result.termination_reason,
+        "started": result.started,
+        "queue_wait_seconds": result.queue_wait_seconds,
+        "execution_timeout_seconds": result.execution_timeout_seconds,
         "peak_rss_bytes": result.peak_rss_bytes,
         "error": result.error,
         "truncated": result.truncated,

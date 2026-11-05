@@ -82,6 +82,10 @@ class AgentConfig(BaseModel):
     retry_attempts: int = Field(default=2, ge=0)
     retry_backoff_seconds: float = Field(default=0.2, ge=0)
     tool_timeout_seconds: float = Field(default=135.0, ge=0)
+    max_parallel_tools: int = Field(default=4, ge=1, le=16)
+    tool_timeout_overrides: dict[
+        str, Annotated[float, Field(gt=0, allow_inf_nan=False)]
+    ] = Field(default_factory=dict)
     tool_retry_attempts: int = Field(default=1, ge=0)
     tool_retry_backoff_seconds: float = Field(default=0.1, ge=0)
     max_tool_log_chars: int = Field(default=400, ge=0)
@@ -143,7 +147,7 @@ class SchedulerConfigModel(BaseModel):
 
     poll_interval_seconds: float = Field(default=1.0, ge=0.1)
     max_concurrent_fires: int = Field(default=5, ge=1)
-    job_timeout_seconds: float = Field(default=120.0, ge=1)
+    job_timeout_seconds: float = Field(default=900.0, ge=1)
     min_interval_seconds: int = Field(default=60, ge=1)
     max_prompt_chars: int = Field(default=12000, ge=1)
     max_jobs_per_chat: int = Field(default=20, ge=1)
@@ -304,6 +308,10 @@ class MemoryConsolidationConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="allow")
 
     rule_based_enabled: bool = True
+    background_enabled: bool = True
+    max_pending: int = Field(default=64, ge=1)
+    max_pending_bytes: int = Field(default=8_388_608, ge=1)
+    shutdown_timeout_seconds: float = Field(default=30.0, ge=0, allow_inf_nan=False)
 
 
 class MemoryConfig(BaseModel):
@@ -573,11 +581,24 @@ class ExecutionConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     memory_limit_mb: int = Field(default=512, ge=1, strict=True)
-    max_concurrency: int = Field(default=1, ge=1, strict=True)
+    max_concurrency: int = Field(default=2, ge=1, strict=True)
     min_available_memory_mb: int = Field(default=512, ge=0, strict=True)
     check_interval_seconds: float = Field(default=0.1, ge=0.01, le=1)
     max_output_bytes: int = Field(default=50_000, ge=1, strict=True)
     max_processes: int = Field(default=64, ge=1, strict=True)
+    queue_timeout_seconds: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    max_queued: int = Field(default=64, ge=1, strict=True)
+    max_queued_per_owner: int = Field(default=8, ge=1, strict=True)
+    default_timeout_seconds: float = Field(default=120.0, gt=0, allow_inf_nan=False)
+    max_timeout_seconds: float = Field(default=900.0, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_timeout_order(self) -> "ExecutionConfig":
+        if self.default_timeout_seconds > self.max_timeout_seconds:
+            raise ValueError(
+                "default_timeout_seconds must not exceed max_timeout_seconds"
+            )
+        return self
 
 
 class Settings(BaseModel):

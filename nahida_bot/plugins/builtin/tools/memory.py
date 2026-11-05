@@ -229,6 +229,7 @@ class MemoryTools:
                 ),
                 parameters=_READ_PARAMETERS,
                 handler=self.read,
+                parallel_safe=True,
             ),
             PluginToolDefinition(
                 name="memory_write",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import asyncio
 import socket
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -80,6 +81,7 @@ class WebFetchTools:
                 description="Fetch a web page and return its main content as Markdown.",
                 parameters=_PARAMETERS,
                 handler=self.fetch,
+                parallel_safe=True,
             ),
         )
 
@@ -167,7 +169,8 @@ class WebFetchTools:
         last_error: httpx.RequestError | None = None
         for address in target.addresses:
             try:
-                return await client.get(
+                request = client.build_request(
+                    "GET",
                     target.request_url(address),
                     headers={
                         "User-Agent": _USER_AGENT,
@@ -179,6 +182,7 @@ class WebFetchTools:
                     },
                     extensions={"sni_hostname": target.hostname},
                 )
+                return await client.send(request, stream=True)
             except httpx.RequestError as exc:
                 last_error = exc
         if last_error is not None:
@@ -192,22 +196,46 @@ class WebFetchTools:
     ) -> httpx.Response | str:
         current_url = url
         for redirect_count in range(_MAX_REDIRECTS + 1):
-            target = self._validate_url(current_url)
+            target = await asyncio.to_thread(self._validate_url, current_url)
             if isinstance(target, str):
                 return target
 
             response = await self._request_pinned_target(client, target)
-            if not response.is_redirect:
-                response.raise_for_status()
-                return response
-
-            location = response.headers.get("location")
-            if not location:
-                return "Request failed: redirect response omitted the Location header"
-            if redirect_count >= _MAX_REDIRECTS:
-                return f"Request failed: exceeded {_MAX_REDIRECTS} redirects"
-            current_url = urljoin(current_url, location)
+            try:
+                if not response.is_redirect:
+                    response.raise_for_status()
+                    return await self._read_bounded_response(response)
+                location = response.headers.get("location")
+                if not location:
+                    return (
+                        "Request failed: redirect response omitted the Location header"
+                    )
+                if redirect_count >= _MAX_REDIRECTS:
+                    return f"Request failed: exceeded {_MAX_REDIRECTS} redirects"
+                current_url = urljoin(current_url, location)
+            finally:
+                await response.aclose()
         return "Request failed: no response received"
+
+    @staticmethod
+    async def _read_bounded_response(response: httpx.Response) -> httpx.Response | str:
+        body = bytearray()
+        async for chunk in response.aiter_bytes(chunk_size=65_536):
+            if len(body) + len(chunk) > _MAX_BODY_BYTES:
+                return f"Error: Response body exceeds {_MAX_BODY_BYTES // 1024 // 1024}MB limit."
+            body.extend(chunk)
+        # aiter_bytes already decoded compression; do not decode the buffered body twice.
+        headers = [
+            (key, value)
+            for key, value in response.headers.multi_items()
+            if key.lower() not in {"content-encoding", "content-length"}
+        ]
+        return httpx.Response(
+            response.status_code,
+            headers=headers,
+            content=bytes(body),
+            request=response.request,
+        )
 
     def _render_response(self, response: httpx.Response, max_length: int) -> str:
         if len(response.content) > _MAX_BODY_BYTES:
@@ -239,7 +267,9 @@ class WebFetchTools:
                 response = await self._request_public_response(client, url)
                 if isinstance(response, str):
                     return response
-                return self._render_response(response, max_length)
+                return await asyncio.to_thread(
+                    self._render_response, response, max_length
+                )
         except httpx.HTTPStatusError as exc:
             return (
                 f"HTTP error {exc.response.status_code}: {exc.response.reason_phrase}"

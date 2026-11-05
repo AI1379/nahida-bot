@@ -223,6 +223,7 @@ class HistoryTools:
                 ),
                 parameters=_READ_PARAMETERS,
                 handler=self.read,
+                parallel_safe=True,
                 scope="chat_domain",
             ),
             PluginToolDefinition(
@@ -245,6 +246,7 @@ class HistoryTools:
                 ),
                 parameters=_SEARCH_PARAMETERS,
                 handler=self.search,
+                parallel_safe=True,
                 scope="chat_domain",
             ),
             PluginToolDefinition(
@@ -259,6 +261,7 @@ class HistoryTools:
                 ),
                 parameters=_FIND_PARAMETERS,
                 handler=self.find_chat,
+                parallel_safe=True,
                 scope="chat_domain",
             ),
             PluginToolDefinition(
@@ -282,6 +285,7 @@ class HistoryTools:
                 ),
                 parameters=_RECALL_PARAMETERS,
                 handler=self.recall,
+                parallel_safe=True,
                 scope="chat_domain",
             ),
         )

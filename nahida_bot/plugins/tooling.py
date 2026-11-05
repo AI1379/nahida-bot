@@ -21,6 +21,7 @@ class ToolRegistrar(Protocol):
         *,
         requires_admin: bool = False,
         scope: str = "",
+        parallel_safe: bool = False,
     ) -> None: ...
 
 
@@ -34,6 +35,7 @@ class PluginToolDefinition:
     handler: ToolHandler
     requires_admin: bool = False
     scope: str = ""
+    parallel_safe: bool = False
 
     def register(self, registrar: ToolRegistrar) -> None:
         """Register this definition through the stable plugin API."""
@@ -44,6 +46,7 @@ class PluginToolDefinition:
             self.handler,
             requires_admin=self.requires_admin,
             scope=self.scope,
+            parallel_safe=self.parallel_safe,
         )
 
 

@@ -6,6 +6,7 @@ import asyncio
 from typing import Any, Protocol
 
 from nahida_bot.agent.loop import AgentRunResult
+from nahida_bot.core.task_runtime import deadline_scope
 from nahida_bot.agent.orchestration.models import AgentRun, AgentRunPayload
 from nahida_bot.core.context import (
     AgentRunContext,
@@ -68,7 +69,8 @@ class LocalAgentRunExecutor:
                 source_tag="subagent_task",
             )
             if payload.timeout_seconds is not None:
-                return await asyncio.wait_for(coro, timeout=payload.timeout_seconds)
+                with deadline_scope(payload.timeout_seconds):
+                    return await asyncio.wait_for(coro, timeout=payload.timeout_seconds)
             return await coro
         finally:
             current_agent_run.reset(run_token)

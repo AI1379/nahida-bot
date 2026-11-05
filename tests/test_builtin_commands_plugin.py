@@ -120,6 +120,7 @@ class _FakeAPI:
         *,
         requires_admin: bool = False,
         scope: str = "",
+        parallel_safe: bool = False,
     ) -> None:
         self.tools[name] = {
             "description": description,
@@ -127,6 +128,7 @@ class _FakeAPI:
             "handler": handler,
             "requires_admin": requires_admin,
             "scope": scope,
+            "parallel_safe": parallel_safe,
         }
 
     def get_model_router(self) -> Any | None:

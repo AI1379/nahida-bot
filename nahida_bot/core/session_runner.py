@@ -24,6 +24,7 @@ from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.attachments import resolve_attachment
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
+from nahida_bot.core.task_runtime.postprocess import PostprocessClosed, PostprocessQueue
 from nahida_bot.core.knowledge_context import load_knowledge_context
 from nahida_bot.core.message_batch import (
     PENDING_BATCH_INSTRUCTION,
@@ -76,6 +77,13 @@ if TYPE_CHECKING:
     from nahida_bot.workspace.manager import WorkspaceManager
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass(slots=True, frozen=True)
+class _MemoryIdentity:
+    person_id: str | None = None
+    sender_account_key: str = ""
+
 
 _FALLBACK_VISION_PROMPT = (
     "Describe this image in detail. Include any visible text (OCR). "
@@ -270,6 +278,7 @@ class SessionRunner:
         kb_auto_recall_config: Any | None = None,
         kb_plugin_resolver: Callable[[], Any] | None = None,
         transcript_projector: TranscriptProjector | None = None,
+        memory_postprocessor: PostprocessQueue | None = None,
     ) -> None:
         self._agent = agent_loop
         self._memory = memory_store
@@ -304,6 +313,7 @@ class SessionRunner:
         self._kb_plugin_resolver = kb_plugin_resolver
         self._transcript_projector = transcript_projector
         self._run_tracker = ActiveRunTracker()
+        self._memory_postprocessor = memory_postprocessor
 
     @property
     def has_agent(self) -> bool:
@@ -2965,7 +2975,7 @@ class SessionRunner:
             ),
         )
 
-        await self._consolidate_memory_after_turn(
+        await self._submit_memory_after_turn(
             session_id=session_id,
             user_message=user_message,
             assistant_message="\n\n".join(turn.content for turn in assistant_turns),
@@ -3088,6 +3098,45 @@ class SessionRunner:
                 result.append(message)
         return result
 
+    async def _submit_memory_after_turn(self, **arguments: Any) -> None:
+        if self._memory_consolidator is None:
+            return
+        if self._memory_postprocessor is None:
+            await self._consolidate_memory_after_turn(**arguments)
+            return
+        from copy import deepcopy
+        from functools import partial
+
+        context = current_session.get()
+        identity = _MemoryIdentity(
+            person_id=context.person_id if context is not None else None,
+            sender_account_key=context.sender_account_key
+            if context is not None
+            else "",
+        )
+        records = deepcopy(arguments.get("records") or [])
+        arguments = dict(
+            arguments, records=records, identity=identity, propagate_errors=True
+        )
+        texts = [arguments["user_message"], arguments["assistant_message"]]
+        texts.extend(record.turn.content for record in records)
+        size = sum(len(text.encode("utf-8")) for text in texts)
+        size += sum(
+            len(json.dumps(record.turn.metadata, ensure_ascii=False).encode("utf-8"))
+            for record in records
+        )
+        try:
+            await self._memory_postprocessor.submit(
+                partial(self._consolidate_memory_after_turn, **arguments),
+                size_bytes=size,
+                label=arguments["session_id"],
+            )
+        except PostprocessClosed:
+            logger.info(
+                "memory.postprocess_skipped_shutdown",
+                session_id=arguments["session_id"],
+            )
+
     async def _consolidate_memory_after_turn(
         self,
         *,
@@ -3097,6 +3146,8 @@ class SessionRunner:
         workspace_id: str | None,
         workspace_root: Any,
         records: list[MemoryRecord] | None = None,
+        identity: _MemoryIdentity | None = None,
+        propagate_errors: bool = False,
     ) -> None:
         """Run non-blocking-looking memory consolidation on the completed turn."""
         if self._memory_consolidator is None:
@@ -3109,8 +3160,12 @@ class SessionRunner:
             # Identity for identity-aware write scope (issue #7, Phase 3).
             # Empty when identity is off / unlinked / context unset → V1.
             ctx = current_session.get()
-            person_id = ctx.person_id if ctx is not None else None
-            sender_account_key = ctx.sender_account_key if ctx is not None else ""
+            identity = identity or _MemoryIdentity(
+                person_id=ctx.person_id if ctx is not None else None,
+                sender_account_key=ctx.sender_account_key if ctx is not None else "",
+            )
+            person_id = identity.person_id
+            sender_account_key = identity.sender_account_key
             from nahida_bot.agent.memory.attribution import EvidenceRef
 
             applied = 0
@@ -3147,6 +3202,8 @@ class SessionRunner:
                 session_id=session_id,
                 error=str(exc),
             )
+            if propagate_errors:
+                raise
 
     async def _embed_memory_items_after_consolidation(self) -> None:
         """Refresh embeddings after durable memory changes when configured."""

@@ -330,12 +330,16 @@ class BotAPI(Protocol):
         *,
         requires_admin: bool = False,
         scope: str = "",
+        parallel_safe: bool = False,
     ) -> None:
         """Register an LLM tool.
 
         ``requires_admin`` gates the tool behind the admin set; ``scope``
         selects an alternative visibility mode (e.g. "chat_domain" lets
         non-admin senders use the tool within their chat trust domain).
+        ``parallel_safe`` permits overlap with other explicitly safe calls in
+        one tool batch. Leave it false for writes, dependent operations, or
+        handlers with shared mutable state.
         """
         ...
 

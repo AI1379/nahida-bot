@@ -65,6 +65,21 @@ workspace_base_dir: "./data/workspace"
 # 模型脚本里的 pip install 只影响这里；留空禁用并回退为继承 bot 环境）
 exec_venv_path: "./data/exec-venv"
 
+# exec 工具与 Cron 脚本共享的执行预算。以下为默认值；修改后重启。
+# 内存准入会为尚未增长到 RSS 上限的任务预留空间，机器资源不足时不会强行跑满并发。
+# execution:
+#   max_concurrency: 2
+#   memory_limit_mb: 512
+#   min_available_memory_mb: 512
+#   queue_timeout_seconds: 30
+#   max_queued: 64
+#   max_queued_per_owner: 8
+#   default_timeout_seconds: 120      # exec 工具省略 timeout 时的执行时长
+#   max_timeout_seconds: 900          # exec 工具允许请求的最大执行时长
+#   check_interval_seconds: 0.1
+#   max_output_bytes: 50000
+#   max_processes: 64
+
 # ── 插件 ──────────────────────────────────────────────
 plugin_paths:
   - "./plugins"
@@ -502,7 +517,9 @@ telegram:
 #   provider_timeout_seconds: 120.0     # 单次 LLM 调用超时（秒）
 #   retry_attempts: 2                   # LLM 调用重试次数
 #   retry_backoff_seconds: 0.2          # 重试退避间隔（秒）
-#   tool_timeout_seconds: 135.0         # 工具执行超时（秒）
+#   tool_timeout_seconds: 135.0         # 普通工具的兜底总超时；exec 自动覆盖排队、执行与收尾
+#   tool_timeout_overrides: {}          # 按工具名显式覆盖总超时，如 {image_generate: 600}
+#   max_parallel_tools: 4              # 同一批明确安全的工具最多并行数；1 恢复串行
 #   tool_retry_attempts: 1              # 工具执行重试次数
 #   tool_retry_backoff_seconds: 0.1     # 工具重试退避间隔（秒）
 #   max_tool_log_chars: 400             # 工具日志截断长度
@@ -627,7 +644,7 @@ agent_runtime:
 # scheduler:
 #   poll_interval_seconds: 1.0          # 调度轮询间隔（秒）
 #   max_concurrent_fires: 5             # 最大并发执行数
-#   job_timeout_seconds: 120.0          # 单任务超时（秒）
+#   job_timeout_seconds: 900.0          # 单次 fire 总超时，含脚本、Agent、排队和投递
 #   min_interval_seconds: 60            # cron 最小间隔
 #   max_prompt_chars: 12000             # 定时任务 prompt 最大字符数
 #   max_jobs_per_chat: 20               # 每个会话最大任务数
@@ -700,3 +717,7 @@ agent_runtime:
 #     embed_after_consolidation: true
 #   consolidation:
 #     rule_based_enabled: true     # 是否启用每轮对话后的规则抽取；false 时只保留 dreaming/显式写入
+#     background_enabled: true    # 历史提交后在后台固化、嵌入；false 恢复同步后处理
+#     max_pending: 64             # 已接受的后处理任务数量，含正在执行者；满时施加背压
+#     max_pending_bytes: 8388608   # 常规待处理载荷上限；超大单项先排空，再同步等待
+#     shutdown_timeout_seconds: 30 # 退出时排空队列的等待时间；超时后取消剩余派生工作

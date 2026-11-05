@@ -44,6 +44,7 @@ class MockBotAPI:
         handler: Callable[..., Awaitable[str]],
         *,
         requires_admin: bool = False,
+        parallel_safe: bool = False,
     ) -> None:
         pass
 
@@ -250,12 +251,14 @@ class RecordingMockBotAPI(MockBotAPI):
         handler: Any,
         *,
         requires_admin: bool = False,
+        parallel_safe: bool = False,
     ) -> None:
         self.registered_tools[name] = {
             "description": description,
             "parameters": parameters,
             "handler": handler,
             "requires_admin": requires_admin,
+            "parallel_safe": parallel_safe,
         }
 
     def unregister_tool(self, name: str) -> bool:

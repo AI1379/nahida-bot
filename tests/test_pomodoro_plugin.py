@@ -21,6 +21,7 @@ class _FakeAPI:
         *,
         requires_admin: bool = False,
         scope: str = "",
+        parallel_safe: bool = False,
     ) -> None:
         self.tools[name] = {
             "description": description,

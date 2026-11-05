@@ -121,6 +121,7 @@ class MockBotAPI:
         handler: Callable[..., Awaitable[str]],
         *,
         requires_admin: bool = False,
+        parallel_safe: bool = False,
     ) -> None:
         pass
 
@@ -426,6 +427,7 @@ class RecordingMockBotAPI(MockBotAPI):
         handler: Any,
         *,
         requires_admin: bool = False,
+        parallel_safe: bool = False,
     ) -> None:
         if name in self.registered_tools:
             raise KeyError(f"Tool '{name}' is already registered")
@@ -434,6 +436,7 @@ class RecordingMockBotAPI(MockBotAPI):
             "parameters": parameters,
             "handler": handler,
             "requires_admin": requires_admin,
+            "parallel_safe": parallel_safe,
         }
 
     def unregister_tool(self, name: str) -> bool:
@@ -774,6 +777,7 @@ class ConsoleMockBotAPI:
         handler: Callable[..., Awaitable[str]],
         *,
         requires_admin: bool = False,
+        parallel_safe: bool = False,
     ) -> None:
         if name in self._tools:
             raise KeyError(f"Tool '{name}' is already registered")
@@ -782,6 +786,7 @@ class ConsoleMockBotAPI:
             "parameters": parameters,
             "handler": handler,
             "requires_admin": requires_admin,
+            "parallel_safe": parallel_safe,
         }
 
     def unregister_tool(self, name: str) -> bool:

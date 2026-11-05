@@ -11,6 +11,67 @@ from nahida_bot.plugins.builtin.tools.web_fetch import WebFetchTools
 PUBLIC_IP = "93.184.216.34"
 
 
+async def test_streaming_body_limit_stops_reading_and_closes_response():
+    class Stream(httpx.AsyncByteStream):
+        def __init__(self):
+            self.reads = 0
+            self.closed = False
+
+        async def __aiter__(self):
+            for _ in range(200):
+                self.reads += 1
+                yield b"x" * 65_536
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = Stream()
+    tools = WebFetchTools(
+        resolver=lambda _: (PUBLIC_IP,),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=stream, request=request)
+        ),
+    )
+    result = await tools.fetch("https://public.example/large")
+    assert "5MB limit" in result
+    assert stream.reads < 200 and stream.closed
+
+
+async def test_compressed_response_is_not_decoded_twice():
+    import gzip
+
+    tools = WebFetchTools(
+        resolver=lambda _: (PUBLIC_IP,),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=gzip.compress(b"plain text"),
+                headers={"content-encoding": "gzip"},
+                request=request,
+            )
+        ),
+    )
+    assert await tools.fetch("https://public.example/compressed") == "plain text"
+
+
+async def test_dns_resolution_is_off_the_event_loop():
+    import threading
+
+    main_thread = threading.get_ident()
+
+    def resolver(_):
+        assert threading.get_ident() != main_thread
+        return (PUBLIC_IP,)
+
+    tools = WebFetchTools(
+        resolver=resolver,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, text="ok", request=request)
+        ),
+    )
+    assert await tools.fetch("https://public.example/") == "ok"
+
+
 @pytest.mark.asyncio
 async def test_fetch_revalidates_redirect_destination() -> None:
     requested_hosts: list[str] = []

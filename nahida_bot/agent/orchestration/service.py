@@ -27,6 +27,7 @@ from nahida_bot.agent.orchestration.policy import OrchestrationPolicy
 from nahida_bot.agent.orchestration.registry import AgentRegistry
 from nahida_bot.agent.orchestration.task_store import BackgroundTaskStore
 from nahida_bot.core.context import SessionContext, current_agent_run, current_session
+from nahida_bot.core.task_runtime import independent_deadline_scope
 from nahida_bot.core.runtime_settings import (
     RUNTIME_META_KEY,
     merge_runtime_meta,
@@ -119,12 +120,15 @@ class AgentOrchestrator:
             max_child_agents_per_run=self._config.max_child_agents_per_run
         )
         self._registry = AgentRegistry()
+        self._closing = False
         self._subagent_sem = asyncio.Semaphore(self._config.subagent_concurrency)
         # Issue #41: optional channel delivery hook. When absent (tests,
         # headless runs), completion only writes to the parent session memory.
         self._deliverer = completion_deliverer
 
     async def spawn_subagent(self, spec: SubagentSpec) -> BackgroundTask:
+        if self._closing:
+            raise RuntimeError("Agent orchestration is shutting down")
         session_ctx = current_session.get()
         if session_ctx is None:
             raise RuntimeError("No active session context for agent_spawn.")
@@ -218,7 +222,10 @@ class AgentOrchestrator:
             # targets the chat the user actually spoke to (issue #41).
             chat_address=session_ctx.chat_address,
         )
-        run.asyncio_task = asyncio.create_task(self._run_subagent(run, payload, spec))
+        with independent_deadline_scope():
+            run.asyncio_task = asyncio.create_task(
+                self._run_subagent(run, payload, spec)
+            )
         logger.info(
             "subagent.spawned",
             task_id=task_id,
@@ -227,6 +234,37 @@ class AgentOrchestrator:
             child_session_id=child_session_id,
         )
         return task
+
+    async def shutdown(self, *, timeout: float = 30.0) -> None:
+        """Quiesce background producers before shared memory maintenance is closed."""
+        self._closing = True
+        runs = self._registry.all_runs
+        tasks = [run.asyncio_task for run in runs if run.asyncio_task is not None]
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=timeout)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for run in runs:
+            # Cancellation while waiting for the semaphore never entered the body.
+            if run.status in {AgentRunStatus.QUEUED, AgentRunStatus.RUNNING}:
+                self._apply_terminal(
+                    run,
+                    status=AgentRunStatus.CANCELLED,
+                    summary="",
+                    error="Service shutdown",
+                    terminal_state="cancelled",
+                    terminal_reason="service_shutdown",
+                )
+                await self._task_store.update_status(
+                    run.task_id or "",
+                    AgentRunStatus.CANCELLED,
+                    error="Service shutdown",
+                    terminal=True,
+                    terminal_state="cancelled",
+                    terminal_reason="service_shutdown",
+                )
+            self._registry.unregister(run.run_id)
 
     async def wait_for_task(
         self, task_id: str, *, timeout_seconds: float | None = None

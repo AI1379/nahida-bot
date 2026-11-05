@@ -49,7 +49,7 @@ class SchedulerConfig:
 
     poll_interval_seconds: float = 1.0
     max_concurrent_fires: int = 5
-    job_timeout_seconds: float = 120.0
+    job_timeout_seconds: float = 900.0
     min_interval_seconds: int = 60
     max_prompt_chars: int = 12000
     max_jobs_per_chat: int = 20

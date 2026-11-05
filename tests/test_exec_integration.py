@@ -9,7 +9,7 @@ import pytest
 from nahida_bot.agent.providers import ToolCall
 from nahida_bot.core.app import Application
 from nahida_bot.core.config import ExecutionConfig, Settings
-from nahida_bot.core.exec_runner import ExecCommandError, ExecResult, ExecRunner
+from nahida_bot.core.exec_runner import ExecResult, ExecRunner
 from nahida_bot.plugins.builtin.commands import BuiltinCommandsPlugin
 from nahida_bot.plugins.manager import PluginManager
 from nahida_bot.plugins.registry import ToolEntry, ToolRegistry
@@ -65,7 +65,7 @@ async def test_application_injects_one_runner_into_plugin_and_scheduler(tmp_path
 
 @pytest.mark.parametrize("first", ["exec", "cron"])
 async def test_exec_and_cron_share_concurrency_budget(tmp_path, monkeypatch, first):
-    runner = ExecRunner(min_available_memory_mb=0)
+    runner = ExecRunner(max_concurrency=1, min_available_memory_mb=0)
     api = _FakeAPI()
     api.workspace_root = tmp_path
     api.exec_runner = runner
@@ -85,19 +85,21 @@ async def test_exec_and_cron_share_concurrency_budget(tmp_path, monkeypatch, fir
         else execute_script(job, exec_runner=runner)
     )
     await entered.wait()
+    waiting = asyncio.create_task(
+        execute_script(job, exec_runner=runner)
+        if first == "exec"
+        else plugin._tool_exec("second")
+    )
     try:
-        if first == "exec":
-            result = await execute_script(job, exec_runner=runner)
-            assert not result.succeeded
-            assert result.termination_reason == "busy"
-        else:
-            with pytest.raises(ExecCommandError) as caught:
-                await plugin._tool_exec("second")
-            assert caught.value.code == "busy"
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        assert runner.admission.snapshot["queued"] == 1
     finally:
         active.cancel()
         await asyncio.gather(active, return_exceptions=True)
     release.set()
+    completed = await waiting
+    assert completed.succeeded if first == "exec" else "Exit code: 0" in completed
     assert (await execute_script(job, exec_runner=runner)).succeeded
 
 

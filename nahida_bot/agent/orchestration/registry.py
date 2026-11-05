@@ -25,6 +25,10 @@ class AgentRegistry:
     def get_run(self, run_id: str) -> AgentRun | None:
         return self._runs.get(run_id)
 
+    @property
+    def all_runs(self) -> tuple[AgentRun, ...]:
+        return tuple(self._runs.values())
+
     def get_by_task(self, task_id: str) -> AgentRun | None:
         run_id = self._task_to_run.get(task_id)
         return self._runs.get(run_id) if run_id else None

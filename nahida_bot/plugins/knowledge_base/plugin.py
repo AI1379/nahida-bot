@@ -113,6 +113,7 @@ class KnowledgeBasePlugin(Plugin):
         self._embedding_provider: Any | None = None
         self._vector_indexes: dict[str, Any | None] = {}
         self._embedded_collections: set[str] = set()
+        self._embedding_locks: dict[str, asyncio.Lock] = {}
         self._embedding_dimensions = self._config.embedding.dimensions
         self._embedding_tasks: dict[str, asyncio.Task[None]] = {}
         self._embedding_status: dict[str, str] = {}  # "idle" | "embedding" | "embedded"
@@ -230,6 +231,7 @@ class KnowledgeBasePlugin(Plugin):
             ),
             _KB_SEARCH_TOOL_SCHEMA,
             self._handle_kb_search,
+            parallel_safe=True,
         )
         self.api.register_tool(
             "context_read",
@@ -241,6 +243,7 @@ class KnowledgeBasePlugin(Plugin):
             ),
             _CONTEXT_READ_TOOL_SCHEMA,
             self._handle_context_read,
+            parallel_safe=True,
         )
 
     async def _handle_kb_search(self, **kwargs: Any) -> str:
@@ -1045,6 +1048,14 @@ class KnowledgeBasePlugin(Plugin):
         store: Any,
     ) -> tuple[Any | None, Any | None]:
         """Prepare embeddings and optional vector index for one collection."""
+        async with self._embedding_locks.setdefault(collection_name, asyncio.Lock()):
+            return await self._prepare_vector_search(collection_name, store)
+
+    async def _prepare_vector_search(
+        self,
+        collection_name: str,
+        store: Any,
+    ) -> tuple[Any | None, Any | None]:
         provider = self._embedding_provider
         if provider is None:
             provider = self._resolve_embedding_provider()
@@ -1123,6 +1134,18 @@ class KnowledgeBasePlugin(Plugin):
         imported_count: int,
     ) -> None:
         """Refresh embeddings for freshly imported documents when configured."""
+        async with self._embedding_locks.setdefault(collection_name, asyncio.Lock()):
+            await self._refresh_embeddings_serial(
+                collection_name, store, imported_count=imported_count
+            )
+
+    async def _refresh_embeddings_serial(
+        self,
+        collection_name: str,
+        store: Any,
+        *,
+        imported_count: int,
+    ) -> None:
         if imported_count <= 0:
             return
         if not self._config.embedding.enabled:

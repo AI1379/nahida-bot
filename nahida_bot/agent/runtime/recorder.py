@@ -18,6 +18,7 @@ reads their attributes directly.
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -82,6 +83,8 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _receipt_status(result: ToolExecutionResult, phase: str) -> str:
+    if result.error_code == "tool_cancelled":
+        return "cancelled"
     if phase == "prepare_failed":
         return "error"
     if result.is_error:
@@ -100,6 +103,7 @@ class RunRecorder:
         self._sequence = 0
         self._finalized = False
         self._tool_started_at: dict[str, str] = {}
+        self._event_lock = asyncio.Lock()
 
     @property
     def run_id(self) -> str:
@@ -110,6 +114,10 @@ class RunRecorder:
         return self._sequence
 
     async def _append(self, event_type: str, payload: dict[str, Any]) -> None:
+        async with self._event_lock:
+            await self._append_serial(event_type, payload)
+
+    async def _append_serial(self, event_type: str, payload: dict[str, Any]) -> None:
         if self._finalized:
             return
         sequence = self._next_sequence()

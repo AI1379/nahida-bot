@@ -62,6 +62,7 @@ def register_tool(
     description: str = "",
     parameters: dict[str, Any] | None = None,
     requires_admin: bool = False,
+    parallel_safe: bool = False,
 ) -> Callable[[_HandlerT], _HandlerT]:
     """Decorator to mark a method as an LLM-callable tool handler.
 
@@ -86,6 +87,7 @@ def register_tool(
                 "parameters": parameters
                 or {"type": "object", "properties": {}, "required": []},
                 "requires_admin": requires_admin,
+                "parallel_safe": parallel_safe,
             },
         )
         return func
@@ -141,6 +143,7 @@ class _ToolDeclaration:
     description: str
     parameters: dict[str, Any]
     requires_admin: bool
+    parallel_safe: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -165,6 +168,7 @@ class _BoundToolRegistration:
     description: str
     parameters: dict[str, Any]
     requires_admin: bool
+    parallel_safe: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -199,6 +203,7 @@ def bind_decorated_registrations(plugin: Any, api: BotAPI | None = None) -> None
             tool.parameters,
             tool.handler,
             requires_admin=tool.requires_admin,
+            parallel_safe=tool.parallel_safe,
         )
     for subscription in plugin._iter_decorated_subscriptions():
         target_api.subscribe(subscription.event_type, subscription.handler)
@@ -305,6 +310,7 @@ class Plugin(ABC):
                             )
                         ),
                         requires_admin=bool(tool_meta.get("requires_admin", False)),
+                        parallel_safe=bool(tool_meta.get("parallel_safe", False)),
                     )
                     tool_name_by_method[attr_name] = tool_name
 
@@ -361,6 +367,7 @@ class Plugin(ABC):
                     description=declaration.description,
                     parameters=dict(declaration.parameters),
                     requires_admin=declaration.requires_admin,
+                    parallel_safe=declaration.parallel_safe,
                 )
             )
         return tuple(registrations)

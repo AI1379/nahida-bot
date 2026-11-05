@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,6 +32,54 @@ def _kb_manifest_with_config(config: dict[str, Any]) -> Any:
     merged = dict(manifest.config or {})
     merged.update(config)
     return manifest.model_copy(update={"config": merged})
+
+
+async def test_parallel_cold_queries_only_prepare_embedding_index_once(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    plugin = KnowledgeBasePlugin(RecordingMockBotAPI(), _kb_manifest())
+    provider = object()
+    plugin._embedding_provider = provider
+    calls = []
+
+    async def embed(*args, **kwargs):
+        calls.append(True)
+        await asyncio.sleep(0.01)
+        return BackfillResult(added=1, needed=1)
+
+    store = SimpleNamespace(count=AsyncMock(return_value=1), embed_documents=embed)
+    monkeypatch.setattr(plugin, "_get_vector_index", AsyncMock(return_value=None))
+    results = await asyncio.gather(
+        *[plugin._ensure_vector_search_ready("collection", store) for _ in range(5)]
+    )
+    assert len(calls) == 1
+    assert all(result == (provider, None) for result in results)
+
+
+async def test_import_refresh_waits_for_same_collection_search_preparation(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    plugin = KnowledgeBasePlugin(RecordingMockBotAPI(), _kb_manifest())
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def prepare(*args):
+        entered.set()
+        await release.wait()
+        return None, None
+
+    refresh = AsyncMock()
+    monkeypatch.setattr(plugin, "_prepare_vector_search", prepare)
+    monkeypatch.setattr(plugin, "_refresh_embeddings_serial", refresh)
+    search = asyncio.create_task(plugin._ensure_vector_search_ready("same", object()))
+    await entered.wait()
+    importing = asyncio.create_task(
+        plugin._refresh_embeddings_after_import("same", object(), imported_count=1)
+    )
+    await asyncio.sleep(0)
+    refresh.assert_not_awaited()
+    release.set()
+    await asyncio.gather(search, importing)
+    refresh.assert_awaited_once()
 
 
 class _Store:

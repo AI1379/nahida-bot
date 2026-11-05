@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from time import monotonic
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -16,6 +17,7 @@ from nahida_bot.core.chat_address import ChatAddress
 from nahida_bot.core.system_text import format_system_text
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.exec_runner import ExecRunner
+from nahida_bot.core.task_runtime import deadline_scope
 from nahida_bot.core.outbound import outbound_payload, send_channel_message
 from nahida_bot.core.sentinel import normalize_reply_text
 from nahida_bot.plugins.base import MessageContext, OutboundMessage
@@ -47,6 +49,10 @@ _DEFAULT_SCRIPT_TIMEOUT_SECONDS = 30
 
 class _Unchanged(Enum):
     TIMEOUT = "unchanged"
+
+
+class _ExecutionDeferred(Exception):
+    """The script never started; this is not an Agent fallback condition."""
 
 
 class SchedulerService:
@@ -84,6 +90,7 @@ class SchedulerService:
         self._enable_silent_reply = enable_silent_reply
         self._authorization = authorization
         self._exec_runner = exec_runner or ExecRunner()
+        self._admission_retries: dict[str, float] = {}
         # Optional callback: on_job_event("fired" | "failed", job_id, **kwargs)
         # Set by EventBroadcaster to push SSE events when jobs fire/fail.
         self.on_job_event: Any = None
@@ -552,7 +559,16 @@ class SchedulerService:
                     self._dispatch_memory_dreaming_if_due()
 
                     now_iso = datetime.now(UTC).isoformat()
-                    due_jobs = await self._repo.claim_due_jobs(now_iso, limit=available)
+                    self._admission_retries = {
+                        job_id: until
+                        for job_id, until in self._admission_retries.items()
+                        if until > monotonic()
+                    }
+                    due_jobs = await self._repo.claim_due_jobs(
+                        now_iso,
+                        limit=available,
+                        exclude_job_ids=tuple(self._admission_retries),
+                    )
 
                     for job in due_jobs:
                         self._dispatch_fire(job)
@@ -735,10 +751,19 @@ class SchedulerService:
         try:
             if await self._skip_if_stale(job):
                 return
-            await asyncio.wait_for(
-                self._execute_fire(job),
-                timeout=timeout,
+            with deadline_scope(timeout):
+                await asyncio.wait_for(
+                    self._execute_fire(job),
+                    timeout=timeout,
+                )
+        except _ExecutionDeferred as exc:
+            self._admission_retries[job.job_id] = monotonic() + min(
+                self._config.failure_retry_seconds, 30
             )
+            await self._repo.release_claim(job.job_id, scheduled_at=job.next_fire_at)
+            logger.info("scheduler.fire_deferred", job_id=job.job_id, reason=str(exc))
+            if self.on_job_event is not None:
+                await self.on_job_event("deferred", job.job_id, reason=str(exc))
         except TimeoutError:
             logger.warning(
                 "scheduler.fire_timeout",
@@ -753,10 +778,10 @@ class SchedulerService:
                 )
         except asyncio.CancelledError:
             logger.info("scheduler.fire_cancelled", job_id=job.job_id)
-            await self._mark_failed(job, "cancelled")
+            await self._repo.release_claim(job.job_id, scheduled_at=job.next_fire_at)
             if self.on_job_event is not None:
                 await self.on_job_event(
-                    "failed", job.job_id, success=False, error="cancelled"
+                    "interrupted", job.job_id, success=False, error="cancelled"
                 )
             raise
         except Exception as exc:
@@ -944,6 +969,8 @@ class SchedulerService:
                     tool_description="Execute this scheduled host shell command.",
                 )
             script_result = await execute_script(job, exec_runner=self._exec_runner)
+            if script_result.admission_deferred:
+                raise _ExecutionDeferred(script_result.termination_reason)
             if script_result.succeeded:
                 logger.info(
                     "scheduler.script_succeeded",

@@ -16,6 +16,8 @@ from typing import Any, Awaitable, Callable, Coroutine, Literal
 
 import structlog
 
+from nahida_bot.core.task_runtime import independent_deadline_scope
+
 logger = structlog.get_logger(__name__)
 
 # Type aliases
@@ -126,7 +128,8 @@ class TaskManager:
 
         wrapped = self._run_tracked(coro, managed)
         try:
-            task = asyncio.create_task(wrapped, name=f"tm:{key}")
+            with independent_deadline_scope():
+                task = asyncio.create_task(wrapped, name=f"tm:{key}")
         except BaseException:
             # create_task can fail before the wrapper gets a chance to start
             # (for example, when no loop is available).  Close both coroutine

@@ -54,7 +54,9 @@ async def dead(pid: int) -> None:
 
 @pytest.fixture
 def runner():
-    return ExecRunner(min_available_memory_mb=0, check_interval_seconds=0.02)
+    return ExecRunner(
+        max_concurrency=1, min_available_memory_mb=0, check_interval_seconds=0.02
+    )
 
 
 async def test_bounded_output_and_nonzero_exit(runner, tmp_path):
@@ -88,6 +90,32 @@ async def test_cwd_environment_and_unicode(runner, tmp_path):
     )
     assert result.succeeded, result
     assert json.loads(result.stdout) == [str(cwd), env["EXEC_TEST_VALUE"]]
+
+
+async def test_two_real_commands_can_rendezvous_concurrently(tmp_path):
+    runner = ExecRunner(max_concurrency=2, min_available_memory_mb=0)
+    markers = [tmp_path / f"ready_{index}" for index in range(2)]
+
+    def source(index):
+        return (
+            "from pathlib import Path\nimport time\n"
+            f"Path({str(markers[index])!r}).write_text('ready')\n"
+            "deadline=time.monotonic()+5\n"
+            f"while not Path({str(markers[1 - index])!r}).exists():\n"
+            "    if time.monotonic()>deadline: raise RuntimeError('other command never started')\n"
+            "    time.sleep(0.01)\nprint('both running')\n"
+        )
+
+    results = await asyncio.gather(
+        *[
+            runner.run(script(tmp_path, source(index)), timeout=10, cwd=None, env=None)
+            for index in range(2)
+        ]
+    )
+    assert all(result.succeeded and result.started is True for result in results), (
+        results
+    )
+    assert runner.admission.snapshot["running"] == 0
 
 
 async def test_memory_limit_counts_children_and_recovers(tmp_path):
@@ -212,7 +240,43 @@ async def test_cancellation_during_supervisor_creation_does_not_leak(
     assert processes[0].returncode == 0
 
 
-async def test_concurrency_rejection_and_release(monkeypatch, runner):
+async def test_repeated_cancellation_keeps_slot_until_process_cleanup(
+    runner, tmp_path, monkeypatch
+):
+    marker = tmp_path / "cleanup.pid"
+    source = f"import os,time; open({str(marker)!r},'w').write(str(os.getpid())); time.sleep(60)"
+    close_started, release = asyncio.Event(), asyncio.Event()
+    original = runner._close_supervisor
+
+    async def delayed_close(proc):
+        close_started.set()
+        await release.wait()
+        await original(proc)
+
+    monkeypatch.setattr(runner, "_close_supervisor", delayed_close)
+    task = asyncio.create_task(
+        runner.run(script(tmp_path, source), timeout=30, cwd=None, env=None)
+    )
+    try:
+        pid = await marker_pid(marker)
+        task.cancel()
+        await close_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert runner.admission.snapshot["running"] == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await dead(pid)
+        assert runner.admission.snapshot["running"] == 0
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_concurrency_queues_until_cleanup_releases_slot(monkeypatch, runner):
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def blocked(*args, **kwargs):
@@ -223,14 +287,16 @@ async def test_concurrency_rejection_and_release(monkeypatch, runner):
     monkeypatch.setattr(runner, "_run", blocked)
     task = asyncio.create_task(runner.run("first", timeout=5, cwd=None, env=None))
     await entered.wait()
+    waiting = asyncio.create_task(runner.run("excess", timeout=5, cwd=None, env=None))
     try:
-        assert (
-            await runner.run("excess", timeout=5, cwd=None, env=None)
-        ).termination_reason == "busy"
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        assert runner.admission.snapshot["queued"] == 1
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     release.set()
+    assert (await waiting).succeeded
     assert (await runner.run("next", timeout=5, cwd=None, env=None)).succeeded
 
 

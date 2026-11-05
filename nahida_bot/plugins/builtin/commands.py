@@ -55,7 +55,6 @@ from nahida_bot.core.runtime_settings import (
 _logger = structlog.get_logger(__name__)
 
 _MAX_EXEC_OUTPUT = 50_000
-_MAX_EXEC_TIMEOUT = 120
 
 
 class BuiltinCommandsPlugin(Plugin):
@@ -303,7 +302,13 @@ class BuiltinCommandsPlugin(Plugin):
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Timeout in seconds (default 30, max 120).",
+                        "description": (
+                            "Execution timeout in seconds after queueing "
+                            f"(default {self._exec_runner.default_timeout_seconds:g}, "
+                            f"max {self._exec_runner.max_timeout_seconds:g})."
+                        ),
+                        "minimum": 1,
+                        "maximum": self._exec_runner.max_timeout_seconds,
                     },
                     "working_dir": {
                         "type": "string",
@@ -325,12 +330,12 @@ class BuiltinCommandsPlugin(Plugin):
     async def _tool_exec(
         self,
         command: str,
-        timeout: int = 30,
+        timeout: int | None = None,
         working_dir: str = "",
     ) -> str:
         _logger.debug("tool.exec", command=command, timeout=timeout, cwd=working_dir)
 
-        actual_timeout = min(max(timeout, 1), _MAX_EXEC_TIMEOUT)
+        actual_timeout = self._exec_runner.resolve_tool_timeout(timeout)
 
         # Issue #40: resolve cwd against the current session's workspace so
         # exec and workspace_read/write share the same root. Issue #58: the
@@ -359,11 +364,23 @@ class BuiltinCommandsPlugin(Plugin):
             f"Working directory: {self._format_working_directory(cwd, cwd_notes)}\n"
         )
         if result.termination_reason == "timeout":
-            output += f"Command timed out after {actual_timeout}s.\n"
+            effective_timeout = result.execution_timeout_seconds or actual_timeout
+            output += f"Command timed out after {effective_timeout:g}s.\n"
         elif not result.succeeded:
             output += (
                 f"Execution stopped: {result.termination_reason}. {result.error}\n"
             )
+        if not result.succeeded:
+            started = (
+                "unknown"
+                if result.started is None
+                else "yes"
+                if result.started
+                else "no"
+            )
+            output += f"Command started: {started}\n"
+        if result.queue_wait_seconds >= 0.01:
+            output += f"Queue wait: {result.queue_wait_seconds:.2f}s\n"
         if result.memory_limited:
             _logger.warning(
                 "tool.exec.memory_limited",

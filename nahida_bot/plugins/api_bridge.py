@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, cast
@@ -17,6 +18,7 @@ from nahida_bot.core.chat_address import (
     address_from_inbound as _address_from_inbound_message,
 )
 from nahida_bot.core.exceptions import PermissionDenied
+from nahida_bot.core.task_runtime.postprocess import PostprocessQueue
 from nahida_bot.core.outbound import send_channel_message
 from nahida_bot.core.runtime_settings import (
     RUNTIME_META_KEY,
@@ -633,6 +635,7 @@ class RealBotAPI(PluginServiceAPI):
         *,
         requires_admin: bool = False,
         scope: str = "",
+        parallel_safe: bool = False,
     ) -> None:
         entry = ToolEntry(
             name=name,
@@ -642,6 +645,7 @@ class RealBotAPI(PluginServiceAPI):
             plugin_id=self._plugin_id,
             requires_admin=requires_admin,
             scope=scope,
+            parallel_safe=parallel_safe,
         )
         if name in self._registered_tools:
             if self._registrations_active:
@@ -1050,6 +1054,16 @@ class RealBotAPI(PluginServiceAPI):
                 soft_scope=self._memory_soft_scope,
             )
         return self._memory_service_cache
+
+    @asynccontextmanager
+    async def _memory_mutation_scope(self) -> AsyncIterator[None]:
+        app = self._event_bus.context.app
+        maintenance = getattr(app, "memory_postprocessor", None)
+        if isinstance(maintenance, PostprocessQueue):
+            async with maintenance.mutation():
+                yield
+        else:
+            yield
 
     async def memory_browse(
         self, category: str, query: str = "", *, limit: int = 10, account_key: str = ""
@@ -1530,13 +1544,14 @@ class RealBotAPI(PluginServiceAPI):
 
         session_ctx = current_session.get()
         session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
-        item_id = await service.store_item(
-            key,
-            content,
-            ctx=session_ctx,
-            session_id=session_id,
-            metadata=metadata,
-        )
+        async with self._memory_mutation_scope():
+            item_id = await service.store_item(
+                key,
+                content,
+                ctx=session_ctx,
+                session_id=session_id,
+                metadata=metadata,
+            )
         self._logger.debug(
             "memory_store_called", key=key, item_id=item_id, backend="items"
         )
@@ -1558,14 +1573,15 @@ class RealBotAPI(PluginServiceAPI):
 
         session_ctx = current_session.get()
         session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
-        replacement_id = await service.update_item_for_context(
-            item_id,
-            content,
-            key=key,
-            ctx=session_ctx,
-            session_id=session_id,
-            metadata=metadata,
-        )
+        async with self._memory_mutation_scope():
+            replacement_id = await service.update_item_for_context(
+                item_id,
+                content,
+                key=key,
+                ctx=session_ctx,
+                session_id=session_id,
+                metadata=metadata,
+            )
         self._logger.debug(
             "memory_update_called",
             item_id=item_id,
@@ -1582,11 +1598,12 @@ class RealBotAPI(PluginServiceAPI):
 
         session_ctx = current_session.get()
         session_id = getattr(session_ctx, "session_id", "") if session_ctx else ""
-        archived = await service.archive_item_for_context(
-            item_id,
-            ctx=session_ctx,
-            session_id=session_id,
-        )
+        async with self._memory_mutation_scope():
+            archived = await service.archive_item_for_context(
+                item_id,
+                ctx=session_ctx,
+                session_id=session_id,
+            )
         self._logger.debug("memory_archive_called", item_id=item_id, archived=archived)
         return archived
 

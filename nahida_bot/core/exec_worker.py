@@ -89,6 +89,8 @@ def supervise(request: dict[str, Any], cancelled: threading.Event) -> dict[str, 
         truncated=False,
         peak_rss_bytes=0,
         error="",
+        started=False,
+        cleanup_succeeded=True,
     )
     command = None
     captures: list[OutputCapture] = []
@@ -101,6 +103,7 @@ def supervise(request: dict[str, Any], cancelled: threading.Event) -> dict[str, 
             result["termination_reason"] = "host_memory_pressure"
             return result
         command = ManagedCommand(request["command"], request["cwd"], request["env"])
+        result["started"] = True
         captures = [
             OutputCapture(stream, limits["output_bytes"])
             for stream in (command.stdout, command.stderr)
@@ -121,6 +124,7 @@ def supervise(request: dict[str, Any], cancelled: threading.Event) -> dict[str, 
             try:
                 result["returncode"] = command.close()
             except Exception as exc:
+                result["cleanup_succeeded"] = False
                 result["termination_reason"] = "cleanup_failed"
                 result["error"] = f"{type(exc).__name__}: {exc}"
         for key, capture in zip(("stdout", "stderr"), captures):

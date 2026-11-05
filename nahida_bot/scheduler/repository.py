@@ -125,7 +125,9 @@ class CronRepository:
             )
             await self._engine.db.commit()
 
-    async def claim_due_jobs(self, now_iso: str, *, limit: int) -> list[CronJob]:
+    async def claim_due_jobs(
+        self, now_iso: str, *, limit: int, exclude_job_ids: tuple[str, ...] = ()
+    ) -> list[CronJob]:
         """Atomically claim due jobs for execution.
 
         A claimed job is hidden from subsequent polls until it is completed or
@@ -136,17 +138,23 @@ class CronRepository:
             return []
 
         claimed: list[CronJob] = []
+        exclusion = (
+            f"AND job_id NOT IN ({','.join('?' for _ in exclude_job_ids)})"
+            if exclude_job_ids
+            else ""
+        )
         async with self._engine.write_lock:
             rows = await self._engine.fetch_all(
-                """
+                f"""
                 SELECT * FROM cron_jobs
                 WHERE is_active = 1
                   AND claimed_at IS NULL
                   AND next_fire_at <= ?
+                  {exclusion}
                 ORDER BY next_fire_at
                 LIMIT ?
                 """,
-                (now_iso, limit),
+                (now_iso, *exclude_job_ids, limit),
             )
             for row in rows:
                 cursor = await self._engine.execute(
@@ -164,6 +172,16 @@ class CronRepository:
                     claimed.append(_row_to_job(row))
             await self._engine.db.commit()
         return claimed
+
+    async def release_claim(self, job_id: str, *, scheduled_at: str) -> None:
+        """Leave the occurrence and counters intact after admission or shutdown."""
+        async with self._engine.write_lock:
+            await self._engine.execute(
+                "UPDATE cron_jobs SET claimed_at = NULL "
+                "WHERE job_id = ? AND next_fire_at = ?",
+                (job_id, scheduled_at),
+            )
+            await self._engine.db.commit()
 
     async def get_jobs_by_chat(
         self,

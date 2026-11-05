@@ -23,6 +23,7 @@ class _RecordingRegistrar:
         *,
         requires_admin: bool = False,
         scope: str = "",
+        parallel_safe: bool = False,
     ) -> None:
         self.tools.append(
             (name, description, parameters, handler, requires_admin, scope)

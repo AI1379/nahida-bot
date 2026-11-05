@@ -96,6 +96,7 @@ class FileSearchTools:
                 ),
                 parameters=_SEARCH_PARAMETERS,
                 handler=self.search,
+                parallel_safe=True,
             ),
         )
 

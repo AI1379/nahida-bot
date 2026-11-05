@@ -25,6 +25,7 @@ class ToolEntry:
     # Optional scope mode (e.g. "chat_domain"): instead of the binary admin
     # gate, visibility follows the sender's chat-domain (identity/authorization).
     scope: str = ""
+    parallel_safe: bool = False
 
 
 @dataclass(slots=True, frozen=True)

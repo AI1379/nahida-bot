@@ -32,6 +32,7 @@ from nahida_bot.core.exceptions import ApplicationError, StartupError
 from nahida_bot.core.logging import configure_logging
 from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.tasks import TaskManager
+from nahida_bot.core.task_runtime.postprocess import PostprocessQueue
 from nahida_bot.core.process_supervisor import ProcessSupervisor
 from nahida_bot.core.exec_runner import ExecRunner
 from nahida_bot.plugins.commands import CommandMatcher
@@ -101,7 +102,7 @@ class Application:
             EventContext(app=self, settings=self.settings, logger=logger)
         )
         self.channel_registry = ChannelRegistry()
-        self.exec_runner = ExecRunner(**self.settings.execution.model_dump())
+        self.exec_runner = ExecRunner(config=self.settings.execution)
         self.plugin_manager: PluginManager | None = None
         self.message_router: MessageRouter | None = None
         self.agent_loop: AgentLoop | None = None
@@ -146,6 +147,15 @@ class Application:
         self._metrics: MetricsCollector = MetricsCollector()
         self.temp_file_service: Any | None = None
         self.task_manager = TaskManager()
+        consolidation = self.settings.memory.consolidation
+        self.memory_postprocessor = (
+            PostprocessQueue(
+                max_pending=consolidation.max_pending,
+                max_pending_bytes=consolidation.max_pending_bytes,
+            )
+            if consolidation.background_enabled
+            else None
+        )
         self.process_supervisor: ProcessSupervisor | None = None
 
         logger.debug(
@@ -257,7 +267,9 @@ class Application:
             )
             if self.agent_loop is not None:
                 self.agent_loop.tool_executor = RegistryToolExecutor(
-                    self.plugin_manager.tool_registry
+                    self.plugin_manager.tool_registry,
+                    exec_runner=self.exec_runner,
+                    timeout_overrides=self.settings.agent.tool_timeout_overrides,
                 )
 
             # Initialize scheduler
@@ -765,6 +777,12 @@ class Application:
 
             transcript_projector = TranscriptProjector(self._agent_run_store)
 
+        if self.memory_postprocessor is not None and self.memory_postprocessor.closed:
+            consolidation = self.settings.memory.consolidation
+            self.memory_postprocessor = PostprocessQueue(
+                max_pending=consolidation.max_pending,
+                max_pending_bytes=consolidation.max_pending_bytes,
+            )
         self.session_runner = SessionRunner(
             agent_loop=self.agent_loop,
             memory_store=self.memory_store,
@@ -806,6 +824,7 @@ class Application:
             kb_auto_recall_config=self.settings.kb_auto_recall,
             kb_plugin_resolver=self._kb_plugin_resolver,
             transcript_projector=transcript_projector,
+            memory_postprocessor=self.memory_postprocessor,
         )
 
         from nahida_bot.agent.orchestration import (
@@ -1242,6 +1261,11 @@ class Application:
         try:
             if not was_started:
                 logger.warning("application.stop_without_start")
+                if self.orchestration_service is not None:
+                    await self.orchestration_service.shutdown(timeout=0.0)
+                await self.task_manager.shutdown(timeout=10.0)
+                if self.memory_postprocessor is not None:
+                    await self.memory_postprocessor.close(timeout=0.0)
                 if self.plugin_manager is not None:
                     await self.plugin_manager.shutdown_all()
                 # Supervisor may have started during a partially-failed init.
@@ -1265,9 +1289,6 @@ class Application:
                 if self.webapi_service is not None:
                     await self.webapi_service.stop()
 
-                # Cancel managed background tasks (media cleanup, etc.)
-                await self.task_manager.shutdown(timeout=10.0)
-
                 # Shut down scheduler before message router
                 if self.scheduler_service is not None:
                     await self.scheduler_service.stop()
@@ -1277,6 +1298,27 @@ class Application:
                     await self.message_router.stop(
                         mode=mode,
                         abort_event=abort_event,
+                    )
+
+                if self.orchestration_service is not None:
+                    await self.orchestration_service.shutdown(
+                        timeout=(
+                            30.0
+                            if mode == "drain"
+                            and not (abort_event is not None and abort_event.is_set())
+                            else 0.0
+                        ),
+                    )
+                # Stop every producer before draining committed-turn maintenance.
+                await self.task_manager.shutdown(timeout=10.0)
+                if self.memory_postprocessor is not None:
+                    await self.memory_postprocessor.close(
+                        timeout=(
+                            self.settings.memory.consolidation.shutdown_timeout_seconds
+                            if mode == "drain"
+                            and not (abort_event is not None and abort_event.is_set())
+                            else 0.0
+                        ),
                     )
 
                 # Shut down plugins before event bus
@@ -1303,6 +1345,8 @@ class Application:
                 await self.event_bus.shutdown(timeout=1.0)
 
             # Always clean up resources, even if startup didn't fully complete.
+            if self.memory_postprocessor is not None:
+                await self.memory_postprocessor.close(timeout=0.0)
             for provider in self._providers_to_close:
                 close_fn = getattr(provider, "close", None)
                 if close_fn is not None:

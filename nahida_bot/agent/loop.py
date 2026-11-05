@@ -7,11 +7,14 @@ import json
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
+
+from nahida_bot.core.task_runtime import deadline_scope
+from nahida_bot.agent.tool_batch import execute_tool_batch
 
 import structlog
 
@@ -70,6 +73,18 @@ class ToolExecutor(ABC):
     def tool_scope(self, tool_name: str) -> str:
         """Return the registered tool's scope mode ("" for none)."""
         return ""
+
+    def timeout_seconds(self, tool_call: ToolCall, default: float) -> float:
+        """Resolve a trusted tool budget independently of model arguments."""
+        return default
+
+    def parallel_safe(self, tool_call: ToolCall) -> bool:
+        """Only trusted registered metadata may opt a handler into parallelism."""
+        return False
+
+    def batch_scope(self) -> AbstractContextManager[None]:
+        """Freeze dispatch metadata for executors that support hot registration."""
+        return nullcontext()
 
 
 @dataclass(slots=True, frozen=True)
@@ -417,6 +432,7 @@ class AgentLoop:
                     sender_account_key=request.sender_account_key,
                     chat_address=request.chat_address,
                     user_request=request.user_message,
+                    stop_event=request.stop_event,
                 )
                 runtime.tool_messages.extend(executed_messages)
                 runtime.active_turn_messages.extend(executed_messages)
@@ -433,6 +449,14 @@ class AgentLoop:
                     type="tool_end",
                     tool_summary=f"{len(executed_messages)} tool(s) completed",
                 )
+
+                if request.stop_event is not None and request.stop_event.is_set():
+                    yield await self._cancel_runtime(
+                        runtime,
+                        steps=step,
+                        final_response=self._latest_assistant_content(runtime),
+                    )
+                    return
 
             yield await self._max_steps_event(runtime)
         except _StopRequested:
@@ -1323,9 +1347,8 @@ class AgentLoop:
         sender_account_key: str = "",
         chat_address: str = "",
         user_request: str = "",
+        stop_event: asyncio.Event | None = None,
     ) -> list[ContextMessage]:
-        messages: list[ContextMessage] = []
-
         definitions = self._index_tools(tools)
         logger.debug(
             "agent_loop.tool_batch_start",
@@ -1343,10 +1366,14 @@ class AgentLoop:
             ],
             registered_tool_count=len(definitions),
         )
-        for tool_call in response.tool_calls:
-            validation_error = self._validate_tool_call(
-                tool_call=tool_call,
-                definitions=definitions,
+
+        async def execute_one(tool_call: ToolCall) -> ContextMessage:
+            validation_error = (
+                self._cancelled_tool_result()
+                if stop_event is not None and stop_event.is_set()
+                else self._validate_tool_call(
+                    tool_call=tool_call, definitions=definitions
+                )
             )
             if validation_error is not None:
                 logger.warning(
@@ -1359,19 +1386,17 @@ class AgentLoop:
                     error_code=validation_error.error_code or "",
                     error_message=validation_error.error_message or "",
                 )
-                messages.append(
-                    self._build_tool_message(
-                        tool_call=tool_call,
-                        phase="prepare_failed",
-                        attempt=0,
-                        result=validation_error,
-                    )
+                message = self._build_tool_message(
+                    tool_call=tool_call,
+                    phase="prepare_failed",
+                    attempt=0,
+                    result=validation_error,
                 )
                 if recorder is not None:
                     await recorder.end_tool_call(
                         tool_call, validation_error, attempt=0, phase="prepare_failed"
                     )
-                continue
+                return message
 
             if recorder is not None:
                 await recorder.begin_tool_call(tool_call)
@@ -1383,20 +1408,31 @@ class AgentLoop:
                 chat_address=chat_address,
                 user_request=user_request,
                 tool_description=definitions[tool_call.name].description,
+                stop_event=stop_event,
             )
-            messages.append(
-                self._build_tool_message(
-                    tool_call=tool_call,
-                    phase=phase,
-                    attempt=attempt,
-                    result=result,
-                )
+            message = self._build_tool_message(
+                tool_call=tool_call,
+                phase=phase,
+                attempt=attempt,
+                result=result,
             )
             if recorder is not None:
                 await recorder.end_tool_call(
                     tool_call, result, attempt=attempt, phase=phase
                 )
-        return messages
+            return message
+
+        with self.tool_executor.batch_scope() if self.tool_executor else nullcontext():
+            return await execute_tool_batch(
+                response.tool_calls,
+                execute=execute_one,
+                parallel_safe=(
+                    self.tool_executor.parallel_safe
+                    if self.tool_executor
+                    else lambda _: False
+                ),
+                limit=self.config.max_parallel_tools,
+            )
 
     def _attach_allowed_chats(
         self,
@@ -1436,6 +1472,7 @@ class AgentLoop:
         chat_address: str = "",
         user_request: str = "",
         tool_description: str = "",
+        stop_event: asyncio.Event | None = None,
     ) -> tuple[ToolExecutionResult, int, str]:
         if self.tool_executor is None:
             raise RuntimeError("Tool executor is not set")
@@ -1505,6 +1542,9 @@ class AgentLoop:
                 )
         max_attempts = max(1, self.config.tool_retry_attempts + 1)
 
+        timeout_seconds = self.tool_executor.timeout_seconds(
+            tool_call, self.config.tool_timeout_seconds
+        )
         for attempt in range(1, max_attempts + 1):
             t0 = time.monotonic()
             logger.debug(
@@ -1515,23 +1555,21 @@ class AgentLoop:
                 tool_call_id=tool_call.call_id,
                 attempt=attempt,
                 max_attempts=max_attempts,
-                timeout_seconds=self.config.tool_timeout_seconds,
+                timeout_seconds=timeout_seconds,
                 argument_keys=sorted(tool_call.arguments.keys()),
                 argument_count=len(tool_call.arguments),
             )
             try:
-                raw_result = await asyncio.wait_for(
-                    self.tool_executor.execute(tool_call),
-                    timeout=self.config.tool_timeout_seconds,
+                raw_result = await self._execute_tool_attempt(
+                    tool_call,
+                    timeout_seconds=timeout_seconds,
+                    stop_event=stop_event,
                 )
                 result = self._coerce_tool_result(raw_result)
             except TimeoutError:
                 result = ToolExecutionResult.error(
                     code="tool_timeout",
-                    message=(
-                        "Tool execution timed out after "
-                        f"{self.config.tool_timeout_seconds:.1f}s"
-                    ),
+                    message=(f"Tool execution timed out after {timeout_seconds:.1f}s"),
                     retryable=False,
                 )
                 logger.warning(
@@ -1541,7 +1579,7 @@ class AgentLoop:
                     tool_name=tool_call.name,
                     tool_call_id=tool_call.call_id,
                     attempt=attempt,
-                    timeout_seconds=self.config.tool_timeout_seconds,
+                    timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:
                 result = ToolExecutionResult.error(
@@ -1575,7 +1613,13 @@ class AgentLoop:
                 await asyncio.sleep(self.config.tool_retry_backoff_seconds)
                 continue
 
-            phase = "failed" if result.is_error else "completed"
+            phase = (
+                "cancelled"
+                if result.error_code == "tool_cancelled"
+                else "failed"
+                if result.is_error
+                else "completed"
+            )
             logger.debug(
                 "agent_loop.tool_call_done",
                 trace_id=trace.trace_id if trace else "",
@@ -1601,6 +1645,58 @@ class AgentLoop:
             max_attempts,
             "failed",
         )
+
+    @staticmethod
+    def _cancelled_tool_result() -> ToolExecutionResult:
+        return ToolExecutionResult.error(
+            code="tool_cancelled",
+            message="Tool stopped by request; completed external effects are not undone.",
+            retryable=False,
+        )
+
+    async def _execute_tool_attempt(
+        self,
+        tool_call: ToolCall,
+        *,
+        timeout_seconds: float,
+        stop_event: asyncio.Event | None,
+    ) -> ToolExecutionResult:
+        """Stop the tool locally while letting the outer run persist its transcript."""
+        assert self.tool_executor is not None
+        if stop_event is not None and stop_event.is_set():
+            return self._cancelled_tool_result()
+        with deadline_scope(timeout_seconds):
+            operation = asyncio.ensure_future(self.tool_executor.execute(tool_call))
+            stop = (
+                asyncio.create_task(stop_event.wait())
+                if stop_event is not None
+                else None
+            )
+            try:
+                if stop is None:
+                    return await asyncio.wait_for(operation, timeout=timeout_seconds)
+                done, _ = await asyncio.wait(
+                    (operation, stop),
+                    timeout=timeout_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if operation in done:
+                    return operation.result()
+                operation.cancel()
+                await asyncio.gather(operation, return_exceptions=True)
+                if stop_event is not None and stop_event.is_set():
+                    return self._cancelled_tool_result()
+                raise TimeoutError
+            finally:
+                if not operation.done():
+                    operation.cancel()
+                if stop is not None:
+                    stop.cancel()
+                await asyncio.gather(
+                    operation,
+                    *([stop] if stop is not None else []),
+                    return_exceptions=True,
+                )
 
     def _coerce_tool_result(self, result: Any) -> ToolExecutionResult:
         if isinstance(result, ToolExecutionResult):
