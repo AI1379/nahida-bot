@@ -1422,7 +1422,7 @@ class MessageRouter:
                     proactive_context=pending.proactive_context,
                     attention_episode_id=pending.attention_episode_id,
                     parse_commands=pending.parse_commands,
-                    **({"pending_batch": batch} if len(batch) > 1 else {}),
+                    pending_batch=batch,
                 )
             finally:
                 current_session.reset(token)

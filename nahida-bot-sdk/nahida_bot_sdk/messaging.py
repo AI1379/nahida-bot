@@ -64,13 +64,22 @@ class MessageContext:
 
 @dataclass(slots=True, frozen=True)
 class AgentContextRequest:
-    """Inputs for a plugin's once-per-run, non-system context snapshot."""
+    """Inputs for a plugin's once-per-run, non-system context snapshot.
+
+    ``input_messages`` are the original inputs assigned to this run, in arrival
+    order; ``message_context`` identifies its reply anchor. Background IDs come
+    from the host's history snapshot, never the plugin's live chat buffer.
+    Authentication remains independent of message authorship.
+    """
 
     session_id: str
     source: str
     user_message: str
     message_context: MessageContext
     workspace_id: str | None = None
+    input_messages: tuple[InboundMessage, ...] = ()
+    background_message_ids: frozenset[str] = frozenset()
+    actor_account_key: str = ""
 
 
 @dataclass(slots=True, frozen=True)

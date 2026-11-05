@@ -42,6 +42,7 @@ class SocialTurn:
     persona: str
     messages: tuple[InboundMessage, ...]
     trigger_id: str
+    visible_message_ids: frozenset[str] | None = None
 
 
 class SocialContinuity:
@@ -138,61 +139,80 @@ class SocialContinuity:
         direct: bool = False,
     ) -> str:
         """One model call supplies both the existing gate decision and appraisal."""
-        chat_key, session_id, persona = turn.chat_key, turn.session_id, turn.persona
-        trigger_id = turn.trigger_id
-        key = self._key(chat_key, session_id)
+        key = self._key(turn.chat_key, turn.session_id)
         async with self._lock(key):
-            state = await self._load(key, chat_key, session_id, persona)
-            now = time.time()
-            generation = self._generation
-            state.observe(self._evidence(list(turn.messages), now))
-            if direct and (
-                not trigger_id
-                or trigger_id == state.last_trigger_id
+            state = await self._load(key, turn.chat_key, turn.session_id, turn.persona)
+            state.observe(self._evidence(list(turn.messages), time.time()))
+            return await self._chat_locked(
+                turn, state, system=system, prompt=prompt, model=model, direct=direct
+            )
+
+    async def _chat_locked(
+        self,
+        turn: SocialTurn,
+        state: SocialState,
+        *,
+        system: str,
+        prompt: str,
+        model: str,
+        direct: bool = False,
+    ) -> str:
+        """Evaluate observed state under the caller's lock and host visibility."""
+        now = time.time()
+        generation = self._generation
+        if not self.active or (
+            direct
+            and (
+                not turn.trigger_id
+                or turn.trigger_id == state.last_trigger_id
                 or now - max(state.last_attempt, state.last_update)
                 < self.config.direct_update_interval_seconds
-            ):
-                return ""
-            if not self.active:
-                return ""
-            state.last_attempt = now
-            state.memory_basis = await self._memory_basis(turn)
-            state.prune(now, self.config)
-            continuity = {
-                "state": state.snapshot(now, self.config),
-                "evidence": [e.model_dump() for e in state.evidence],
-                "durable_memories": [m.model_dump() for m in state.memory_basis],
-            }
-            response = await self.api.llm_chat(
-                [
-                    {"role": "system", "content": system + "\n" + SOCIAL_APPRAISAL},
-                    {
-                        "role": "user",
-                        "content": prompt
-                        + "\nContinuity data:\n"
-                        + json.dumps(continuity, ensure_ascii=False),
-                    },
-                ],
-                model=model,
-                temperature=0.0,
-                max_tokens=1000,
-                tools=[],
             )
-            usage = getattr(response, "usage", None)
-            self.api.logger.debug(
-                "conversation_joiner.social_call",
-                chat_key=chat_key,
-                direct=direct,
-                model=model,
-                latency_seconds=round(time.time() - now, 3),
-                input_tokens=getattr(usage, "input_tokens", None),
-                cached_tokens=getattr(usage, "cached_tokens", None),
-                output_tokens=getattr(usage, "output_tokens", None),
-            )
-            content = str(getattr(response, "content", "") or "")
-            if self.active and generation == self._generation:
-                await self._accept(key, state, content, trigger_id, now)
-            return content
+        ):
+            return ""
+        state.last_attempt = now
+        state.memory_basis = await self._memory_basis(turn)
+        state.prune(now, self.config)
+        view = (
+            state.project(turn.visible_message_ids)
+            if turn.visible_message_ids is not None
+            else state
+        )
+        continuity = {
+            "state": view.snapshot(now, self.config),
+            "evidence": [e.model_dump() for e in view.evidence],
+            "durable_memories": [m.model_dump() for m in view.memory_basis],
+        }
+        response = await self.api.llm_chat(
+            [
+                {"role": "system", "content": system + "\n" + SOCIAL_APPRAISAL},
+                {
+                    "role": "user",
+                    "content": prompt
+                    + "\nContinuity data:\n"
+                    + json.dumps(continuity, ensure_ascii=False),
+                },
+            ],
+            model=model,
+            temperature=0.0,
+            max_tokens=1000,
+            tools=[],
+        )
+        usage = getattr(response, "usage", None)
+        self.api.logger.debug(
+            "conversation_joiner.social_call",
+            chat_key=turn.chat_key,
+            direct=direct,
+            model=model,
+            latency_seconds=round(time.time() - now, 3),
+            input_tokens=getattr(usage, "input_tokens", None),
+            cached_tokens=getattr(usage, "cached_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+        )
+        content = str(getattr(response, "content", "") or "")
+        if self.active and generation == self._generation:
+            await self._accept(turn, state, content, now)
+        return content
 
     async def _memory_basis(self, turn: SocialTurn):
         from nahida_bot.plugins.conversation_joiner.social_memory import (
@@ -245,8 +265,8 @@ class SocialContinuity:
         address = ChatAddress.from_inbound(
             ctx.channel, ctx.chat_id, chat_type=ctx.chat_type
         )
-        if request.source == "user_input":
-            message = InboundMessage(
+        inputs = request.input_messages or (
+            InboundMessage(
                 message_id=ctx.message_id,
                 platform=ctx.channel,
                 chat_id=ctx.chat_id,
@@ -255,17 +275,37 @@ class SocialContinuity:
                 raw_event={},
                 is_group=ctx.chat_type == "group",
                 message_context=ctx,
-            )
-            messages = [m for m in recent if m.message_id != message.message_id]
-            messages.append(message)
-            messages = messages[-cfg.max_context_messages :]
+            ),
+        )
+        current_ids = frozenset(m.message_id for m in inputs if m.message_id)
+        visible_ids = request.background_message_ids | current_ids
+        if request.source == "user_input":
+            background = [
+                m
+                for m in recent
+                if m.message_id in request.background_message_ids
+                and m.message_id not in current_ids
+            ]
+            background_limit = max(0, cfg.max_context_messages - len(inputs))
+            messages = (
+                background[-background_limit:] if background_limit else []
+            ) + list(inputs)
             prompt = (
                 "Persona:\n"
                 + persona
+                + "\nActive request message IDs: "
+                + json.dumps([m.message_id for m in inputs], ensure_ascii=False)
                 + "\nRecent chat:\n"
                 + "\n".join(
                     render_message_with_context(
-                        m.text, context_from_inbound(m), max_chars=500
+                        m.text,
+                        context_from_inbound(m),
+                        role=(
+                            "current_request"
+                            if m.message_id in current_ids
+                            else "background"
+                        ),
+                        max_chars=500,
                     )
                     for m in messages
                 )
@@ -276,28 +316,66 @@ class SocialContinuity:
                 persona,
                 tuple(messages),
                 ctx.message_id,
+                visible_ids,
             )
-            try:
-                await asyncio.wait_for(
-                    self.chat(
+            return await self._direct_snapshot(turn, cfg, prompt)
+        return await self.snapshot(
+            address.chat_key,
+            request.session_id,
+            persona,
+            visible_message_ids=visible_ids,
+        )
+
+    async def _direct_snapshot(
+        self, turn: SocialTurn, cfg: EffectiveJoinerConfig, prompt: str
+    ) -> str:
+        """Capture success and fallback views without releasing the appraisal lock."""
+        key = self._key(turn.chat_key, turn.session_id)
+        generation = self._generation
+        fallback = ""
+        try:
+            async with asyncio.timeout(cfg.decision_timeout_seconds):
+                async with self._lock(key):
+                    state = await self._load(
+                        key, turn.chat_key, turn.session_id, turn.persona
+                    )
+                    if not self.active or generation != self._generation:
+                        return ""
+                    # Reconcile original bodies before freezing even the error
+                    # fallback; an edited/repeated ID must not expose old text.
+                    state.observe(self._evidence(list(turn.messages), time.time()))
+                    fallback = self._render_turn(state, turn)
+                    await self._chat_locked(
                         turn,
+                        state,
                         system=MESSAGE_CONTEXT_INSTRUCTION
-                        + "\nPrepare context for an already requested reply. Do not initiate a separate reply.",
+                        + "\nPrepare context for the active request only. Recent chat and continuity "
+                        "are background; do not assign additional requests to this reply.",
                         prompt=prompt,
                         model=cfg.model,
                         direct=True,
-                    ),
-                    timeout=cfg.decision_timeout_seconds,
-                )
-            except Exception:
-                self.api.logger.warning(
-                    "conversation_joiner.social_direct_failed",
-                    chat_key=address.chat_key,
-                )
-        return await self.snapshot(address.chat_key, request.session_id, persona)
+                    )
+                    if self.active and generation == self._generation:
+                        return self._render_turn(state, turn)
+                    return ""
+        except Exception:
+            self.api.logger.warning(
+                "conversation_joiner.social_direct_failed", chat_key=turn.chat_key
+            )
+            return fallback if self.active and generation == self._generation else ""
+
+    def _render_turn(self, state: SocialState, turn: SocialTurn) -> str:
+        view = (
+            state.project(turn.visible_message_ids)
+            if turn.visible_message_ids is not None
+            else state
+        )
+        key = self._key(turn.chat_key, turn.session_id)
+        selected_id = self._pending.get(key, ("", ""))[1]
+        return self._render(view, selected_id=selected_id)
 
     async def _accept(
-        self, key: str, state: SocialState, content: str, trigger_id: str, now: float
+        self, turn: SocialTurn, state: SocialState, content: str, now: float
     ) -> None:
         try:
             if len(content) > 24000:
@@ -305,8 +383,13 @@ class SocialContinuity:
             match = re.search(r"\{.*\}", content, flags=re.DOTALL)
             data = json.loads(match.group(0) if match else content)
             update = SocialUpdate.model_validate(data["social"])
+            view = (
+                state.project(turn.visible_message_ids)
+                if turn.visible_message_ids is not None
+                else state
+            )
             if any(
-                not state.grounded(note)
+                not view.grounded(note)
                 for note in [update.scene, update.feeling, *update.thoughts]
                 if note is not None
             ):
@@ -317,10 +400,11 @@ class SocialContinuity:
             )
             return
         selected = state.apply(update, now, self.config)
-        state.last_trigger_id = trigger_id
+        state.last_trigger_id = turn.trigger_id
+        key = self._key(turn.chat_key, turn.session_id)
         self._pending.pop(key, None)
         if selected:
-            self._pending[key] = (trigger_id, selected)
+            self._pending[key] = (turn.trigger_id, selected)
         await self._save(key, state)
         self.api.logger.debug(
             "conversation_joiner.social_updated",
@@ -330,12 +414,21 @@ class SocialContinuity:
             task_focused=state.task_focused,
         )
 
-    async def snapshot(self, chat_key: str, session_id: str, persona: str) -> str:
+    async def snapshot(
+        self,
+        chat_key: str,
+        session_id: str,
+        persona: str,
+        *,
+        visible_message_ids: frozenset[str] | None = None,
+    ) -> str:
         key = self._key(chat_key, session_id)
         async with self._lock(key):
             state = await self._load(key, chat_key, session_id, persona)
-            selected_id = self._pending.get(key, ("", ""))[1]
-            return self._render(state, selected_id=selected_id) if self.active else ""
+            turn = SocialTurn(
+                chat_key, session_id, persona, (), "", visible_message_ids
+            )
+            return self._render_turn(state, turn) if self.active else ""
 
     async def status(self, chat_key: str, session_id: str, persona: str) -> str:
         """Present local state for /status without exposing the model prompt."""

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import time
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -110,6 +112,69 @@ def test_unknown_evidence_and_wrong_subject_are_rejected():
     assert state.scene is None
     assert state.feeling is None
     assert state.thoughts == []
+
+
+def test_projection_drops_mixed_notes_without_mutating_shared_state():
+    state = _state()
+    state.evidence.append(
+        Evidence(
+            message_id="m2", sender_id="u2", text="another request", observed_at=100
+        )
+    )
+    state.scene = Note(text="mixed scene", evidence_ids=["m1", "m2"])
+    state.feeling = Feeling(
+        text="allowed feeling", evidence_ids=["m1"], label="curious", intensity=0.4
+    )
+    state.thoughts = [Thought(text="other request", evidence_ids=["m2"])]
+    state.last_reply = "unscoped text about another request"
+    before = state.model_dump()
+
+    view = state.project(frozenset({"m1"}))
+    assert view.scene is None and view.thoughts == []
+    assert view.feeling is not None and view.feeling.text == "allowed feeling"
+    assert [e.message_id for e in view.evidence] == ["m1"]
+    assert view.last_reply == ""
+    assert state.model_dump() == before
+
+
+def test_original_evidence_body_can_be_corrected_without_refreshing_its_age():
+    state = _state()
+    state.observe(
+        [
+            Evidence(
+                message_id="m1", sender_id="u1", text="original body", observed_at=200
+            )
+        ]
+    )
+    assert state.evidence[0].text == "original body"
+    assert state.evidence[0].observed_at == 100
+
+
+async def test_legacy_social_state_is_rebuilt_before_injection():
+    legacy = _state().model_dump()
+    legacy["version"] = 1
+    legacy["persona_hash"] = hashlib.sha256(b"").hexdigest()
+    legacy["last_update"] = legacy["evidence"][0]["observed_at"] = time.time()
+    legacy["scene"] = {
+        "text": "unrecoverable legacy batch attribution",
+        "evidence_ids": ["m1"],
+    }
+    api = _JoinerAPI(['{"social":{"scene":null,"thoughts":[]}}'])
+    api.plugin_data_get = AsyncMock(return_value=legacy)
+    api.plugin_data_set = AsyncMock()
+    plugin = await _load_plugin(api, {"inner_thoughts": {"enabled": True}})
+    try:
+        message = _event("current input").payload.message
+        request = AgentContextRequest(
+            "test:group:g1", "user_input", message.text, context_from_inbound(message)
+        )
+        assert await plugin._social_context(request) == ""
+        saved = api.plugin_data_set.call_args.args[1]
+        assert saved["version"] == 2
+        assert saved["scene"] is None
+        assert saved["evidence"][0]["text"] == "current input"
+    finally:
+        await plugin.on_unload()
 
 
 def test_consumed_thought_is_not_resurrected_by_motivation_change():
@@ -233,7 +298,13 @@ async def test_malformed_update_and_provider_failure_preserve_last_good_state():
         api, {"inner_thoughts": {"enabled": True, "direct_update_interval_seconds": 0}}
     )
     ctx = context_from_inbound(_event().payload.message)
-    request = AgentContextRequest("test:group:g1", "user_input", "cake", ctx)
+    request = AgentContextRequest(
+        "test:group:g1",
+        "user_input",
+        "cake",
+        ctx,
+        background_message_ids=frozenset({"m1"}),
+    )
     first = await plugin._social_context(request)
     await plugin._social_context(
         replace(request, message_context=replace(ctx, message_id="m2"))

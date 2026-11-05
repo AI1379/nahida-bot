@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from dataclasses import replace
 from types import SimpleNamespace
@@ -264,6 +265,60 @@ async def test_losing_dispatch_race_preserves_age_and_steer_priority():
         batch[-1].inbound, SESSION_ID, "workspace", pending_batch=batch
     )
     assert list(router._pending[SESSION_ID]) == [steer, *batch]
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("invariant", ["fifo", "acceptance_age"])
+async def test_dispatch_race_restores_original_fifo_and_acceptance_age(
+    batch_size, invariant
+):
+    """A competing run wins while mute lookup yields; no sleeps or live I/O."""
+    agent = _BlockingAgent()
+    router, bus, _, _ = _make_router(agent=agent)
+    original_batch = tuple(
+        replace(_pending(f"m{i}"), queued_at=time.monotonic() - 10)
+        for i in range(batch_size)
+    )
+    tail = replace(_pending("tail"), inbound=_message("tail", user_id="other"))
+    selected, resume = asyncio.Event(), asyncio.Event()
+
+    async def check_mute(inbound, session_id):
+        if inbound.message_id == original_batch[-1].inbound.message_id:
+            selected.set()
+            await resume.wait()
+        return False
+
+    router._check_chat_mute = check_mute
+    await router.start()
+    draining = None
+    try:
+        router._pending[SESSION_ID] = deque([*original_batch, tail])
+        draining = asyncio.create_task(router._drain_pending(SESSION_ID))
+        await asyncio.wait_for(selected.wait(), timeout=3)
+        await _publish(bus, _message("wins-slot", user_id="winner"))
+        await asyncio.wait_for(agent.started[0].wait(), timeout=3)
+        resume.set()
+        await asyncio.wait_for(draining, timeout=3)
+
+        restored = list(router._pending[SESSION_ID])
+        if invariant == "fifo":
+            assert [item.inbound.message_id for item in restored] == [
+                *[item.inbound.message_id for item in original_batch],
+                "tail",
+            ]
+        else:
+            restored_by_id = {item.inbound.message_id: item for item in restored}
+            assert all(
+                restored_by_id[item.inbound.message_id].queued_at == item.queued_at
+                for item in original_batch
+            )
+    finally:
+        resume.set()
+        if draining is not None:
+            await asyncio.wait_for(draining, timeout=3)
+        for release in agent.release:
+            release.set()
+        await router.stop()
 
 
 async def test_group_steer_runs_before_and_separately_from_backlog_batch():

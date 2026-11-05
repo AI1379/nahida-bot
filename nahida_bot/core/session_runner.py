@@ -34,6 +34,7 @@ from nahida_bot.core.message_context import (
     ENVELOPE_INSTRUCTION,
     HEARTBEAT_INSTRUCTION,
     CRON_DESKTOP_ANNOUNCEMENT_INSTRUCTION,
+    CURRENT_REQUEST_INSTRUCTION,
     PROACTIVE_JOIN_INSTRUCTION,
     SILENT_REPLY_INSTRUCTION,
     assistant_context,
@@ -53,6 +54,7 @@ from nahida_bot.core.runtime_settings import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from nahida_bot_sdk.messaging import AgentContextRequest
 
     from nahida_bot.agent.loop import AgentLoop, LoopEvent
     from nahida_bot.agent.media.resolver import MediaResolver
@@ -726,17 +728,17 @@ class SessionRunner:
         # Dynamic plugin state is a once-per-run snapshot after history, never
         # part of the stable system prefix or re-read between tool calls.
         if self._supplement_registry is not None and message_context is not None:
-            from nahida_bot_sdk.messaging import AgentContextRequest
-
-            snapshots = await self._supplement_registry.collect_context(
-                AgentContextRequest(
-                    session_id=request.session_id,
-                    source=request.source_tag,
-                    user_message=request.user_message,
-                    message_context=message_context,
-                    workspace_id=request.workspace_id,
-                )
+            context_request = self._context_request(runtime, message_context)
+            logger.debug(
+                "session_runner.context_scope",
+                session_id=request.session_id,
+                input_message_ids=[
+                    m.message_id for m in context_request.input_messages
+                ],
+                background_message_count=len(context_request.background_message_ids),
+                actor_account_key=context_request.actor_account_key,
             )
+            snapshots = await self._supplement_registry.collect_context(context_request)
             for key, content in snapshots:
                 runtime.history.append(
                     ContextMessage(
@@ -758,6 +760,45 @@ class SessionRunner:
                     metadata={"ephemeral": True},
                 )
             )
+
+    @staticmethod
+    def _context_request(
+        runtime: _SessionRunRuntime, message_context: MessageContext
+    ) -> AgentContextRequest:
+        """Freeze input membership, history visibility and the authenticated actor."""
+        from nahida_bot_sdk.messaging import AgentContextRequest, InboundMessage
+
+        request = runtime.request
+        session = current_session.get()
+        if session is not None and session.session_id != request.session_id:
+            session = None
+        original = session.inbound_message if session is not None else None
+        if original is None or original.message_id != message_context.message_id:
+            original = InboundMessage(
+                message_id=message_context.message_id,
+                platform=message_context.channel,
+                chat_id=message_context.chat_id,
+                user_id=message_context.sender_id,
+                text=request.user_message,
+                raw_event={},
+                is_group=message_context.chat_type == "group",
+                message_context=message_context,
+            )
+        return AgentContextRequest(
+            session_id=request.session_id,
+            source=request.source_tag,
+            user_message=request.user_message,
+            message_context=message_context,
+            workspace_id=request.workspace_id,
+            input_messages=request.inbound_batch or (original,),
+            background_message_ids=frozenset(
+                message_id
+                for record in runtime.recent_records
+                if record.turn.role == "user"
+                and (message_id := _metadata_message_id(record.turn.metadata))
+            ),
+            actor_account_key=session.actor_account_key if session is not None else "",
+        )
 
     async def _append_attention_context(self, runtime: _SessionRunRuntime) -> None:
         """Append either an explicit proactive frame or generic observations."""
@@ -2568,6 +2609,8 @@ class SessionRunner:
         parts = [system_prompt.rstrip()]
         if context is not None and context.channel not in ("", "bot"):
             parts.append(ENVELOPE_INSTRUCTION)
+        if source_tag == "user_input":
+            parts.append(CURRENT_REQUEST_INSTRUCTION)
         if enable_silent_reply:
             parts.append(SILENT_REPLY_INSTRUCTION)
         if source_tag == "cron_trigger":

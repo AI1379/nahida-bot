@@ -60,7 +60,9 @@ class SocialUpdate(BaseModel):
 
 
 class SocialState(BaseModel):
-    version: Literal[1] = 1
+    # v1 could attribute a combined batch body to one message ID. Such notes
+    # cannot be safely projected by their evidence IDs; rebuild transient state.
+    version: Literal[2] = 2
     session_id: str
     chat_key: str
     persona_hash: str
@@ -123,7 +125,12 @@ class SocialState(BaseModel):
         # Keep the original timestamp when a rolling window repeats evidence.
         by_id = {item.message_id: item for item in self.evidence}
         for item in items:
-            by_id.setdefault(item.message_id, item)
+            previous = by_id.get(item.message_id)
+            by_id[item.message_id] = (
+                item.model_copy(update={"observed_at": previous.observed_at})
+                if previous is not None
+                else item
+            )
         needed = {
             i
             for note in [self.scene, self.feeling, *self.thoughts]
@@ -134,6 +141,22 @@ class SocialState(BaseModel):
         retained = [e for e in ordered if e.message_id in needed]
         recent = [e for e in ordered if e.message_id not in needed][-24:]
         self.evidence = sorted([*retained, *recent], key=lambda e: e.observed_at)[-40:]
+
+    def project(self, message_ids: frozenset[str]) -> SocialState:
+        """Copy a request-visible view; mixed-source notes are removed whole."""
+        view = self.model_copy(deep=True)
+        view.evidence = [e for e in view.evidence if e.message_id in message_ids]
+        if view.scene is not None and not view.grounded(view.scene):
+            view.scene = None
+        if view.feeling is not None and not view.grounded(view.feeling):
+            view.feeling = None
+        view.thoughts = [t for t in view.thoughts if view.grounded(t)]
+        # Own replies already appear in the host's history. This free text has
+        # no evidence membership with which to project it safely.
+        view.last_reply = ""
+        if not any((view.scene, view.feeling, view.thoughts)):
+            view.task_focused = False
+        return view
 
     def apply(self, update: SocialUpdate, now: float, cfg: InnerThoughtsConfig) -> str:
         notes = [update.scene, update.feeling, *update.thoughts]
