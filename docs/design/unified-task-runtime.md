@@ -27,19 +27,19 @@
 
 | 位置 | 当前职责和行为 | 对迁移的约束 |
 |---|---|---|
-| [`core/tasks.py`](../../nahida_bot/core/tasks.py) 的 `TaskManager` | 命名、owner、后台协程启动与关闭；`spawn` 立即启动 | 保留基础设施任务管理；不直接承担业务准入 |
-| [`core/exec_runner.py`](../../nahida_bot/core/exec_runner.py) 的 `ExecRunner.run` | 全局信号量；额度不足直接 `busy`；监督进程负责采样与回收 | 第一处可收敛的共享资源边界 |
-| [`builtin/commands.py`](../../nahida_bot/plugins/builtin/commands.py) 与 [`scheduler/script_executor.py`](../../nahida_bot/scheduler/script_executor.py) | 工具、命令、Cron 脚本复用应用 runner；独立构造时存在创建 runner 的兜底 | 应用内必须注入同一入口，禁止兜底产生独立额度 |
-| [`core/router.py`](../../nahida_bot/core/router.py) | 普通 Agent 运行登记 tracker；忙时进入 pending 队列；控制命令可先执行 | 原始消息、steer、批次和回复锚点由路由层保留 |
-| [`core/message_batch.py`](../../nahida_bot/core/message_batch.py) | 只合并兼容、连续、同发起者的群聊输入 | 通用队列不能重新解释这些请求边界 |
-| [`core/session_runner.py`](../../nahida_bot/core/session_runner.py) 的 `ActiveRunTracker` | 会话运行追踪；停止设置 `stop_event` | 迁移后作为运行时的兼容视图，不再独立授予会话所有权 |
+| [`core/tasks.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/core/tasks.py) 的 `TaskManager` | 命名、owner、后台协程启动与关闭；`spawn` 立即启动 | 保留基础设施任务管理；不直接承担业务准入 |
+| [`core/exec_runner.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/core/exec_runner.py) 的 `ExecRunner.run` | 全局信号量；额度不足直接 `busy`；监督进程负责采样与回收 | 第一处可收敛的共享资源边界 |
+| [`builtin/commands.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/plugins/builtin/commands.py) 与 [`scheduler/script_executor.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/scheduler/script_executor.py) | 工具、命令、Cron 脚本复用应用 runner；独立构造时存在创建 runner 的兜底 | 应用内必须注入同一入口，禁止兜底产生独立额度 |
+| [`core/router.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/core/router.py) | 普通 Agent 运行登记 tracker；忙时进入 pending 队列；控制命令可先执行 | 原始消息、steer、批次和回复锚点由路由层保留 |
+| [`core/message_batch.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/core/message_batch.py) | 只合并兼容、连续、同发起者的群聊输入 | 通用队列不能重新解释这些请求边界 |
+| [`core/session_runner.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/core/session_runner.py) 的 `ActiveRunTracker` | 会话运行追踪；停止设置 `stop_event` | 迁移后作为运行时的兼容视图，不再独立授予会话所有权 |
 | 同文件的 `run_stream` 与 `_persist_turns` | `done` 后继续持久化，并等待记忆固化、嵌入 | `done` 不代表会话已可交给下一轮 |
-| [`agent/loop.py`](../../nahida_bot/agent/loop.py) | 批内工具串行；统一工具超时；Provider 请求可响应停止信号 | 工具并行、按工具超时和可中断工具等待需单独迁移 |
-| [`scheduler/service.py`](../../nahida_bot/scheduler/service.py) | 认领到期 job；限制并发 fire；`main` 等模式直接调用 runner；脚本失败回退 Agent | 接入会话准入，区分未启动、执行失败和关闭中断 |
-| [`orchestration/service.py`](../../nahida_bot/agent/orchestration/service.py) | 子 Agent 独立信号量；等待使用 shield；停止先写取消状态 | 统一后先确认执行清理，再发布可信终态 |
-| [`builtin/tools/agent.py`](../../nahida_bot/plugins/builtin/tools/agent.py) | `agent_spawn` 是后台任务；`agent_wait` 超时不取消；`agent_yield` 已移除 | 保持公开工具语义；不引入隐式 continuation |
-| [`agent/runtime`](../../nahida_bot/agent/runtime) | canonical ledger、transcript 与执行回执；部分记录 best effort | 作为 Agent 业务证据，不能直接充当可靠队列 |
-| [`core/app.py`](../../nahida_bot/core/app.py) 与 [`plugins/manager.py`](../../nahida_bot/plugins/manager.py) | 应用关闭和插件 owner 任务清理 | 迁移时显式加入业务任务停止与后台子 Agent 收口 |
+| [`agent/loop.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/agent/loop.py) | 批内工具串行；统一工具超时；Provider 请求可响应停止信号 | 工具并行、按工具超时和可中断工具等待需单独迁移 |
+| [`scheduler/service.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/scheduler/service.py) | 认领到期 job；限制并发 fire；`main` 等模式直接调用 runner；脚本失败回退 Agent | 接入会话准入，区分未启动、执行失败和关闭中断 |
+| [`orchestration/service.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/agent/orchestration/service.py) | 子 Agent 独立信号量；等待使用 shield；停止先写取消状态 | 统一后先确认执行清理，再发布可信终态 |
+| [`builtin/tools/agent.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/plugins/builtin/tools/agent.py) | `agent_spawn` 是后台任务；`agent_wait` 超时不取消；`agent_yield` 已移除 | 保持公开工具语义；不引入隐式 continuation |
+| [`agent/runtime`](https://github.com/AI1379/nahida-bot/tree/v2/nahida_bot/agent/runtime) | canonical ledger、transcript 与执行回执；部分记录 best effort | 作为 Agent 业务证据，不能直接充当可靠队列 |
+| [`core/app.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/core/app.py) 与 [`plugins/manager.py`](https://github.com/AI1379/nahida-bot/blob/v2/nahida_bot/plugins/manager.py) | 应用关闭和插件 owner 任务清理 | 迁移时显式加入业务任务停止与后台子 Agent 收口 |
 
 [旧编排设计](../architecture/agent-orchestration.md)和[运行流程](../architecture/runtime-flows.md)提到的 `AgentRunQueue` 当前没有对应实现；其中的 `agent_yield` 流程也已过时。实施时须同步修订这些文档。
 
