@@ -18,7 +18,12 @@ from nahida_bot.core.system_text import format_system_text
 from nahida_bot.core.context import SessionContext, current_session
 from nahida_bot.core.exec_runner import ExecRunner
 from nahida_bot.core.task_runtime import deadline_scope
-from nahida_bot.core.outbound import outbound_payload, send_channel_message
+from nahida_bot.core.outbound import (
+    ChannelAccessDenied,
+    check_channel_access,
+    outbound_payload,
+    send_channel_message,
+)
 from nahida_bot.core.sentinel import normalize_reply_text
 from nahida_bot.plugins.base import MessageContext, OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
@@ -756,6 +761,23 @@ class SchedulerService:
                     self._execute_fire(job),
                     timeout=timeout,
                 )
+        except ChannelAccessDenied as exc:
+            # Keep the task for review, but do not run, retry, or notify an
+            # excluded chat. Re-enabling access must not replay old jobs.
+            deactivated = await self._repo.cancel_job(
+                job.job_id, reason="chat_access_denied"
+            )
+            logger.info(
+                "scheduler.fire_blocked",
+                job_id=job.job_id,
+                chat_address=exc.address.chat_key,
+                reason="chat_access_denied",
+                deactivated=deactivated,
+            )
+            if self.on_job_event is not None:
+                await self.on_job_event(
+                    "blocked", job.job_id, success=False, error="chat_access_denied"
+                )
         except _ExecutionDeferred as exc:
             self._admission_retries[job.job_id] = monotonic() + min(
                 self._config.failure_retry_seconds, 30
@@ -951,6 +973,14 @@ class SchedulerService:
 
     async def _execute_fire(self, job: CronJob) -> None:
         """Execute a job through its configured executor."""
+        address = ChatAddress.from_inbound(
+            job.platform, job.chat_id, chat_type=job.chat_type
+        )
+        check_channel_access(self._channels, address)
+        if job.created_from_chat_address:
+            check_channel_access(
+                self._channels, ChatAddress.parse(job.created_from_chat_address)
+            )
         script_result: ScriptExecutionResult | None = None
         if job.executor_type == "script_then_agent":
             if self._authorization is not None:

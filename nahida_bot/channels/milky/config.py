@@ -64,13 +64,21 @@ class MilkyPluginConfig(BaseModel):
             "Null means use the global router setting."
         ),
     )
+    access_mode: Literal["open", "allowlist"] = Field(
+        default="open",
+        description=(
+            "allowlist requires an explicit friend/group entry for inbound events, "
+            "outbound delivery and scheduled work. Empty lists deny all in this mode. "
+            "open preserves the legacy optional inbound filters."
+        ),
+    )
     allowed_friends: list[str] = Field(
         default_factory=list,
-        description="Optional friend allow-list. Empty means all friends.",
+        description="Private QQ peers. Empty denies all in allowlist mode.",
     )
     allowed_groups: list[str] = Field(
         default_factory=list,
-        description="Optional group allow-list. Empty means all groups.",
+        description="Allowed QQ groups (all members). Empty denies all in allowlist mode.",
     )
 
     connect_timeout: float = Field(default=10.0, gt=0)
@@ -148,6 +156,18 @@ class MilkyPluginConfig(BaseModel):
             "triggers the agent for the same chat."
         ),
     )
+
+    def allows_peer(self, scene: str, peer_id: str) -> bool:
+        """Keep private peers and groups separate; unknown scenes fail closed."""
+        if scene == "friend":
+            allowed = self.allowed_friends
+        elif scene == "group":
+            allowed = self.allowed_groups
+        else:
+            return self.access_mode == "open"
+        if self.access_mode == "allowlist":
+            return bool(peer_id) and peer_id in allowed
+        return not allowed or peer_id in allowed
 
     @field_validator(
         "allowed_friends",

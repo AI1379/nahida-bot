@@ -17,6 +17,7 @@ def test_milky_config_defaults() -> None:
     assert config.command_prefix == "/"
     assert config.group_trigger_mode == "mention"
     assert config.reply_to_inbound is None
+    assert config.access_mode == "open"
     assert config.allowed_friends == []
     assert config.allowed_groups == []
     assert config.cache_media_on_receive is True
@@ -80,3 +81,31 @@ def test_milky_config_rejects_invalid_reconnect_delay_order() -> None:
                 "reconnect_max_delay": 1.0,
             }
         )
+
+
+@pytest.mark.parametrize("scene", ["friend", "group", "unknown", ""])
+def test_allowlist_empty_denies_every_scene(scene: str) -> None:
+    assert not MilkyPluginConfig(access_mode="allowlist").allows_peer(scene, "123")
+
+
+def test_allowlist_keeps_private_and_group_membership_separate() -> None:
+    config = MilkyPluginConfig(
+        access_mode="allowlist", allowed_friends=["10001"], allowed_groups=["20001"]
+    )
+    assert config.allows_peer("friend", "10001")
+    assert config.allows_peer("group", "20001")
+    assert not config.allows_peer("friend", "20001")
+    assert not config.allows_peer("group", "10001")
+    assert not config.allows_peer("unknown", "10001")
+
+
+def test_open_mode_preserves_optional_inbound_filters() -> None:
+    config = MilkyPluginConfig(allowed_groups=["20001"])
+    assert config.allows_peer("friend", "10001")
+    assert config.allows_peer("group", "20001")
+    assert not config.allows_peer("group", "20002")
+
+
+def test_invalid_access_mode_is_a_config_error() -> None:
+    with pytest.raises(ValidationError):
+        parse_milky_config({"access_mode": "allowlists"})

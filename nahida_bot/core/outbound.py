@@ -27,6 +27,22 @@ class DeliveryError(RuntimeError):
     """The channel was unavailable or did not acknowledge delivery."""
 
 
+class ChannelAccessDenied(DeliveryError):
+    """A channel explicitly excludes this chat from service."""
+
+    def __init__(self, address: ChatAddress) -> None:
+        self.address = address
+        super().__init__(f"Chat {address.chat_key!r} is not allowed by channel policy")
+
+
+def check_channel_access(registry: Any, address: ChatAddress) -> None:
+    """Consult an optional typed-chat policy before background work."""
+    service = registry.get(address.channel) if registry is not None else None
+    check = getattr(service, "check_chat_access", None)
+    if callable(check):
+        check(address)
+
+
 def outbound_payload(
     target: str, channel: str, message: OutboundMessage, *, notification: bool = False
 ) -> MessagePayload:
@@ -113,6 +129,11 @@ async def send_channel_message(
     service = registry.get(channel) if registry is not None and channel else None
     if service is None:
         raise DeliveryError(f"Channel {channel!r} is unavailable; message was not sent")
+    # Let the channel resolve its own routing hints; lifecycle payloads can
+    # describe the originating chat rather than the actual destination.
+    check = getattr(service, "check_outbound_access", None)
+    if callable(check):
+        check(target, message)
     payload = (
         replace(payload, outbound=message)
         if payload is not None

@@ -21,6 +21,7 @@ config:
   command_prefix: "/"
   group_trigger_mode: "mention"
   group_context_capture: false
+  access_mode: open
   allowed_friends: []
   allowed_groups: []
   connect_timeout: 10.0

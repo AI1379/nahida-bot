@@ -123,10 +123,9 @@ class MilkyPokeTool:
         if target_id == self_id:
             raise ValueError("Cannot poke the bot itself.")
         is_group = address.target_type == "group"
-        allowed = (
-            self._config.allowed_groups if is_group else self._config.allowed_friends
-        )
-        if allowed and address.target_id not in allowed:
+        if not self._config.allows_peer(
+            "group" if is_group else "friend", address.target_id
+        ):
             raise ValueError("This chat is not allowed by the Milky configuration.")
         if not is_group and target_id != peer_id:
             raise ValueError("Private pokes can only target the current peer.")

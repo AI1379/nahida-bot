@@ -192,11 +192,7 @@ class MilkyMessageConverter:
         return resolved
 
     def _is_allowed(self, scene: str, peer_id: str) -> bool:
-        if scene == "friend" and self._config.allowed_friends:
-            return peer_id in self._config.allowed_friends
-        if scene == "group" and self._config.allowed_groups:
-            return peer_id in self._config.allowed_groups
-        return True
+        return self._config.allows_peer(scene, peer_id)
 
     def _should_accept_group_message(self, segments: list[IncomingSegment]) -> bool:
         if self._config.group_trigger_mode == "always":

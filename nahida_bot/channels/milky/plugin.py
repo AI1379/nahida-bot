@@ -30,6 +30,7 @@ from nahida_bot.channels.milky.file_upload import (
 from nahida_bot.channels.milky.message_converter import MilkyMessageConverter
 from nahida_bot.channels.milky.poke import MilkyPokeTool
 from nahida_bot.channels.milky.segment_converter import (
+    MessageScene,
     MilkyOutboundConverter,
     MilkyTargetError,
     fallback_text_for_segments,
@@ -60,6 +61,7 @@ from nahida_bot.core.events import (
     PokePayload,
 )
 from nahida_bot.core.group_policy import GroupInteractionPolicy
+from nahida_bot.core.outbound import ChannelAccessDenied
 from nahida_bot.core.router import MessageRouter
 from nahida_bot.agent.media.store import MediaPayload, MediaStore
 from nahida_bot.plugins.base import (
@@ -149,6 +151,36 @@ class MilkyPlugin(Plugin):
     def reply_to_inbound(self) -> bool | None:
         """Optional channel override for router default reply-to behavior."""
         return self.config.reply_to_inbound
+
+    def check_chat_access(self, address: ChatAddress) -> None:
+        """Optional channel policy used by outbound delivery and the scheduler."""
+        if self.config.access_mode != "allowlist":
+            return
+        scene = {"private": "friend", "group": "group"}.get(address.target_type, "")
+        if address.channel != self.channel_id or not self.config.allows_peer(
+            scene, address.target_id
+        ):
+            raise ChannelAccessDenied(address)
+
+    def check_outbound_access(self, target: str, message: OutboundMessage) -> None:
+        """Check the actual route before shared delivery publishes lifecycle events."""
+        if self.config.access_mode == "allowlist":
+            self._resolve_send_target(target, message)
+
+    def _resolve_send_target(
+        self, target: str, message: OutboundMessage
+    ) -> tuple[MessageScene, int]:
+        scene, peer_id = resolve_target(
+            target, message, scene_by_peer=self._scene_by_peer
+        )
+        self.check_chat_access(
+            ChatAddress(
+                channel=self.channel_id,
+                target_type="group" if scene == "group" else "private",
+                target_id=str(peer_id),
+            )
+        )
+        return scene, peer_id
 
     async def on_load(self) -> None:
         """Create client, verify connection, and register channel."""
@@ -450,10 +482,7 @@ class MilkyPlugin(Plugin):
 
         # Apply allowlist filter (same logic as converter._is_allowed).
         if inbound.is_group:
-            if (
-                self._config.allowed_groups
-                and inbound.chat_id not in self._config.allowed_groups
-            ):
+            if not self._config.allows_peer("group", inbound.chat_id):
                 logger.debug(
                     "milky.file_upload_not_allowed",
                     channel=self.channel_id,
@@ -461,10 +490,7 @@ class MilkyPlugin(Plugin):
                 )
                 return
         else:
-            if (
-                self._config.allowed_friends
-                and inbound.chat_id not in self._config.allowed_friends
-            ):
+            if not self._config.allows_peer("friend", inbound.chat_id):
                 logger.debug(
                     "milky.file_upload_not_allowed",
                     channel=self.channel_id,
@@ -515,10 +541,7 @@ class MilkyPlugin(Plugin):
                     self_id=self_id,
                 )
                 return
-            if (
-                self._config.allowed_groups
-                and group_id not in self._config.allowed_groups
-            ):
+            if not self._config.allows_peer("group", group_id):
                 logger.debug(
                     "milky.nudge_not_allowed",
                     channel=self.channel_id,
@@ -547,10 +570,7 @@ class MilkyPlugin(Plugin):
                     user_id=user_id,
                 )
                 return
-            if (
-                self._config.allowed_friends
-                and user_id not in self._config.allowed_friends
-            ):
+            if not self._config.allows_peer("friend", user_id):
                 logger.debug(
                     "milky.nudge_not_allowed",
                     channel=self.channel_id,
@@ -606,7 +626,7 @@ class MilkyPlugin(Plugin):
                 channel=self.channel_id,
             )
             return
-        if self._config.allowed_groups and group_id not in self._config.allowed_groups:
+        if not self._config.allows_peer("group", group_id):
             logger.debug(
                 "milky.reaction_not_allowed",
                 channel=self.channel_id,
@@ -923,9 +943,6 @@ class MilkyPlugin(Plugin):
             target=target,
             **_outbound_log_fields(message),
         )
-        client = self._ensure_client()
-        converter = self._ensure_outbound_converter()
-
         # Prepend reasoning as a plain-text thinking block
         if message.reasoning:
             thinking = f"[💭 思考过程]\n{message.reasoning}"
@@ -938,9 +955,7 @@ class MilkyPlugin(Plugin):
             )
 
         try:
-            scene, peer_id = resolve_target(
-                target, message, scene_by_peer=self._scene_by_peer
-            )
+            scene, peer_id = self._resolve_send_target(target, message)
         except MilkyTargetError as exc:
             logger.warning(
                 "milky.target_invalid",
@@ -949,6 +964,8 @@ class MilkyPlugin(Plugin):
                 channel=self.channel_id,
             )
             return ""
+        client = self._ensure_client()
+        converter = self._ensure_outbound_converter()
         if scene == "group" and self.config.outbound_mentions_enabled and message.text:
             message = await self._with_validated_mentions(client, peer_id, message)
         segments, file_uploads = converter.to_payload(message)

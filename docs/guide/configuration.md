@@ -844,8 +844,35 @@ discord:
 | `command_prefix` | `str` | `"/"` | 命令前缀 |
 | `group_trigger_mode` | `str` | `"mention"` | 群消息进入 Router/Agent 的方式：`none`（不触发）、`mention`（必须 @ 机器人，命令也需 @）、`command`（命令前缀或 @ 机器人）、`always`（全部消息） |
 | `reply_to_inbound` | `bool \| null` | `null` | 是否覆盖 `router.reply_to_inbound`；`null`/省略表示跟随全局 |
-| `allowed_friends` | `list[str]` | `[]` | QQ 好友白名单，空 = 不限制 |
-| `allowed_groups` | `list[str]` | `[]` | QQ 群白名单，空 = 不限制 |
+| `access_mode` | `str` | `"open"` | `allowlist`：入站、出站和 CRON 均检查白名单，空名单拒绝所有；`open`：保留原有可选入站过滤 |
+| `allowed_friends` | `list[str]` | `[]` | 允许私聊的 QQ 号；`allowlist` 模式下空名单不开放私聊，`open` 模式下空名单不限制 |
+| `allowed_groups` | `list[str]` | `[]` | 允许的 QQ 群，群内全员可用；`allowlist` 模式下空名单不开放群聊，`open` 模式下空名单不限制 |
+
+临时收紧开放范围时，在实际启动命令 `--config-yaml` 指定的文件中配置（例如
+`config-run.yaml`），不要只改仓库里的示例 `config.yaml`：
+
+```yaml
+milky:
+  access_mode: allowlist
+  allowed_friends: [] # 填入允许私聊的 QQ 号，建议用字符串
+  allowed_groups: []  # 填入可信群号；群内所有成员均可使用
+```
+
+两份名单独立：群成员获准在群里使用，不会自动获得私聊资格；管理员也不隐式绕过
+聊天白名单。群聊仍遵守 `group_trigger_mode`。被排除的聊天不会通过普通消息、
+文件、戳一戳或表情回应进入会话、上下文采集和主动参与流程。
+渠道发送也会检查目标，包括普通回复、通知、附件和主动戳一戳。
+
+CRON 在执行模型或脚本前检查目标与原始创建会话。被白名单拒绝的任务会停用，
+保留任务内容、执行次数和失败次数，`last_error` 记为 `chat_access_denied`，
+不向被拒绝的聊天发送错误通知。重新开放名单后，需人工重新启用这些任务，避免旧任务自动补发。
+修改配置需在下次启动时加载；修改名单本身不会启动服务。
+
+聊天白名单与工具权限分别配置。启用前应检查顶层 `authorization.mode` 以及
+`authorization.accounts` / `authorization.chats` 的覆盖项。`standard` 模式将
+主机 `exec` 和 `workspace_write` 留给 `authorization.admins`；加入聊天白名单不会
+获得管理员权限。`unsafe` / `relaxed` 下的主机脚本、独立系统 crontab 和直接调用
+Milky HTTP API 的外部程序不受此渠道白名单隔离，不能用白名单替代主机权限控制。
 
 #### 超时 / 重连
 

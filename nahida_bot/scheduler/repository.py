@@ -336,14 +336,16 @@ class CronRepository:
                 )
             await self._engine.db.commit()
 
-    async def cancel_job(self, job_id: str) -> bool:
+    async def cancel_job(self, job_id: str, *, reason: str | None = None) -> bool:
         async with self._engine.write_lock:
             cursor = await self._engine.execute(
                 """
-                UPDATE cron_jobs SET is_active = 0, claimed_at = NULL
+                UPDATE cron_jobs
+                SET is_active = 0, claimed_at = NULL,
+                    last_error = COALESCE(?, last_error)
                 WHERE job_id = ? AND is_active = 1
                 """,
-                (job_id,),
+                (reason, job_id),
             )
             await self._engine.db.commit()
             return cursor.rowcount > 0

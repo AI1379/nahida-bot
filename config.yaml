@@ -406,8 +406,9 @@ telegram:
 #   group_trigger_mode: "mention"  # none / mention / command / always
 #   group_context_capture: false   # true 时，未触发群消息只记录为上下文，可供 conversation_joiner 判断
 #   reply_to_inbound: null         # true/false 覆盖 router.reply_to_inbound；null/省略表示跟随全局
-#   allowed_friends: []            # QQ 号白名单；空列表表示不限制
-#   allowed_groups: []             # 群号白名单；空列表表示不限制
+#   access_mode: "open"            # allowlist 开启严格白名单；open 保留原有可选入站过滤
+#   allowed_friends: []            # 私聊 QQ 号；allowlist 模式下空列表拒绝所有私聊
+#   allowed_groups: []             # 允许的群（群内全员）；allowlist 模式下空列表拒绝所有群
 #   connect_timeout: 10.0
 #   heartbeat_timeout: 30.0
 #   reconnect_initial_delay: 1.0
