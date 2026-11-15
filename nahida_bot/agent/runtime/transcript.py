@@ -366,6 +366,7 @@ class TranscriptProjector:
         limit: int = 20,
         since: datetime | None = None,
         events: list[tuple[datetime, ContextMessage]] | None = None,
+        include_timestamps: bool = False,
     ) -> list[ContextMessage]:
         """Return replayed history for ``session_id``, oldest-first.
 
@@ -411,6 +412,20 @@ class TranscriptProjector:
             if since is None or created_at >= since
         )
         blocks.sort(key=lambda item: item[0])
+        if include_timestamps:
+            from nahida_bot.agent.compaction import HISTORY_TIMESTAMP
+
+            return [
+                replace(
+                    message,
+                    metadata={
+                        **(message.metadata or {}),
+                        HISTORY_TIMESTAMP: created_at.astimezone(UTC).isoformat(),
+                    },
+                )
+                for created_at, block in blocks
+                for message in block
+            ]
         return [message for _, block in blocks for message in block]
 
     @staticmethod

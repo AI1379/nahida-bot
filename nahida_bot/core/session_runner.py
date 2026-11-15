@@ -684,12 +684,24 @@ class SessionRunner:
             include_observed_surplus=bool(
                 message_context is not None and message_context.chat_type == "group"
             ),
+            for_compaction=bool(
+                self._context_config.model_compaction_enabled
+                and runtime.provider_slot is not None
+            ),
         )
         runtime.history = await self._build_history_context(
             request.session_id,
             runtime.recent_records,
             capabilities=runtime.capabilities,
             message_context=message_context,
+            compaction_builder=runtime.context_builder,
+            compaction_provider=(
+                runtime.provider_slot.provider
+                if runtime.provider_slot is not None
+                else None
+            ),
+            compaction_model=runtime.effective_model or None,
+            stop_event=request.stop_event,
         )
         reply_anchor = self._load_reply_anchor_context(
             runtime.recent_records,
@@ -1378,6 +1390,7 @@ class SessionRunner:
         *,
         workspace_id: str | None = None,
         include_observed_surplus: bool = False,
+        for_compaction: bool = False,
     ) -> list[MemoryRecord]:
         if self._memory is None:
             logger.debug(
@@ -1390,6 +1403,10 @@ class SessionRunner:
         history_query_limit = self._history_query_limit(
             include_observed_surplus=include_observed_surplus,
         )
+        if for_compaction:
+            history_query_limit = max(
+                history_query_limit, min(self._max_history_turns * 4, 2000)
+            )
         records = await self._memory.get_recent(session_id, limit=history_query_limit)
         logger.debug(
             "session_runner.history_loaded",
@@ -1428,11 +1445,27 @@ class SessionRunner:
         *,
         capabilities: ModelCapabilities | None = None,
         message_context: MessageContext | None = None,
+        compaction_builder: Any = None,
+        compaction_provider: ChatProvider | None = None,
+        compaction_model: str | None = None,
+        stop_event: asyncio.Event | None = None,
     ) -> list[ContextMessage]:
         history_cutoff = _latest_cutoff(
             self._group_dialogue_cutoff(records, message_context=message_context),
             self._group_topic_cutoff(records, message_context=message_context),
         )
+        if self._memory is not None:
+            try:
+                meta = await self._memory.get_session_meta(session_id)
+                reset_at = meta.get("history_reset_at")
+                if isinstance(reset_at, str) and reset_at:
+                    history_cutoff = _latest_cutoff(
+                        history_cutoff, datetime.fromisoformat(reset_at)
+                    )
+            except Exception:
+                logger.warning(
+                    "session_runner.history_reset_read_failed", session_id=session_id
+                )
         eligible = [
             record
             for record in records
@@ -1440,6 +1473,13 @@ class SessionRunner:
             and (history_cutoff is None or record.turn.created_at >= history_cutoff)
         ]
         messages: list[ContextMessage] = []
+        model_compaction = bool(
+            self._context_config.model_compaction_enabled
+            and compaction_builder is not None
+            and compaction_builder.budget.model_compaction_enabled
+            and compaction_provider is not None
+            and self._memory is not None
+        )
         projector = self._transcript_projector
         replayed = False
         if projector is not None:
@@ -1457,6 +1497,14 @@ class SessionRunner:
                     capabilities=capabilities,
                     since=history_cutoff,
                     events=events,
+                    **(
+                        {
+                            "limit": max(20, min(self._max_history_turns, 200)),
+                            "include_timestamps": True,
+                        }
+                        if model_compaction
+                        else {}
+                    ),
                 )
             except Exception:
                 logger.warning(
@@ -1471,9 +1519,52 @@ class SessionRunner:
             messages = [
                 await self._history_record_message(record) for record in eligible
             ]
+            if model_compaction:
+                from nahida_bot.agent.compaction import HISTORY_TIMESTAMP
+
+                messages = [
+                    replace(
+                        message,
+                        metadata={
+                            **(message.metadata or {}),
+                            HISTORY_TIMESTAMP: record.turn.created_at.astimezone(
+                                UTC
+                            ).isoformat(),
+                        },
+                    )
+                    for message, record in zip(messages, eligible, strict=True)
+                ]
 
         # Both representations obey the same atomic window and media policy.
-        messages = truncate_messages_to_window(messages, self._max_history_turns)
+        if (
+            model_compaction
+            and self._memory is not None
+            and compaction_provider is not None
+        ):
+            from nahida_bot.core.session_compaction import (
+                HistoryCompactionScope,
+                SessionHistoryCompactor,
+            )
+
+            messages = await SessionHistoryCompactor(
+                self._memory,
+                compaction_builder,
+                compaction_provider,
+            ).compact(
+                messages,
+                HistoryCompactionScope(
+                    session_id=session_id,
+                    mode="replay" if replayed else "legacy",
+                    scope_start=history_cutoff.astimezone(UTC).isoformat()
+                    if history_cutoff
+                    else "",
+                    model=compaction_model,
+                    max_messages=self._max_history_turns,
+                    stop_event=stop_event,
+                ),
+            )
+        else:
+            messages = truncate_messages_to_window(messages, self._max_history_turns)
         if self._multimodal_config is not None and any(
             m.parts for m in messages if m.role == "user"
         ):

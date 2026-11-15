@@ -243,6 +243,14 @@ class ContextBudget:
     max_chars: int | None = None
     reserved_chars: int = 0
     summary_max_chars: int = 2000
+    # Manually constructed budgets retain the synchronous clipping API.
+    # Application budgets opt into model compaction through ContextConfig.
+    model_compaction_enabled: bool = False
+    compaction_timeout_seconds: float = 60.0
+    compaction_summary_max_chars: int = 12000
+    compaction_history_tokens: int = 60000
+    compaction_keep_recent_turns: int = 4
+    compaction_max_input_chars: int = 180000
 
     # Reasoning chain budgeting (Phase 2.8)
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.BUDGET
@@ -309,6 +317,12 @@ def build_context_budget(
         max_chars=cfg.max_chars,
         reserved_chars=cfg.reserved_chars,
         summary_max_chars=cfg.summary_max_chars,
+        model_compaction_enabled=cfg.model_compaction_enabled,
+        compaction_timeout_seconds=cfg.compaction_timeout_seconds,
+        compaction_summary_max_chars=cfg.compaction_summary_max_chars,
+        compaction_history_tokens=cfg.compaction_history_tokens,
+        compaction_keep_recent_turns=cfg.compaction_keep_recent_turns,
+        compaction_max_input_chars=cfg.compaction_max_input_chars,
         reasoning_policy=policy,
         max_reasoning_tokens=cfg.max_reasoning_tokens,
     )
@@ -355,6 +369,26 @@ class ContextBuilder:
             )
         return messages
 
+    def build_prefix(
+        self, *, system_prompt: str, workspace_root: Path | None = None
+    ) -> list[ContextMessage]:
+        """Load the stable instructions, which never participate in compaction."""
+        prefix = [
+            ContextMessage(
+                role="system", source="system_baseline", content=system_prompt
+            )
+        ]
+        if workspace_root is not None:
+            prefix.extend(self.load_workspace_instructions(workspace_root))
+            catalog = SkillCatalog.build_catalog_text(workspace_root)
+            if catalog is not None:
+                prefix.append(
+                    ContextMessage(
+                        role="system", source="skill_catalog", content=catalog
+                    )
+                )
+        return prefix
+
     def build_context(
         self,
         *,
@@ -373,25 +407,9 @@ class ContextBuilder:
         4. Tool messages
         5. Protected messages, usually the active user turn and live tool transcript
         """
-        prefix_messages: list[ContextMessage] = [
-            ContextMessage(
-                role="system",
-                source="system_baseline",
-                content=system_prompt,
-            )
-        ]
-
-        if workspace_root is not None:
-            prefix_messages.extend(self.load_workspace_instructions(workspace_root))
-            catalog_text = SkillCatalog.build_catalog_text(workspace_root)
-            if catalog_text is not None:
-                prefix_messages.append(
-                    ContextMessage(
-                        role="system", source="skill_catalog", content=catalog_text
-                    )
-                )
-            # Dynamic memory is prepared by MemoryService for this audience.
-            # Shared workspace exports are never a source of model context.
+        prefix_messages = self.build_prefix(
+            system_prompt=system_prompt, workspace_root=workspace_root
+        )
 
         optional_messages = [*(history_messages or []), *(tool_messages or [])]
         protected = list(protected_messages or [])

@@ -136,6 +136,12 @@ class ContextConfig(BaseModel):
     reserved_chars: int = Field(default=0, ge=0)
     # Larger summaries help preserve more dropped context on modern long-window models.
     summary_max_chars: int = Field(default=2000, ge=0)
+    model_compaction_enabled: bool = True
+    compaction_timeout_seconds: float = Field(default=60.0, gt=0)
+    compaction_summary_max_chars: int = Field(default=12000, ge=256)
+    compaction_history_tokens: int = Field(default=60000, ge=1)
+    compaction_keep_recent_turns: int = Field(default=4, ge=1)
+    compaction_max_input_chars: int = Field(default=180000, ge=1024)
     reasoning_policy: ReasoningPolicyValue = "budget"
     max_reasoning_tokens: int = Field(default=2000, ge=0)
 

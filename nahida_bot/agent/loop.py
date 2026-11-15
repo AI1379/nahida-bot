@@ -18,7 +18,12 @@ from nahida_bot.agent.tool_batch import execute_tool_batch
 
 import structlog
 
-from nahida_bot.agent.context import ContextBuilder, ContextMessage, ContextPart
+from nahida_bot.agent.context import (
+    ContextBuilder,
+    ContextMessage,
+    ContextPart,
+    tool_transcript_groups,
+)
 from nahida_bot.agent.metrics import MetricsCollector, Trace
 from nahida_bot.agent.runtime import (
     AgentRunContext,
@@ -243,6 +248,8 @@ class _LoopRuntime:
     effective_system_prompt: str
     history: list[ContextMessage]
     active_turn_messages: list[ContextMessage]
+    active_prompt_messages: list[ContextMessage]
+    compaction_failed: bool = False
     tool_messages: list[ContextMessage] = field(default_factory=list)
     assistant_messages: list[ContextMessage] = field(default_factory=list)
     total_usage: TokenUsage = field(default_factory=TokenUsage)
@@ -436,6 +443,7 @@ class AgentLoop:
                 )
                 runtime.tool_messages.extend(executed_messages)
                 runtime.active_turn_messages.extend(executed_messages)
+                runtime.active_prompt_messages.extend(executed_messages)
                 logger.debug(
                     "agent_loop.tools_executed",
                     trace_id=runtime.trace.trace_id if runtime.trace else "",
@@ -472,11 +480,12 @@ class AgentLoop:
     async def _call_loop_step(self, runtime: _LoopRuntime) -> _StepResponse:
         """Build one prompt, call the provider, and update in-memory state."""
         request = runtime.request
+        await self._compact_loop_context(runtime)
         prompt_messages = runtime.context_builder.build_context(
             system_prompt=runtime.effective_system_prompt,
             workspace_root=request.workspace_root,
             history_messages=runtime.history,
-            protected_messages=runtime.active_turn_messages,
+            protected_messages=runtime.active_prompt_messages,
         )
         logger.debug(
             "agent_loop.context_built",
@@ -518,11 +527,52 @@ class AgentLoop:
         if assistant_message is not None:
             runtime.assistant_messages.append(assistant_message)
             runtime.active_turn_messages.append(assistant_message)
+            runtime.active_prompt_messages.append(assistant_message)
         return _StepResponse(
             response=response,
             display=self._display_content(response),
             reasoning=response.reasoning_content or None,
         )
+
+    async def _compact_loop_context(self, runtime: _LoopRuntime) -> None:
+        """Compact the prompt projection without modifying the execution transcript."""
+        from nahida_bot.agent.compaction import ModelCompactor, summary_message
+
+        builder = runtime.context_builder
+        if not builder.budget.model_compaction_enabled or runtime.compaction_failed:
+            return
+        prefix = builder.build_prefix(
+            system_prompt=runtime.effective_system_prompt,
+            workspace_root=runtime.request.workspace_root,
+        )
+
+        if (
+            builder._estimate_tokens(
+                [*prefix, *runtime.history, *runtime.active_prompt_messages]
+            )
+            <= builder.budget.soft_token_limit
+        ):
+            return
+        groups = tool_transcript_groups(runtime.active_prompt_messages[1:])
+        # Preserve the live user request and newest complete call/result group.
+        older = [message for group in groups[:-1] for message in group]
+        if not runtime.history and not older:
+            return
+        summary = await ModelCompactor(builder).summarize(
+            [*runtime.history, *older],
+            provider=runtime.provider,
+            model=runtime.request.model,
+            stop_event=runtime.request.stop_event,
+        )
+        if summary is None:
+            runtime.compaction_failed = True
+            return
+        runtime.history = [summary_message(summary)]
+        if older:
+            runtime.active_prompt_messages = [
+                runtime.active_prompt_messages[0],
+                *groups[-1],
+            ]
 
     @staticmethod
     async def _record_step_response(
@@ -610,6 +660,7 @@ class AgentLoop:
             effective_system_prompt=effective_system_prompt,
             history=history,
             active_turn_messages=active_turn_messages,
+            active_prompt_messages=list(active_turn_messages),
         )
 
     def _log_loop_start(

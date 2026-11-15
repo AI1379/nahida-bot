@@ -513,6 +513,13 @@ class SQLiteMemoryRepository:
                 "DELETE FROM memory_turns WHERE session_id = ?",
                 (session_id,),
             )
+            metadata = await self.get_session_metadata(session_id)
+            metadata.pop("context_compaction", None)
+            metadata["history_reset_at"] = _utc_now_iso()
+            await self._engine.execute(
+                "UPDATE sessions SET metadata_json = ? WHERE session_id = ?",
+                (json.dumps(metadata, ensure_ascii=False), session_id),
+            )
             await self._engine.db.commit()
         return cursor.rowcount
 
