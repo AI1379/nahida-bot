@@ -188,6 +188,23 @@ class SQLiteMemoryStore(MemoryStore):
             for row in await SQLiteMemoryCatalog(self._engine).select(**kwargs)
         ]
 
+    async def inspect_overview(
+        self, scope_type: str = "", scope_id: str = ""
+    ) -> dict[str, Any]:
+        from nahida_bot.db.repositories.sqlite_memory_inspection import (
+            SQLiteMemoryInspection,
+        )
+
+        return await SQLiteMemoryInspection(self._engine).overview(scope_type, scope_id)
+
+    async def inspect_item(self, item_id: str) -> MemoryItem | None:
+        from nahida_bot.db.repositories.sqlite_memory_inspection import (
+            SQLiteMemoryInspection,
+        )
+
+        row = await SQLiteMemoryInspection(self._engine).item(item_id)
+        return _row_to_item(row) if row else None
+
     async def list_category_items(
         self,
         query: str,
@@ -414,6 +431,14 @@ class SQLiteMemoryStore(MemoryStore):
     ) -> None:
         """Merge updates into session metadata."""
         await self._repo.update_session_metadata(session_id, updates)
+
+    async def set_error_notifications(self, session_id: str, mode: str) -> bool:
+        return await self._repo.set_error_notifications(session_id, mode)
+
+    async def patch_runtime_settings(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        return await self._repo.patch_runtime_settings(session_id, updates)
 
     async def persist_active_session(self, chat_key: str, session_id: str) -> None:
         """Persist the active session override for a chat key."""

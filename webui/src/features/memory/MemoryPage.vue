@@ -28,6 +28,8 @@ import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import Input from "@/components/ui/Input.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Textarea from "@/components/ui/Textarea.vue";
+import MemoryOverview from "./MemoryOverview.vue";
+import MemoryEvidence from "./MemoryEvidence.vue";
 import { formatDateTime, relativeTime } from "@/lib/utils";
 
 type MemoryTab = "items" | "candidates" | "turns";
@@ -258,7 +260,7 @@ function formatJson(value: Record<string, unknown>) {
       <div>
         <h1>Memory</h1>
         <div class="header-meta">
-          <span>{{ items.length }} active items</span>
+          <span>{{ items.length }} items in this result · up to 150</span>
           <span>{{ restrictedCount }} restricted</span>
           <span>{{ percent(averageImportance) }} avg importance</span>
         </div>
@@ -283,6 +285,8 @@ function formatJson(value: Record<string, unknown>) {
         </Button>
       </div>
     </div>
+
+    <MemoryOverview :scope-type="scopeType" :scope-id="scopeId" @select-scope="scopeType = $event.scope_type; scopeId = $event.scope_id; activeTab = 'items'" />
 
     <div class="toolbar">
       <div class="tab-buttons">
@@ -438,16 +442,20 @@ function formatJson(value: Record<string, unknown>) {
             </div>
           </div>
 
-          <div class="json-columns">
-            <div>
-              <h3>Evidence</h3>
-              <pre>{{ formatJson(selectedItem.evidence) }}</pre>
+          <MemoryEvidence :item-id="selectedItem.item_id" />
+          <details>
+            <summary>Stored metadata</summary>
+            <div class="json-columns">
+              <div>
+                <h3>Evidence</h3>
+                <pre>{{ formatJson(selectedItem.evidence) }}</pre>
+              </div>
+              <div>
+                <h3>Metadata</h3>
+                <pre>{{ formatJson(selectedItem.metadata) }}</pre>
+              </div>
             </div>
-            <div>
-              <h3>Metadata</h3>
-              <pre>{{ formatJson(selectedItem.metadata) }}</pre>
-            </div>
-          </div>
+          </details>
         </template>
       </main>
     </section>

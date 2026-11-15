@@ -582,7 +582,8 @@ async def test_fire_job_failure_releases_claim_for_retry_without_counting_run() 
         assert stored.last_error is not None
         assert "RuntimeError" in stored.last_error
         assert "boom" in stored.last_error
-        assert channel.sent[0][1].text.startswith("[Scheduler] Failed\nTask: job1")
+        # Background failures stay observable in job state, without unsolicited messages.
+        assert channel.sent == []
     finally:
         await engine.close()
 

@@ -44,6 +44,7 @@ from nahida_bot.core.message_context import (
     render_message_with_context,
 )
 from nahida_bot.core.outbound import send_channel_message
+from nahida_bot.core.response_policy import is_failed_response, should_notify_error
 from nahida_bot.core.runtime_settings import runtime_settings_from_meta
 from nahida_bot.core.sentinel import normalize_reply_text
 from nahida_bot.identity.resolver import IdentityResolver
@@ -122,6 +123,7 @@ class _AgentDeliveryState:
     cancelled: bool = False
     crashed: bool = False
     done_error: str = ""
+    terminal_state: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -1198,13 +1200,16 @@ class MessageRouter:
             state.cancelled = True
             logger.debug("router.agent_cancelled", session_id=request.session_id)
             raise
-        except Exception:
+        except Exception as exc:
             state.crashed = True
+            state.done_error = type(exc).__name__
             logger.exception(
                 "router.agent_run_failed",
                 session_id=request.session_id,
             )
             try:
+                if not await self._should_notify_error(request):
+                    return
                 await self._send_response(
                     request.inbound,
                     request.session_id,
@@ -1308,7 +1313,15 @@ class MessageRouter:
         reasoning_display: ReasoningDisplayConfig,
         state: _AgentDeliveryState,
     ) -> None:
-        if event.error == "cancelled":
+        state.done_error = event.error or ""
+        state.terminal_state = event.terminal_state or ""
+        if is_failed_response(state.terminal_state, event.error):
+            state.cancelled = (
+                event.error == "cancelled" or event.terminal_state == "cancelled"
+            )
+            if not await self._should_notify_error(request):
+                return
+        if state.cancelled:
             state.cancelled = True
             await self._send_response(
                 request.inbound,
@@ -1337,6 +1350,13 @@ class MessageRouter:
             final,
             reasoning=reasoning,
             reply_to_override=request.reply_to_override,
+        )
+
+    async def _should_notify_error(self, request: _AgentDispatchRequest) -> bool:
+        return await should_notify_error(
+            self.memory,
+            request.session_id,
+            trigger_kind=_trigger_kind(request.inbound, source_tag=request.source_tag),
         )
 
     def _normalize_agent_text(self, text: str | None) -> str | None:
@@ -1380,6 +1400,8 @@ class MessageRouter:
             return "crashed"
         if state.done_error:
             return "failed"
+        if state.terminal_state in {"failed", "incomplete"}:
+            return state.terminal_state
         return "completed"
 
     def _expire_pending(self, session_id: str) -> None:

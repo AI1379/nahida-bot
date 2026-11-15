@@ -1,11 +1,11 @@
 # Runtime Settings TODO
 
-Status as of 2026-05-15: first-pass reasoning runtime settings are implemented.
+Status as of 2026-11-15: reasoning and session error-notification settings are implemented.
 The broader runtime settings surface and shared command parser are still deferred.
 
 This note tracks runtime-configurable settings that should not be implemented in
-the first pass. The first pass only supports session-persisted reasoning display
-and reasoning effort.
+the first pass. Implemented settings include session-persisted reasoning display,
+reasoning effort and error notifications.
 
 ## Implemented first
 
@@ -16,6 +16,9 @@ and reasoning effort.
   to the provider/config default.
 - `/reasoning reset`: removes the session-level reasoning runtime metadata.
 - `/status`: displays the effective session reasoning display/effort values.
+- WebUI Sessions: `runtime.error_notifications` selects `interactive` (default),
+  `none`, or `all`. Default behavior keeps unsolicited failures quiet. Normal
+  model replies are unchanged. See [phase-one design](refactor-phase-one.md).
 
 Runtime values live in session metadata under `runtime`. `config.yaml` remains
 the startup/default source.

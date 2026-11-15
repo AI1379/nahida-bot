@@ -11,6 +11,10 @@ import { useToastStore } from "@/stores/toast";
 import { useAppStore } from "@/stores/app";
 import type {
   BootstrapResponse,
+  ErrorNotificationMode,
+  ErrorNotificationSettings,
+  MemoryOverviewResponse,
+  MemoryDetailResponse,
   ConfigCurrentResponse,
   ConfigDocumentResponse,
   ConfigPatchRequest,
@@ -130,6 +134,42 @@ export function useSessionList() {
 }
 
 type ReadableRef<T> = Ref<T> | ComputedRef<T>;
+
+export function useSessionErrorNotifications(sessionId: ReadableRef<string>) {
+  return useQuery<ErrorNotificationSettings>({
+    queryKey: computed(() => ["sessions", "error-notifications", sessionId.value]),
+    queryFn: () => api.get(`/sessions/${encodeURIComponent(sessionId.value)}/error-notifications`),
+    enabled: computed(() => !!sessionId.value),
+  });
+}
+
+export function useSetSessionErrorNotifications() {
+  const qc = useQueryClient();
+  const toast = useToastStore();
+  return useMutation<ErrorNotificationSettings, Error, { sessionId: string; mode: ErrorNotificationMode }>({
+    mutationFn: ({ sessionId, mode }) => api.put(`/sessions/${encodeURIComponent(sessionId)}/error-notifications`, { mode }),
+    onSuccess(_data, variables) {
+      qc.invalidateQueries({ queryKey: ["sessions", "error-notifications", variables.sessionId] });
+      toast.add("Error notifications updated for this session.", "success");
+    },
+    onError(error) { toast.add(`Save failed: ${toApiError(error).detail}`, "error"); },
+  });
+}
+
+export function useMemoryOverview(params: ReadableRef<{ scope_type: string; scope_id: string }>) {
+  return useQuery<MemoryOverviewResponse>({
+    queryKey: computed(() => ["memory", "overview", params.value]),
+    queryFn: () => api.get(`/memory/overview?${new URLSearchParams(params.value)}`),
+  });
+}
+
+export function useMemoryDetail(itemId: ReadableRef<string>) {
+  return useQuery<MemoryDetailResponse>({
+    queryKey: computed(() => ["memory", "detail", itemId.value]),
+    queryFn: () => api.get(`/memory/items/${encodeURIComponent(itemId.value)}`),
+    enabled: computed(() => !!itemId.value),
+  });
+}
 
 export function useSessionHistory(sessionId: ReadableRef<string>) {
   return useQuery<SessionHistoryResponse>({

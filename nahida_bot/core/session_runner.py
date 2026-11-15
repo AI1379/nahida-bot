@@ -45,6 +45,7 @@ from nahida_bot.core.message_context import (
     render_message_with_context,
 )
 from nahida_bot.core.sentinel import normalize_reply_text
+from nahida_bot.core.response_policy import is_failed_response
 from nahida_bot.core.runtime_settings import (
     REASONING_EFFORTS,
     ReasoningRuntimeSettings,
@@ -2833,7 +2834,9 @@ class SessionRunner:
             seen.add(content)
 
         final_response = _visible_text(
-            str(result.final_response or ""),
+            ""
+            if is_failed_response(result.terminal_state, result.error)
+            else str(result.final_response or ""),
             enable_silent_reply=self._enable_silent_reply,
         )
         fallback_metadata_source = (

@@ -1911,10 +1911,19 @@ class RealBotAPI(PluginServiceAPI):
             )
             return {}
         await self._memory.ensure_session(session_id)
-        meta = await self._memory.get_session_meta(session_id)
-        runtime = runtime_meta_from_session_meta(meta)
-        merged = merge_runtime_meta(runtime, updates)
-        await self._memory.update_session_meta(session_id, {RUNTIME_META_KEY: merged})
+        patcher = cast(
+            Callable[..., Awaitable[dict[str, Any] | None]] | None,
+            getattr(self._memory, "patch_runtime_settings", None),
+        )
+        if callable(patcher):
+            merged = await patcher(session_id, updates) or {}
+        else:
+            meta = await self._memory.get_session_meta(session_id)
+            runtime = runtime_meta_from_session_meta(meta)
+            merged = merge_runtime_meta(runtime, updates)
+            await self._memory.update_session_meta(
+                session_id, {RUNTIME_META_KEY: merged}
+            )
         self._logger.debug(
             "runtime_settings_updated",
             session_id=session_id,

@@ -9,6 +9,7 @@ import {
 } from "@/api/queries";
 import Alert from "@/components/ui/Alert.vue";
 import Badge from "@/components/ui/Badge.vue";
+import SessionErrorNotifications from "./SessionErrorNotifications.vue";
 import { formatDateTime, relativeTime } from "@/lib/utils";
 import type { SessionSearchResult, SessionSummary } from "@/api/schemas";
 
@@ -238,6 +239,7 @@ function resultSource(result: SessionSearchResult) {
           <div v-if="!selectedId" class="empty">Select a session to view history.</div>
 
           <template v-else-if="selectedType === 'session'">
+            <SessionErrorNotifications :key="selectedSessionId" :session-id="selectedSessionId" />
             <div v-if="historyQuery.isLoading.value" class="loading">Loading history...</div>
             <template v-else-if="historyQuery.data.value">
               <div class="history-header">

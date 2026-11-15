@@ -25,6 +25,7 @@ from nahida_bot.core.outbound import (
     send_channel_message,
 )
 from nahida_bot.core.sentinel import normalize_reply_text
+from nahida_bot.core.response_policy import is_failed_response, should_notify_error
 from nahida_bot.plugins.base import MessageContext, OutboundMessage
 from nahida_bot.scheduler.models import CronJob, SchedulerConfig
 from nahida_bot.scheduler.repository import CronRepository
@@ -1122,6 +1123,11 @@ class SchedulerService:
         )
 
         # Send response via channel
+        if is_failed_response(result.terminal_state, result.error):
+            raise RuntimeError(
+                f"Agent run {result.terminal_state or 'failed'}: "
+                f"{result.error or result.terminal_reason}"
+            )
         normalized = normalize_reply_text(
             result.final_response, enable_silent_reply=self._enable_silent_reply
         )
@@ -1184,6 +1190,12 @@ class SchedulerService:
         self, job: CronJob, message: str, *, timeout: float | None = None
     ) -> None:
         """Identify the failed job and explain whether it will retry."""
+        if not await should_notify_error(
+            getattr(self._runner, "memory", None),
+            job.created_from_session_id or job.session_key,
+            trigger_kind="cron_trigger",
+        ):
+            return
         failures = job.failure_count + 1
         maximum = self._config.max_consecutive_failures
         next_action = (

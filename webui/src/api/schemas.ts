@@ -228,6 +228,57 @@ export interface SessionSearchResponse {
 export type MemorySensitivity = "public" | "private" | "secret_like";
 export type MemorySensitivitySource = "default" | "dream" | "explicit";
 
+export type ErrorNotificationMode = "interactive" | "all" | "none";
+export interface ErrorNotificationSettings { mode: ErrorNotificationMode }
+
+export interface MemoryScopeSummary {
+  scope_type: string;
+  scope_id: string;
+  active: number;
+  restricted: number;
+  last_updated_at: string;
+}
+
+export interface MemoryOverviewResponse {
+  total: number;
+  active: number;
+  archived: number;
+  restricted: number;
+  without_subject: number;
+  without_evidence: number;
+  last_updated_at: string;
+  candidates: Record<string, number>;
+  scopes: MemoryScopeSummary[];
+  scopes_truncated: boolean;
+  soft_scope: boolean;
+}
+
+export interface MemoryEvidence {
+  reference: {
+    turn_id: number;
+    session_id: string;
+    chat_id: string;
+    account_key: string;
+    display_name: string;
+    message_id: string;
+    timestamp: string;
+    role: string;
+    source: string;
+  };
+  turn: MemoryTurn | null;
+  status: "available" | "missing" | "mismatch";
+  excerpt_truncated: boolean;
+}
+
+export interface MemoryDetailResponse {
+  item: MemoryItem;
+  subject: { kind: string; id: string; members: { kind: string; id: string }[] };
+  portable: boolean;
+  evidence: MemoryEvidence[];
+  evidence_truncated: boolean;
+  replaces_item_id: string;
+}
+
 export interface MemoryItem {
   item_id: string;
   scope_type: string;

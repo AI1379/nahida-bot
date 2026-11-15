@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 RUNTIME_META_KEY = "runtime"
 REASONING_EFFORTS = frozenset({"low", "medium", "high", "max"})
+ErrorNotificationMode = Literal["interactive", "all", "none"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -25,6 +26,7 @@ class RuntimeSettings:
     reasoning: ReasoningRuntimeSettings = field(
         default_factory=ReasoningRuntimeSettings
     )
+    error_notifications: ErrorNotificationMode = "interactive"
 
 
 current_runtime_settings: ContextVar[RuntimeSettings] = ContextVar(
@@ -57,8 +59,20 @@ def runtime_settings_from_meta(meta: dict[str, Any] | None) -> RuntimeSettings:
         reasoning=ReasoningRuntimeSettings(
             show=show,
             effort=effort,
-        )
+        ),
+        error_notifications=normalize_error_notifications(
+            runtime.get("error_notifications")
+        ),
     )
+
+
+def normalize_error_notifications(value: object) -> ErrorNotificationMode:
+    """Unknown or absent settings keep unsolicited failures quiet."""
+    if value == "all":
+        return "all"
+    if value == "none":
+        return "none"
+    return "interactive"
 
 
 def merge_runtime_meta(

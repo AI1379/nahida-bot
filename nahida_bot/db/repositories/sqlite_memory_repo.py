@@ -576,6 +576,34 @@ class SQLiteMemoryRepository:
             )
             await self._engine.db.commit()
 
+    async def set_error_notifications(self, session_id: str, mode: str) -> bool:
+        """Patch one runtime field atomically, preserving concurrent session edits."""
+        if mode not in {"interactive", "all", "none"}:
+            raise ValueError("invalid error notification mode")
+        return (
+            await self.patch_runtime_settings(session_id, {"error_notifications": mode})
+            is not None
+        )
+
+    async def patch_runtime_settings(
+        self, session_id: str, updates: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Merge a runtime patch under the same lock as other metadata writes."""
+        async with self._engine.write_lock:
+            cursor = await self._engine.execute(
+                "UPDATE sessions SET metadata_json = json_patch("
+                "CASE WHEN json_valid(metadata_json) THEN metadata_json ELSE '{}' END, "
+                "json_object('runtime', json(?))) "
+                "WHERE session_id = ?",
+                (json.dumps(updates, ensure_ascii=False), session_id),
+            )
+            await self._engine.db.commit()
+            if not cursor.rowcount:
+                return None
+            meta = await self.get_session_metadata(session_id)
+            runtime = meta.get("runtime")
+            return runtime if isinstance(runtime, dict) else {}
+
     # -- Active session overrides --
 
     async def set_active_session(self, chat_key: str, session_id: str) -> None:

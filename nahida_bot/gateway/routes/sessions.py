@@ -6,10 +6,16 @@ from typing import Any, Awaitable, Callable, cast
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict
 
 from nahida_bot.core.chat_address import chat_key_from_session_id, classify_session_key
 from nahida_bot.core.sentinel import detect_sentinel
+from nahida_bot.core.runtime_settings import (
+    ErrorNotificationMode,
+    runtime_settings_from_meta,
+)
 from nahida_bot.gateway.deps import get_application
+from nahida_bot.gateway.services import audit_log
 from nahida_bot.gateway.schemas import (
     MessageDeliveriesResponse,
     MessageDeliveryGroupResponse,
@@ -26,6 +32,47 @@ from nahida_bot.gateway.schemas import (
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+class ErrorNotificationSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: ErrorNotificationMode = "interactive"
+
+
+@router.get(
+    "/api/sessions/{session_id}/error-notifications",
+    response_model=ErrorNotificationSettings,
+)
+async def get_error_notifications(
+    session_id: str, app=Depends(get_application)
+) -> ErrorNotificationSettings:
+    if app.memory_store is None:
+        raise HTTPException(status_code=503, detail="Memory store not initialized")
+    settings = runtime_settings_from_meta(
+        await app.memory_store.get_session_meta(session_id)
+    )
+    return ErrorNotificationSettings(mode=settings.error_notifications)
+
+
+@router.put(
+    "/api/sessions/{session_id}/error-notifications",
+    response_model=ErrorNotificationSettings,
+)
+async def set_error_notifications(
+    session_id: str, body: ErrorNotificationSettings, app=Depends(get_application)
+) -> ErrorNotificationSettings:
+    setter = cast(
+        Callable[[str, str], Awaitable[bool]] | None,
+        getattr(app.memory_store, "set_error_notifications", None),
+    )
+    if not callable(setter):
+        raise HTTPException(status_code=503, detail="Session settings are unavailable")
+    if not await setter(session_id, body.mode):
+        raise HTTPException(status_code=404, detail="Session not found")
+    audit_log.audit(
+        "session.error_notifications_changed", detail=f"{session_id}: {body.mode}"
+    )
+    return body
 
 
 @router.get("/api/sessions", response_model=SessionListResponse)
