@@ -10,8 +10,9 @@ from .models import Task, TaskCreate, TaskUpdate
 
 
 class TaskService:
-    def __init__(self, api: BotAPI) -> None:
+    def __init__(self, api: BotAPI, timezone: str = "Asia/Shanghai") -> None:
         self.api = api
+        self.timezone = timezone
 
     @staticmethod
     def prefix(owner: str) -> str:
@@ -42,9 +43,14 @@ class TaskService:
         task = Task(
             id=task_id,
             owner=owner,
+            timezone=self.timezone,
             title=request.title,
             planned_on=request.planned_on,
             due_date=request.due_date,
+            due_at=request.due_at,
+            remind_at=request.remind_at,
+            description=request.description,
+            priority=request.priority,
             created_at=now,
             updated_at=now,
             operation_id=request.operation_id,
@@ -65,9 +71,17 @@ class TaskService:
         if raw is None or raw.get("owner") != owner:
             raise ValueError("Task not found")
         task = Task.model_validate(raw)
+        if not isinstance(task.revision, int) or not isinstance(
+            request.expected_revision, int
+        ):
+            raise ValueError("Local tasks require an integer revision")
         updates = request.model_dump(
             exclude={"task_id", "expected_revision"}, exclude_unset=True
         )
+        if request.due_at is not None:
+            updates["due_date"] = None
+        if request.due_date is not None:
+            updates["due_at"] = None
         if task.operation_id == request.operation_id:
             if any(getattr(task, name) != value for name, value in updates.items()):
                 raise ValueError("Operation ID already used with different changes")

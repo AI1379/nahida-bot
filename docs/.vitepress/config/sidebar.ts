@@ -9,6 +9,7 @@ export const sidebar: DefaultTheme.Sidebar = {
         { text: "Workspace 文件", link: "/guide/workspace-files" },
         { text: "开发规范", link: "/guide/development" },
         { text: "配置参考", link: "/guide/configuration" },
+        { text: "CalDAV 提醒事项与日历", link: "/guide/caldav" },
       ],
     },
   ],

@@ -1032,6 +1032,8 @@ class Application:
             "nahida_bot.plugins.knowledge_base",
             "nahida_bot.plugins.pomodoro",
             "nahida_bot.plugins.todo",
+            "nahida_bot.plugins.caldav",
+            "nahida_bot.plugins.calendar",
             "nahida_bot.plugins.notification_router",
             "nahida_bot.plugins.daily_brief",
             "nahida_bot.plugins.tts",

@@ -1,0 +1,13 @@
+id: caldav
+name: "CalDAV Sources"
+version: "0.1.0"
+description: "Independent, account-bound task and calendar connections"
+entrypoint: "nahida_bot.plugins.caldav.plugin:CalDAVPlugin"
+enabled: false
+permissions:
+  network: {outbound: ['*']}
+  plugin_data: {read: true, write: true}
+  plugin_secrets: {read: true}
+config:
+  connections: {}
+  bindings: {}

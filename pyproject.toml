@@ -41,6 +41,9 @@ dependencies = [
     # SDK (workspace member)
     "nahida-bot-sdk",
     "tzdata",
+    "icalendar>=6.3,<8",
+    "recurring-ical-events>=3,<4",
+    "defusedxml>=0.7,<1",
 ]
 
 [dependency-groups]
@@ -64,6 +67,7 @@ dev = [
     "griffe>=2.0.0",
     "jinja2>=3.0.0",
     "pytest-timeout>=2.4.0",
+    "radicale>=3.9,<4",
 ]
 
 telegram = [

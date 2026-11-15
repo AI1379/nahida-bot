@@ -16,25 +16,44 @@ from nahida_bot_sdk.plugin import Plugin
 from nahida_bot_sdk.services import PluginServiceContext
 
 from .models import TaskCreate, TaskUpdate
-from .service import TaskService
+from .sources import TaskSources
 
 
 class TodoPlugin(Plugin):
     async def on_load(self) -> None:
-        self.tasks = TaskService(self.api)
+        backends = self.manifest.config.get("backends", {})
+        if not isinstance(backends, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in backends.items()
+        ):
+            raise ValueError(
+                "TODO backends must map account keys to versioned provider services"
+            )
+        self.tasks = TaskSources(
+            self.api, backends, self.manifest.config.get("timezone", "Asia/Shanghai")
+        )
         self.timezone = ZoneInfo(self.manifest.config.get("timezone", "Asia/Shanghai"))
         self.api.register_plugin_service("tasks.v1", self.handle, desktop=True)
         for name in ("today", "drawer"):
             self.api.register_desktop_surface_provider(name, self.surface)
+        self.api.register_prompt_supplement(
+            "task_usage",
+            (
+                "Use TODO tools for actionable personal items, memory for background/preferences, and calendar tools for occupied time. "
+                "Read fresh task state before reporting completion. A task deadline is not a calendar reservation or an alarm. "
+                "Use todo_update with the current ID/revision; closing a notification never completes a task."
+            ),
+        )
         self.api.register_tool(
             "todo_list",
             "List your stored personal tasks. Completed tasks remain available.",
             {"type": "object", "properties": {}, "additionalProperties": False},
             self.list_tool,
+            parallel_safe=True,
         )
         self.api.register_tool(
             "todo_add",
-            "Create a personal task when the user asks. planned_on is a plan date, due_date is a deadline.",
+            "Create a personal task when the user asks. planned_on is a plan date; due_date/due_at is a deadline. remind_at creates a native CalDAV alarm only when requested; a deadline alone is not an alarm.",
             self.tool_schema(TaskCreate),
             self.create_tool,
         )
@@ -104,8 +123,12 @@ class TodoPlugin(Plugin):
             else "计划做的事与截止日期分别记录。",
             items=[
                 DesktopSurfaceItem(
-                    text=t.title,
-                    detail=f"截止 {t.due_date}" if t.due_date else "今日计划",
+                    text=t.title[:200],
+                    detail=f"截止 {t.due_at.isoformat()}"
+                    if t.due_at
+                    else f"截止 {t.due_date}"
+                    if t.due_date
+                    else "今日计划",
                     action=DesktopSurfaceAction(
                         label="完成",
                         service="tasks.v1",
@@ -115,7 +138,9 @@ class TodoPlugin(Plugin):
                             "expected_revision": t.revision,
                             "status": "done",
                         },
-                    ),
+                    )
+                    if t.editable
+                    else None,
                 )
                 for t in tasks[:20]
             ],
@@ -132,8 +157,19 @@ class TodoPlugin(Plugin):
                 operation, arguments, PluginServiceContext(self.api.actor_account_key)
             )
             return json.dumps(result, ensure_ascii=False)
-        except (ValueError, PermissionError) as exc:
-            return f"Error: {exc}"
+        except (ValueError, PermissionError, TimeoutError) as exc:
+            operation_id = arguments.get("operation_id")
+            suffix = (
+                f"; operation_id={operation_id} (reuse for a retry, or query current state)"
+                if operation_id
+                else ""
+            )
+            message = (
+                "source_timeout_query_state_before_retry"
+                if isinstance(exc, TimeoutError)
+                else str(exc)
+            )
+            return f"Error: {message}{suffix}"
 
     async def list_tool(self) -> str:
         return await self._tool("list", {})

@@ -1,0 +1,13 @@
+id: calendar
+name: "Personal Calendar"
+version: "0.1.0"
+description: "Agent calendar queries, availability and personal time blocks"
+entrypoint: "nahida_bot.plugins.calendar.plugin:CalendarPlugin"
+enabled: false
+contributes:
+  desktop_surfaces:
+    - {id: today, target: desktop.home, kind: list, priority: 65}
+    - {id: drawer, target: pet.drawer, kind: list, priority: 65}
+config:
+  timezone: Asia/Shanghai
+  backends: {}

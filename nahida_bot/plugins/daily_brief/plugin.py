@@ -11,6 +11,7 @@ from nahida_bot_sdk.plugin import Plugin
 from nahida_bot_sdk.services import PluginServiceContext
 
 from .models import BriefPreferences
+from .rendering import render_item, source_label
 
 
 def owner_key(owner: str) -> str:
@@ -109,7 +110,9 @@ class DailyBriefPlugin(Plugin):
         key = self.brief_key(owner, due.date())
         brief = await self.api.plugin_data_get(key)
         if brief is None:
-            body = await self.build_body(owner, due.date())
+            body = await self.build_body(
+                owner, due.date(), timezone=preferences.timezone
+            )
             proposed = {
                 "owner": owner,
                 "date": due.date().isoformat(),
@@ -142,25 +145,23 @@ class DailyBriefPlugin(Plugin):
         )
         self.refresh()
 
-    async def build_body(self, owner: str, day: date) -> str:
+    async def build_body(
+        self, owner: str, day: date, *, timezone: str = "Asia/Shanghai"
+    ) -> str:
         lines = [f"{day.isoformat()} 的安排", ""]
         for source in self.sources:
+            label = source_label(source)
             try:
                 result = await self.api.call_plugin_service(
                     source, "today", {"date": day.isoformat()}, actor_account_key=owner
                 )
                 items = result["items"]
-                lines.append(f"【{source}】")
+                lines.append(f"【{label}】")
                 if not items:
                     lines.append("今天没有安排。")
-                for item in items[:100]:
-                    title = str(item["title"])[:200]
-                    deadline = (
-                        f"（截止 {item['due_date']}）" if item.get("due_date") else ""
-                    )
-                    lines.append(f"• {title}{deadline}")
+                lines.extend(render_item(item, timezone) for item in items[:100])
             except Exception:
-                lines.append(f"【{source}】暂时无法读取，请稍后查看今日面板。")
+                lines.append(f"【{label}】暂时无法读取，请稍后查看今日面板。")
             lines.append("")
         body = "\n".join(lines).strip()
         return (

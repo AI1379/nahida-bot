@@ -12,3 +12,4 @@ contributes:
     - {id: drawer, target: pet.drawer, kind: list, priority: 60}
 config:
   timezone: Asia/Shanghai
+  backends: {}
