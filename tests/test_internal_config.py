@@ -136,7 +136,7 @@ class TestSchedulerConfigModel:
         cfg = SchedulerConfigModel()
         assert cfg.poll_interval_seconds == 1.0
         assert cfg.max_concurrent_fires == 5
-        assert cfg.job_timeout_seconds == 120.0
+        assert cfg.job_timeout_seconds == 900.0
         assert cfg.min_interval_seconds == 60
         assert cfg.max_prompt_chars == 12000
         assert cfg.max_jobs_per_chat == 20

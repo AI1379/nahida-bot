@@ -177,5 +177,6 @@ async def test_pending_expiry_keeps_fresh_request_fields():
         proactive_context="context",
         attention_episode_id="episode",
         parse_commands=True,
+        pending_batch=(fresh,),
     )
     assert "test:private:c1" not in router._pending
