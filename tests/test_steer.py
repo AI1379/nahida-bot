@@ -159,9 +159,9 @@ async def test_steer_prioritizes_prompt_preserves_history_and_sender_context():
             for turn in memory.sessions["test:group:c1"]
             if turn.role == "user"
         ] == ["original task", "new direction", "queued one", "queued two"]
-        history = agent.calls[1]["history_messages"]
-        assert any("original task" in item.content for item in history)
-        assert any("partial reply" in item.content for item in history)
+        prompt = agent.calls[1]["user_message"]
+        assert prompt.index("original task") < prompt.index("partial reply")
+        assert prompt.index("partial reply") < prompt.index("new direction")
         assert [ctx.actor_account_key for ctx in agent.contexts] == [
             "test:user:owner",
             "test:user:member",

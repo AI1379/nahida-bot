@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import tiktoken
 
 from nahida_bot.agent.context import (
     ContextBudget,
@@ -15,7 +16,15 @@ from nahida_bot.agent.context import (
     tool_transcript_groups,
     truncate_messages_to_window,
 )
-from nahida_bot.agent.providers import ChatProvider, ModelCapabilities, ProviderResponse
+from nahida_bot.agent import tokenization
+from nahida_bot.agent.prompt_tokens import IMAGE_TOKENS, MESSAGE_FRAMING_TOKENS
+from nahida_bot.agent.providers import (
+    ChatProvider,
+    ModelCapabilities,
+    ProviderResponse,
+    ToolDefinition,
+)
+from nahida_bot.agent.providers.openai_responses import OpenAIResponsesProvider
 from nahida_bot.agent.tokenization import CharacterEstimateTokenizer
 from nahida_bot.core.config import ContextConfig
 
@@ -140,7 +149,7 @@ class TestContextBuilder:
         """Sliding window should keep newest dynamic messages first."""
         # Arrange
         builder = ContextBuilder(
-            budget=ContextBudget(max_tokens=4, reserved_tokens=0),
+            budget=ContextBudget(max_tokens=20, reserved_tokens=0),
             tokenizer=_AlwaysOneTokenizer(),
         )
         history = [
@@ -167,9 +176,9 @@ class TestContextBuilder:
         """Auto-compaction should reserve headroom before the hard context limit."""
         builder = ContextBuilder(
             budget=ContextBudget(
-                max_tokens=10,
+                max_tokens=50,
                 reserved_tokens=0,
-                auto_compact_token_limit=5,
+                auto_compact_token_limit=25,
             ),
             tokenizer=_AlwaysOneTokenizer(),
         )
@@ -193,7 +202,7 @@ class TestContextBuilder:
     def test_budget_keeps_tool_call_transcript_atomic(self) -> None:
         """Sliding window should not split assistant tool_calls from tool results."""
         builder = ContextBuilder(
-            budget=ContextBudget(max_tokens=3, reserved_tokens=0),
+            budget=ContextBudget(max_tokens=16, reserved_tokens=0),
             tokenizer=_AlwaysOneTokenizer(),
         )
         history = [
@@ -225,7 +234,7 @@ class TestContextBuilder:
     ) -> None:
         """A tool result should not be kept after its assistant tool_call is dropped."""
         builder = ContextBuilder(
-            budget=ContextBudget(max_tokens=2, reserved_tokens=0),
+            budget=ContextBudget(max_tokens=10, reserved_tokens=0),
             tokenizer=_AlwaysOneTokenizer(),
         )
         history = [
@@ -333,7 +342,7 @@ class TestContextBuilder:
         # Arrange
         builder = ContextBuilder(
             budget=ContextBudget(
-                max_tokens=5, reserved_tokens=0, summary_max_chars=120
+                max_tokens=25, reserved_tokens=0, summary_max_chars=120
             ),
             tokenizer=_AlwaysOneTokenizer(),
         )
@@ -451,20 +460,20 @@ class TestContextBuilder:
         # Arrange
         provider = _ProviderWithTokenizer()
         builder = ContextBuilder(
-            budget=ContextBudget(max_tokens=5, reserved_tokens=0),
+            budget=ContextBudget(max_tokens=20, reserved_tokens=0),
             provider=provider,
         )
         history = [
-            ContextMessage(role="user", source="history", content="a"),
-            ContextMessage(role="assistant", source="history", content="b"),
-            ContextMessage(role="user", source="history", content="c"),
+            ContextMessage(role="user", source="history", content="first " * 10),
+            ContextMessage(role="assistant", source="history", content="second " * 10),
+            ContextMessage(role="user", source="history", content="third " * 10),
         ]
 
         # Act
         result = builder.build_context(system_prompt="base", history_messages=history)
 
         # Assert
-        # One token per message allows more messages than char-estimation would keep.
+        # One token for each text, plus message framing.
         assert len(result) == 4
 
     def test_fallback_tokenizer_is_used_when_provider_has_no_tokenizer(self) -> None:
@@ -472,7 +481,7 @@ class TestContextBuilder:
         # Arrange
         provider = _ProviderWithoutTokenizer()
         builder = ContextBuilder(
-            budget=ContextBudget(max_tokens=4, reserved_tokens=0),
+            budget=ContextBudget(max_tokens=20, reserved_tokens=0),
             provider=provider,
             fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=100),
         )
@@ -580,12 +589,137 @@ class TestContextMessageParts:
             role="user",
             source="test",
             content="hello",
-            parts=[ContextPart(type="image_base64", data="x" * 100)],
+            parts=[
+                ContextPart(type="image_base64", data="x" * 100, mime_type="image/png")
+            ],
         )
 
         assert builder._estimate_tokens([with_parts]) > builder._estimate_tokens(
             [without_parts]
         )
+
+    def test_multimodal_estimate_counts_visible_text_once_and_reserves_vision(
+        self,
+    ) -> None:
+        builder = ContextBuilder()
+        text = "请看刚才那张图片。"
+        plain = ContextMessage(role="user", source="test", content=text)
+        for data in ("A" * 600_000, "A/+" * 200_000):
+            multimodal = ContextMessage(
+                role="user",
+                source="test",
+                content=text,
+                parts=[
+                    ContextPart(type="text", text=text),
+                    ContextPart(type="image_base64", data=data, mime_type="image/png"),
+                ],
+            )
+            assert (
+                builder._estimate_tokens([multimodal])
+                == builder._estimate_tokens([plain]) + IMAGE_TOKENS
+            )
+
+    def test_oversized_multimodal_turn_preserves_visible_text(self) -> None:
+        builder = ContextBuilder(budget=ContextBudget(max_tokens=80, reserved_tokens=0))
+        question = "请回答这一条来访消息。"
+        protected = ContextMessage(
+            role="user",
+            source="user_input",
+            content="fallback",
+            parts=[
+                ContextPart(type="text", text=question),
+                ContextPart(type="image_url", url="https://example.test/large.jpeg"),
+            ],
+        )
+        result = builder.build_context(
+            system_prompt="system", protected_messages=[protected]
+        )
+        assert question in result[-1].content
+        assert result[-1].role == "user"
+        assert not result[-1].parts
+        assert builder._estimate_tokens(result) <= builder.budget.usable_tokens
+
+
+def test_default_budget_counts_chinese_with_o200k() -> None:
+    builder = ContextBuilder()
+    text = ("群聊时间线和历史工具文本。 " * 100) + "终于找到了！"
+    message = ContextMessage(
+        role="user", source="test", content=text, metadata={"internal": "hidden" * 1000}
+    )
+    assert builder._estimate_tokens([message]) == (
+        len(tiktoken.get_encoding("o200k_base").encode_ordinary(text))
+        + MESSAGE_FRAMING_TOKENS
+    )
+
+
+def test_o200k_bounds_long_encoding_spans(monkeypatch: pytest.MonkeyPatch) -> None:
+    chunks: list[str] = []
+
+    class TestEncoding:
+        def encode_ordinary(self, text: str) -> list[int]:
+            chunks.append(text)
+            return [1] * len(text)
+
+    monkeypatch.setattr(tokenization, "_o200k_encoding", lambda: TestEncoding())
+    text = "start " + "中文" * 1000 + " " * 2000 + "end"
+    assert tokenization.O200kTokenizer().count_tokens(text) == len(text)
+    assert "".join(chunks) == text
+    assert max(map(len, chunks)) <= 256
+
+
+def test_run_caches_actual_text_and_reserves_formatted_tool_definitions() -> None:
+    class CountingTokenizer:
+        def __init__(self) -> None:
+            self.counters: dict[str, int] = {}
+
+        def count_tokens(self, text: str) -> int:
+            self.counters[text] = self.counters.get(text, 0) + 1
+            return len(text)
+
+    tokenizer = CountingTokenizer()
+    base = ContextBuilder(
+        budget=ContextBudget(
+            max_tokens=500, reserved_tokens=50, auto_compact_token_limit=400
+        ),
+        tokenizer=tokenizer,
+    )
+    message = ContextMessage(role="user", source="user_input", content="stable text")
+    tool = ToolDefinition(
+        name="lookup", description="Read a group message", parameters={"type": "object"}
+    )
+    provider = _ProviderWithoutTokenizer()
+    scoped = base.for_run(provider, [tool])
+    assert scoped.budget.tool_tokens > 0
+    assert scoped.budget.usable_tokens == 450 - scoped.budget.tool_tokens
+    assert scoped.budget.soft_token_limit == 400 - scoped.budget.tool_tokens
+    assert scoped._estimate_tokens([message]) == scoped._estimate_tokens([message])
+    assert tokenizer.counters[message.content] == 1
+    assert base.budget.tool_tokens == 0
+    scoped_without_tools = base.for_run(provider, None)
+    scoped_without_tools._estimate_tokens([message])
+    assert tokenizer.counters[message.content] == 2
+
+
+def test_budget_reserves_provider_builtin_tools_without_function_tools() -> None:
+    provider = OpenAIResponsesProvider(
+        base_url="https://example.test",
+        api_key="test",
+        model="test",
+        built_in_tools=["web_search"],
+    )
+    builder = ContextBuilder().for_run(provider, None)
+    assert builder.budget.tool_tokens > 0
+
+
+def test_o200k_truncation_keeps_a_valid_chinese_prefix() -> None:
+    builder = ContextBuilder(budget=ContextBudget(max_tokens=64, reserved_tokens=0))
+    text = "聊天记录和图片描述" * 200
+    message = ContextMessage(role="user", source="user_input", content=text)
+    result = builder.build_context(system_prompt="system", protected_messages=[message])
+    assert result[-1].role == "user"
+    assert text.startswith(result[-1].content.split("\n", 1)[0])
+    assert result[-1].content.split("\n", 1)[0]
+    assert builder._estimate_tokens(result) <= builder.budget.usable_tokens
 
 
 # ── pair-aware window truncation (regression for minimax 400 / orphan tool_result) ─

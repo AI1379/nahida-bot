@@ -398,7 +398,12 @@ async def test_legacy_history_also_uses_persisted_model_summary(storage):
     result = await runner._build_history_context(
         "s", records, compaction_provider=provider, compaction_builder=builder()
     )
-    assert result[0].source == SUMMARY_SOURCE and len(result) == 9
+    assert result[0].source == SUMMARY_SOURCE
+    # Adjacent SQLite writes can share a timestamp. The checkpoint keeps the
+    # entire tied set, including an extra turn at the boundary when needed.
+    assert [message.content for message in result[-8:]] == [
+        record.turn.content for record in records[-8:]
+    ]
     assert (await memory.get_session_meta("s"))["context_compaction"][
         "mode"
     ] == "legacy"

@@ -388,7 +388,7 @@ def test_full_tool_call_roundtrip_serialization() -> None:
 def test_context_budgeted_tool_round_remains_deepseek_protocol_valid() -> None:
     """Protected active tool transcripts should serialize as valid DeepSeek input."""
     builder = ContextBuilder(
-        budget=ContextBudget(max_tokens=90, reserved_tokens=0, summary_max_chars=80),
+        budget=ContextBudget(max_tokens=75, reserved_tokens=0, summary_max_chars=80),
         fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=10),
     )
     provider = DeepSeekProvider(

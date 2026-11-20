@@ -720,6 +720,7 @@ class TestPersistTurnsWithAttachments:
         ]
         result = MagicMock()
         result.final_response = "It's a cat."
+        result.terminal_state, result.error = "completed", None
 
         await runner._persist_turns(
             "session_1",
@@ -751,6 +752,7 @@ class TestPersistTurnsWithAttachments:
         )
         result = MagicMock()
         result.final_response = "hello back"
+        result.terminal_state, result.error = "completed", None
 
         await runner._persist_turns(
             "session_1",
@@ -772,6 +774,7 @@ class TestPersistTurnsWithAttachments:
         )
         result = MagicMock()
         result.final_response = "It's a cat."
+        result.terminal_state, result.error = "completed", None
 
         await runner._persist_turns(
             "session_1",

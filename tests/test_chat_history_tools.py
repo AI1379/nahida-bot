@@ -378,6 +378,58 @@ async def test_find_message_and_read_neighbors(engine: DatabaseEngine) -> None:
     ]
 
 
+async def test_group_history_tool_displays_platform_order_and_keeps_ingestion_cursor(
+    engine: DatabaseEngine,
+    tmp_path,
+) -> None:
+    from nahida_bot.core.group_timeline import acknowledged_group_turn
+    from nahida_bot.plugins.base import OutboundMessage
+    from nahida_bot.plugins.builtin.tools.history import HistoryTools
+    from tests.test_api_bridge import _api
+
+    store = SQLiteMemoryStore(engine)
+    address = ChatAddress("milky", "group", "1")
+    await store.ensure_session(address.chat_key)
+    second = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=1)
+
+    async def append(message_id, content, sender="tester"):
+        metadata = _message_metadata(message_id, sender=sender)
+        metadata["message_context"]["timestamp"] = second.timestamp()
+        return await store.append_turn(
+            address.chat_key, ConversationTurn("user", content, metadata=metadata)
+        )
+
+    cursor = await append("42", "later user message")
+    await append("40", "older group message")
+    await store.append_turn(
+        address.chat_key,
+        acknowledged_group_turn(
+            address,
+            "41",
+            OutboundMessage("acknowledged bot message"),
+            second + timedelta(milliseconds=500),
+        ),
+    )
+    await append("41", "echo of the bot message", sender="bot")
+    anchor = await store.find_turn_by_message_id("41", chat_address=address.chat_key)
+    assert anchor is not None and anchor.turn.source == "group_delivery"
+    api, _, _, _ = _api(tmp_path, memory_store=store)
+    rows = await api.read_chat_history(chat_address=address.chat_key)
+    assert [row["message_id"] for row in rows] == ["40", "41", "42"]
+    assert rows[1]["role"] == "assistant"
+    assert rows[1]["event_at"] == rows[2]["event_at"] == second.isoformat()
+    assert rows[0]["older_page_before_turn_id"] == cursor
+    history = await HistoryTools(api).read(chat_address=address.chat_key)
+    assert "echo of the bot message" not in history
+    assert f"before_turn_id={cursor}" in history
+    assert history.index("older group message") < history.index(
+        "acknowledged bot message"
+    )
+    assert history.index("acknowledged bot message") < history.index(
+        "later user message"
+    )
+
+
 # ── Sanitization ─────────────────────────────────────────────────
 
 

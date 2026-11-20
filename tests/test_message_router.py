@@ -34,17 +34,20 @@ from nahida_bot.core.events import (
     MessagePayload,
     MessageSent,
 )
-from nahida_bot.core.router import (
-    MessageRouter,
-    RouterConfig,
-    _render_observed_batch_context,
+from nahida_bot.core.group_timeline import (
+    GroupRunInput,
+    TimelineWindow,
+    acknowledged_group_turn,
+    build_group_timeline,
 )
+from nahida_bot.core.router import MessageRouter, RouterConfig
 from nahida_bot.core.chat_mute import ChatMuteService
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.core.temp_files import ManagedTempFileService
 from nahida_bot.plugins.base import (
     AttentionFrame,
     ChatContext,
+    InboundAttachment,
     InboundMessage,
     MessageContext,
     OutboundMessage,
@@ -78,39 +81,152 @@ def _inbound(text: str = "hello", platform: str = "test") -> InboundMessage:
     )
 
 
-def test_observed_batch_budget_keeps_complete_identity_envelope() -> None:
+async def test_observed_batch_budget_favors_recent_and_keeps_complete_envelopes() -> (
+    None
+):
+    now = datetime.now(UTC)
     observed = replace(
         _inbound("很长的旁听消息\n" * 1000),
+        is_group=True,
         message_id="other-message",
         message_context=MessageContext(
             channel="test",
             chat_type="group",
+            chat_id="c1",
             sender_id="other-bot",
             sender_display_name="纳西妲",
             message_id="other-message",
             mentioned_user_ids=("another-user",),
         ),
     )
-    anchor = replace(_inbound("回复这位群友"), message_id="anchor")
-    rendered = _render_observed_batch_context(
-        (observed,),
-        anchor_message=anchor,
-        reply_to_message_id=None,
-        attention_frame=AttentionFrame(
-            trigger_kind="proactive_join",
-            anchor_message_id="anchor",
-            messages=(observed,),
-            max_chars=400,
-        ),
+    anchor = replace(
+        _inbound("回复这位群友"),
+        message_id="anchor",
+        is_group=True,
+        chat_context=ChatContext(platform="test", chat_type="group"),
     )
+    newest = replace(anchor, message_id="newest", text="The most recent observation")
+    timeline = await build_group_timeline(
+        [],
+        GroupRunInput(
+            (anchor,),
+            AttentionFrame("proactive_join", "anchor", messages=(observed, newest)),
+        ),
+        TimelineWindow(now, None, 20, 600, 900, 300, True),
+    )
+    rendered = timeline.lines[0].text
 
     assert "sender: 纳西妲(other-bot)" in rendered
     assert "mentions_bot: no" in rendered
     assert "mentioned_user_ids: another-user" in rendered
     assert "[message text truncated]" in rendered
     assert rendered.endswith("</message_context>")
-    block = rendered.split("Batch message_id: ", 1)[1]
-    assert len("Batch message_id: " + block) <= 400
+    assert timeline.lines[1].message_id == "newest"
+    assert "The most recent observation" in timeline.lines[1].text
+    assert len(rendered) + len(timeline.lines[1].text) + 4 <= 600
+
+
+async def test_milky_quote_follows_acknowledged_message_in_same_second() -> None:
+    second = datetime.now(UTC).replace(microsecond=0)
+    address = ChatAddress("milky", "group", "c1")
+    sent_at = second + timedelta(milliseconds=500)
+    visible_reply = acknowledged_group_turn(
+        address, "41", OutboundMessage(text="My reply"), sent_at
+    )
+    trigger = replace(
+        _inbound("I am quoting you", platform="milky"),
+        is_group=True,
+        chat_context=ChatContext(platform="milky", chat_type="group"),
+        timestamp=second.timestamp(),
+        message_id="42",
+        reply_to="41",
+    )
+    timeline = await build_group_timeline(
+        [
+            MemoryRecord(
+                1,
+                address.chat_key,
+                replace(visible_reply, role="user", source="group_observation"),
+            ),
+            MemoryRecord(2, address.chat_key, visible_reply),
+        ],
+        GroupRunInput((trigger,)),
+        TimelineWindow(second + timedelta(seconds=1), None, 20, 4000, 900, 300, True),
+    )
+    assert [line.message_id for line in timeline.lines] == ["41", "42"]
+    assert [line.role for line in timeline.lines] == ["bot_message", "current_request"]
+
+
+@pytest.mark.parametrize("reset_after_image", [False, True])
+async def test_group_timeline_follows_scoped_quote_chain_to_original_image(
+    reset_after_image: bool,
+) -> None:
+    now = datetime.now(UTC)
+    group = ChatContext(platform="test", chat_type="group")
+    anchor = replace(
+        _inbound("I meant the original picture"),
+        chat_context=group,
+        is_group=True,
+        message_id="current",
+        reply_to="bot-reply",
+        timestamp=now.timestamp(),
+    )
+    address = ChatAddress("test", "group", "c1")
+    old = now - timedelta(minutes=20)
+    turns = {
+        "bot-reply": acknowledged_group_turn(
+            address,
+            "bot-reply",
+            OutboundMessage("I answered", reply_to="question"),
+            old + timedelta(seconds=2),
+        ),
+        "question": ConversationTurn(
+            "user",
+            "Did you see it?",
+            metadata={"message_id": "question", "reply_to": "picture"},
+            created_at=old + timedelta(seconds=1),
+        ),
+        "picture": ConversationTurn(
+            "user",
+            "[Image]",
+            source="group_observation",
+            metadata={
+                "message_id": "picture",
+                "observed_only": True,
+                "reply_to": "out-of-scope",
+                "attachments": [{"kind": "image", "description": "a red balloon"}],
+            },
+            created_at=old,
+        ),
+    }
+    find_turn = AsyncMock(
+        side_effect=lambda message_id: MemoryRecord(
+            1, address.chat_key, turns[message_id]
+        )
+    )
+    window = TimelineWindow(
+        now,
+        old + timedelta(microseconds=1) if reset_after_image else None,
+        20,
+        4000,
+        900,
+        300,
+        False,
+    )
+    timeline = await build_group_timeline(
+        [], GroupRunInput((anchor,)), window, find_turn=find_turn
+    )
+    assert [call.args[0] for call in find_turn.await_args_list] == [
+        "bot-reply",
+        "question",
+        "picture",
+    ]
+    expected = ["question", "bot-reply", "current"]
+    if not reset_after_image:
+        expected.insert(0, "picture")
+        assert "a red balloon" in timeline.lines[0].text
+        assert timeline.lines[0].quote_depth == 3
+    assert [line.message_id for line in timeline.lines] == expected
 
 
 class _StubChannel(Plugin):
@@ -377,7 +493,7 @@ class TestChatMuteRouter:
         await _publish_mute_input(bus, "/mute status", group=group, user="other")
         assert not agent.calls
         session_id = f"test:{'group' if group else 'private'}:c1"
-        turns = memory.sessions[session_id]
+        turns = [turn for turn in memory.sessions[session_id] if turn.role == "user"]
         assert len(turns) == 1 and turns[0].metadata["observed_only"]
         assert len(channel.sent) == 2
         assert channel.sent[0][1].text.startswith("[Command] /mute\n")
@@ -389,8 +505,11 @@ class TestChatMuteRouter:
         assert len(agent.calls) == 1
         assert "Chat unmuted." in channel.sent[2][1].text
         # The muted input remains nearby context on private and group chats.
-        history = agent.calls[0]["history_messages"]
-        assert any("please reply" in message.content for message in history)
+        call = agent.calls[0]
+        if group:
+            assert "please reply" in call["user_message"]
+        else:
+            assert any("please reply" in m.content for m in call["history_messages"])
 
     async def test_new_session_does_not_bypass_mute(self, chat_mute_router):
         router, bus, _, memory, agent, _, _ = chat_mute_router
@@ -435,7 +554,8 @@ class TestChatMuteRouter:
                 payload=MessagePayload(message=inbound, session_id=""), source="test"
             )
         )
-        assert len(memory.sessions["test:group:c1"]) == 1
+        turns = memory.sessions["test:group:c1"]
+        assert [turn.content for turn in turns if turn.role == "user"] == ["ambient"]
         address = ChatAddress(channel="test", target_type="group", target_id="c1")
         request = AgentResponseRequested(
             payload=AgentResponseRequestPayload(
@@ -449,7 +569,8 @@ class TestChatMuteRouter:
         )
         result = await bus.publish(request)
         assert result.failures and "muted:" in result.failures[0].error
-        assert not agent.calls and len(memory.sessions["test:group:c1"]) == 1
+        assert not agent.calls
+        assert [turn.content for turn in turns if turn.role == "user"] == ["ambient"]
         clock[0] += 1
         await bus.publish(
             MessageObserved(
@@ -968,7 +1089,9 @@ class TestMessageRouterAgentDispatch:
             for m in agent.calls[0]["history_messages"]
         )
         turns = memory.sessions["test:group:g1"]
-        assert turns[0].source == "proactive_join"
+        assert [turn.source for turn in turns if turn.role == "user"] == [
+            "proactive_join"
+        ]
 
     async def test_agent_response_requested_batch_context_and_reply_anchor(
         self,
@@ -1071,33 +1194,18 @@ class TestMessageRouterAgentDispatch:
 
         system_prompt = agent.calls[0]["system_prompt"]
         user_message = agent.calls[0]["user_message"]
-        history = agent.calls[0]["history_messages"]
-        assert "Conversation Joiner Batch Context" not in system_prompt
-        assert "Conversation Joiner Batch Context" not in user_message
-        assert "but will it spam?" in user_message
-        frames = [
-            message
-            for message in history
-            if message.source == "proactive_attention_frame"
-        ]
-        assert len(frames) == 1
-        assert not [
-            message for message in history if message.source == "group_observed_context"
-        ]
-        assert "Conversation Joiner Batch Context" in frames[0].content
-        assert "Batch message_id: m1" in frames[0].content
-        assert "Batch message_id: m2" not in frames[0].content
-        assert "Batch message_id: m3" in frames[0].content
-        assert "Current anchor message_id: m2" in frames[0].content
-        assert "Attention trigger: engaged_continue" in frames[0].content
-        assert "Attention episode_id: episode-1" in frames[0].content
-        assert "Attention focus: spam concern" in frames[0].content
-        assert frames[0].metadata["attention_episode_id"] == "episode-1"
-        assert (
-            '<message_context trust="untrusted" role="batch_message">'
-            in frames[0].content
+        assert "Group Chat Timeline" in system_prompt
+        assert 'delivery quotes message_id "m2"' in user_message
+        assert user_message.count("but will it spam?") == 1
+        assert user_message.index("message_id: m1") < user_message.index(
+            "message_id: m2"
         )
-        assert "Reply anchor message_id: m2" in frames[0].content
+        assert user_message.index("message_id: m2") < user_message.index(
+            "message_id: m3"
+        )
+        assert 'role="focus_message"' in user_message
+        assert 'role="current_request"' not in user_message
+        assert "sender: Bob(u2)" in user_message
 
         turns = memory.sessions["test:group:g1"]
         proactive_turns = [turn for turn in turns if turn.source == "proactive_join"]
@@ -1153,14 +1261,10 @@ class TestMessageRouterAgentDispatch:
         )
         await router.stop()
 
-        frames = [
-            message
-            for message in agent.calls[0]["history_messages"]
-            if message.source == "proactive_attention_frame"
-        ]
-        assert len(frames) == 1
-        assert "Current anchor message_id: m2" in frames[0].content
-        assert "ambient topic" not in frames[0].content
+        prompt = agent.calls[0]["user_message"]
+        assert "delivery is a group comment without a quote" in prompt
+        assert "message_id: m2" in prompt
+        assert prompt.count("ambient topic") == 1
 
         channel = channel_registry.get("test")
         assert isinstance(channel, _StubChannel)
@@ -1796,9 +1900,12 @@ class TestMessageRouterMemory:
 
         assert len(agent.calls) == 1
         history = agent.calls[0]["history_messages"]
-        observed = [m for m in history if m.source == "group_observed_context"]
-        assert len(observed) == 1
-        assert "Alice mentioned the deployment" in observed[0].content
+        prompt = agent.calls[0]["user_message"]
+        assert prompt.index("Alice mentioned the deployment") < prompt.index(
+            "@bot summarize"
+        )
+        assert 'role="group_message"' in prompt
+        assert 'role="current_request"' in prompt
         assert memory.get_recent_calls == 1
         assert all(
             not (
@@ -1807,6 +1914,107 @@ class TestMessageRouterMemory:
             )
             for message in history
         )
+
+    async def test_group_timeline_orders_late_observation_and_resolves_own_reply(
+        self,
+    ) -> None:
+        memory = _MockMemoryStore()
+        agent = _MockAgentLoop(response="I saw the image")
+        router, bus, _, _ = _make_router(
+            agent=agent, memory=memory, config=RouterConfig(reply_to_inbound=True)
+        )
+        session_id = "test:group:c1"
+        group = ChatContext(platform="test", chat_type="group")
+        before = datetime.now(UTC) - timedelta(seconds=10)
+        first = replace(
+            _inbound("What is in the image?"),
+            chat_context=group,
+            is_group=True,
+            message_id="request-1",
+            timestamp=before.timestamp(),
+            mentions_bot=True,
+        )
+        await router.start()
+        try:
+            result = await bus.publish(
+                MessageReceived(MessagePayload(first, session_id), source="test")
+            )
+            assert not result.failures
+            assert router._runner is not None
+            active = router._runner.run_tracker.get(session_id)
+            assert active is not None
+            await asyncio.wait_for(active.task, timeout=3)
+            replies = [
+                turn for turn in memory.sessions[session_id] if turn.role == "assistant"
+            ]
+            assert len(replies) == 1
+            assert replies[0].source == "group_delivery"
+            assert replies[0].metadata["message_id"] == "msg_1"
+            assert replies[0].metadata["reply_to"] == "request-1"
+
+            image = replace(
+                first,
+                text="[Image]",
+                user_id="u2",
+                message_id="picture",
+                timestamp=(before - timedelta(seconds=2)).timestamp(),
+                mentions_bot=False,
+                attachments=[
+                    InboundAttachment(
+                        kind="image",
+                        platform_id="image-id",
+                        alt_text="A red balloon above a desk",
+                    )
+                ],
+            )
+            await bus.publish(
+                MessageObserved(MessagePayload(image, session_id), source="test")
+            )
+            second = replace(
+                first,
+                text="I meant the one above",
+                message_id="request-2",
+                reply_to="msg_1",
+                timestamp=datetime.now(UTC).timestamp(),
+            )
+            # The Windows wall clock may give adjacent events identical times.
+            await asyncio.sleep(0.025)
+            await bus.publish(
+                MessageObserved(
+                    MessagePayload(
+                        replace(
+                            image,
+                            text="A later bystander message",
+                            message_id="later",
+                            timestamp=datetime.now(UTC).timestamp(),
+                            attachments=[],
+                        ),
+                        session_id,
+                    ),
+                    source="test",
+                )
+            )
+            await bus.publish(
+                MessageReceived(MessagePayload(second, session_id), source="test")
+            )
+        finally:
+            await router.stop()
+
+        prompt = agent.calls[1]["user_message"]
+        expected = [
+            "A red balloon above a desk",
+            "What is in the image?",
+            "I saw the image",
+            "I meant the one above",
+            "A later bystander message",
+        ]
+        offsets = [prompt.index(text) for text in expected]
+        assert offsets == sorted(offsets)
+        assert prompt.count("I saw the image") == 1
+        assert 'role="bot_message"' in prompt
+        assert "message_id: msg_1\n" in prompt
+        assert "reply_to_message_id: msg_1\n" in prompt
+        assert prompt.count('role="current_request"') == 1
 
     async def test_observed_context_skips_duplicate_current_trigger(self) -> None:
         memory = _MockMemoryStore()
@@ -1854,8 +2062,9 @@ class TestMessageRouterMemory:
         await router.stop()
 
         assert len(agent.calls) == 1
-        history = agent.calls[0]["history_messages"]
-        assert [m for m in history if m.source == "group_observed_context"] == []
+        prompt = agent.calls[0]["user_message"]
+        assert prompt.count("same message") == 1
+        assert 'role="group_message"' not in prompt
 
     async def test_set_active_session_persists_override(self) -> None:
         memory = _MockMemoryStore()
@@ -2067,7 +2276,10 @@ class TestGroupDialogueContinuity:
         kept = [r.turn.content for r in records if r.turn.created_at >= cutoff]
         assert kept == ["new topic starts", "new topic continues"]
 
-    async def test_explicit_reply_restores_anchor_outside_topic_window(self) -> None:
+    @pytest.mark.parametrize("in_recent_rows", [True, False])
+    async def test_explicit_reply_restores_anchor_outside_topic_window(
+        self, in_recent_rows: bool
+    ) -> None:
         memory = _MockMemoryStore()
         old_at = datetime.now(UTC) - timedelta(minutes=10)
         memory.sessions["test:group:c1"] = [
@@ -2091,6 +2303,12 @@ class TestGroupDialogueContinuity:
                 },
             )
         ]
+        anchor = memory.sessions["test:group:c1"][0]
+        if not in_recent_rows:
+            memory.sessions["test:group:c1"].clear()
+        memory.find_turn_by_message_id = AsyncMock(
+            return_value=MemoryRecord(1, "test:group:c1", anchor)
+        )
         agent = _MockAgentLoop(response="reply")
         router, event_bus, _, _ = _make_router(agent=agent, memory=memory)
 
@@ -2116,12 +2334,17 @@ class TestGroupDialogueContinuity:
         )
         await router.stop()
 
-        history = agent.calls[0]["history_messages"]
-        anchors = [m for m in history if m.source == "reply_anchor_context"]
-        assert len(anchors) == 1
-        assert "the exact old message being discussed" in anchors[0].content
-        assert anchors[0].metadata["message_id"] == "old-message"
-        assert [m for m in history if m.source == "group_observed_context"] == []
+        prompt = agent.calls[0]["user_message"]
+        assert prompt.count("the exact old message being discussed") == 1
+        assert "message_id: old-message" in prompt
+        assert "reply_to_message_id: old-message" in prompt
+        assert prompt.index("the exact old message") < prompt.index("what do you think")
+        if in_recent_rows:
+            memory.find_turn_by_message_id.assert_not_awaited()
+        else:
+            memory.find_turn_by_message_id.assert_awaited_once_with(
+                "old-message", session_id="test:group:c1"
+            )
 
     async def test_stale_group_dialogue_dropped_on_trigger(self) -> None:
         memory = _MockMemoryStore()
@@ -2184,15 +2407,12 @@ class TestGroupDialogueContinuity:
         await router.stop()
 
         assert len(agent.calls) == 1
-        history = agent.calls[0]["history_messages"]
-        contents = [message.content or "" for message in history]
-        # Stale dialogue from a different conversation is dropped from history.
-        assert not any("stale question" in c for c in contents)
-        assert not any("stale answer" in c for c in contents)
-        # Fresh observed chatter is still injected as group context.
-        observed = [m for m in history if m.source == "group_observed_context"]
-        assert len(observed) == 1
-        assert "someone chatting recently" in observed[0].content
+        prompt = agent.calls[0]["user_message"]
+        assert "stale question" not in prompt
+        assert "stale answer" not in prompt
+        assert prompt.index("someone chatting recently") < prompt.index(
+            "@bot now please"
+        )
 
 
 class TestMessageRouterSentinel:

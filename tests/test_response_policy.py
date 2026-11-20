@@ -90,7 +90,14 @@ async def test_router_error_notifications(trigger, mode, sends, crash):
         await asyncio.gather(*bus._pending_tasks)
     assert bool(channels.get("test").sent) == sends
     assert finished == ["crashed" if crash else "failed"]
-    assert all(t.content != "fallback notice" for t in memory.sessions.get(session, []))
+    fallback_records = [
+        turn
+        for turn in memory.sessions.get(session, [])
+        if turn.content == "fallback notice"
+    ]
+    assert [turn.source for turn in fallback_records] == (
+        ["group_delivery"] if group and sends and not crash else []
+    )
 
 
 async def test_successful_proactive_reply_with_error_word_is_not_suppressed():

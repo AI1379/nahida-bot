@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+from copy import copy
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING, Literal
 
 import structlog
 
-from nahida_bot.agent.tokenization import Tokenizer, resolve_tokenizer
+from nahida_bot.agent.prompt_tokens import (
+    PromptTokenEstimator,
+    is_image_part,
+    text_parts,
+)
+from nahida_bot.agent.tokenization import O200kTokenizer, Tokenizer, resolve_tokenizer
 from nahida_bot.workspace.skills import SkillCatalog
 from nahida_bot.core.logging import log_trace
 
@@ -32,7 +37,11 @@ class ReasoningPolicy(Enum):
 
 
 if TYPE_CHECKING:
-    from nahida_bot.agent.providers.base import ChatProvider, ModelCapabilities
+    from nahida_bot.agent.providers.base import (
+        ChatProvider,
+        ModelCapabilities,
+        ToolDefinition,
+    )
     from nahida_bot.core.config import ContextConfig
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
@@ -255,6 +264,7 @@ class ContextBudget:
     # Reasoning chain budgeting (Phase 2.8)
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.BUDGET
     max_reasoning_tokens: int = 2000
+    tool_tokens: int = 0
 
     @property
     def usable_tokens(self) -> int:
@@ -263,12 +273,12 @@ class ContextBudget:
         `max_chars` / `reserved_chars` are retained for backward compatibility,
         but token budgeting should be preferred for new code.
         """
-        if self.max_chars is not None:
-            usable = self.max_chars - self.reserved_chars
-            return usable if usable > 0 else 0
-
-        usable = self.max_tokens - self.reserved_tokens
-        return usable if usable > 0 else 0
+        usable = (
+            self.max_chars - self.reserved_chars
+            if self.max_chars is not None
+            else self.max_tokens - self.reserved_tokens
+        )
+        return max(0, usable - self.tool_tokens)
 
     @property
     def soft_token_limit(self) -> int:
@@ -279,7 +289,9 @@ class ContextBudget:
         """
         if self.auto_compact_token_limit is None:
             return self.usable_tokens
-        return min(max(0, self.auto_compact_token_limit), self.usable_tokens)
+        return min(
+            max(0, self.auto_compact_token_limit - self.tool_tokens), self.usable_tokens
+        )
 
 
 def build_context_budget(
@@ -348,6 +360,24 @@ class ContextBuilder:
             tokenizer=tokenizer,
             fallback_tokenizer=fallback_tokenizer,
         )
+        self._prompt_tokens = PromptTokenEstimator(
+            self.tokenizer,
+            api_family=provider.api_family if provider is not None else "",
+        )
+
+    def for_run(
+        self, provider: ChatProvider, tools: list[ToolDefinition] | None
+    ) -> ContextBuilder:
+        """Give each run its own text-count cache and reserve room for its tools."""
+        builder = copy(self)
+        builder._prompt_tokens = PromptTokenEstimator(
+            self.tokenizer, api_family=provider.api_family, cache_text=True
+        )
+        builder.budget = replace(
+            self.budget,
+            tool_tokens=builder._prompt_tokens.estimate_tools(provider, tools or []),
+        )
+        return builder
 
     def load_workspace_instructions(self, workspace_root: Path) -> list[ContextMessage]:
         """Load instruction files in strict priority order."""
@@ -685,10 +715,7 @@ class ContextBuilder:
                         remaining,
                         allow_empty=True,
                     )
-                if (
-                    truncated_message is None
-                    or truncated_message.content == message.content
-                ):
+                if truncated_message is None or truncated_message == message:
                     continue
 
                 compacted[index] = truncated_message
@@ -848,6 +875,20 @@ class ContextBuilder:
         allow_empty: bool = False,
     ) -> ContextMessage | None:
         """Trim a message content to fit a remaining token budget."""
+        if message.role == "user" and message.parts:
+            blocks = text_parts(message.parts)
+            has_images = any(is_image_part(part) for part in message.parts)
+            text = "\n".join(blocks) if blocks else message.content
+            message = replace(message, content=text, parts=[])
+            if has_images:
+                notice = replace(
+                    message, content=text + "\n[Image omitted due to context budget]"
+                )
+                if self._estimate_tokens([notice]) <= remaining_budget_tokens:
+                    return notice
+            if self._estimate_tokens([message]) <= remaining_budget_tokens:
+                return message
+
         overhead_tokens = self._estimate_tokens([replace(message, content="")])
         if remaining_budget_tokens < overhead_tokens:
             return None
@@ -860,6 +901,22 @@ class ContextBuilder:
 
         low = 0
         high = len(content)
+        if isinstance(self.tokenizer, O200kTokenizer):
+            text_limit = remaining_budget_tokens - overhead_tokens
+            prefix = self.tokenizer.prefix_within_tokens(
+                content, text_limit - self.tokenizer.count_tokens(truncation_marker)
+            )
+            if prefix or allow_empty:
+                candidate = replace(
+                    message,
+                    content=prefix + (truncation_marker if prefix != content else ""),
+                )
+                if (
+                    self._prompt_tokens.estimate_message(candidate, cache_text=False)
+                    <= remaining_budget_tokens
+                ):
+                    return candidate
+            high = len(prefix)
         best: str | None = None
 
         while low <= high:
@@ -868,7 +925,7 @@ class ContextBuilder:
             if truncation_marker and mid < len(content):
                 candidate_content += truncation_marker
             candidate = replace(message, content=candidate_content)
-            size = self._estimate_tokens([candidate])
+            size = self._prompt_tokens.estimate_message(candidate, cache_text=False)
             if size <= remaining_budget_tokens:
                 best = candidate_content
                 low = mid + 1
@@ -917,59 +974,7 @@ class ContextBuilder:
         )
 
     def _estimate_tokens(self, messages: list[ContextMessage]) -> int:
-        """Estimate context size using configured tokenizer strategy.
-
-        TODO: Metadata JSON is re-serialized on every call. The binary-search
-        truncation path calls this repeatedly for the same messages. Cache the
-        serialized form on ContextMessage or compute metadata overhead once.
-        """
-        total = 0
-        for message in messages:
-            metadata_serialized = (
-                json.dumps(message.metadata, sort_keys=True)
-                if message.metadata is not None
-                else ""
-            )
-            parts_serialized = self._serialize_parts_for_budget(message)
-            reasoning_serialized = self._serialize_reasoning_for_budget(message)
-            serialized = (
-                f"role:{message.role}\n"
-                f"source:{message.source}\n"
-                f"content:{message.content}\n"
-                f"{reasoning_serialized}"
-                f"parts:{parts_serialized}\n"
-                f"metadata:{metadata_serialized}"
-            )
-            total += self.tokenizer.count_tokens(serialized)
-        return total
-
-    @staticmethod
-    def _serialize_reasoning_for_budget(message: ContextMessage) -> str:
-        parts: list[str] = []
-        if message.reasoning:
-            parts.append(f"reasoning:{message.reasoning}")
-        if message.reasoning_signature:
-            parts.append(f"reasoning_signature:{message.reasoning_signature}")
-        if message.has_redacted_thinking:
-            parts.append("has_redacted_thinking:true")
-        if not parts:
-            return ""
-        return "\n".join(parts) + "\n"
-
-    def _serialize_parts_for_budget(self, message: ContextMessage) -> str:
-        if not message.parts:
-            return ""
-        return json.dumps(
-            [
-                {
-                    "type": part.type,
-                    "text": part.text,
-                    "url": part.url,
-                    "data": part.data,
-                    "mime_type": part.mime_type,
-                    "media_id": part.media_id,
-                }
-                for part in message.parts
-            ],
-            sort_keys=True,
+        """Estimate message tokens after reserving tool tokens separately."""
+        return sum(
+            self._prompt_tokens.estimate_message(message) for message in messages
         )

@@ -7,7 +7,8 @@ import json
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, AbstractSet, Any, Callable, cast
+from functools import partial
+from typing import TYPE_CHECKING, AbstractSet, Any, Awaitable, Callable, cast
 
 import structlog
 
@@ -24,6 +25,13 @@ from nahida_bot.agent.providers import ToolDefinition
 from nahida_bot.core.attachments import resolve_attachment
 from nahida_bot.core.config import ContextConfig, MediaContextPolicy
 from nahida_bot.core.context import current_attachments, current_session
+from nahida_bot.core.group_timeline import (
+    GROUP_TIMELINE_INSTRUCTION,
+    GroupRunInput,
+    GroupTimeline,
+    TimelineWindow,
+    build_group_timeline,
+)
 from nahida_bot.core.task_runtime.postprocess import PostprocessClosed, PostprocessQueue
 from nahida_bot.core.knowledge_context import load_knowledge_context
 from nahida_bot.core.message_batch import (
@@ -59,7 +67,7 @@ if TYPE_CHECKING:
     from nahida_bot_sdk.messaging import AgentContextRequest
 
     from nahida_bot.agent.loop import AgentLoop, LoopEvent
-    from nahida_bot.agent.media.resolver import MediaResolver
+    from nahida_bot.agent.media.resolver import MediaResolver, ResolvedMedia
     from nahida_bot.agent.runtime.transcript import TranscriptProjector
     from nahida_bot.agent.storage.embedding import EmbeddingProvider
     from nahida_bot.agent.memory.store import MemoryStore
@@ -180,6 +188,7 @@ class _SessionRunRequest:
     attention_episode_id: str
     stop_event: asyncio.Event | None
     inbound_batch: tuple[InboundMessage, ...] = ()
+    group_input: GroupRunInput | None = None
 
 
 @dataclass(slots=True)
@@ -194,6 +203,7 @@ class _SessionRunRuntime:
     context_builder: Any = None
     recent_records: list[Any] = field(default_factory=list)
     history: list[ContextMessage] = field(default_factory=list)
+    group_timeline: GroupTimeline | None = None
     tools: list[ToolDefinition] = field(default_factory=list)
     visible_user_message: str = ""
     user_parts: list[ContextPart] = field(default_factory=list)
@@ -516,6 +526,7 @@ class SessionRunner:
         attention_episode_id: str = "",
         stop_event: asyncio.Event | None = None,
         inbound_batch: tuple[InboundMessage, ...] = (),
+        group_input: GroupRunInput | None = None,
     ) -> AsyncIterator[LoopEvent]:
         """Run the agent loop, yielding :class:`LoopEvent` as progress happens.
 
@@ -563,6 +574,7 @@ class SessionRunner:
             attention_episode_id=attention_episode_id,
             stop_event=stop_event,
             inbound_batch=inbound_batch,
+            group_input=group_input,
         )
         runtime = _SessionRunRuntime(
             request=request,
@@ -679,6 +691,7 @@ class SessionRunner:
         """Build history, reply anchors, attention context, and retrieval context."""
         request = runtime.request
         message_context = request.message_context
+        snapshot_at = datetime.now(UTC)
         runtime.recent_records = await self._load_recent_records(
             request.session_id,
             workspace_id=request.workspace_id,
@@ -688,8 +701,46 @@ class SessionRunner:
             for_compaction=bool(
                 self._context_config.model_compaction_enabled
                 and runtime.provider_slot is not None
+                and request.group_input is None
             ),
         )
+        if request.group_input is not None:
+            runtime.group_timeline = await self._load_group_timeline(
+                runtime, snapshot_at
+            )
+        else:
+            await self._prepare_dialogue_history(runtime)
+
+        relevant_memory = await self._load_relevant_memory(
+            request.user_message,
+            session_id=request.session_id,
+        )
+        relevant_knowledge = await self._load_relevant_knowledge(
+            request.user_message,
+            session_id=request.session_id,
+        )
+        if relevant_memory:
+            runtime.history.insert(0, relevant_memory)
+            logger.debug(
+                "session_runner.relevant_memory_added",
+                session_id=request.session_id,
+                relevant_memory_chars=len(relevant_memory.content),
+                history_count=len(runtime.history),
+            )
+        if relevant_knowledge:
+            runtime.history.insert(0, relevant_knowledge)
+            logger.debug(
+                "session_runner.relevant_kb_added",
+                session_id=request.session_id,
+                relevant_kb_chars=len(relevant_knowledge.content),
+                history_count=len(runtime.history),
+            )
+
+        await self._append_dynamic_context(runtime)
+
+    async def _prepare_dialogue_history(self, runtime: _SessionRunRuntime) -> None:
+        request = runtime.request
+        message_context = request.message_context
         runtime.history = await self._build_history_context(
             request.session_id,
             runtime.recent_records,
@@ -718,32 +769,43 @@ class SessionRunner:
             runtime.history.append(reply_anchor)
         await self._append_attention_context(runtime)
 
-        relevant_memory = await self._load_relevant_memory(
-            request.user_message,
-            session_id=request.session_id,
+    async def _load_group_timeline(
+        self, runtime: _SessionRunRuntime, snapshot_at: datetime
+    ) -> GroupTimeline:
+        request = runtime.request
+        group_input = request.group_input
+        assert group_input is not None
+        find_turn = (
+            partial(self._memory.find_turn_by_message_id, session_id=request.session_id)
+            if self._memory is not None
+            else None
         )
-        relevant_knowledge = await self._load_relevant_knowledge(
-            request.user_message,
-            session_id=request.session_id,
+        max_chars = self._group_context_max_chars
+        if group_input.attention is not None and group_input.attention.max_chars > 0:
+            max_chars = min(max_chars, group_input.attention.max_chars)
+        timeline = await build_group_timeline(
+            runtime.recent_records,
+            group_input,
+            TimelineWindow(
+                snapshot_at=snapshot_at,
+                reset_at=await self._load_history_reset(request.session_id),
+                max_messages=self._group_context_max_messages
+                or self._max_history_turns,
+                max_chars=max_chars,
+                ttl_seconds=self._group_context_ttl_seconds,
+                topic_gap_seconds=self._group_topic_gap_seconds,
+                capture_observations=self._group_context_max_messages > 0,
+            ),
+            find_turn=find_turn,
         )
-        if relevant_memory:
-            runtime.history.insert(0, relevant_memory)
-            logger.debug(
-                "session_runner.relevant_memory_added",
-                session_id=request.session_id,
-                relevant_memory_chars=len(relevant_memory.content),
-                history_count=len(runtime.history),
-            )
-        if relevant_knowledge:
-            runtime.history.insert(0, relevant_knowledge)
-            logger.debug(
-                "session_runner.relevant_kb_added",
-                session_id=request.session_id,
-                relevant_kb_chars=len(relevant_knowledge.content),
-                history_count=len(runtime.history),
-            )
-
-        await self._append_dynamic_context(runtime)
+        logger.debug(
+            "session_runner.group_timeline_built",
+            session_id=request.session_id,
+            message_count=len(timeline.lines),
+            background_count=len(timeline.background_ids),
+            proactive=group_input.attention is not None,
+        )
+        return timeline
 
     async def _append_dynamic_context(self, runtime: _SessionRunRuntime) -> None:
         request = runtime.request
@@ -814,7 +876,9 @@ class SessionRunner:
             message_context=message_context,
             workspace_id=request.workspace_id,
             input_messages=request.inbound_batch or (original,),
-            background_message_ids=frozenset(
+            background_message_ids=runtime.group_timeline.background_ids
+            if runtime.group_timeline is not None
+            else frozenset(
                 message_id
                 for record in runtime.recent_records
                 if record.turn.role == "user"
@@ -895,7 +959,14 @@ class SessionRunner:
                 else None
             ),
         )
-        if request.inbound_batch:
+        if (timeline := runtime.group_timeline) is not None:
+            runtime.visible_user_message = "\n\n".join(
+                [timeline.heading, *(line.text for line in timeline.lines)]
+            )
+            runtime.user_parts = await self._build_group_timeline_parts(
+                timeline, capabilities=runtime.capabilities
+            )
+        elif request.inbound_batch:
             runtime.visible_user_message = render_inbound_batch(request.inbound_batch)
             runtime.user_parts = await self._build_batch_user_parts(
                 request.inbound_batch, capabilities=runtime.capabilities
@@ -941,6 +1012,8 @@ class SessionRunner:
             agent_instruction=request.agent_instruction,
             enable_silent_reply=self._enable_silent_reply,
         )
+        if runtime.group_timeline is not None:
+            effective_system_prompt += "\n\n" + GROUP_TIMELINE_INSTRUCTION
         run_kwargs: dict[str, Any] = {
             "user_message": runtime.visible_user_message,
             "system_prompt": effective_system_prompt,
@@ -1059,6 +1132,11 @@ class SessionRunner:
             workspace_id=request.workspace_id,
             workspace_root=runtime.workspace_root,
             inbound_batch=request.inbound_batch,
+            group_snapshot_at=(
+                runtime.group_timeline.snapshot_at
+                if runtime.group_timeline is not None
+                else None
+            ),
         )
 
     # ── Public helpers (used by image_understand tool) ─────────
@@ -1454,19 +1532,8 @@ class SessionRunner:
         history_cutoff = _latest_cutoff(
             self._group_dialogue_cutoff(records, message_context=message_context),
             self._group_topic_cutoff(records, message_context=message_context),
+            await self._load_history_reset(session_id),
         )
-        if self._memory is not None:
-            try:
-                meta = await self._memory.get_session_meta(session_id)
-                reset_at = meta.get("history_reset_at")
-                if isinstance(reset_at, str) and reset_at:
-                    history_cutoff = _latest_cutoff(
-                        history_cutoff, datetime.fromisoformat(reset_at)
-                    )
-            except Exception:
-                logger.warning(
-                    "session_runner.history_reset_read_failed", session_id=session_id
-                )
         eligible = [
             record
             for record in records
@@ -1583,6 +1650,23 @@ class SessionRunner:
             replay_wired=projector is not None,
         )
         return messages
+
+    async def _load_history_reset(self, session_id: str) -> datetime | None:
+        if self._memory is None:
+            return None
+        try:
+            meta = await self._memory.get_session_meta(session_id)
+            reset_at = meta.get("history_reset_at")
+            if isinstance(reset_at, str) and reset_at:
+                parsed = datetime.fromisoformat(reset_at)
+                return (
+                    parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+                )
+        except Exception:
+            logger.warning(
+                "session_runner.history_reset_read_failed", session_id=session_id
+            )
+        return None
 
     async def _history_record_message(self, record: MemoryRecord) -> ContextMessage:
         """Render a stored turn identically in fallback and merged event history."""
@@ -2278,20 +2362,42 @@ class SessionRunner:
         capabilities: ModelCapabilities | None,
     ) -> list[ContextPart]:
         """Keep media next to its message while sharing the run's image budget."""
-        parts = [ContextPart(type="text", text=PENDING_BATCH_INSTRUCTION)]
+        return await self._build_ordered_user_parts(
+            PENDING_BATCH_INSTRUCTION,
+            [
+                (
+                    render_message_with_context(
+                        message.text,
+                        context_from_inbound(message),
+                        role="batch_message",
+                    ),
+                    tuple(message.attachments),
+                )
+                for message in messages
+            ],
+            capabilities=capabilities,
+        )
+
+    async def _build_ordered_user_parts(
+        self,
+        heading: str,
+        entries: list[tuple[str, tuple[InboundAttachment, ...]]],
+        *,
+        capabilities: ModelCapabilities | None,
+        quoted_parts: dict[int, list[ContextPart]] | None = None,
+    ) -> list[ContextPart]:
+        """Keep each image next to its envelope within the shared image limit."""
+        parts = [ContextPart(type="text", text=heading)]
         remaining = (
             capabilities.max_image_count
             if capabilities and capabilities.image_input
             else 0
         )
         limited = remaining > 0
-        for message in messages:
-            visible = render_message_with_context(
-                message.text, context_from_inbound(message), role="batch_message"
-            )
+        for index, (visible, entry_attachments) in enumerate(entries):
             attachments = []
             omitted = 0
-            for attachment in message.attachments:
+            for attachment in entry_attachments:
                 if limited and attachment.kind == "image":
                     if remaining <= 0:
                         omitted += 1
@@ -2302,6 +2408,8 @@ class SessionRunner:
                 visible, attachments, capabilities=capabilities
             )
             parts.extend(message_parts or [ContextPart(type="text", text=visible)])
+            if quoted_parts is not None:
+                parts.extend(quoted_parts.get(index, ()))
             if omitted:
                 parts.append(
                     ContextPart(
@@ -2313,6 +2421,81 @@ class SessionRunner:
                         ),
                     )
                 )
+        return parts
+
+    async def _build_group_timeline_parts(
+        self,
+        timeline: GroupTimeline,
+        *,
+        capabilities: ModelCapabilities | None,
+    ) -> list[ContextPart]:
+        current_images = [
+            attachment
+            for line in timeline.lines
+            for attachment in line.attachments
+            if attachment.kind == "image"
+        ]
+        quoted_parts = await self._load_cached_quote_images(
+            timeline, capabilities, current_images
+        )
+        if not current_images and not quoted_parts:
+            return []
+        return await self._build_ordered_user_parts(
+            timeline.heading,
+            [(line.text, line.attachments) for line in timeline.lines],
+            capabilities=capabilities,
+            quoted_parts=quoted_parts,
+        )
+
+    async def _load_cached_quote_images(
+        self,
+        timeline: GroupTimeline,
+        capabilities: ModelCapabilities | None,
+        current_images: list[InboundAttachment],
+    ) -> dict[int, list[ContextPart]]:
+        """Use spare vision slots for explicitly referenced local images."""
+        resolver = self._media_resolver
+        if resolver is None or capabilities is None or not capabilities.image_input:
+            return {}
+        if (
+            self._multimodal_config is not None
+            and self._multimodal_config.media_context_policy == "description_only"
+        ):
+            return {}
+        count_limit = capabilities.max_image_count
+        remaining = min(2, count_limit - len(current_images)) if count_limit > 0 else 2
+        seen_ids = {
+            attachment.platform_id or attachment.path
+            for attachment in current_images
+            if attachment.platform_id or attachment.path
+        }
+        parts: dict[int, list[ContextPart]] = {}
+        quoted = sorted(
+            ((i, line) for i, line in enumerate(timeline.lines) if line.media_metadata),
+            key=lambda item: item[1].quote_depth,
+        )
+        for index, line in quoted:
+            for attachment in self._attachments_from_metadata(line.media_metadata):
+                if remaining <= 0:
+                    return parts
+                media_key = attachment.platform_id or attachment.path
+                if not attachment.path or media_key in seen_ids:
+                    continue
+                image_parts = await self._build_vision_parts(
+                    "",
+                    [replace(attachment, url="")],
+                    max_count=1,
+                    max_bytes=capabilities.max_image_bytes,
+                    supported=capabilities.supported_image_mime_types,
+                    resolve=resolver.resolve,
+                )
+                native = next(
+                    (part for part in image_parts if part.type == "image_base64"), None
+                )
+                if native is not None:
+                    parts.setdefault(index, []).append(native)
+                    remaining -= 1
+                    seen_ids.add(media_key)
         return parts
 
     async def _build_user_parts(
@@ -2376,6 +2559,7 @@ class SessionRunner:
         max_count: int,
         max_bytes: int,
         supported: tuple[str, ...],
+        resolve: Callable[[InboundAttachment], Awaitable[ResolvedMedia]] | None = None,
     ) -> list[ContextPart]:
         """Build parts for a vision-capable model."""
         parts: list[ContextPart] = []
@@ -2401,7 +2585,7 @@ class SessionRunner:
                 )
                 continue
 
-            resolved = await self._resolve_attachment(attachment)
+            resolved = await (resolve or self._resolve_attachment)(attachment)
             if max_bytes > 0 and resolved.file_size > max_bytes:
                 logger.debug(
                     "session_runner.image_skipped",
@@ -2711,7 +2895,7 @@ class SessionRunner:
         parts = [system_prompt.rstrip()]
         if context is not None and context.channel not in ("", "bot"):
             parts.append(ENVELOPE_INSTRUCTION)
-        if source_tag == "user_input":
+        if source_tag in {"user_input", "steer"}:
             parts.append(CURRENT_REQUEST_INSTRUCTION)
         if enable_silent_reply:
             parts.append(SILENT_REPLY_INSTRUCTION)
@@ -2991,6 +3175,7 @@ class SessionRunner:
         workspace_id: str | None = None,
         workspace_root: Any = None,
         inbound_batch: tuple[InboundMessage, ...] = (),
+        group_snapshot_at: datetime | None = None,
     ) -> None:
         if self._memory is None:
             logger.debug(
@@ -3011,6 +3196,14 @@ class SessionRunner:
             final_response_chars=len(result.final_response or ""),
             **_message_context_log_fields(message_context),
         )
+        if (
+            message_context is not None
+            and not message_context.timestamp
+            and group_snapshot_at
+        ):
+            message_context = replace(
+                message_context, timestamp=group_snapshot_at.timestamp()
+            )
         metadata = await self._build_user_turn_metadata(
             attachments=attachments,
             image_descriptions=image_descriptions,
@@ -3025,6 +3218,7 @@ class SessionRunner:
                 inbound_batch,
                 image_descriptions=image_descriptions,
                 source_tag=source_tag,
+                group_snapshot_at=group_snapshot_at,
             )
         else:
             user_turn = ConversationTurn(
@@ -3037,7 +3231,7 @@ class SessionRunner:
             result,
             include_message_context=message_context is not None,
         )
-        if assistant_turns:
+        if assistant_turns and group_snapshot_at is None:
             assistant_messages = result.assistant_messages
             tool_messages = result.tool_messages
             final_response = str(result.final_response or "")
@@ -3061,12 +3255,24 @@ class SessionRunner:
             for assistant_turn in assistant_turns:
                 await self._memory.append_turn(session_id, assistant_turn)
 
+        recorded_input = None
+        if group_snapshot_at is not None and self._transcript_projector is not None:
+            recorded_input = (
+                render_inbound_batch(inbound_batch)
+                if inbound_batch
+                else render_message_with_context(
+                    user_message,
+                    message_context,
+                    role="focus_message" if source_tag == "proactive_join" else "user",
+                )
+            )
         await self._persist_transcript(
             session_id,
             result,
             attachment_refs=(
                 metadata.get("attachments") if isinstance(metadata, dict) else None
             ),
+            recorded_input=recorded_input,
         )
 
         await self._submit_memory_after_turn(
@@ -3082,7 +3288,9 @@ class SessionRunner:
             session_id=session_id,
             source_tag=source_tag,
             workspace_id=workspace_id or "",
-            persisted_assistant_turn_count=len(assistant_turns),
+            persisted_assistant_turn_count=0
+            if group_snapshot_at
+            else len(assistant_turns),
         )
 
     async def _persist_batch_messages(
@@ -3092,6 +3300,7 @@ class SessionRunner:
         *,
         image_descriptions: dict[str, str] | None,
         source_tag: str,
+        group_snapshot_at: datetime | None = None,
     ) -> list[MemoryRecord]:
         """Persist the original inputs separately, without a synthetic extra turn."""
         if self._memory is None:
@@ -3099,10 +3308,13 @@ class SessionRunner:
         records = []
         message_ids = [message.message_id for message in messages]
         for index, message in enumerate(messages):
+            context = context_from_inbound(message)
+            if not context.timestamp and group_snapshot_at:
+                context = replace(context, timestamp=group_snapshot_at.timestamp())
             metadata = await self._build_user_turn_metadata(
                 attachments=message.attachments,
                 image_descriptions=image_descriptions,
-                message_context=context_from_inbound(message),
+                message_context=context,
                 source_tag=source_tag,
                 trigger_kind="mention" if message.mentions_bot else source_tag,
             )
@@ -3122,6 +3334,7 @@ class SessionRunner:
         result: AgentRunResult,
         *,
         attachment_refs: list[dict[str, Any]] | None = None,
+        recorded_input: str | None = None,
     ) -> None:
         """Best-effort persist of this run's ordered transcript (Phase 5).
 
@@ -3143,7 +3356,9 @@ class SessionRunner:
         ordered = result.ordered_transcript
         if not ordered:
             return
-        ordered = self._attach_image_refs_to_transcript(ordered, attachment_refs)
+        ordered = self._prepare_transcript_input(
+            ordered, attachment_refs, recorded_input
+        )
         try:
             await self._transcript_projector.save_transcript(run_id, ordered)
             logger.debug(
@@ -3161,36 +3376,29 @@ class SessionRunner:
             )
 
     @staticmethod
-    def _attach_image_refs_to_transcript(
-        ordered: list[Any], attachment_refs: list[dict[str, Any]] | None
-    ) -> list[Any]:
-        """Return a copy of ``ordered`` with image refs stamped on the user turn.
-
-        Only image references are attached, and only base64-free fields are
-        kept, so ``transcript_json`` stays bounded. The first ``role="user"``
-        message (the loop's ``user_input`` turn) is the target; the rest of the
-        transcript is passed through untouched. Returns the original list when
-        there is nothing to attach.
-        """
-        if not attachment_refs:
+    def _prepare_transcript_input(
+        ordered: list[ContextMessage],
+        attachment_refs: list[dict[str, Any]] | None,
+        recorded_input: str | None = None,
+    ) -> list[ContextMessage]:
+        """Save the active input and image references without copying the group snapshot."""
+        image_refs = [
+            ref for ref in attachment_refs or () if ref.get("kind") == "image"
+        ]
+        if not image_refs and recorded_input is None:
             return ordered
-        image_refs = [ref for ref in attachment_refs if ref.get("kind") == "image"]
-        if not image_refs:
-            return ordered
-        result: list[Any] = []
-        stamped = False
-        for message in ordered:
-            if not stamped and getattr(message, "role", None) == "user":
-                base_meta = getattr(message, "metadata", None)
-                merged_meta: dict[str, Any] = (
-                    dict(base_meta) if isinstance(base_meta, dict) else {}
-                )
-                merged_meta["attachments"] = image_refs
-                result.append(replace(message, metadata=merged_meta))
-                stamped = True
-            else:
-                result.append(message)
-        return result
+        for index, message in enumerate(ordered):
+            if message.role == "user":
+                metadata = dict(message.metadata or {})
+                if image_refs:
+                    metadata["attachments"] = image_refs
+                input_message = replace(message, metadata=metadata)
+                if recorded_input is not None:
+                    input_message = replace(
+                        input_message, content=recorded_input, parts=[]
+                    )
+                return [*ordered[:index], input_message, *ordered[index + 1 :]]
+        return ordered
 
     async def _submit_memory_after_turn(self, **arguments: Any) -> None:
         if self._memory_consolidator is None:

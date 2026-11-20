@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -19,6 +20,9 @@ import pytest
 from nahida_bot.agent.context import ContextMessage, ContextPart
 from nahida_bot.agent.media.cache import MediaCache
 from nahida_bot.agent.media.resolver import MediaPolicy, MediaResolver
+from nahida_bot.agent.providers.base import ModelCapabilities
+from nahida_bot.core.config import MultimodalConfig
+from nahida_bot.core.group_timeline import GroupTimeline, TimelineLine
 from nahida_bot.core.session_runner import (
     SessionRunner,
     _IMAGE_UNAVAILABLE_NOTICE,
@@ -102,8 +106,67 @@ async def test_build_vision_parts_keeps_real_image(tmp_path: Path) -> None:
     assert any(p.type == "image_base64" and p.data for p in parts)
 
 
+@pytest.mark.parametrize(
+    "mode", ["cached", "expired", "current_image", "description_only"]
+)
+async def test_timeline_quote_image_uses_only_spare_local_vision_slots(
+    tmp_path: Path, mode: str
+) -> None:
+    path = tmp_path / "quoted.png"
+    if mode != "expired":
+        path.write_bytes(_PNG_1X1)
+    runner = _runner(tmp_path)
+    if mode == "description_only":
+        runner._multimodal_config = MultimodalConfig(
+            media_context_policy="description_only"
+        )
+    current = ()
+    if mode == "current_image":
+        current_path = tmp_path / "new.png"
+        current_path.write_bytes(_PNG_1X1)
+        current = (InboundAttachment("image", "new", path=str(current_path)),)
+    timeline = GroupTimeline(
+        "timeline",
+        (
+            TimelineLine(
+                "quoted picture description",
+                "m1",
+                "group_message",
+                quote_depth=3,
+                media_metadata={
+                    "attachments": [
+                        {
+                            "kind": "image",
+                            "platform_id": "quoted",
+                            "path": str(path),
+                            "url": "https://example.test/archived.png",
+                            "mime_type": "image/png",
+                        }
+                    ]
+                },
+            ),
+            TimelineLine("current input", "m2", "current_request", current),
+        ),
+        datetime.now(UTC),
+    )
+    with patch.object(
+        MediaResolver, "_download", side_effect=AssertionError("network")
+    ) as download:
+        parts = await runner._build_group_timeline_parts(
+            timeline,
+            capabilities=ModelCapabilities(image_input=True, max_image_count=1),
+        )
+    download.assert_not_called()
+    images = [part.media_id for part in parts if part.type == "image_base64"]
+    assert images == {"cached": ["quoted"], "current_image": ["new"]}.get(mode, [])
+    if mode == "cached":
+        assert parts[1].text == "quoted picture description"
+        assert parts[2].media_id == "quoted"
+        assert parts[3].text == "current input"
+
+
 # ---------------------------------------------------------------------------
-# Layer 4 (persist side) — _attach_image_refs_to_transcript
+# Layer 4 (persist side) — _prepare_transcript_input
 # ---------------------------------------------------------------------------
 
 
@@ -129,7 +192,7 @@ def test_attach_image_refs_stamps_first_user_message() -> None:
         _user_msg(),
         ContextMessage(role="assistant", source="assistant", content="ok"),
     ]
-    out = SessionRunner._attach_image_refs_to_transcript(ordered, refs)
+    out = SessionRunner._prepare_transcript_input(ordered, refs)
 
     assert out[0].metadata["attachments"] == refs
     # Only the first user message is stamped; the rest pass through untouched.
@@ -143,14 +206,14 @@ def test_attach_image_refs_filters_non_image_kinds() -> None:
         {"kind": "file", "platform_id": "f1"},
         {"kind": "image", "platform_id": "p1", "path": "/x.png"},
     ]
-    out = SessionRunner._attach_image_refs_to_transcript([_user_msg()], refs)
+    out = SessionRunner._prepare_transcript_input([_user_msg()], refs)
     assert [r["platform_id"] for r in out[0].metadata["attachments"]] == ["p1"]
 
 
 def test_attach_image_refs_noop_without_refs() -> None:
     ordered = [_user_msg()]
-    assert SessionRunner._attach_image_refs_to_transcript(ordered, None) is ordered
-    assert SessionRunner._attach_image_refs_to_transcript(ordered, []) is ordered
+    assert SessionRunner._prepare_transcript_input(ordered, None) is ordered
+    assert SessionRunner._prepare_transcript_input(ordered, []) is ordered
 
 
 # ---------------------------------------------------------------------------

@@ -330,7 +330,8 @@ class HistoryTools:
                 f"Chat history ({selection.mode}, {selection.target_label}), "
                 f"{len(rows)} turns, chronological:"
             ),
-            f"Older-page cursor: before_turn_id={rows[0].get('turn_id', '')}",
+            "Older-page cursor: before_turn_id="
+            f"{rows[0].get('older_page_before_turn_id', rows[0].get('turn_id', ''))}",
         ]
         total_chars = sum(len(line) for line in lines)
         for row in rows:
@@ -347,10 +348,8 @@ class HistoryTools:
         role, sender = cls._history_identity(row)
         flags = cls._history_flags(row)
         source = row.get("source") or role
-        header = (
-            f"\n[{row.get('turn_id')}] {row.get('created_at', '')} "
-            f"[{sender}] [{source}]"
-        )
+        timestamp = row.get("event_at") or row.get("created_at", "")
+        header = f"\n[{row.get('turn_id')}] {timestamp} [{sender}] [{source}]"
         header += cls._history_header_suffix(row, flags)
         content = cls.sanitize_turn(str(row.get("content") or ""))
         return f"{header}\n{content}"

@@ -90,6 +90,8 @@ async def test_tool_reply_confirms_joiner_only_in_its_originating_chat(
         await bus.shutdown()
     assert message_id == "sent-1"
     assert len(sent) == 1
+    assert sent[0].delivered_address == ChatAddress("test", "group", target)
+    assert sent[0].delivered_message_id == message_id
     if target == "g" and not origin and not notification:
         assert sent[0].message is context.inbound_message
         assert sent[0].session_id == context.session_id

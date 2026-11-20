@@ -506,6 +506,10 @@ class AgentLoop:
             model=request.model,
             stop_event=request.stop_event,
             session_id=request.session_id,
+            estimated_message_tokens=runtime.context_builder._estimate_tokens(
+                prompt_messages
+            ),
+            estimated_tool_tokens=runtime.context_builder.budget.tool_tokens,
         )
         if response.usage is not None:
             runtime.total_usage = self._merge_usage(
@@ -603,7 +607,9 @@ class AgentLoop:
     async def _start_loop_runtime(self, request: _LoopRequest) -> _LoopRuntime:
         """Resolve run-scoped dependencies, start the ledger, and seed messages."""
         active_provider = request.provider or self.provider
-        active_builder = request.context_builder or self.context_builder
+        active_builder = (request.context_builder or self.context_builder).for_run(
+            active_provider, request.tools
+        )
         trace = self.metrics.new_trace() if self.metrics else None
         provider_default_model = getattr(active_provider, "model", "")
         effective_system_prompt = self._system_prompt_with_tool_guidance(
@@ -1000,6 +1006,8 @@ class AgentLoop:
         model: str | None = None,
         stop_event: asyncio.Event | None = None,
         session_id: str | None = None,
+        estimated_message_tokens: int = 0,
+        estimated_tool_tokens: int = 0,
     ) -> ProviderResponse:
         active_provider = provider or self.provider
         attempts = 0
@@ -1045,6 +1053,10 @@ class AgentLoop:
                     content_chars=len(response.content or ""),
                     reasoning_chars=len(response.reasoning_content or ""),
                     refusal_chars=len(response.refusal or ""),
+                    estimated_input_tokens=estimated_message_tokens
+                    + estimated_tool_tokens,
+                    estimated_message_tokens=estimated_message_tokens,
+                    estimated_tool_tokens=estimated_tool_tokens,
                     usage_input_tokens=(
                         response.usage.input_tokens if response.usage else 0
                     ),
@@ -1053,6 +1065,9 @@ class AgentLoop:
                     ),
                     usage_cached_tokens=(
                         response.usage.cached_tokens if response.usage else 0
+                    ),
+                    usage_cache_creation_tokens=(
+                        response.usage.cache_creation_tokens if response.usage else 0
                     ),
                     usage_reasoning_tokens=(
                         response.usage.reasoning_tokens if response.usage else 0

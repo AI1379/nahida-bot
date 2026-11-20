@@ -46,6 +46,22 @@
 4. `SessionRunner` 在每轮 resolve provider/model 之后创建本轮 `ContextBuilder`，并传给 `AgentLoop`。
 5. 文档和测试同步更新，明确模型上下文在哪里声明与生效。
 
+### 请求输入估算
+
+默认文本估算器统一用 `tiktoken` 的 `o200k_base`。每次 Agent run 复用稳定文本片段的计数，
+对超长连续文本和空白分片编码以限制合并开销。
+消息文字、协议封装、图片和实际发送的工具定义分别计入预算。图片按每张 1024 token 预留，
+超预算时优先降级成文字，再缩短正文。工具定义占用同一请求窗口。
+
+`agent_loop.provider_call_done` 同时记录本地估算以及供应商上报的输入和缓存用量，
+可以按模型比较估算偏差。图片预留属于统一估算值。
+
+首次加载 `o200k_base` 需要词表。网络受限的部署环境可以在启服务前用服务账号预热词表缓存。
+
+```bash
+uv run python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+```
+
 ## 4. 实施清单
 
 - [x] 扩展 `ModelCapabilities` 的窗口字段和解析 helper。

@@ -44,6 +44,7 @@ dependencies = [
     "icalendar>=6.3,<8",
     "recurring-ical-events>=3,<4",
     "defusedxml>=0.7,<1",
+    "tiktoken>=0.12,<1",
 ]
 
 [dependency-groups]

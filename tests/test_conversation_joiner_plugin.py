@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
@@ -22,7 +23,11 @@ from nahida_bot.core.message_context import (
     context_from_inbound,
     render_message_with_context,
 )
-from nahida_bot.core.router import _render_observed_batch_context
+from nahida_bot.core.group_timeline import (
+    GroupRunInput,
+    TimelineWindow,
+    build_group_timeline,
+)
 from nahida_bot.plugins.base import ChatContext, InboundMessage, SenderContext
 from nahida_bot.plugins.conversation_joiner.config import (
     EngagementConfig,
@@ -244,17 +249,20 @@ async def test_secretary_and_agent_share_same_name_speaker_envelopes() -> None:
     secretary_prompt = api.llm_calls[-1]["messages"][1]["content"]
     request = api.agent_response_requests[0]
     frame = request["attention_frame"]
-    agent_context = _render_observed_batch_context(
-        frame.messages,
-        anchor_message=reply_message,
-        reply_to_message_id=None,
-        attention_frame=frame,
+    timeline = await build_group_timeline(
+        [],
+        GroupRunInput((reply_message,), frame),
+        TimelineWindow(datetime.now(UTC), None, 20, 4000, 900, 300, True),
     )
+    agent_context = "\n".join(line.text for line in timeline.lines)
     quoted = render_message_with_context(
         other_message.text, context_from_inbound(other_message), role="batch_message"
     )
     assert quoted in secretary_prompt
-    assert quoted in agent_context
+    assert "sender: 纳西妲(other-bot)" in agent_context
+    assert "message_id: other-bot-message" in agent_context
+    assert "reply_to_message_id: other-bot-message" in agent_context
+    assert 'role="focus_message"' in agent_context
     assert "sender: 纳西妲(other-bot)" in secretary_prompt
     current = secretary_prompt.split("Current message:\n", 1)[1]
     assert (

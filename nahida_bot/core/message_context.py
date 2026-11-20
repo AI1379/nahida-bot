@@ -7,7 +7,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from nahida_bot.plugins.base import (
+from nahida_bot_sdk.messaging import (
     ChatContext,
     InboundMessage,
     MessageContext,

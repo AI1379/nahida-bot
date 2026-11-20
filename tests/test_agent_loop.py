@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -27,6 +28,7 @@ from nahida_bot.agent.providers import (
     ProviderRateLimitError,
     ProviderRequestContext,
     ProviderResponse,
+    TokenUsage,
     ToolCall,
     ToolDefinition,
     current_provider_request_context,
@@ -200,12 +202,59 @@ async def test_agent_loop_passes_workspace_root_to_context_builder(tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_budgets_tool_schemas_and_logs_usage(monkeypatch) -> None:
+    provider = _QueuedProvider(
+        responses=[ProviderResponse(content="ok", usage=TokenUsage(input_tokens=95))]
+    )
+    builder = ContextBuilder(budget=ContextBudget(max_tokens=100, reserved_tokens=0))
+    loop = AgentLoop(provider=provider, context_builder=builder)
+    history = ContextMessage(
+        role="user", source="history", content="older context " * 30
+    )
+    tool = ToolDefinition(
+        name="read_history",
+        description="Read chronological conversation messages with quote anchors.",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+    )
+    logger = Mock()
+    monkeypatch.setattr("nahida_bot.agent.loop.logger", logger)
+    assert any(
+        message.source == "history"
+        for message in builder.build_context(
+            system_prompt="sys",
+            history_messages=[history],
+            protected_messages=[ContextMessage("user", "current", "user_input")],
+        )
+    )
+    await loop.run(
+        user_message="current",
+        system_prompt="sys",
+        history_messages=[history],
+        tools=[tool],
+    )
+    prompt = provider.observed_messages[0]
+    assert any(message.content == "current" for message in prompt)
+    assert history not in prompt
+    fields = next(
+        call.kwargs
+        for call in logger.debug.call_args_list
+        if call.args == ("agent_loop.provider_call_done",)
+    )
+    assert fields["estimated_tool_tokens"] > 0
+    assert fields["estimated_input_tokens"] == (
+        fields["estimated_message_tokens"] + fields["estimated_tool_tokens"]
+    )
+    assert fields["estimated_input_tokens"] <= builder.budget.usable_tokens
+    assert fields["usage_input_tokens"] == 95
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_passes_user_parts_to_provider() -> None:
     provider = _QueuedProvider(
         responses=[ProviderResponse(content="looks good", tool_calls=[])]
     )
     builder = ContextBuilder(
-        budget=ContextBudget(max_tokens=300, reserved_tokens=0),
+        budget=ContextBudget(max_tokens=1500, reserved_tokens=0),
         fallback_tokenizer=CharacterEstimateTokenizer(chars_per_token=20),
     )
     loop = AgentLoop(provider=provider, context_builder=builder)

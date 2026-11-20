@@ -408,7 +408,7 @@ class SQLiteMemoryRepository:
         chat_address: str = "",
         session_id: str = "",
     ) -> dict[str, Any] | None:
-        """Find the newest persisted turn carrying one platform message id."""
+        """Find a platform message, preferring its confirmed outbound turn."""
         if not message_id:
             return None
         conditions, params = self._turn_scope_conditions(
@@ -423,7 +423,7 @@ class SQLiteMemoryRepository:
         row = await self._engine.fetch_one(
             "SELECT id, session_id, role, content, source, metadata_json, created_at "
             f"FROM memory_turns WHERE {' AND '.join(conditions)} "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            "ORDER BY (source = 'group_delivery') DESC, created_at DESC, id DESC LIMIT 1",
             tuple(params),
         )
         return self._row_to_dict(row) if row is not None else None

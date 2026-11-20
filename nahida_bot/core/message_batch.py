@@ -69,7 +69,7 @@ def _compatible(first: PendingMessage, other: PendingMessage) -> bool:
         and first.session_context == other.session_context
         and first.agent_instruction == other.agent_instruction
         and first.reply_to_override == other.reply_to_override
-        and first.proactive_context == other.proactive_context
+        and first.group_attention == other.group_attention
         and first.attention_episode_id == other.attention_episode_id
     )
 

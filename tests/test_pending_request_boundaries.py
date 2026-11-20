@@ -166,7 +166,7 @@ async def test_distinct_senders_keep_fifo_identity_and_one_dispatch(
     ]
     for call, message in zip(calls[1:], messages, strict=True):
         assert f"message_id: {message.message_id}\n" in call["user_message"]
-        assert 'role="batch_message"' not in call["user_message"]
+        assert call["user_message"].count('role="current_request"') == 1
     users = [turn for turn in case.memory.sessions[SESSION_ID] if turn.role == "user"]
     assert [turn.metadata["message_id"] for turn in users] == [
         "busy",
@@ -243,7 +243,7 @@ async def test_context_provider_receives_original_batch_and_one_reply_anchor(
     assert request.message_context.sender_id == "alice"
     assert request.input_messages == (first, last)
     assert request.actor_account_key == "test:user:alice"
-    assert case.agent.calls[1]["user_message"].count('role="batch_message"') == 2
+    assert case.agent.calls[1]["user_message"].count('role="current_request"') == 2
     prompt = case.api.llm_calls[1]["messages"][1]["content"]
     assert 'Active request message IDs: ["m1", "m2"]' in prompt
     recent_chat = prompt.split("\nRecent chat:\n", 1)[1].split(

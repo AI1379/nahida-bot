@@ -15,7 +15,7 @@ from nahida_bot.core.router import PendingMessage, RouterConfig
 from nahida_bot.core.session_runner import SessionRunner
 from nahida_bot.gateway.routes.sessions import _chat_address_from_session_id
 from nahida_bot.identity.authorization import chat_key_from_session_id
-from nahida_bot.plugins.base import MessageContext
+from nahida_bot.plugins.base import AttentionFrame, MessageContext
 from nahida_bot.plugins.builtin.tools.history import HistoryTools
 from nahida_bot.plugins.knowledge_base.plugin import KnowledgeBasePlugin
 from nahida_bot.plugins.registry import PromptSupplementEntry, PromptSupplementRegistry
@@ -160,7 +160,7 @@ async def test_pending_expiry_keeps_fresh_request_fields():
         source_tag="proactive_join",
         agent_instruction="instruction",
         reply_to_override="reply",
-        proactive_context="context",
+        group_attention=AttentionFrame("proactive_join", "context"),
         attention_episode_id="episode",
     )
     stale = replace(fresh, queued_at=fresh.queued_at - 10000)
@@ -174,7 +174,7 @@ async def test_pending_expiry_keeps_fresh_request_fields():
         source_tag="proactive_join",
         agent_instruction="instruction",
         reply_to_override="reply",
-        proactive_context="context",
+        group_attention=fresh.group_attention,
         attention_episode_id="episode",
         parse_commands=True,
         pending_batch=(fresh,),

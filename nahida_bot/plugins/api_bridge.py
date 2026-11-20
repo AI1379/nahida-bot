@@ -13,11 +13,12 @@ from nahida_bot_sdk.commands import CommandArgument, CompletionChoice, Completio
 from nahida_bot_sdk.plugin import bind_decorated_registrations
 
 from nahida_bot.agent.context import MessageRole
-from nahida_bot.core.chat_address import ChatAddress
+from nahida_bot.core.chat_address import ChatAddress, SessionKey
 from nahida_bot.core.chat_address import (
     address_from_inbound as _address_from_inbound_message,
 )
 from nahida_bot.core.exceptions import PermissionDenied
+from nahida_bot.core.group_timeline import order_group_history
 from nahida_bot.core.task_runtime.postprocess import PostprocessQueue
 from nahida_bot.core.outbound import send_channel_message
 from nahida_bot.core.runtime_settings import (
@@ -1475,6 +1476,24 @@ class RealBotAPI(PluginServiceAPI):
                 limit=limit,
             )
 
+        scope = session_id or chat_address
+        if records and scope:
+            try:
+                address = SessionKey.parse(scope).address
+            except ValueError:
+                address = None
+            if address is not None and address.target_type == "group":
+                rows = [
+                    {
+                        **self._chat_history_record(record),
+                        "event_at": sent_at.isoformat(),
+                    }
+                    for record, sent_at in order_group_history(records, address.channel)
+                ]
+                rows[0]["older_page_before_turn_id"] = min(
+                    record.turn_id for record in records
+                )
+                return rows
         return [self._chat_history_record(record) for record in records]
 
     @staticmethod

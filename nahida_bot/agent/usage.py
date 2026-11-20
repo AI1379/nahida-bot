@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from nahida_bot.agent.tokenization import HeuristicTokenizer
+from nahida_bot.agent.tokenization import O200kTokenizer
 
 if TYPE_CHECKING:
     from nahida_bot.agent.providers.base import TokenUsage
@@ -186,7 +186,7 @@ class UsageRecorder:
         self._totals = UsageTotals()
         self._max_events = max_events
         self._db: DatabaseEngine | None = None
-        self._heuristic = HeuristicTokenizer()
+        self._tokenizer = O200kTokenizer()
 
     # -- DB binding ----------------------------------------------------------
 
@@ -361,8 +361,8 @@ class UsageRecorder:
         output_text: str = "",
     ) -> UsageEvent:
         """Fallback: estimate tokens with heuristic tokenizer and record."""
-        input_est = self._heuristic.count_tokens(prompt_text) if prompt_text else 0
-        output_est = self._heuristic.count_tokens(output_text) if output_text else 0
+        input_est = self._tokenizer.count_tokens(prompt_text)
+        output_est = self._tokenizer.count_tokens(output_text)
         if input_est == 0 and output_est == 0:
             # Last resort: character estimate
             input_est = max(1, math.ceil(len(prompt_text) / 4)) if prompt_text else 0

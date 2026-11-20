@@ -186,7 +186,7 @@ async def test_busy_group_messages_share_run_and_preserve_originals():
         assert call["user_message"].index("use this") < call["user_message"].index(
             "correction: use that"
         )
-        assert call["user_message"].count('role="batch_message"') == 2
+        assert call["user_message"].count('role="current_request"') == 2
         assert "original" in call["user_message"]
         assert [a.platform_id for a in agent.attachment_snapshots[1]] == [
             "file1",
@@ -220,7 +220,8 @@ async def test_sequential_mode_retains_one_run_per_input():
         await _finish_runs(router)
         assert len(agent.calls) == 3
         assert all(
-            'role="batch_message"' not in call["user_message"] for call in agent.calls
+            call["user_message"].count('role="current_request"') == 1
+            for call in agent.calls
         )
     finally:
         agent.release[0].set()
@@ -336,8 +337,8 @@ async def test_group_steer_runs_before_and_separately_from_backlog_batch():
         await _finish_runs(router)
         assert len(agent.calls) == 3
         assert "new focus" in agent.calls[1]["user_message"]
-        assert 'role="batch_message"' not in agent.calls[1]["user_message"]
-        assert agent.calls[2]["user_message"].count('role="batch_message"') == 2
+        assert agent.calls[1]["user_message"].count('role="current_request"') == 1
+        assert agent.calls[2]["user_message"].count('role="current_request"') == 2
         assert "new focus" not in agent.calls[2]["user_message"]
     finally:
         agent.release[0].set()

@@ -64,6 +64,12 @@ class MemoryStore(ABC):
         """Retrieve recent conversation turns for a session."""
         raise NotImplementedError
 
+    async def find_turn_by_message_id(
+        self, message_id: str, *, chat_address: str = "", session_id: str = ""
+    ) -> MemoryRecord | None:
+        """Look up an explicit quote in one session when the store supports it."""
+        return None
+
     @abstractmethod
     async def evict_before(self, cutoff: datetime) -> int:
         """Delete memories older than cutoff. Returns deleted count."""

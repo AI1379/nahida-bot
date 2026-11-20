@@ -148,7 +148,17 @@ async def send_channel_message(
         )
     if event_bus is not None:
         try:
-            await event_bus.publish(MessageSent(payload=payload, source=source))
+            address = _delivered_address(channel, target, message, payload)
+            await event_bus.publish(
+                MessageSent(
+                    payload=replace(
+                        payload,
+                        delivered_message_id=message_id,
+                        delivered_address=address,
+                    ),
+                    source=source,
+                )
+            )
         except Exception:
             logger.exception(
                 "outbound.sent_observer_failed", channel=channel, message_id=message_id
@@ -161,3 +171,27 @@ async def send_channel_message(
                 "outbound.cleanup_failed", channel=channel, message_id=message_id
             )
     return message_id
+
+
+def _delivered_address(
+    channel: str, target: str, outbound: OutboundMessage, payload: MessagePayload
+) -> ChatAddress | None:
+    address_hint = outbound.extra.get("chat_address")
+    if isinstance(address_hint, str) and address_hint:
+        try:
+            address = ChatAddress.parse(address_hint)
+        except ValueError:
+            return None
+    else:
+        inbound = payload.message
+        if not isinstance(inbound, InboundMessage):
+            return None
+        address = ChatAddress.from_inbound(
+            inbound.platform,
+            inbound.chat_id,
+            is_group=inbound.is_group,
+            chat_type=inbound.chat_context.chat_type if inbound.chat_context else "",
+        )
+    if address.channel == channel and address.target_id == target:
+        return address
+    return None

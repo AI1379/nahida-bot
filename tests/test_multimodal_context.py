@@ -316,6 +316,7 @@ class TestPersistTurnsMetadata:
         ]
 
         class _FakeResult:
+            terminal_state, error = "completed", None
             final_response = "ok"
             assistant_messages: list[Any] = []
             tool_messages: list[Any] = []
@@ -357,6 +358,7 @@ class TestPersistTurnsMetadata:
         runner = SessionRunner(memory_store=cast(MemoryStore, _FakeMemory()))
 
         class _FakeResult:
+            terminal_state, error = "completed", None
             final_response = "ok"
             assistant_messages: list[Any] = []
             tool_messages: list[Any] = []
@@ -398,6 +400,7 @@ class TestPersistTurnsMetadata:
         runner = SessionRunner(memory_store=cast(MemoryStore, _FakeMemory()))
 
         class _FakeResult:
+            terminal_state, error = "completed", None
             final_response = "recorded"
             assistant_messages = [
                 ContextMessage(
@@ -468,6 +471,7 @@ class TestPersistTurnsMetadata:
             has_redacted_thinking = True
 
         class _FakeResult:
+            terminal_state, error = "completed", None
             final_response = "here is my answer"
             assistant_messages = [_FakeContextMessage()]
             tool_messages: list[Any] = []

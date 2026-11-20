@@ -125,6 +125,8 @@ class MessagePayload:
     actor_account_key: str = ""
     # Notifications must not confirm an unrelated in-flight conversational reply.
     delivery_kind: str = "reply"
+    delivered_message_id: str = ""
+    delivered_address: ChatAddress | None = None
 
 
 @dataclass(slots=True, frozen=True)

@@ -21,7 +21,10 @@ async def test_cancelled_response_distinguishes_service_shutdown(shutdown):
     router._send_response = AsyncMock()
     state = _AgentDeliveryState()
     request = SimpleNamespace(
-        inbound=_inbound(), session_id="test:private:c1", reply_to_override=None
+        inbound=_inbound(),
+        session_id="test:private:c1",
+        reply_to_override=None,
+        source_tag="user_input",
     )
     await router._handle_agent_done(
         request,
